@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: skywave
+      POSTGRES_PASSWORD: skywave
+      POSTGRES_DB: skywave
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  radio:
+    build: ./apps/radio
+    env_file:
+      - path: ./apps/radio/.env
+        required: false
+    ports:
+      - "8765:8765"
+    restart: unless-stopped
+    profiles: ["radio"]
+
+volumes:
+  pgdata:

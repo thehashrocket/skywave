@@ -1,0 +1,13 @@
+{
+  "name": "skywave",
+  "private": true,
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "dev:radio": "cd apps/radio && .venv/bin/uvicorn skywave_radio.server:app --port 8765 --reload --env-file .env",
+    "build": "pnpm --filter web build",
+    "typecheck": "pnpm --filter web typecheck",
+    "test:radio": "cd apps/radio && .venv/bin/python -m pytest -q",
+    "db:up": "docker compose up -d postgres"
+  }
+}

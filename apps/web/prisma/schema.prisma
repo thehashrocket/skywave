@@ -1,0 +1,21 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// A saved frequency, optionally pinned to a specific receiver.
+model Preset {
+  id           String   @id @default(cuid())
+  name         String
+  freqKhz      Float
+  mode         String
+  receiverHost String?
+  receiverPort Int?
+  createdAt    DateTime @default(now())
+
+  @@index([freqKhz])
+}

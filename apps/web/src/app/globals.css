@@ -1,0 +1,736 @@
+:root {
+  --enamel: #13303a;
+  --enamel-deep: #0b1e24;
+  --enamel-raised: #1b3f4a;
+  --rule: #2b5560;
+  --glass: #d4e6d8;
+  --glass-shade: #b9d3c2;
+  --ink: #1b2a2f;
+  --needle: #c8322b;
+  --brass: #c19a4b;
+  --brass-dim: #8a6c33;
+  --text: #e6eee8;
+  --muted: #9db8b0;
+  --ham: #2f6f6a;
+  --lamp: #f2c55c;
+  --danger: #f08a7e;
+
+  --font-ui: "Atkinson Hyperlegible", system-ui, sans-serif;
+  --font-instrument: "Barlow Condensed", "Arial Narrow", sans-serif;
+
+  --radius-knob: 999px;
+  --radius-panel: 6px;
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--enamel);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--lamp);
+}
+
+:focus-visible {
+  outline: 2px solid var(--lamp);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Page frame */
+
+.console {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 24px 16px 64px;
+  display: grid;
+  gap: 20px;
+}
+
+.console-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.wordmark {
+  margin: 0;
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 2.6rem;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  color: var(--glass);
+}
+
+/* Receiver picker */
+
+.receiver {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+}
+
+.field label,
+.volume label,
+.presets-save label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.field input,
+.presets-save input {
+  font: inherit;
+  color: var(--text);
+  background: var(--enamel-deep);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-panel);
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.field input:disabled {
+  color: var(--muted);
+}
+
+.field-host input {
+  width: min(320px, 60vw);
+}
+
+.field-port input {
+  width: 5.5em;
+}
+
+.power {
+  font: inherit;
+  font-weight: 700;
+  min-width: 7em;
+  padding: 9px 20px;
+  border-radius: var(--radius-knob);
+  border: 1px solid var(--brass);
+  background: var(--brass);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.power:hover {
+  background: #d3ad5e;
+}
+
+.power-on {
+  background: transparent;
+  color: var(--brass);
+}
+
+.power-on:hover {
+  background: rgba(193, 154, 75, 0.12);
+}
+
+.receiver-help {
+  margin: -8px 0 0;
+  max-width: 70ch;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+/* The dial: the one loud thing on the page */
+
+.dial {
+  display: grid;
+  gap: 6px;
+}
+
+.dial-scroll {
+  overflow-x: auto;
+  padding: 6px;
+  margin: -6px;
+  scrollbar-width: thin;
+}
+
+.dial-glass {
+  display: block;
+  width: 100%;
+  min-width: 860px;
+  height: auto;
+  border-radius: 10px;
+  background:
+    radial-gradient(120% 140% at 50% 120%, rgba(242, 197, 92, 0.32), transparent 60%),
+    linear-gradient(180deg, var(--glass) 0%, var(--glass-shade) 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(27, 42, 47, 0.35),
+    inset 0 8px 18px rgba(255, 255, 255, 0.35),
+    0 0 0 6px var(--enamel-deep);
+  cursor: ew-resize;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.dial-glass:focus-visible {
+  outline: 2px solid var(--lamp);
+  outline-offset: 8px;
+}
+
+.dial-ticks-minor {
+  stroke: rgba(27, 42, 47, 0.45);
+  stroke-width: 1;
+}
+
+.dial-ticks-major,
+.dial-baseline {
+  stroke: var(--ink);
+  stroke-width: 1.5;
+}
+
+.dial-num {
+  font-family: var(--font-instrument);
+  font-weight: 500;
+  font-size: 15px;
+  fill: rgba(27, 42, 47, 0.7);
+}
+
+.dial-num-major {
+  font-weight: 600;
+  font-size: 22px;
+  fill: var(--ink);
+}
+
+.dial-row-label {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-style: italic;
+  fill: rgba(27, 42, 47, 0.75);
+}
+
+.dial-band text {
+  font-family: var(--font-instrument);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dial-band-broadcast rect {
+  fill: var(--brass-dim);
+  opacity: 0.8;
+}
+
+.dial-band-broadcast text {
+  fill: #6b5226;
+}
+
+.dial-band-ham rect {
+  fill: var(--ham);
+}
+
+.dial-band-ham text {
+  fill: var(--ham);
+}
+
+.dial-needle line {
+  stroke: var(--needle);
+  stroke-width: 2.5;
+}
+
+.dial-needle circle {
+  fill: var(--needle);
+}
+
+.dial-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* Tuning row */
+
+.controls {
+  display: grid;
+  grid-template-columns: auto auto minmax(220px, 1fr) minmax(140px, 200px);
+  align-items: center;
+  gap: 16px 28px;
+  padding: 16px 20px;
+  background: var(--enamel-raised);
+  border-radius: var(--radius-panel);
+}
+
+.readout {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.readout-input {
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 3rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  width: 8.6ch;
+  padding: 2px 4px;
+  color: var(--lamp);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  text-align: right;
+}
+
+.readout-input:hover {
+  border-color: var(--rule);
+}
+
+.readout-input:focus {
+  outline: none;
+  border-color: var(--lamp);
+  background: var(--enamel-deep);
+}
+
+.readout-unit {
+  font-family: var(--font-instrument);
+  font-size: 1.3rem;
+  color: var(--muted);
+}
+
+.modes {
+  display: flex;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.mode {
+  position: relative;
+}
+
+.mode input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.mode span {
+  display: block;
+  padding: 7px 13px;
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 1.1rem;
+  color: var(--muted);
+  border: 1px solid var(--rule);
+  margin-left: -1px;
+}
+
+.mode:first-child span {
+  border-radius: var(--radius-knob) 0 0 var(--radius-knob);
+  margin-left: 0;
+}
+
+.mode:last-child span {
+  border-radius: 0 var(--radius-knob) var(--radius-knob) 0;
+}
+
+.mode input:checked + span {
+  background: var(--glass);
+  border-color: var(--glass);
+  color: var(--ink);
+}
+
+.mode input:focus-visible + span {
+  outline: 2px solid var(--lamp);
+  outline-offset: 2px;
+}
+
+/* S-meter */
+
+.smeter {
+  display: grid;
+  gap: 4px;
+}
+
+.smeter-reading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.smeter-s {
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 1.5rem;
+  min-width: 3.6ch;
+}
+
+.smeter-dbm {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.smeter-ov {
+  font-size: 0.8rem;
+  color: var(--danger);
+}
+
+.smeter-track {
+  position: relative;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--enamel-deep);
+  overflow: hidden;
+}
+
+.smeter-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+  background: linear-gradient(90deg, var(--ham) 0%, #6fb29e 55%, var(--lamp) 100%);
+  transition: transform 180ms linear;
+}
+
+.smeter-s9 {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(230, 238, 232, 0.5);
+}
+
+.smeter-scale {
+  position: relative;
+  height: 1.1em;
+  font-family: var(--font-instrument);
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.smeter-scale span {
+  position: absolute;
+  transform: translateX(-50%);
+}
+
+/* Volume */
+
+.volume {
+  display: grid;
+  gap: 4px;
+}
+
+.volume input {
+  width: 100%;
+  accent-color: var(--brass);
+}
+
+/* Status */
+
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  min-height: 1.5em;
+  font-size: 0.95rem;
+}
+
+.status-lamp {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--rule);
+  align-self: center;
+}
+
+.status[data-state="listening"] .status-lamp {
+  background: var(--lamp);
+  box-shadow: 0 0 8px var(--lamp);
+}
+
+.status[data-state="connecting"] .status-lamp {
+  background: var(--lamp);
+  opacity: 0.5;
+}
+
+.status[data-state="error"] .status-lamp {
+  background: var(--danger);
+}
+
+.status-state {
+  font-weight: 700;
+}
+
+.status-detail {
+  color: var(--muted);
+}
+
+.status-message {
+  flex-basis: 100%;
+  color: var(--muted);
+  max-width: 75ch;
+}
+
+.status[data-state="error"] .status-message {
+  color: var(--danger);
+}
+
+/* Waterfall */
+
+.waterfall {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.waterfall-screen {
+  position: relative;
+  border-radius: var(--radius-panel);
+  overflow: hidden;
+  background: var(--enamel-deep);
+  cursor: crosshair;
+}
+
+.waterfall-screen canvas {
+  display: block;
+  width: 100%;
+  height: 240px;
+  image-rendering: auto;
+}
+
+.waterfall-passband {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(212, 230, 216, 0.08);
+  border-left: 1px solid rgba(212, 230, 216, 0.45);
+  border-right: 1px solid rgba(212, 230, 216, 0.45);
+  pointer-events: none;
+}
+
+.waterfall-center {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 0;
+  border-left: 1px dashed rgba(200, 50, 43, 0.85);
+  pointer-events: none;
+}
+
+.waterfall-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+  pointer-events: none;
+}
+
+.waterfall-axis {
+  position: relative;
+  height: 2.6em;
+  font-family: var(--font-instrument);
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.waterfall-axis span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+}
+
+.waterfall-axis span:first-child {
+  transform: none;
+}
+
+.waterfall-axis .waterfall-unit {
+  top: 1.3em;
+  left: 50% !important;
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+}
+
+/* Presets */
+
+.presets h2 {
+  margin: 8px 0 10px;
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 1.6rem;
+  color: var(--glass);
+}
+
+.presets-note {
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+
+.presets-list {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 0 24px;
+}
+
+.presets-list li {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--rule);
+}
+
+.presets-list li[data-current] .preset-freq {
+  color: var(--lamp);
+}
+
+.preset-tune {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 5.2ch 3.2ch 1fr;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 4px;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.preset-tune:hover .preset-name {
+  color: var(--glass);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.preset-freq {
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 1.2rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.preset-mode {
+  font-family: var(--font-instrument);
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+.preset-delete {
+  font: inherit;
+  font-size: 1.2rem;
+  line-height: 1;
+  width: 32px;
+  height: 32px;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.preset-delete:hover {
+  color: var(--danger);
+  background: rgba(240, 138, 126, 0.1);
+}
+
+.presets-save {
+  display: grid;
+  gap: 6px;
+  max-width: 520px;
+}
+
+.presets-save-row {
+  display: flex;
+  gap: 8px;
+}
+
+.presets-save-row input {
+  flex: 1;
+}
+
+.presets-save button {
+  font: inherit;
+  font-weight: 700;
+  padding: 8px 18px;
+  border-radius: var(--radius-knob);
+  border: 1px solid var(--brass);
+  background: transparent;
+  color: var(--brass);
+  cursor: pointer;
+}
+
+.presets-save button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Small screens */
+
+@media (max-width: 860px) {
+  .controls {
+    grid-template-columns: 1fr 1fr;
+  }
+  .readout,
+  .modes {
+    grid-column: span 2;
+  }
+  .readout-input {
+    font-size: 2.6rem;
+  }
+}
+
+@media (max-width: 520px) {
+  .controls {
+    grid-template-columns: 1fr;
+    padding: 14px;
+  }
+  .readout,
+  .modes {
+    grid-column: auto;
+  }
+  .field-host input {
+    width: 100%;
+  }
+  .field-host {
+    flex: 1 1 100%;
+  }
+  .waterfall-screen canvas {
+    height: 180px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .smeter-fill {
+    transition: none;
+  }
+}
