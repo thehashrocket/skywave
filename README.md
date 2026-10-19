@@ -13,7 +13,15 @@ The Kiwi only hands over raw I/Q. Everything from there to your speakers (filter
 
 ## Run it locally
 
-You need Node 22+, pnpm, Python 3.11+, and Postgres (Docker is easiest).
+You need Node 24 (see `.nvmrc`), pnpm 12, Python 3.11+, and Postgres (Docker is easiest).
+
+The repo pins pnpm 12.14.0 in `package.json`. If your global pnpm is 10.x, it downloads 12 for you but skips the install script that puts pnpm 12's native binary in place, and every pnpm command then fails with `Failed to switch pnpm to v12.14.0 ... ENOEXEC`. Upgrade the global pnpm first, from outside the repo:
+
+```bash
+cd ~ && pnpm self-update 12.14.0
+```
+
+If it's already broken, finish the skipped step by hand: `cd ~/Library/pnpm/.tools/pnpm/12.14.0/node_modules/pnpm && node install.js` (the path differs on Linux: `~/.local/share/pnpm/.tools/...`).
 
 ```bash
 pnpm install

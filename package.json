@@ -1,7 +1,7 @@
 {
   "name": "skywave",
   "private": true,
-  "packageManager": "pnpm@10.28.0",
+  "packageManager": "pnpm@12.14.0",
   "scripts": {
     "dev": "pnpm --filter web dev",
     "dev:radio": "cd apps/radio && .venv/bin/uvicorn skywave_radio.server:app --port 8765 --reload --env-file .env",
