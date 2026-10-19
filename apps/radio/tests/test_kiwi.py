@@ -86,3 +86,20 @@ async def test_unreachable_kiwi_raises():
     with pytest.raises(KiwiError) as e:
         await client.connect()
     assert e.value.code == "unreachable"
+
+
+async def test_silent_port_gives_a_reason():
+    # Accepts TCP but never answers the WebSocket upgrade, like a wrong port.
+    held = []
+    server = await asyncio.start_server(lambda r, w: held.append(w), "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        with pytest.raises(KiwiError) as e:
+            await KiwiClient("127.0.0.1", port, timeout_s=0.5).connect()
+        assert e.value.code == "unreachable"
+        assert "()" not in str(e.value)
+        assert "check the port" in str(e.value)
+    finally:
+        for w in held:
+            w.close()
+        server.close()

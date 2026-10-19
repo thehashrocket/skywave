@@ -165,7 +165,9 @@ class KiwiClient:
                 timeout=self.timeout_s,
             )
         except (OSError, asyncio.TimeoutError, websockets.InvalidHandshake) as e:
-            raise KiwiError("unreachable", f"Couldn't connect to {self.host}:{self.port} ({e})") from e
+            # A timeout's message is empty, which left the browser showing "()".
+            reason = "no answer; check the port" if isinstance(e, asyncio.TimeoutError) else str(e) or type(e).__name__
+            raise KiwiError("unreachable", f"Couldn't connect to {self.host}:{self.port} ({reason})") from e
 
         await self._send("SET auth t=kiwi p=")
         try:

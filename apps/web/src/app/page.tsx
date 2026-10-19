@@ -7,6 +7,7 @@ import { Presets } from "@/components/Presets";
 import { SMeter } from "@/components/SMeter";
 import { Waterfall } from "@/components/Waterfall";
 import { MODE_LABELS, MODES, guessMode, type Mode } from "@/lib/radio-types";
+import { parseReceiver } from "@/lib/receiver";
 import { useRadio } from "@/lib/use-radio";
 
 const STORAGE_KEY = "skywave.receiver";
@@ -91,8 +92,17 @@ export default function ListenPage() {
     sendRetune({ freqKhz, mode: m });
   };
 
+  // Pull a host and port out of a pasted URL like http://f4kiy.ddns.net:8073/.
+  const normalizeReceiver = () => {
+    const parsed = parseReceiver(host);
+    const r = { host: parsed.host, port: parsed.port ?? (port.trim() || "8073") };
+    setHost(r.host);
+    setPort(r.port);
+    return r;
+  };
+
   const listen = () => {
-    const r = { host: host.trim(), port: port.trim() || "8073" };
+    const r = normalizeReceiver();
     saveReceiver(r);
     void radio.tune({ host: r.host, port: Number(r.port), freqKhz, mode });
   };
@@ -129,6 +139,7 @@ export default function ListenPage() {
               id="host"
               value={host}
               onChange={(e) => setHost(e.target.value)}
+              onBlur={normalizeReceiver}
               placeholder="kiwi hostname"
               autoComplete="off"
               spellCheck={false}
@@ -154,11 +165,11 @@ export default function ListenPage() {
 
       <p className="receiver-help">
         Pick any public receiver from{" "}
-        <a href="https://rx.kiwisdr.com" target="_blank" rel="noreferrer">
-          rx.kiwisdr.com
+        <a href="http://kiwisdr.com/public/" target="_blank" rel="noreferrer">
+          kiwisdr.com/public
         </a>{" "}
-        and paste its hostname. They're run by volunteers and most allow only a handful of listeners, so stop when
-        you're done.
+        and paste its address. They're run by volunteers and most allow only a handful of listeners, so stop when you're
+        done.
       </p>
 
       <Dial freqKhz={freqKhz} onChange={onDial} />

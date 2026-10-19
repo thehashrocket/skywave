@@ -21,6 +21,22 @@ def is_local_origin(origin: str) -> bool:
     return urlsplit(origin).hostname in LOCAL_HOSTNAMES
 
 
+def origin_allowed(origin: str | None, allowed: tuple[str, ...]) -> bool:
+    """True if a browser origin may connect.
+
+    localhost, 127.0.0.1 and [::1] are the same machine, so allowing one of
+    them on a port allows the others on that port too.
+    """
+    if "*" in allowed or origin in allowed:
+        return True
+    if not origin or not is_local_origin(origin):
+        return False
+    o = urlsplit(origin)
+    return any(
+        is_local_origin(a) and urlsplit(a).scheme == o.scheme and urlsplit(a).port == o.port for a in allowed
+    )
+
+
 @dataclass(frozen=True)
 class Settings:
     # Browser origins allowed to open the listening WebSocket. Empty means

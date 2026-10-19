@@ -11,7 +11,7 @@ import logging
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 
-from .config import Settings, is_local_origin
+from .config import Settings, is_local_origin, origin_allowed
 from .session import ClientGone, ListenSession, Slots
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -48,7 +48,7 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
     @app.websocket("/ws")
     async def listen(ws: WebSocket) -> None:
         origin = ws.headers.get("origin")
-        if "*" not in settings.allowed_origins and origin not in settings.allowed_origins:
+        if not origin_allowed(origin, settings.allowed_origins):
             log.warning("rejected origin %r", origin)
             await ws.close(code=status.WS_1008_POLICY_VIOLATION)
             return

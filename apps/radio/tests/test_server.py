@@ -8,7 +8,7 @@ import pytest
 from fastapi import WebSocketDisconnect, status
 from fastapi.testclient import TestClient
 
-from skywave_radio.config import Settings
+from skywave_radio.config import Settings, origin_allowed
 from skywave_radio.server import create_app
 
 from .fakekiwi import FakeKiwi
@@ -148,6 +148,33 @@ def test_retune_reuses_connection():
 
 def test_bad_origin_rejected():
     assert_rejected(create_app(settings()), headers={"origin": "https://evil.example"})
+
+
+@pytest.mark.parametrize(
+    ("origin", "ok"),
+    [
+        ("http://localhost:3000", True),
+        ("http://127.0.0.1:3000", True),
+        ("http://[::1]:3000", True),
+        ("http://127.0.0.1:3001", False),
+        ("https://127.0.0.1:3000", False),
+        ("http://evil.localhost.example:3000", False),
+        (None, False),
+    ],
+)
+def test_loopback_names_are_interchangeable(origin, ok):
+    assert origin_allowed(origin, ("http://localhost:3000",)) is ok
+
+
+def test_loopback_equivalence_does_not_extend_public_origins():
+    assert not origin_allowed("http://127.0.0.1:443", ("https://radio.example",))
+
+
+def test_127_origin_accepted_end_to_end():
+    with TestClient(create_app(settings())) as client:
+        with client.websocket_connect("/ws", headers={"origin": "http://127.0.0.1:3000"}) as ws:
+            ws.send_text(json.dumps({"type": "stop"}))
+            assert json.loads(ws.receive_text())["state"] == "stopped"
 
 
 def test_empty_origin_list_refuses_everyone(caplog):
