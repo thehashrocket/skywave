@@ -126,7 +126,10 @@ export function useRadio() {
       ws.onerror = () => reject(new Error("socket"));
       ws.onmessage = (e) => (typeof e.data === "string" ? handleText(e.data) : handleBinary(e.data as ArrayBuffer));
       ws.onclose = () => {
-        if (wsRef.current === ws) wsRef.current = null;
+        // Only the live socket may touch audio and status. After Stop and a
+        // quick Listen, the old socket's close arrives while a new one plays.
+        if (wsRef.current !== ws) return;
+        wsRef.current = null;
         nodeRef.current?.port.postMessage({ type: "reset" });
         setMeter(null);
         if (!stoppingRef.current) {

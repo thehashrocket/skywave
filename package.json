@@ -8,6 +8,7 @@
     "build": "pnpm --filter web build",
     "typecheck": "pnpm --filter web typecheck",
     "test:radio": "cd apps/radio && .venv/bin/python -m pytest -q",
+    "test:web": "pnpm --filter web test",
     "db:up": "docker compose up -d postgres"
   }
 }

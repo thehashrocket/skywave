@@ -15,7 +15,9 @@ export const presetsRouter = router({
 
   create: publicProcedure.input(presetInput).mutation(({ ctx, input }) => ctx.db.preset.create({ data: input })),
 
+  // deleteMany, not delete: removing a preset that's already gone (double
+  // click, second tab) is a success, not a 500.
   delete: publicProcedure
     .input(z.object({ id: z.string() }))
-    .mutation(({ ctx, input }) => ctx.db.preset.delete({ where: { id: input.id } })),
+    .mutation(({ ctx, input }) => ctx.db.preset.deleteMany({ where: { id: input.id } })),
 });

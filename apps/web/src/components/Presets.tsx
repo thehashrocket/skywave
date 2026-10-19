@@ -68,6 +68,7 @@ export function Presets({ freqKhz, mode, onSelect }: Props) {
           })}
         </ul>
       )}
+      {remove.isError && <p className="presets-note">Couldn't delete that. Is the database running?</p>}
 
       <form className="presets-save" onSubmit={save}>
         <label htmlFor="preset-name">
