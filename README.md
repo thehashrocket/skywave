@@ -90,12 +90,12 @@ Browser ↔ service protocol: the browser sends JSON (`{"type":"tune","host","po
 Run it on one of your EC2 boxes or the home server (`docker compose --profile radio up -d radio`). Two things matter:
 
 1. **TLS.** A web app served over `https` can only open `wss://` sockets, so put the service behind your usual reverse proxy (Caddy, nginx) and set `NEXT_PUBLIC_RADIO_WS_URL=wss://radio.example.com/ws`. This is also why the service exists at all: most Kiwis only speak plain `ws://`, which browsers block from secure pages.
-2. **Lock it down.** Set `ALLOWED_ORIGINS` to your web app's origin. `ALLOW_PRIVATE_HOSTS` stays off so the service can't be pointed at your internal network. `RADIO_TOKEN` adds a shared token, but it ships to the browser, so treat it as a speed bump; put the app behind real auth if it's public.
+2. **Lock it down.** Set `ALLOWED_ORIGINS` to your web app's origin. Any script can fake an Origin header, so the service refuses to start without `RADIO_TOKEN` once any non-localhost origin is allowed. The token ships to the browser in the web app's JavaScript, so set `APP_PASSWORD` on the web app (see below) to keep the token behind a password. `ALLOW_PRIVATE_HOSTS` stays off so the service can't be pointed at your internal network or tailnet.
 
 ## Tests
 
 ```bash
-pnpm test:radio     # 37 tests: DSP math, a fake Kiwi for the protocol, end-to-end WebSocket sessions
+pnpm test:radio     # 60 tests: DSP math, a fake Kiwi for the protocol, end-to-end WebSocket sessions
 pnpm typecheck
 ```
 

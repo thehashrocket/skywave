@@ -43,24 +43,60 @@ class ClientGone(Exception):
     """The browser disconnected; stop quietly."""
 
 
+class Slots:
+    """Caps live Kiwi connections across every browser session.
+
+    Each one occupies a channel on a volunteer's receiver, so that's what we
+    count. No lock: acquire and release never await, and everything runs on
+    one event loop.
+    """
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.active = 0
+
+    def try_acquire(self) -> bool:
+        if self.active >= self.limit:
+            return False
+        self.active += 1
+        return True
+
+    def release(self) -> None:
+        self.active -= 1
+
+
 def kiwi_freq_khz(freq_khz: float, mode: str) -> float:
     """Frequency to ask the Kiwi for. CW is offset so the signal lands at an audible pitch."""
     return freq_khz - CW_PITCH_HZ / 1000 if mode == "cw" else freq_khz
 
 
 class ListenSession:
+    """One browser's listening session.
+
+    A tune for a new receiver takes a slot and starts a pump task:
+
+        connecting ──handshake──▶ listening ──limit/error/stop──▶ ended
+                                                                  (slot released)
+
+    A tune for the same receiver while the pump is alive is always a retune,
+    never a restart. Before the handshake finishes it only records the new
+    frequency and mode, which the handshake then applies.
+    """
+
     def __init__(
         self,
         settings: Settings,
         send_text: SendText,
         send_bytes: SendBytes,
         *,
+        slots: Slots | None = None,
         resolver: Callable[..., Awaitable[str]] = resolve_receiver,
         client_factory: Callable[..., KiwiClient] = KiwiClient,
     ):
         self.settings = settings
         self._send_text = send_text
         self._send_bytes = send_bytes
+        self._slots = slots or Slots(settings.max_sessions)
         self._resolver = resolver
         self._client_factory = client_factory
         self._client: KiwiClient | None = None
@@ -70,6 +106,7 @@ class ListenSession:
         self._mode = "am"
         self._freq_khz = 0.0
         self._target: tuple[str, int] | None = None
+        self._listening = False
 
     async def handle(self, msg: dict[str, Any]) -> None:
         kind = msg.get("type")
@@ -100,19 +137,27 @@ class ListenSession:
 
         self._freq_khz = freq
         same_receiver = self._target == (host, port) and self._pump is not None and not self._pump.done()
-        if same_receiver and self._client is not None:
+        if same_receiver:
             if mode != self._mode:
                 self._mode = mode
-                if self._client.info.sample_rate:
+                if self._listening:
                     self._demod = Demodulator(self._client.info.sample_rate, mode)
-            await self._client.tune(kiwi_freq_khz(freq, mode))
-            await self._status("listening")
+            # Still resolving: _run reads _freq_khz/_mode when it builds the client.
+            if self._client is not None:
+                await self._client.tune(kiwi_freq_khz(freq, mode))
+            if self._listening:
+                await self._status("listening")
             return
 
         await self.stop(None)
+        if not self._slots.try_acquire():
+            raise BadRequest("The radio service is at its listener limit. Try again in a bit.")
         self._mode = mode
         self._target = (host, port)
         self._pump = asyncio.create_task(self._run(host, port))
+        # A done callback, not a finally in _run: a task cancelled before it
+        # first runs never enters its body.
+        self._pump.add_done_callback(lambda _: self._slots.release())
 
     async def _run(self, host: str, port: int) -> None:
         await self._status("connecting", host=host)
@@ -127,6 +172,7 @@ class ListenSession:
             assert info.sample_rate is not None
             self._demod = Demodulator(info.sample_rate, self._mode)
             self._spectrum = Spectrum(info.sample_rate)
+            self._listening = True
             await self._status("listening")
 
             started = time.monotonic()
@@ -163,6 +209,7 @@ class ListenSession:
             log.exception("listen session crashed")
             await self._status("error", message="Something broke in the radio service. Check its logs.")
         finally:
+            self._listening = False
             if self._client is not None:
                 await self._client.close()
                 self._client = None

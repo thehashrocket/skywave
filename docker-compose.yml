@@ -6,7 +6,8 @@ services:
       POSTGRES_PASSWORD: skywave
       POSTGRES_DB: skywave
     ports:
-      - "5432:5432"
+      # Localhost only: the dev password is not a secret.
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 

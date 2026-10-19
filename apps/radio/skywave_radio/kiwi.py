@@ -39,6 +39,12 @@ SND_FLAG_COMPRESSED = 0x10
 GPS_HEADER_BYTES = 10
 DEFAULT_PORT = 8073
 
+# Kiwis run at about 12 kHz (or 20.25 kHz in wideband mode). The receiver
+# reports its rate and we size DSP and browser buffers from it, so a hostile
+# one could otherwise ask us to allocate gigabytes.
+MIN_RATE_HZ = 6_000.0
+MAX_RATE_HZ = 48_000.0
+
 
 class KiwiError(Exception):
     """A Kiwi refused or dropped us. `code` is machine-readable."""
@@ -202,16 +208,26 @@ class KiwiClient:
             if name == "redirect":
                 raise KiwiError("redirect", f"{self.host} redirected to {value}; use that address instead.")
             if name == "audio_rate" and value:
-                self.info.audio_rate = int(float(value))
+                self.info.audio_rate = int(self._checked_rate(value))
                 await self._send(f"SET AR OK in={self.info.audio_rate} out=44100")
             elif name == "sample_rate" and value:
-                self.info.sample_rate = float(value)
+                self.info.sample_rate = self._checked_rate(value)
             elif name == "freq_offset" and value:
                 self.info.freq_offset_khz = float(value)
             elif name == "version_maj":
                 self.info.version = value
             else:
                 self.info.extra[name] = value
+
+    def _checked_rate(self, value: str) -> float:
+        try:
+            rate = float(value)
+        except ValueError:
+            rate = float("nan")
+        # Written so NaN fails too: every comparison with NaN is False.
+        if not MIN_RATE_HZ <= rate <= MAX_RATE_HZ:
+            raise KiwiError("bad_rate", f"{self.host} reported an unsupported sample rate ({value}).")
+        return rate
 
     async def tune(self, freq_khz: float) -> None:
         self.freq_khz = freq_khz

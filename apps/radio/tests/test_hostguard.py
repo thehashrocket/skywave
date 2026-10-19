@@ -3,7 +3,19 @@ import pytest
 from skywave_radio.hostguard import HostRejected, resolve_receiver
 
 
-@pytest.mark.parametrize("host", ["127.0.0.1", "10.0.0.5", "192.168.1.20", "169.254.169.254", "::1", "localhost"])
+@pytest.mark.parametrize(
+    "host",
+    [
+        "127.0.0.1",
+        "10.0.0.5",
+        "192.168.1.20",
+        "169.254.169.254",
+        "::1",
+        "localhost",
+        "100.64.0.1",  # carrier NAT / Tailscale
+        "100.100.100.100",  # Tailscale MagicDNS
+    ],
+)
 async def test_private_addresses_blocked(host):
     with pytest.raises(HostRejected):
         await resolve_receiver(host, 8073, allow_private=False)

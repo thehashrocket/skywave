@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import urlsplit
+
+LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -13,11 +16,18 @@ def _bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def is_local_origin(origin: str) -> bool:
+    """True for browser origins on this machine, like http://localhost:3000."""
+    return urlsplit(origin).hostname in LOCAL_HOSTNAMES
+
+
 @dataclass(frozen=True)
 class Settings:
-    # Browser origins allowed to open the listening WebSocket.
+    # Browser origins allowed to open the listening WebSocket. Empty means
+    # nobody; "*" means anybody.
     allowed_origins: tuple[str, ...]
-    # Optional shared secret the browser must pass as ?token=...
+    # Shared secret the browser must pass as ?token=... Required as soon as
+    # any allowed origin is not localhost, since scripts can fake Origin.
     token: str | None
     # Hard cap on simultaneous listeners. Each one occupies a channel on
     # somebody's volunteer-run Kiwi, so keep this small.

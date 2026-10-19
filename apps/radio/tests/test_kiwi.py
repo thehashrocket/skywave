@@ -41,12 +41,43 @@ async def test_handshake_and_iq_stream():
     assert abs(freq - 1500) < 30
 
 
-async def test_busy_kiwi_raises():
-    async with FakeKiwi(busy=True) as kiwi:
+@pytest.mark.parametrize(
+    "reject,code",
+    [
+        (b"MSG too_busy=4", "busy"),
+        (b"MSG badp=1", "password"),
+        (b"MSG down", "down"),
+        (b"MSG redirect=http%3A%2F%2Fother.example%3A8073", "redirect"),
+    ],
+)
+async def test_kiwi_refusals_raise_coded_errors(reject, code):
+    async with FakeKiwi(reject=reject) as kiwi:
         client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=3)
         with pytest.raises(KiwiError) as e:
             await client.connect()
-        assert e.value.code == "busy"
+        assert e.value.code == code
+        await client.close()
+
+
+@pytest.mark.parametrize("rate", ["1e12", "nan", "0"])
+async def test_unsupported_sample_rate_refused(rate):
+    async with FakeKiwi(sample_rate=rate) as kiwi:
+        client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=3)
+        with pytest.raises(KiwiError) as e:
+            await client.connect()
+        assert e.value.code == "bad_rate"
+        await client.close()
+
+
+async def test_stalled_stream_times_out():
+    async with FakeKiwi(stall=True) as kiwi:
+        client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=1)
+        await client.tune(9535.0)
+        await client.connect()
+        with pytest.raises(KiwiError) as e:
+            async for _ in client.blocks():
+                pass
+        assert e.value.code == "timeout"
         await client.close()
 
 

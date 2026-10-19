@@ -21,7 +21,9 @@ class HostRejected(Exception):
 
 
 def _is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return not (
+    # is_global is an allowlist: it also refuses ranges the flags below miss,
+    # like 100.64.0.0/10 (carrier NAT, and every Tailscale address).
+    return ip.is_global and not (
         ip.is_private
         or ip.is_loopback
         or ip.is_link_local

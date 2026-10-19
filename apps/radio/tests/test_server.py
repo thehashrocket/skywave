@@ -1,14 +1,18 @@
 import asyncio
 import json
-import struct
+import time
 
 import numpy as np
+import pytest
+from fastapi import WebSocketDisconnect, status
 from fastapi.testclient import TestClient
 
 from skywave_radio.config import Settings
 from skywave_radio.server import create_app
 
 from .fakekiwi import FakeKiwi
+
+ORIGIN = {"origin": "http://localhost:3000"}
 
 
 def settings(**over):
@@ -38,6 +42,33 @@ def collect(ws, want_audio=3, want_spectrum=1, limit=500):
         if len(audio) >= want_audio and len(spectra) >= want_spectrum:
             break
     return statuses, audio, spectra
+
+
+def until_state(ws, *states, limit=5000):
+    """Status messages up to and including the first one in `states`; audio is skipped."""
+    seen = []
+    for _ in range(limit):
+        msg = ws.receive()
+        if msg.get("text"):
+            payload = json.loads(msg["text"])
+            seen.append(payload)
+            if payload.get("state") in states:
+                return seen
+    raise AssertionError(f"never reached {states}: {seen}")
+
+
+def assert_rejected(app, path="/ws", headers=ORIGIN):
+    client = TestClient(app)
+    # Closing before accept makes websocket_connect itself raise; an accepted
+    # socket falls through and fails as "DID NOT RAISE".
+    with pytest.raises(WebSocketDisconnect) as e:
+        with client.websocket_connect(path, headers=headers):
+            pass
+    assert e.value.code == status.WS_1008_POLICY_VIOLATION
+
+
+def tune_msg(port, freq=7200, mode="usb", host="127.0.0.1"):
+    return json.dumps({"type": "tune", "host": host, "port": port, "freqKhz": freq, "mode": mode})
 
 
 def run_with_fake(fn, **fake_kw):
@@ -117,13 +148,48 @@ def test_retune_reuses_connection():
 
 
 def test_bad_origin_rejected():
+    assert_rejected(create_app(settings()), headers={"origin": "https://evil.example"})
+
+
+def test_empty_origin_list_refuses_everyone(caplog):
+    app = create_app(settings(allowed_origins=()))
+    assert "every connection will be refused" in caplog.text
+    assert_rejected(app)
+
+
+@pytest.mark.parametrize(
+    "origins",
+    [("https://radio.example",), ("*",), ("http://localhost:3000", "https://radio.example")],
+)
+def test_public_origin_requires_token(origins):
+    with pytest.raises(RuntimeError, match="RADIO_TOKEN"):
+        create_app(settings(allowed_origins=origins))
+
+
+def test_public_origin_with_token_starts():
+    create_app(settings(allowed_origins=("https://radio.example",), token="secret"))
+
+
+@pytest.mark.parametrize("supplied", ["", "wrong", "s%C3%A9cret"])
+def test_wrong_token_rejected(supplied):
+    assert_rejected(create_app(settings(token="secret")), path=f"/ws?token={supplied}")
+
+
+def test_right_token_accepted():
+    client = TestClient(create_app(settings(token="secret")))
+    with client.websocket_connect("/ws?token=secret", headers=ORIGIN) as ws:
+        ws.send_text("not json")
+        assert json.loads(ws.receive_text())["message"] == "Expected JSON."
+
+
+def test_binary_frame_gets_expected_json():
     client = TestClient(create_app(settings()))
-    try:
-        with client.websocket_connect("/ws", headers={"origin": "https://evil.example"}) as ws:
-            ws.receive()
-        assert False, "should have been closed"
-    except Exception:
-        pass
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.send_bytes(b"\x00\x01")
+        assert json.loads(ws.receive_text())["message"] == "Expected JSON."
+        # The session is still alive and handling tunes.
+        ws.send_text(json.dumps({"type": "tune", "host": "x.org", "freqKhz": 99999, "mode": "am"}))
+        assert "between 0 and 32,000" in json.loads(ws.receive_text())["message"]
 
 
 def test_private_host_blocked_by_default():
@@ -144,13 +210,87 @@ def test_validation_errors():
         assert "Mode must be" in json.loads(ws.receive_text())["message"]
 
 
-def test_listener_limit():
-    client = TestClient(create_app(settings(max_sessions=1)))
-    h = {"origin": "http://localhost:3000"}
-    with client.websocket_connect("/ws", headers=h):
-        with client.websocket_connect("/ws", headers=h) as ws2:
-            msg = json.loads(ws2.receive_text())
-            assert "listener limit" in msg["message"]
+def test_listener_limit_counts_receiver_connections():
+    def body(kiwi):
+        client = TestClient(create_app(settings(max_sessions=1)))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws1:
+            ws1.send_text(tune_msg(kiwi.port))
+            until_state(ws1, "listening")
+            # A second socket connects fine; it's the tune that needs a slot.
+            with client.websocket_connect("/ws", headers=ORIGIN) as ws2:
+                ws2.send_text(tune_msg(kiwi.port))
+                return until_state(ws2, "error", "listening")
+
+    statuses = run_with_fake(body)
+    assert statuses[-1]["state"] == "error"
+    assert "listener limit" in statuses[-1]["message"]
+
+
+def test_slot_freed_when_session_hits_time_limit():
+    def body(kiwi):
+        client = TestClient(create_app(settings(max_sessions=1, max_session_minutes=0.005)))  # 0.3 s
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws1:
+            ws1.send_text(tune_msg(kiwi.port))
+            first = until_state(ws1, "stopped", "error")
+            # ws1 stays open on "Stopped"; it must not keep the only slot.
+            with client.websocket_connect("/ws", headers=ORIGIN) as ws2:
+                ws2.send_text(tune_msg(kiwi.port))
+                second = until_state(ws2, "listening", "error")
+        return first, second
+
+    first, second = run_with_fake(body)
+    assert first[-1]["state"] == "stopped"
+    assert "session limit" in first[-1]["message"]
+    assert second[-1]["state"] == "listening"
+
+
+def test_retune_while_connecting_keeps_one_connection():
+    async def slow_resolver(host, port, *, allow_private):
+        await asyncio.sleep(0.3)
+        return "127.0.0.1"
+
+    def body(kiwi):
+        client = TestClient(create_app(settings(), resolver=slow_resolver))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port, 7200))
+            ws.send_text(tune_msg(kiwi.port, 7210))  # still resolving the host
+            time.sleep(0.5)
+            ws.send_text(tune_msg(kiwi.port, 7185, "lsb"))  # connected, handshake pending
+            statuses, _, _ = collect(ws, want_audio=3, want_spectrum=0)
+        return kiwi, statuses
+
+    kiwi, statuses = run_with_fake(body, handshake_delay=0.6)
+    states = [s["state"] for s in statuses if s["type"] == "status"]
+    assert states.count("connecting") == 1  # never restarted
+    listening = [s for s in statuses if s.get("state") == "listening"]
+    assert listening and all("sampleRate" in s for s in listening)  # none sent early
+    assert len(kiwi.paths) == 1
+    # Only the last frequency reaches the Kiwi, applied by the handshake.
+    assert [c for c in kiwi.commands if c.startswith("SET mod=iq")] == [
+        "SET mod=iq low_cut=-5000 high_cut=5000 freq=7185.000"
+    ]
+
+
+def test_receiver_dropping_mid_stream_reports_error():
+    def body(kiwi):
+        client = TestClient(create_app(settings()))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            return until_state(ws, "error")
+
+    statuses = run_with_fake(body, drop_after=5)
+    assert statuses[-1]["code"] == "closed"
+
+
+def test_unexpected_crash_reports_generic_error():
+    def boom(*args, **kwargs):
+        raise RuntimeError("kaboom")
+
+    client = TestClient(create_app(settings(), client_factory=boom))
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.send_text(tune_msg(8073))
+        statuses = until_state(ws, "error")
+    assert "Something broke" in statuses[-1]["message"]
 
 
 def test_healthz():

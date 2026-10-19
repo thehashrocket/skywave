@@ -15,8 +15,17 @@ BLOCK = 512
 
 @dataclass
 class FakeKiwi:
-    busy: bool = False
+    # A MSG frame to send instead of the handshake, e.g. b"MSG too_busy=4".
+    reject: bytes | None = None
     tone_hz: float = 1000.0
+    # What the fake reports as its I/Q rate (it always streams at RATE).
+    sample_rate: str = "12000.000"
+    # Seconds to wait before starting the handshake.
+    handshake_delay: float = 0.0
+    # Handshake normally, then never send audio.
+    stall: bool = False
+    # Close the connection after this many SND frames.
+    drop_after: int | None = None
     commands: list[str] = field(default_factory=list)
     paths: list[str] = field(default_factory=list)
     port: int = 0
@@ -34,13 +43,14 @@ class FakeKiwi:
         self.paths.append(ws.request.path)
         first = await ws.recv()
         self.commands.append(first)
-        if self.busy:
-            await ws.send(b"MSG too_busy=4")
+        if self.reject is not None:
+            await ws.send(self.reject)
             await asyncio.sleep(0.2)
             return
+        await asyncio.sleep(self.handshake_delay)
         await ws.send(b"MSG version_maj=1 version_min=799")
         await ws.send(b"MSG audio_rate=12000")
-        await ws.send(b"MSG sample_rate=12000.000")
+        await ws.send(f"MSG sample_rate={self.sample_rate}".encode())
 
         streaming = asyncio.Event()
 
@@ -53,8 +63,11 @@ class FakeKiwi:
         rtask = asyncio.create_task(reader())
         try:
             await asyncio.wait_for(streaming.wait(), 5)
+            if self.stall:
+                await ws.wait_closed()
+                return
             seq, n = 0, 0
-            while True:
+            while self.drop_after is None or seq < self.drop_after:
                 t = (np.arange(BLOCK) + n) / RATE
                 iq = 0.2 * np.exp(2j * np.pi * self.tone_hz * t)
                 inter = np.empty(BLOCK * 2, dtype=">i2")
