@@ -20,11 +20,11 @@
 
 **Why:** Cuts per-listener bandwidth roughly in half (~550 kbit/s today, estimated). Only matters for metered/mobile listeners or a higher `MAX_SESSIONS`.
 
-**Context:** Binary frames are built in `apps/radio/skywave_radio/session.py:145-147` and decoded in `apps/web/src/lib/use-radio.ts:100-108`. It's a protocol change on both sides, and both need tests.
+**Context:** Binary frames are built in `ListenSession._run` (`AUDIO_TAG` / `SPECTRUM_TAG`, `apps/radio/skywave_radio/session.py`) and decoded in `handleBinary` (`apps/web/src/lib/use-radio.ts`). It's a protocol change on both sides; extend `test_server.py` and add a `use-radio` decode test.
 
 **Effort:** M
 **Priority:** P4
-**Depends on:** Web test setup (Vitest) for the decode path
+**Depends on:** None
 
 ## Web app
 
@@ -48,10 +48,10 @@
 
 **Why:** Tests and typecheck only run by hand today, so a broken change can land without anyone noticing.
 
-**Context:** There's no git remote yet, so the host (GitHub or otherwise) is undecided. CI needs Node from `.nvmrc`, Python 3.13 with `apps/radio/.venv`, and an install that works without `DATABASE_URL` (fixed in `prisma.config.ts`). Install pnpm 12.14.0 directly (e.g. `pnpm/action-setup` with `version: 12.14.0`), not by letting a pnpm 10 runner switch to it: pnpm 10 skips pnpm 12's native-binary install script and every command then fails with ENOEXEC (see README "Run it locally"). Build scripts for `@prisma/engines`, `esbuild` and `prisma` are denied in `pnpm-workspace.yaml`; pnpm 12 errors if any new dependency adds an unlisted build script.
+**Context:** There's no git remote yet, so the host (GitHub or otherwise) is undecided. CI needs Node from `.nvmrc`, Python 3.13 with `apps/radio/.venv`, and `pnpm install` already works without `DATABASE_URL`. Install pnpm 12.14.0 directly (e.g. `pnpm/action-setup` with `version: 12.14.0`), not by letting a pnpm 10 runner switch to it: pnpm 10 skips pnpm 12's native-binary install script and every command then fails with ENOEXEC (see README "Run it locally"). Build scripts for `@prisma/engines`, `esbuild` and `prisma` are denied in `pnpm-workspace.yaml`; pnpm 12 errors if any new dependency adds an unlisted build script.
 
 **Effort:** S
 **Priority:** P2
-**Depends on:** A git remote; clean-install fix for `prisma.config.ts`
+**Depends on:** A git remote
 
 ## Completed

@@ -99,7 +99,7 @@ If the web app is reachable from the internet, set `APP_PASSWORD`. Every request
 ## Tests
 
 ```bash
-pnpm test:radio     # 60 tests: DSP math, a fake Kiwi for the protocol, end-to-end WebSocket sessions
+pnpm test:radio     # DSP math, a fake Kiwi for the protocol, end-to-end WebSocket sessions
 pnpm test:web       # password gate, preset API, band/S-meter math, the audio worklet's buffer
 pnpm typecheck
 ```

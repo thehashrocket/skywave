@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 function format(khz: number) {
   return khz.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -16,6 +16,7 @@ export function parseFrequencyKhz(text: string): number | null {
 export function FrequencyReadout({ freqKhz, onChange }: { freqKhz: number; onChange: (khz: number) => void }) {
   const [draft, setDraft] = useState(format(freqKhz));
   const [editing, setEditing] = useState(false);
+  const cancelling = useRef(false);
 
   useEffect(() => {
     if (!editing) setDraft(format(freqKhz));
@@ -46,11 +47,20 @@ export function FrequencyReadout({ freqKhz, onChange }: { freqKhz: number; onCha
           e.currentTarget.select();
         }}
         onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => commit()}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
+        onBlur={() => {
+          if (cancelling.current) {
+            cancelling.current = false;
             setDraft(format(freqKhz));
             setEditing(false);
+          } else {
+            commit();
+          }
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            // blur() runs onBlur right away, while `draft` still holds the
+            // typed text, so tell it to discard rather than commit.
+            cancelling.current = true;
             e.currentTarget.blur();
           }
         }}

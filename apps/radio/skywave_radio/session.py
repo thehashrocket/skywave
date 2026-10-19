@@ -125,7 +125,8 @@ class ListenSession:
         try:
             port = int(msg.get("port") or DEFAULT_PORT)
             freq = float(msg["freqKhz"])
-        except (KeyError, TypeError, ValueError) as e:
+        except (KeyError, TypeError, ValueError, OverflowError) as e:
+            # OverflowError: JSON like "port": 1e999 parses to inf, and int(inf) overflows.
             raise BadRequest("tune needs host, port and freqKhz.") from e
         mode = str(msg.get("mode", "am")).lower()
         if not host:
@@ -144,7 +145,12 @@ class ListenSession:
                     self._demod = Demodulator(self._client.info.sample_rate, mode)
             # Still resolving: _run reads _freq_khz/_mode when it builds the client.
             if self._client is not None:
-                await self._client.tune(kiwi_freq_khz(freq, mode))
+                try:
+                    await self._client.tune(kiwi_freq_khz(freq, mode))
+                except KiwiError:
+                    # The Kiwi just dropped us; the pump sees the same failure
+                    # and reports it, so don't send a second error.
+                    return
             if self._listening:
                 await self._status("listening")
             return
@@ -186,8 +192,7 @@ class ListenSession:
                         "Reconnect if you're still listening.",
                     )
                     return
-                demod = self._demod
-                audio = demod.process(block.samples)
+                audio = self._demod.process(block.samples)
                 await self._send_bytes(AUDIO_TAG + audio.astype("<f4").tobytes())
                 for frame in self._spectrum.process(block.samples):
                     await self._send_bytes(SPECTRUM_TAG + frame.db.astype("<f4").tobytes())

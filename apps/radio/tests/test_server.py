@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 import time
 
 import numpy as np
@@ -73,8 +74,6 @@ def tune_msg(port, freq=7200, mode="usb", host="127.0.0.1"):
 
 def run_with_fake(fn, **fake_kw):
     """TestClient runs the app in its own thread/loop; run the fake Kiwi in another."""
-    import threading
-
     ready = threading.Event()
     stop = threading.Event()
     holder = {}
@@ -102,8 +101,8 @@ def run_with_fake(fn, **fake_kw):
 def test_listen_end_to_end():
     def body(kiwi):
         client = TestClient(create_app(settings()))
-        with client.websocket_connect("/ws", headers={"origin": "http://localhost:3000"}) as ws:
-            ws.send_text(json.dumps({"type": "tune", "host": "127.0.0.1", "port": kiwi.port, "freqKhz": 7200, "mode": "usb"}))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
             statuses, audio, spectra = collect(ws)
             ws.send_text(json.dumps({"type": "stop"}))
         return kiwi, statuses, audio, spectra
@@ -122,8 +121,8 @@ def test_listen_end_to_end():
 def test_cw_offsets_kiwi_frequency():
     def body(kiwi):
         client = TestClient(create_app(settings()))
-        with client.websocket_connect("/ws", headers={"origin": "http://localhost:3000"}) as ws:
-            ws.send_text(json.dumps({"type": "tune", "host": "127.0.0.1", "port": kiwi.port, "freqKhz": 7030, "mode": "cw"}))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port, 7030, "cw"))
             collect(ws, want_audio=1, want_spectrum=0)
         return kiwi
 
@@ -134,7 +133,7 @@ def test_cw_offsets_kiwi_frequency():
 def test_retune_reuses_connection():
     def body(kiwi):
         client = TestClient(create_app(settings()))
-        with client.websocket_connect("/ws", headers={"origin": "http://localhost:3000"}) as ws:
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
             tune = {"type": "tune", "host": "127.0.0.1", "port": kiwi.port, "freqKhz": 7200, "mode": "lsb"}
             ws.send_text(json.dumps(tune))
             collect(ws, want_audio=2, want_spectrum=0)
@@ -188,14 +187,14 @@ def test_binary_frame_gets_expected_json():
         ws.send_bytes(b"\x00\x01")
         assert json.loads(ws.receive_text())["message"] == "Expected JSON."
         # The session is still alive and handling tunes.
-        ws.send_text(json.dumps({"type": "tune", "host": "x.org", "freqKhz": 99999, "mode": "am"}))
+        ws.send_text(tune_msg(8073, 99999, "am", host="x.org"))
         assert "between 0 and 32,000" in json.loads(ws.receive_text())["message"]
 
 
 def test_private_host_blocked_by_default():
     client = TestClient(create_app(settings(allow_private_hosts=False)))
-    with client.websocket_connect("/ws", headers={"origin": "http://localhost:3000"}) as ws:
-        ws.send_text(json.dumps({"type": "tune", "host": "127.0.0.1", "port": 8073, "freqKhz": 9535, "mode": "am"}))
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.send_text(tune_msg(8073, 9535, "am"))
         statuses = [json.loads(ws.receive_text()) for _ in range(2)]
     assert statuses[-1]["state"] == "error"
     assert "non-public" in statuses[-1]["message"]
@@ -203,11 +202,16 @@ def test_private_host_blocked_by_default():
 
 def test_validation_errors():
     client = TestClient(create_app(settings()))
-    with client.websocket_connect("/ws", headers={"origin": "http://localhost:3000"}) as ws:
-        ws.send_text(json.dumps({"type": "tune", "host": "x.org", "port": 8073, "freqKhz": 99999, "mode": "am"}))
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.send_text(tune_msg(8073, 99999, "am", host="x.org"))
         assert "between 0 and 32,000" in json.loads(ws.receive_text())["message"]
-        ws.send_text(json.dumps({"type": "tune", "host": "x.org", "freqKhz": 7000, "mode": "fm"}))
+        ws.send_text(tune_msg(8073, 7000, "fm", host="x.org"))
         assert "Mode must be" in json.loads(ws.receive_text())["message"]
+        # Numbers too big for int()/float() are bad requests, not crashes.
+        ws.send_text('{"type": "tune", "host": "x.org", "port": 1e999, "freqKhz": 7000}')
+        assert "needs host, port and freqKhz" in json.loads(ws.receive_text())["message"]
+        ws.send_text(tune_msg(8073, 10**400, host="x.org"))
+        assert "needs host, port and freqKhz" in json.loads(ws.receive_text())["message"]
 
 
 def test_listener_limit_counts_receiver_connections():
@@ -316,3 +320,47 @@ async def test_session_stops_quietly_when_browser_vanishes():
         await session.handle({"type": "tune", "host": "127.0.0.1", "port": kiwi.port, "freqKhz": 7200, "mode": "usb"})
         await asyncio.wait_for(session._pump, 5)
         assert session._client is None
+
+
+async def test_retune_as_the_kiwi_drops_is_not_a_crash():
+    from skywave_radio.kiwi import KiwiError, KiwiInfo
+    from skywave_radio.session import ListenSession
+
+    class DroppingClient:
+        """Connects fine, then fails the first retune as if the Kiwi just hung up."""
+
+        def __init__(self, *args, **kwargs):
+            self.info = KiwiInfo(sample_rate=12000.0)
+            self.tunes = 0
+
+        async def connect(self):
+            return self.info
+
+        async def tune(self, freq_khz):
+            self.tunes += 1
+            if self.tunes > 1:
+                raise KiwiError("closed", "kiwi.example closed the connection")
+
+        async def blocks(self):
+            await asyncio.Event().wait()
+            yield
+
+        async def close(self):
+            pass
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    async def send_bytes(_):
+        pass
+
+    session = ListenSession(settings(), send_text, send_bytes, client_factory=DroppingClient)
+    await session.handle({"type": "tune", "host": "127.0.0.1", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    while not session._listening:
+        await asyncio.sleep(0.01)
+    await session.handle({"type": "tune", "host": "127.0.0.1", "port": 8073, "freqKhz": 7185, "mode": "usb"})
+    await session.close()
+    # The failed retune neither raised nor sent its own error; the pump owns that.
+    assert [s["state"] for s in sent] == ["connecting", "listening"]

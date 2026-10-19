@@ -19,11 +19,12 @@ export function Presets({ freqKhz, mode, onSelect }: Props) {
   const create = useMutation(trpc.presets.create.mutationOptions({ onSuccess: invalidate }));
   const remove = useMutation(trpc.presets.delete.mutationOptions({ onSuccess: invalidate }));
   const [name, setName] = useState("");
+  const trimmedName = name.trim();
 
   const save = (e: FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
-    create.mutate({ name: name.trim(), freqKhz, mode }, { onSuccess: () => setName("") });
+    if (!trimmedName) return;
+    create.mutate({ name: trimmedName, freqKhz, mode }, { onSuccess: () => setName("") });
   };
 
   return (
@@ -82,7 +83,7 @@ export function Presets({ freqKhz, mode, onSelect }: Props) {
             placeholder="e.g. Radio New Zealand, evenings"
             onChange={(e) => setName(e.target.value)}
           />
-          <button type="submit" disabled={!name.trim() || create.isPending}>
+          <button type="submit" disabled={!trimmedName || create.isPending}>
             Save
           </button>
         </div>

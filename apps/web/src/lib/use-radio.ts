@@ -21,11 +21,11 @@ type SpectrumListener = (row: Float32Array, sampleRate: number) => void;
 const AUDIO_TAG = 1;
 const SPECTRUM_TAG = 2;
 const DEFAULT_RATE = 12000;
+const SERVICE_URL = process.env.NEXT_PUBLIC_RADIO_WS_URL ?? "ws://localhost:8765/ws";
 
 function serviceUrl() {
-  const base = process.env.NEXT_PUBLIC_RADIO_WS_URL ?? "ws://localhost:8765/ws";
   const token = process.env.NEXT_PUBLIC_RADIO_TOKEN;
-  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+  return token ? `${SERVICE_URL}?token=${encodeURIComponent(token)}` : SERVICE_URL;
 }
 
 /**
@@ -158,7 +158,7 @@ export function useRadio() {
       } catch {
         setStatus({
           state: "error",
-          message: `Can't reach the radio service at ${process.env.NEXT_PUBLIC_RADIO_WS_URL ?? "ws://localhost:8765/ws"}. Start it with pnpm dev:radio.`,
+          message: `Can't reach the radio service at ${SERVICE_URL}. Start it with pnpm dev:radio.`,
         });
         return;
       }
