@@ -43,6 +43,8 @@ pnpm dev:radio                               # terminal 1: radio service on :876
 pnpm dev                                     # terminal 2: web app on :3000
 ```
 
+**Port 5432 already taken** (another project's Postgres)? Put `POSTGRES_PORT=5433` in a root `.env` (see `.env.example`) before `pnpm db:up`, and use the same port in `DATABASE_URL` in `apps/web/.env`. If 3000 is taken, Next.js moves the web app to the next free port; add that origin (e.g. `http://localhost:3001`) to `ALLOWED_ORIGINS` in `apps/radio/.env`.
+
 Open http://localhost:3000, paste a receiver hostname from rx.kiwisdr.com (port is usually 8073), and hit Listen. WWV on 10,000 kHz AM is the easiest first signal: it's on 24/7 and you'll hear the time ticks.
 
 ## Using it
