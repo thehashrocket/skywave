@@ -3,17 +3,25 @@ import { KIWI_LIST_URL, parseKiwiList, type Receiver } from "@/lib/kiwi-list";
 import { publicProcedure, router } from "../trpc";
 
 const TTL_MS = 15 * 60_000;
-// Past this, an old list misleads more than it helps (listener counts, who's
-// even up), so a mirror outage eventually shows as an error instead.
-const MAX_STALE_MS = 2 * 60 * 60_000;
+// Past this the list is still served (the server only keeps it in memory, so
+// it's never older than the process, and Pick best skips receivers that have
+// gone), but marked stale so the picker can say how old it is.
+const STALE_AFTER_MS = 2 * 60 * 60_000;
 // After a failed refresh, keep serving what we have for a minute before
 // asking the mirror again, so a down mirror isn't hit on every page load.
 const RETRY_AFTER_MS = 60_000;
+// With nothing to serve, retry sooner, so "Try again" isn't a dead button.
+const COLD_RETRY_AFTER_MS = 10_000;
 const TIMEOUT_MS = 10_000;
 // The real file is about 0.9 MB.
 const MAX_BYTES = 5_000_000;
 
-type ReceiverList = { receivers: Receiver[]; fetchedAt: number };
+type ReceiverList = {
+  receivers: Receiver[];
+  fetchedAt: number;
+  /** The mirror hasn't answered for a while; this copy is more than two hours old. */
+  stale: boolean;
+};
 
 type Options = { fetchImpl?: typeof fetch; now?: () => number };
 
@@ -38,7 +46,7 @@ export function receiverSource({ fetchImpl = (...args) => fetch(...args), now = 
       cache: "no-store",
     });
     if (!res.ok) throw new Error(`Receiver list request failed: HTTP ${res.status}`);
-    return { receivers: parseKiwiList(await readCapped(res)), fetchedAt: now() };
+    return { receivers: parseKiwiList(await readCapped(res)), fetchedAt: now(), stale: false };
   }
 
   function startRefresh(): Promise<ReceiverList> {
@@ -62,13 +70,13 @@ export function receiverSource({ fetchImpl = (...args) => fetch(...args), now = 
 
   return async function get(): Promise<ReceiverList> {
     if (cached && now() - cached.fetchedAt < TTL_MS) return cached;
-    if (cached && now() - cached.fetchedAt >= MAX_STALE_MS) cached = null;
-    const backingOff = lastFailure !== null && now() - lastFailure.at < RETRY_AFTER_MS;
+    const retryAfter = cached ? RETRY_AFTER_MS : COLD_RETRY_AFTER_MS;
+    const backingOff = lastFailure !== null && now() - lastFailure.at < retryAfter;
     if (cached) {
       // Nobody awaits a background refresh, so say here when one fails;
       // otherwise a dying mirror stays silent until the cached list expires.
       if (!backingOff) startRefresh().catch((error: unknown) => console.warn("receivers.list: refresh failed:", error));
-      return cached;
+      return now() - cached.fetchedAt >= STALE_AFTER_MS ? { ...cached, stale: true } : cached;
     }
     if (backingOff) throw lastFailure!.error;
     return startRefresh();

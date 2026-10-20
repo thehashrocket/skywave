@@ -37,6 +37,11 @@ const MAX_TOTAL = 6; // README "Using it" quotes this number too.
 /** Tunes a receiver; `fromList` says it came from the public list rather than being typed in. */
 type Tune = (r: Receiver, fromList: boolean) => void;
 
+/** How the receiver at host:port is being dialed: from the list or typed, and over wss:// or not. */
+export type Provenance = (host: string, port: number) => { fromList: boolean; secure: boolean };
+
+type Fallback = { receiver: Receiver; fromList: boolean };
+
 type Chain = {
   candidates: Receiver[];
   tried: Receiver[];
@@ -44,8 +49,13 @@ type Chain = {
   strikes: number;
   /** The status on screen when the run started, which says nothing about this run. */
   before: RadioStatus;
-  /** What was playing when the run started, to go back to if nothing works. */
-  fallback: { receiver: Receiver; fromList: boolean } | null;
+  /** What was playing (or connecting) when the run started, to go back to if nothing works. */
+  fallback: Fallback | null;
+  /**
+   * Set once the run has given up and is tuning `fallback` again. The chain
+   * stays to watch that reconnect, so the note only says "Back on" once it's true.
+   */
+  returning?: { receiver: Receiver; why: string };
   /** The current receiver was already tried again after a retryAfterMs hint. */
   retried: boolean;
   /** That retry, still waiting to fire. */
@@ -53,20 +63,15 @@ type Chain = {
 };
 
 /**
- * The receiver that was playing, from the list if it's there. `wasListed`
- * covers a list receiver the candidates no longer include (they only hold
- * receivers that cover the dial's current frequency).
+ * The receiver playing or connecting when the run started. How it was dialed
+ * comes from the page, never from the candidates: a receiver you typed that
+ * also happens to be listed must come back as typed. The matching candidate,
+ * if any, only lends its name.
  */
-function playing(
-  status: RadioStatus,
-  candidates: Receiver[],
-  wasListed: (host: string, port: number) => boolean,
-): Chain["fallback"] {
-  if (status.state !== "listening" || !status.host || !status.port) return null;
+function playing(status: RadioStatus, candidates: Receiver[], provenance: Provenance): Fallback | null {
+  if ((status.state !== "listening" && status.state !== "connecting") || !status.host || !status.port) return null;
   const key = receiverKey({ host: status.host, port: status.port });
-  const listed = candidates.find((r) => receiverKey(r) === key);
-  if (listed) return { receiver: listed, fromList: true };
-  const receiver: Receiver = {
+  const { secure: _, ...details } = candidates.find((r) => receiverKey(r) === key) ?? {
     id: key,
     name: status.host,
     location: "",
@@ -79,7 +84,8 @@ function playing(
     minKhz: 0,
     maxKhz: 0,
   };
-  return { receiver, fromList: wasListed(status.host, status.port) };
+  const { fromList, secure } = provenance(status.host, status.port);
+  return { receiver: secure ? { ...details, secure: true } : details, fromList };
 }
 
 /**
@@ -92,8 +98,8 @@ export function usePickBest(
   tune: Tune,
   /** Whether a candidate can still be tried, e.g. it covers the dial's current frequency. */
   accepts: (r: Receiver) => boolean = () => true,
-  /** Whether the receiver now playing came from the public list. */
-  wasListed: (host: string, port: number) => boolean = () => false,
+  /** How the receiver now playing was dialed. */
+  provenance: Provenance = () => ({ fromList: false, secure: false }),
 ) {
   const chain = useRef<Chain | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -102,8 +108,8 @@ export function usePickBest(
   latestStatus.current = status;
   const acceptsRef = useRef(accepts);
   acceptsRef.current = accepts;
-  const wasListedRef = useRef(wasListed);
-  wasListedRef.current = wasListed;
+  const provenanceRef = useRef(provenance);
+  provenanceRef.current = provenance;
 
   /** End the chain, optionally leaving a note about why. */
   const finish = useCallback((why: string | null = null) => {
@@ -115,29 +121,37 @@ export function usePickBest(
 
   useEffect(() => () => clearTimeout(chain.current?.retryTimer), []);
 
-  /** Switching away already dropped what was playing; go back to it if we can. */
+  /**
+   * Switching away already dropped what was playing; go back to it if we can.
+   * The run is over (the button reads Pick best again), but the chain stays
+   * until the reconnect succeeds or fails, so the note is true either way.
+   */
   const goBack = useCallback(
     (c: Chain, why: string) => {
       const back = c.fallback;
       if (!back || c.tried.some((r) => receiverKey(r) === receiverKey(back.receiver))) return false;
+      clearTimeout(c.retryTimer);
+      c.returning = { receiver: back.receiver, why };
+      setRunning(false);
+      setNote(`${why} Going back to ${back.receiver.name}…`);
       tune(back.receiver, back.fromList);
-      finish(`${why} Back on ${back.receiver.name}.`);
       return true;
     },
-    [finish, tune],
+    [tune],
   );
 
   const start = useCallback(
     (candidates: Receiver[]) => {
       const first = candidates[0];
       if (!first) return finish("No listed receiver covers this frequency.");
+      clearTimeout(chain.current?.retryTimer);
       const before = latestStatus.current;
       chain.current = {
         candidates,
         tried: [first],
         strikes: 0,
         before,
-        fallback: playing(before, candidates, wasListedRef.current),
+        fallback: playing(before, candidates, provenanceRef.current),
         retried: false,
       };
       setRunning(true);
@@ -168,6 +182,13 @@ export function usePickBest(
     // Clicking Pick best again right after a failure must not read that old
     // failure as the new attempt's answer.
     if (status === c.before) return;
+    if (c.returning) {
+      const { receiver: back, why } = c.returning;
+      if (status.host !== undefined && (status.host !== back.host || status.port !== back.port)) return;
+      if (status.state === "listening") return finish(`${why} Back on ${back.name}.`);
+      if (status.state === "error") return finish(`${why} Couldn't get back to ${back.name}.`);
+      return;
+    }
     const current = c.tried[c.tried.length - 1]!;
     // A status naming another receiver belongs to an earlier attempt.
     if (status.host !== undefined && (status.host !== current.host || status.port !== current.port)) return;

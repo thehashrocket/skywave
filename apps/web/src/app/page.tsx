@@ -25,9 +25,17 @@ type Saved = { host: string; port: string; fromList?: boolean; secure?: boolean 
 function loadReceiver(): Saved {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    // Anything could be stored here (an old format, a hand edit); use only a
+    // value with the shape we write.
+    const r: unknown = raw ? JSON.parse(raw) : null;
+    if (r && typeof r === "object" && "host" in r && "port" in r) {
+      const { host, port, fromList, secure } = r as Record<string, unknown>;
+      if (typeof host === "string" && typeof port === "string") {
+        return { host, port, ...(fromList === true && { fromList }), ...(secure === true && { secure }) };
+      }
+    }
   } catch {
-    /* storage unavailable; fall through */
+    /* storage unavailable or unreadable; fall through */
   }
   return { host: "", port: String(DEFAULT_KIWI_PORT) };
 }
@@ -171,11 +179,19 @@ export default function ListenPage() {
   );
   // The dial can move during a run; only try receivers that still cover it.
   const coversDial = useCallback((r: Receiver) => covers(r, latest.current.freqKhz), []);
-  const wasListed = useCallback((h: string, p: number) => {
+  /** Whether host:port is what the page is tuned to: the only receiver whose list tag and scheme we know. */
+  const isTarget = useCallback((h: string, p: number) => {
     const t = tuning.current;
-    return t.fromList && t.host === h && Number(t.port) === p;
+    return t.host === h && Number(t.port) === p;
   }, []);
-  const pickBest = usePickBest(status, tuneReceiver, coversDial, wasListed);
+  const provenance = useCallback(
+    (h: string, p: number) => {
+      const t = tuning.current;
+      return isTarget(h, p) ? { fromList: t.fromList, secure: t.secure } : { fromList: false, secure: false };
+    },
+    [isTarget],
+  );
+  const pickBest = usePickBest(status, tuneReceiver, coversDial, provenance);
   const { cancel: cancelPickBest, stop: stopPickBest } = pickBest;
   // With nothing to go back to, stop the attempt that's still connecting too.
   const stopPicking = useCallback(() => {
@@ -188,23 +204,33 @@ export default function ListenPage() {
     },
     [cancelPickBest, tuneReceiver],
   );
-  const portNumber = Number(port) || DEFAULT_KIWI_PORT;
-  const current = useMemo(() => ({ host, port: portNumber }), [host, portNumber]);
+  // The table's dot marks what's playing (or connecting), not what the fields say.
+  const playingHost = live ? status.host : undefined;
+  const playingPort = live ? status.port : undefined;
+  const current = useMemo(
+    () => (playingHost && playingPort ? { host: playingHost, port: playingPort } : null),
+    [playingHost, playingPort],
+  );
 
   // Remember a receiver only once it actually plays, so a typo or a failed
-  // Pick best run never becomes the saved default.
+  // Pick best run never becomes the saved default. Only the receiver the page
+  // is tuned to: a late "listening" from an attempt Pick best already left
+  // isn't one we know the list tag of.
+  const lastSaved = useRef<string | null>(null);
   useEffect(() => {
-    if (status.state === "listening" && status.host) {
-      const port = String(status.port ?? DEFAULT_KIWI_PORT);
-      const t = tuning.current;
-      saveReceiver({
-        host: status.host,
-        port,
-        ...(wasListed(status.host, Number(port)) && { fromList: true }),
-        ...(t.secure && t.host === status.host && Number(t.port) === Number(port) && { secure: true }),
-      });
-    }
-  }, [status, wasListed]);
+    if (status.state !== "listening" || !status.host || !isTarget(status.host, status.port ?? DEFAULT_KIWI_PORT)) return;
+    const t = tuning.current;
+    const saved = JSON.stringify({
+      host: t.host,
+      port: t.port,
+      ...(t.fromList && { fromList: true }),
+      ...(t.secure && { secure: true }),
+    } satisfies Saved);
+    // Each retune while listening is a new status; don't rewrite the same value.
+    if (saved === lastSaved.current) return;
+    lastSaved.current = saved;
+    saveReceiver(JSON.parse(saved));
+  }, [status, isTarget]);
 
   const onDial = useCallback(
     (khz: number) => {

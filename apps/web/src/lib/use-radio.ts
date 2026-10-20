@@ -191,9 +191,12 @@ export function useRadio() {
           // (Pick best's retries) must see that nothing more is coming.
           setStatus((s) => ({
             state: "error",
-            // Keep a receiver's own explanation ("needs a password"); it's still true.
+            // Keep a receiver's own explanation ("needs a password"); it's
+            // still true. But say the service went too, or nobody learns it's down.
             message:
-              s.state === "error" && s.message ? s.message : "Lost the connection to the radio service. Is it running?",
+              s.state === "error" && s.message
+                ? `${s.message} The connection to the radio service was lost too.`
+                : "Lost the connection to the radio service. Is it running?",
           }));
         }
       };

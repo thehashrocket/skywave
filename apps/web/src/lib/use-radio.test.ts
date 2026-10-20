@@ -248,7 +248,10 @@ describe("useRadio", () => {
     expect(result.current.status).not.toBe(before);
     expect(result.current.status.code).toBeUndefined();
     expect(result.current.status.host).toBeUndefined();
-    expect(result.current.status.message).toBe("kiwi.example is full.");
+    // The receiver's explanation is still true, and so is the service going away.
+    expect(result.current.status.message).toBe(
+      "kiwi.example is full. The connection to the radio service was lost too.",
+    );
   });
 
   it("ignores a late status from a socket that was replaced", async () => {
@@ -266,4 +269,65 @@ describe("useRadio", () => {
     expect(result.current.status.host).toBe("other.example");
     expect(fresh.sent).toEqual([{ type: "tune", ...tuning, host: "other.example" }]);
   });
+
+  // Value: protects=after a receiver error the same socket takes the next tune; fails_when=an error status leaves the socket unusable or opens a second one; why_new=state matrix error x tune; seam=none; no_claim=server behaviour
+  it("tunes again on the same socket after an error", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => ws!.status("error", { message: "full", code: "busy", host: "kiwi.example", port: 8073 }));
+    await act(() => result.current.tune({ ...tuning, host: "other.example" }));
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(ws!.sent.at(-1)).toEqual({ type: "tune", ...tuning, host: "other.example" });
+  });
+
+  // Value: protects=the service sends a wss tune when the receiver is secure; fails_when=Tuning drops `secure` on the way to the socket; why_new=wss dialing; seam=none; no_claim=the service's TLS
+  it("sends secure on the tune when the receiver needs wss", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune({ ...tuning, secure: true }));
+    expect(FakeSocket.instances[0]!.sent.at(-1)).toEqual({ type: "tune", ...tuning, secure: true });
+  });
+
+  // Value: protects=a second Stop is harmless and leaves the radio idle; fails_when=stop() assumes a live socket; why_new=state matrix stopped x stop; seam=none; no_claim=none beyond protects
+  it("treats Stop when already stopped as a no-op", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    act(() => result.current.stop());
+    act(() => result.current.stop());
+    expect(result.current.status).toEqual({ state: "idle" });
+    expect(FakeSocket.instances[0]!.sent.filter((m) => m.type === "stop")).toHaveLength(1);
+  });
+
+  // Value: protects=a drop after Stop isn't reported as a problem; fails_when=onclose ignores stoppingRef; why_new=state matrix idle x socket-drop; seam=none; no_claim=none beyond protects
+  it("stays quiet when the socket closes after Stop", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => result.current.stop());
+    act(() => ws!.finishClose());
+    expect(result.current.status).toEqual({ state: "idle" });
+  });
+
+  // Value: protects=switching receivers before the first one connects reuses the socket; fails_when=tune() opens a socket per call while one is in use; why_new=state matrix connecting x tune; seam=none; no_claim=the service cancelling the first attempt (radio tests)
+  it("switches receivers on the open socket while still connecting", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => ws!.status("connecting", { host: "kiwi.example" }));
+    await act(() => result.current.tune({ ...tuning, host: "other.example" }));
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(ws!.sent.at(-1)).toEqual({ type: "tune", ...tuning, host: "other.example" });
+  });
+
+  // Value: protects=Stop after a receiver error tells the service and clears the error; fails_when=stop() skips an errored session; why_new=state matrix error x stop; seam=none; no_claim=none beyond protects
+  it("stops cleanly from an error", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => ws!.status("error", { message: "full", code: "busy", host: "kiwi.example", port: 8073 }));
+    act(() => result.current.stop());
+    expect(ws!.sent.at(-1)).toEqual({ type: "stop" });
+    expect(result.current.status).toEqual({ state: "idle" });
+  });
 });
+

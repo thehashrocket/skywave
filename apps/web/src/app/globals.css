@@ -196,9 +196,10 @@ a {
   cursor: default;
 }
 
+/* Pick best's note is its main feedback, so it reads at body size. */
 .receivers-note {
   color: var(--muted);
-  font-size: 0.92rem;
+  font-size: 1rem;
 }
 
 .receivers-browse summary {
@@ -208,6 +209,10 @@ a {
   font-family: var(--font-instrument);
   font-weight: 600;
   font-size: 1.15rem;
+}
+
+.receivers-browse summary:hover {
+  color: var(--text);
 }
 
 .receivers-table-wrap {
@@ -255,6 +260,11 @@ a {
   text-decoration: underline;
   text-underline-offset: 3px;
   cursor: pointer;
+}
+
+.link-button:hover {
+  color: var(--text);
+  text-decoration-thickness: 2px;
 }
 
 .link-button.inline {
@@ -390,8 +400,12 @@ a {
 }
 
 .col-location {
-  max-width: 22ch;
   color: var(--muted);
+}
+
+.location-text {
+  display: block;
+  max-width: 22ch;
 }
 
 .receivers-credit,
@@ -833,6 +847,7 @@ a {
 
 /* Presets */
 
+.receivers h2,
 .presets h2 {
   margin: 8px 0 10px;
   font-family: var(--font-instrument);

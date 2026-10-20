@@ -37,17 +37,20 @@ const backup: Receiver = { ...listed, id: "backup", name: "Backup", host: "backu
 vi.mock("@/components/ReceiverPicker", () => ({
   ReceiverPicker: ({
     open,
+    current,
     onChoose,
     onPickBest,
     onStopPicking,
   }: {
     open: boolean;
+    current: { host: string; port: number } | null;
     onChoose: (r: Receiver) => void;
     onPickBest: (r: Receiver[]) => void;
     onStopPicking: () => void;
   }) => (
     <>
       <output aria-label="browse">{open ? "open" : "closed"}</output>
+      <output aria-label="tuned">{current ? `${current.host}:${current.port}` : "none"}</output>
       <button type="button" onClick={() => onChoose(listed)}>
         choose listed
       </button>
@@ -351,4 +354,107 @@ describe("ListenPage", () => {
     expect(port.value).toBe("8075");
     expect(radio.tune).not.toHaveBeenCalled();
   });
+
+  // Value: protects=the table's dot marks what's actually playing, not what's typed in the field; fails_when=current is built from the host/port fields again; why_new=TODOS Pick best edges; seam=none; no_claim=the table's rendering (picker test)
+  it("marks the receiver that's playing, not the one in the fields", () => {
+    localStorage.setItem("skywave.receiver", JSON.stringify({ host: "f4kiy.ddns.net", port: "8073" }));
+    const view = render(<ListenPage />);
+    expect(screen.getByLabelText("tuned").textContent).toBe("none");
+
+    radio.status = { state: "connecting", host: "f4kiy.ddns.net", port: 8073 };
+    view.rerender(<ListenPage />);
+    expect(screen.getByLabelText("tuned").textContent).toBe("f4kiy.ddns.net:8073");
+
+    radio.status = { state: "listening", host: "sdr.k1vl.com", port: 8076 };
+    view.rerender(<ListenPage />);
+    expect(screen.getByLabelText("tuned").textContent).toBe("sdr.k1vl.com:8076");
+  });
+
+  // Value: protects=a bad saved value can't crash the page on load; fails_when=loadReceiver trusts storage again; why_new=TODOS small edges; seam=none; no_claim=other storage keys
+  it.each(["null", '"kiwi.example"', '{"host":5,"port":"8073"}', "[]", "{not json"])(
+    "starts fresh when the saved receiver is %s",
+    (raw) => {
+      localStorage.setItem("skywave.receiver", raw);
+      render(<ListenPage />);
+      expect((screen.getByLabelText("Receiver") as HTMLInputElement).value).toBe("");
+      expect(screen.getByLabelText("browse").textContent).toBe("open");
+    },
+  );
+
+  // Value: protects=dragging the dial doesn't rewrite storage on every retune; fails_when=the save effect stops skipping unchanged values; why_new=TODOS small edges; seam=none; no_claim=real storage cost
+  it("writes the saved receiver once, not on every listening status", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    try {
+      localStorage.setItem("skywave.receiver", JSON.stringify({ host: "f4kiy.ddns.net", port: "8073" }));
+      setItem.mockClear();
+      const view = render(<ListenPage />);
+      for (const freqKhz of [10_000, 10_001, 10_002]) {
+        radio.status = { state: "listening", host: "f4kiy.ddns.net", port: 8073, sampleRate: 12000, freqKhz } as RadioStatus;
+        view.rerender(<ListenPage />);
+      }
+      expect(setItem).toHaveBeenCalledTimes(1);
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
+  // Value: protects=a late "listening" from an attempt Pick best already left can't become the saved default, tagged wrong; fails_when=the save effect saves any listening status; why_new=TODOS provenance (pass-2/3 red team); seam=none; no_claim=real socket ordering
+  it("saves only the receiver the page is tuned to", () => {
+    localStorage.setItem("skywave.receiver", JSON.stringify({ host: "home.example", port: "8073" }));
+    radio.status = { state: "listening", host: "home.example", port: 8073 };
+    const view = render(<ListenPage />);
+    act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+    fireEvent.click(screen.getByRole("button", { name: "stop picking" })); // going back to home
+    localStorage.clear();
+
+    radio.status = { state: "listening", host: listed.host, port: listed.port };
+    view.rerender(<ListenPage />);
+    expect(localStorage.getItem("skywave.receiver")).toBeNull();
+
+    radio.status = { state: "listening", host: "home.example", port: 8073 };
+    view.rerender(<ListenPage />);
+    expect(JSON.parse(localStorage.getItem("skywave.receiver")!)).toEqual({ host: "home.example", port: "8073" });
+  });
+
+  // Value: protects=Pick best goes back to an https-only receiver over wss and as typed; fails_when=the page's provenance drops the scheme; why_new=wss + provenance; seam=none; no_claim=the service's TLS
+  it("goes back to a secure typed receiver securely", () => {
+    localStorage.setItem("skywave.receiver", JSON.stringify({ host: "far.example", port: "443", secure: true }));
+    radio.status = { state: "listening", host: "far.example", port: 443 };
+    render(<ListenPage />);
+    act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+    fireEvent.click(screen.getByRole("button", { name: "stop picking" }));
+    expect(radio.tune).toHaveBeenLastCalledWith({ host: "far.example", port: 443, freqKhz: 10_000, mode: "am", secure: true });
+  });
+
+  // Value: protects=a dial retune queued during a Pick best run can't follow the run to its next receiver and switch back; fails_when=Pick best's next tune skips clearing the retune timer; why_new=state matrix pending-retune x Pick best next; seam=none; no_claim=real timer jitter
+  it("drops a queued dial retune when Pick best moves on", () => {
+    vi.useFakeTimers();
+    try {
+      const view = render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      radio.status = { state: "connecting", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      radio.retune.mockClear();
+      fireEvent.keyDown(screen.getByRole("slider", { name: "Tuning dial" }), { key: "ArrowUp" });
+      radio.status = { state: "error", code: "busy", message: "full", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(500));
+      expect(radio.retune).not.toHaveBeenCalled();
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: backup.host }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=choosing a list row while a list receiver plays keeps both tagged; fails_when=a row choice loses the tag when the page was already on the list; why_new=state matrix listed x choose-row; seam=none; no_claim=server enforcement
+  it("keeps the list tag when choosing a row while a list receiver plays", () => {
+    localStorage.setItem("skywave.receiver", JSON.stringify({ host: "far.example", port: "8073", fromList: true }));
+    radio.status = { state: "listening", host: "far.example", port: 8073 };
+    render(<ListenPage />);
+    fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+    expect(radio.tune).toHaveBeenLastCalledWith(
+      expect.objectContaining({ host: listed.host, port: listed.port, source: "list" }),
+    );
+  });
 });
+
