@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { memo, useDeferredValue, useMemo, useState } from "react";
 import { byRank, covers, freeSlots, isFull, rankReceivers, receiverKey, type Receiver } from "@/lib/kiwi-list";
+import { formatHostPort } from "@/lib/receiver";
 import { useTRPC } from "@/lib/trpc";
 
 const PAGE = 50;
@@ -314,7 +315,7 @@ const ReceiverRow = memo(function ReceiverRow({ receiver: r, tuned, onChoose }: 
             {r.name}
           </span>
           <span className="receiver-host">
-            {r.host}:{r.port}
+            {formatHostPort(r.host, r.port)}
             {r.antenna && ` · ${r.antenna}`}
           </span>
         </button>

@@ -47,7 +47,7 @@ pnpm dev                                     # terminal 2: web app on :3000
 
 Open http://localhost:3000 and hit **Pick best receiver**, or choose one from the list under it. WWV on 10,000 kHz AM is the easiest first signal: it's on 24/7 and you'll hear the time ticks.
 
-The list comes from [rx.linkfanel.net](http://rx.linkfanel.net/), which mirrors the [public KiwiSDR list](http://kiwisdr.com/public/) as data (kiwisdr.com itself sits behind a click-through captcha). The web server fetches it at most every 15 minutes and keeps serving the last good copy if the mirror is down, marked stale once it's two hours old. You can always paste an address yourself: a full URL like `http://f4kiy.ddns.net:8073/` is fine, and the port is usually 8073.
+The list comes from [rx.linkfanel.net](http://rx.linkfanel.net/), which mirrors the [public KiwiSDR list](http://kiwisdr.com/public/) as data (kiwisdr.com itself sits behind a click-through captcha). The web server fetches it at most every 15 minutes and keeps serving the last good copy if the mirror is down, marked stale once it's two hours old. You can always paste an address yourself: a full URL like `http://f4kiy.ddns.net:8073/` is fine (one with no port means 80, or 443 for `https://`), and the port is usually 8073. The list only offers entries on Kiwi ports (80 and 8070–8079, plus 443 for `https://`), so a bad entry can't aim the radio service at some other kind of server; anything you paste yourself can use any port.
 
 ## Using it
 
