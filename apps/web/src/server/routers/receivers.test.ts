@@ -98,26 +98,39 @@ describe("receiverSource", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  // Value: protects=a down mirror isn't hit on every page load during a cold start; fails_when=the cold path ignores the retry window; why_new=the backoff test only ran with a cached list; seam=none; no_claim=real network
-  it("doesn't ask a failing mirror again within a minute even with nothing cached", async () => {
+  // Value: protects=a down mirror isn't hit on every page load during a cold start, yet "Try again" works soon; fails_when=the cold path ignores the retry window or uses the full minute; why_new=D5 shortened the cold window to 10 s; seam=none; no_claim=real network
+  it("waits 10 seconds before asking a failing mirror again when nothing is cached", async () => {
     const { get, fetchImpl, advance } = setup();
     fetchImpl.mockRejectedValue(new TypeError("fetch failed"));
     await expect(get()).rejects.toThrow("fetch failed");
-    advance(30_000);
+    advance(9_000);
     await expect(get()).rejects.toThrow("fetch failed");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+    advance(2_000);
+    fetchImpl.mockResolvedValueOnce(new Response(FIXTURE));
+    await expect(get()).resolves.toMatchObject({ stale: false });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  // Value: protects=a days-long mirror outage surfaces as an error, not a silently ancient list; fails_when=MAX_STALE_MS check is removed; why_new=stale-while-revalidate had no upper bound; seam=none; no_claim=real outage timing
-  it("stops serving a list more than two hours old", async () => {
+  // Value: protects=a long mirror outage keeps Browse and Pick best working on a list marked stale; fails_when=the old list is dropped (BAD_GATEWAY) or served without the flag; why_new=D7 reversed the 2-hour cutoff; seam=none; no_claim=real outage timing
+  it("keeps serving a list more than two hours old, marked stale", async () => {
     const { get, fetchImpl, advance } = setup();
-    await get();
+    const good = await get();
+    expect(good.stale).toBe(false);
     fetchImpl.mockRejectedValue(new TypeError("fetch failed"));
     advance(119 * MINUTE);
-    await expect(get()).resolves.toBeTruthy();
+    await expect(get()).resolves.toMatchObject({ stale: false });
     await settled();
     advance(2 * MINUTE);
-    await expect(get()).rejects.toThrow("fetch failed");
+    const old = await get();
+    expect(old).toMatchObject({ stale: true, fetchedAt: good.fetchedAt });
+    expect(old.receivers).toBe(good.receivers);
+
+    await settled();
+    advance(61_000);
+    fetchImpl.mockResolvedValueOnce(new Response(FIXTURE));
+    await get();
+    await vi.waitFor(async () => expect((await get()).stale).toBe(false));
   });
 
   it("throws when the first fetch fails and there's nothing cached", async () => {

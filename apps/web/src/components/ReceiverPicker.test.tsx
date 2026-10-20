@@ -222,7 +222,11 @@ function renderPicker(
       </TRPCProvider>
     </QueryClientProvider>,
   );
-  return { onPickBest, button: () => screen.getByRole("button", { name: "Pick best receiver" }) as HTMLButtonElement };
+  return {
+    onPickBest,
+    queryClient,
+    button: () => screen.getByRole("button", { name: "Pick best receiver" }) as HTMLButtonElement,
+  };
 }
 
 describe("ReceiverPicker", () => {
@@ -272,5 +276,42 @@ describe("ReceiverPicker", () => {
 
     renderPicker(new Promise(() => {}), "A was full; trying B…");
     expect(screen.getByRole("status").textContent).toBe("A was full; trying B…");
+  });
+
+  // Value: protects=the second click of a double-click on Stop picking can't start a new run on the restored button; fails_when=the Pick button loses its detail guard; why_new=TODOS Pick best edges; seam=none; no_claim=real browser click timing
+  it("ignores the second click of a double-click landing on Pick best", async () => {
+    const { onPickBest, button } = renderPicker(Promise.resolve({ receivers, fetchedAt: 0, stale: false }));
+    await waitFor(() => expect(button().disabled).toBe(false));
+    fireEvent.click(button(), { detail: 2 });
+    expect(onPickBest).not.toHaveBeenCalled();
+    fireEvent.click(button(), { detail: 1 });
+    expect(onPickBest).toHaveBeenCalledTimes(1);
+  });
+
+  // Value: protects=a failed background refetch doesn't claim the list is gone while it's still shown and usable; fails_when=the note keys on isError alone; why_new=TODOS small edges; seam=none; no_claim=react-query's retention of data on error (relied on)
+  it("keeps Pick best usable and quiet when a refetch fails but the list is still there", async () => {
+    let calls = 0;
+    const { queryClient, button } = renderPicker(() =>
+      ++calls === 1 ? Promise.resolve({ receivers, fetchedAt: 0, stale: false }) : Promise.reject(new Error("BAD_GATEWAY")),
+    );
+    await waitFor(() => expect(button().disabled).toBe(false));
+    await queryClient.refetchQueries();
+    await waitFor(() => expect(calls).toBe(2));
+    expect(screen.getByRole("status").textContent).toMatch(/Highest signal-to-noise/);
+    expect(button().disabled).toBe(false);
+  });
+
+  // Value: protects=an old list served through a mirror outage says how old it is; fails_when=the stale flag isn't shown; why_new=D7 serves stale lists; seam=none; no_claim=server staleness rule (receivers.test)
+  it("says when the list is an old copy", async () => {
+    renderPicker(Promise.resolve({ receivers, fetchedAt: Date.now() - 3 * 60 * 60_000, stale: true }));
+    await screen.findByText(/isn't answering, so this is the copy from 3 h ago/);
+  });
+});
+
+describe("ReceiverTable tuned mark", () => {
+  // Value: protects=the dot marks only what's playing; fails_when=the table can't take "nothing playing"; why_new=the dot followed the host field; seam=none; no_claim=what the page passes (page test)
+  it("marks nothing when nothing is playing", () => {
+    render(<ReceiverTable receivers={receivers} freqKhz={10_000} current={null} onChoose={() => {}} />);
+    expect(document.querySelector("[aria-current]")).toBeNull();
   });
 });

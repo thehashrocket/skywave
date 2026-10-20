@@ -180,7 +180,25 @@ describe("usePickBest", () => {
     report(fail("a", "busy"));
     report(fail("b", "busy"));
     expect(tuned()).toEqual(["a", "b", "home.example"]);
+    // Not "Back on" until it really is.
+    expect(hook.result.current.note).toBe("Tried 2 receivers and none worked. Going back to home.example…");
+    expect(hook.result.current.running).toBe(false);
+    report({ state: "connecting", host: "home.example", port: 8073 });
+    report({ state: "listening", host: "home.example", port: 8073 });
     expect(hook.result.current.note).toBe("Tried 2 receivers and none worked. Back on home.example.");
+  });
+
+  // Value: protects=the note never claims Pick best got back when the reconnect failed; fails_when=the note is set before the fallback answers; why_new=TODOS small edges ("Back on X" too early); seam=none; no_claim=why the old receiver refused
+  it("says so when it can't get back to what was playing", () => {
+    const { hook, report, tuned } = setup();
+    report({ state: "listening", host: "home.example", port: 8073 });
+    act(() => hook.result.current.start([rx("a")]));
+    report(fail("a", "busy"));
+    report(fail("a", "closed")); // late news from the abandoned attempt is ignored
+    expect(hook.result.current.note).toMatch(/Going back to home\.example/);
+    report({ state: "error", code: "busy", host: "home.example", port: 8073, message: "full" });
+    expect(tuned()).toEqual(["a", "home.example"]);
+    expect(hook.result.current.note).toBe("Tried 1 receiver and it didn't work. Couldn't get back to home.example.");
   });
 
   it("doesn't go back to a receiver it already tried", () => {
@@ -212,8 +230,19 @@ describe("usePickBest", () => {
     act(() => hook.result.current.start(candidates));
     act(() => hook.result.current.stop());
     expect(tuned()).toEqual(["a", "home.example"]);
-    expect(hook.result.current.note).toBe("Stopped. Back on home.example.");
+    expect(hook.result.current.note).toBe("Stopped. Going back to home.example…");
     expect(hook.result.current.running).toBe(false);
+    report({ state: "listening", host: "home.example", port: 8073 });
+    expect(hook.result.current.note).toBe("Stopped. Back on home.example.");
+  });
+
+  // Value: protects=Pick best started while a typed receiver is still connecting can go back to it; fails_when=playing() only counts "listening"; why_new=TODOS Pick best edges; seam=none; no_claim=that receiver eventually connecting
+  it("goes back to a receiver that was still connecting when the run started", () => {
+    const { hook, report, tuned } = setup();
+    report({ state: "connecting", host: "typed.example", port: 8073 });
+    act(() => hook.result.current.start([rx("a")]));
+    report(fail("a", "busy"));
+    expect(tuned()).toEqual(["a", "typed.example"]);
   });
 
   it("just stops when Stop picking is pressed with nothing to go back to", () => {
@@ -278,10 +307,11 @@ describe("usePickBest", () => {
     expect(wentBack).toBe(true);
   });
 
-  // Value: protects=going back to a list receiver keeps its list tag when it's outside the candidates; fails_when=playing() infers fromList only from the frequency-filtered candidates; why_new=security review; seam=none; no_claim=the page's wasListed wiring (page test)
+  // Value: protects=going back to a list receiver keeps its list tag when it's outside the candidates; fails_when=playing() infers fromList only from the frequency-filtered candidates; why_new=security review; seam=none; no_claim=the page's provenance wiring (page test)
   it("goes back to a list receiver outside the candidates with its list tag", () => {
     const tune = vi.fn();
-    const hook = renderHook(({ status }) => usePickBest(status, tune, undefined, (h) => h === "listed.example"), {
+    const provenance = (h: string) => ({ fromList: h === "listed.example", secure: false });
+    const hook = renderHook(({ status }) => usePickBest(status, tune, undefined, provenance), {
       initialProps: { status: { state: "listening", host: "listed.example", port: 8073 } as RadioStatus },
     });
     act(() => hook.result.current.start(candidates));
@@ -301,7 +331,24 @@ describe("usePickBest", () => {
     report(fail("c", "busy"));
     report(fail("d", "busy"));
     expect(tuned()).toEqual(["a", "b", "c", "d", "home.example"]);
-    expect(hook.result.current.note).toMatch(/Back on home\.example/);
+    expect(hook.result.current.note).toMatch(/Going back to home\.example/);
+  });
+
+  // Value: protects=a receiver you typed that is also listed comes back typed (dialed with your rule), and an https one comes back over wss; fails_when=playing() takes provenance from the matching candidate row; why_new=TODOS provenance (pass-2/3 red team); seam=none; no_claim=the page's provenance (page test)
+  it("takes the way back's list tag and scheme from the page, not from a matching candidate", () => {
+    const tune = vi.fn();
+    const provenance = () => ({ fromList: false, secure: true });
+    const hook = renderHook(({ status }) => usePickBest(status, tune, undefined, provenance), {
+      initialProps: { status: { state: "listening", host: "b", port: 8073 } as RadioStatus },
+    });
+    act(() => hook.result.current.start(candidates.filter((r) => r.host !== "b").concat(rx("b"))));
+    act(() => {
+      hook.result.current.stop();
+    });
+    expect(tune.mock.calls.at(-1)).toEqual([
+      expect.objectContaining({ host: "b", name: "B", secure: true }),
+      false,
+    ]);
   });
 
   it("reports whether a run is in progress", () => {
@@ -319,4 +366,16 @@ describe("usePickBest", () => {
     expect(tuned()).toEqual([]);
     expect(hook.result.current.note).toMatch(/No listed receiver/);
   });
+
+  // Value: protects=choosing something else while Pick best is going back ends the return cleanly; fails_when=a returning chain keeps reacting after cancel; why_new=state matrix fallback x cancel; seam=none; no_claim=none beyond protects
+  it("forgets the way back once cancelled", () => {
+    const { hook, report } = setup();
+    report({ state: "listening", host: "home.example", port: 8073 });
+    act(() => hook.result.current.start([rx("a")]));
+    report(fail("a", "busy"));
+    act(() => hook.result.current.cancel());
+    report({ state: "listening", host: "home.example", port: 8073 });
+    expect(hook.result.current.note).toBeNull();
+  });
 });
+

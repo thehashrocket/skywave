@@ -9,7 +9,8 @@ const PAGE = 50;
 
 type Props = {
   freqKhz: number;
-  current: { host: string; port: number };
+  /** The receiver playing or connecting, marked in the table; null when nothing is. */
+  current: { host: string; port: number } | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onChoose: (r: Receiver) => void;
@@ -40,10 +41,12 @@ export function ReceiverPicker({
   const fetchedAt = list.data?.fetchedAt;
 
   return (
-    <section className="receivers" aria-label="Public receivers">
+    <section className="receivers" aria-labelledby="receivers-heading">
+      <h2 id="receivers-heading">Choose a receiver</h2>
       <div className="receivers-bar">
-        {/* Distinct keys, so the second click of a double-click lands on a new
-            Stop button (detail 2) and is ignored instead of cancelling. */}
+        {/* Distinct keys, so the second click of a double-click lands on the
+            other button (detail 2) and is ignored there instead of undoing the
+            first click: cancelling the run, or starting a new one after Stop. */}
         {picking ? (
           <button
             key="stop"
@@ -61,7 +64,9 @@ export function ReceiverPicker({
             type="button"
             className="pick-best"
             disabled={!receivers}
-            onClick={() => receivers && onPickBest(rankReceivers(receivers, freqKhz))}
+            onClick={(e) => {
+              if (e.detail <= 1 && receivers) onPickBest(rankReceivers(receivers, freqKhz));
+            }}
           >
             Pick best receiver
           </button>
@@ -70,7 +75,7 @@ export function ReceiverPicker({
           {note ??
             (list.isPending ? (
               "Loading the public receiver list…"
-            ) : list.isError ? (
+            ) : !receivers ? (
               <>
                 Couldn't load the public receiver list.{" "}
                 <button type="button" className="link-button inline" onClick={() => void list.refetch()}>
@@ -78,6 +83,9 @@ export function ReceiverPicker({
                 </button>{" "}
                 or paste an address above.
               </>
+            ) : list.data?.stale && fetchedAt ? (
+              // A failed refetch keeps the old data; it's still usable, so say how old.
+              `The public list isn't answering, so this is the copy from ${ago(Date.now() - fetchedAt)}.`
             ) : (
               "Highest signal-to-noise receiver that covers this frequency."
             ))}
@@ -125,7 +133,7 @@ const FIRST_DIRECTION: Record<SortKey, 1 | -1> = { name: 1, location: 1, snr: -1
 type TableProps = {
   receivers: readonly Receiver[];
   freqKhz: number;
-  current: { host: string; port: number };
+  current: { host: string; port: number } | null;
   onChoose: (r: Receiver) => void;
   /** When the server fetched the list (ms since epoch). */
   fetchedAt?: number;
@@ -174,7 +182,7 @@ export const ReceiverTable = memo(function ReceiverTable({
   }, [receivers, searchText, listQuery, onlyFree, onlyCovering, listFreqKhz, sort]);
 
   const shown = showAll ? rows : rows.slice(0, PAGE);
-  const currentKey = receiverKey(current);
+  const currentKey = current && receiverKey(current);
   const freqText = freqKhz.toLocaleString("en-US", { maximumFractionDigits: 2 });
 
   const sortBy = (key: SortKey) =>
@@ -311,7 +319,10 @@ const ReceiverRow = memo(function ReceiverRow({ receiver: r, tuned, onChoose }: 
           </span>
         </button>
       </td>
-      <td className="col-location">{r.location}</td>
+      <td className="col-location">
+        {/* Browsers ignore max-width on a table cell; this one holds it. */}
+        <span className="location-text">{r.location}</span>
+      </td>
       <td className="num">{r.snr ?? "–"}</td>
       <td className="num">
         {r.users}/{r.usersMax}
