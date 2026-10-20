@@ -362,20 +362,23 @@ describe("useRadio", () => {
     // Value: protects=uint8 spectrum rows decode to dB around their base; fails_when=the base is dropped or the 0.5 dB step changes on one side; why_new=no binary decode test; seam=none; no_claim=waterfall rendering
     it("decodes uint8 spectrum rows against their base level", async () => {
       const { ws, rows } = await listening();
-      const payload = new Uint8Array(4 + 3);
+      const payload = new Uint8Array(4 + 512);
       new DataView(payload.buffer).setFloat32(0, -150, true);
       payload.set([0, 40, 255], 4);
       act(() => ws.frame(4, payload));
-      expect(Array.from(rows[0]!)).toEqual([-150, -130, -22.5]);
+      expect(rows[0]).toHaveLength(512);
+      expect(Array.from(rows[0]!.slice(0, 4))).toEqual([-150, -130, -22.5, -150]);
     });
 
     // Value: protects=a radio service from before the switch still plays, so the web app can deploy first; fails_when=the float32 branches are deleted early; why_new=D6 deploy-order guarantee; seam=none; no_claim=none beyond protects
     it("still reads float32 frames from an older radio service", async () => {
       const { ws, rows } = await listening();
       act(() => ws.frame(1, new Float32Array([0.25, -0.5])));
-      act(() => ws.frame(2, new Float32Array([-120, -60])));
+      const legacyRow = new Float32Array(512).fill(-120);
+      legacyRow[1] = -60;
+      act(() => ws.frame(2, legacyRow));
       expect(Array.from(samples()[0]!)).toEqual([0.25, -0.5]);
-      expect(Array.from(rows[0]!)).toEqual([-120, -60]);
+      expect(Array.from(rows[0]!.slice(0, 3))).toEqual([-120, -60, -120]);
     });
 
     // Value: protects=a frame tag from a newer service is dropped, not played as noise or drawn as a row; fails_when=handleBinary treats unknown tags as audio; why_new=the tag switch had no unknown-tag case; seam=none; no_claim=what a newer service would send
@@ -419,6 +422,21 @@ describe("useRadio", () => {
       expect(samples()).toHaveLength(0);
       expect(rows).toHaveLength(0);
       expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    // Value: protects=spectrum rows of the wrong length or with a NaN/Infinity base never reach the waterfall; fails_when=the 512-bin or finite-base checks are dropped (a huge row sizes the canvas to it; a NaN base poisons its floor); why_new=only short and empty rows were tested; seam=none; no_claim=what a broken service would send
+    it("skips spectrum rows of the wrong length or with a non-finite base", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { ws, rows } = await listening();
+      act(() => ws.frame(4, new Uint8Array(4 + 511)));
+      act(() => ws.frame(4, new Uint8Array(4 + 100_000)));
+      for (const bad of [NaN, Infinity, -Infinity]) {
+        const payload = new Uint8Array(4 + 512);
+        new DataView(payload.buffer).setFloat32(0, bad, true);
+        act(() => ws.frame(4, payload));
+      }
+      act(() => ws.frame(2, new Float32Array(511)));
+      expect(rows).toHaveLength(0);
     });
 
     // Value: protects=an empty frame's warning reads as an empty frame, not "type undefined, -1 bytes"; fails_when=the empty case loses its own wording; why_new=only the warning count was checked; seam=none; no_claim=none beyond protects

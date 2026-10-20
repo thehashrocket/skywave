@@ -265,6 +265,10 @@ class ListenSession:
                         "Reconnect if you're still listening.",
                     )
                     return
+                # A short SND block has no samples: the demodulator's filter
+                # can't take an empty array, and there's nothing to send.
+                if not block.samples.size:
+                    continue
                 audio = self._demod.process(block.samples)
                 await self._send_bytes(AUDIO_TAG + encode_audio(audio))
                 for frame in self._spectrum.process(block.samples):

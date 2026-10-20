@@ -163,3 +163,12 @@ def test_encode_spectrum_base_follows_the_20th_percentile():
     payload = encode_spectrum(db)
     assert payload[:4] == struct.pack("<f", -190.0)
     assert payload[4] == 0 and payload[4 + 100] == 40 and payload[4 + 200] == 120
+
+
+# Value: protects=the base uses the waterfall's order statistic (sorted[floor(n*0.2)]), so a jump at the 20% mark doesn't clip the floor bins; fails_when=encode_spectrum goes back to np.percentile's interpolation (base -198 here, lifting the -200 bins); why_new=Codex found the two definitions disagree on such rows; seam=none; no_claim=the TypeScript side
+def test_encode_spectrum_floor_matches_the_waterfalls_order_statistic():
+    db = np.full(512, -90.0, dtype=np.float32)
+    db[:103] = -200.0  # sorted[102] is -200, sorted[103] is -90
+    payload = encode_spectrum(db)
+    assert payload[:4] == struct.pack("<f", -220.0)
+    assert decode_spectrum(payload)[0] == pytest.approx(-200.0)

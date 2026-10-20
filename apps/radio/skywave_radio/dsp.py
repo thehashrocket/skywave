@@ -216,6 +216,9 @@ def encode_audio(audio: np.ndarray) -> bytes:
 
 def encode_spectrum(db: np.ndarray) -> bytes:
     """A dB row as float32 LE base level plus uint8 bins: dB = base + v * SPECTRUM_STEP_DB."""
-    base = float(np.percentile(db, SPECTRUM_FLOOR_PERCENTILE)) - SPECTRUM_FLOOR_MARGIN_DB
+    # The same order statistic the waterfall takes (sorted[floor(n * 0.2)]), not
+    # np.percentile's interpolation, which lands between two bins.
+    floor = float(np.sort(db)[len(db) * SPECTRUM_FLOOR_PERCENTILE // 100])
+    base = floor - SPECTRUM_FLOOR_MARGIN_DB
     steps = np.clip(np.round((db - base) / SPECTRUM_STEP_DB), 0, 255).astype(np.uint8)
     return np.array([base], dtype="<f4").tobytes() + steps.tobytes()

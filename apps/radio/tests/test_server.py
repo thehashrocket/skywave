@@ -104,6 +104,19 @@ def run_with_fake(fn, **fake_kw):
         t.join(5)
 
 
+# Value: protects=a Kiwi SND block with no samples is skipped: it used to crash the demodulator and end the session, and must not send a bare audio tag; fails_when=session.py passes an empty block to Demodulator.process or sends AUDIO_TAG for it; why_new=the fake always sent full blocks; seam=none; no_claim=how often real Kiwis send short blocks
+def test_empty_kiwi_blocks_send_no_audio_frame():
+    def body(kiwi):
+        client = TestClient(create_app(settings()))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            _, audio, _ = collect(ws, want_audio=3, want_spectrum=0)
+        return audio
+
+    audio = run_with_fake(body, empty_blocks=3)
+    assert audio and all(len(a) == BLOCK for a in audio)
+
+
 def test_listen_end_to_end():
     def body(kiwi):
         client = TestClient(create_app(settings()))
