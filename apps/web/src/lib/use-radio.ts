@@ -58,8 +58,14 @@ export type Meter = { rssi: number; overflow: boolean };
 
 type SpectrumListener = (row: Float32Array, sampleRate: number) => void;
 
-const AUDIO_TAG = 1;
-const SPECTRUM_TAG = 2;
+// Frame tags: 3 is int16 audio, 4 is a float32 base dB then a uint8 per bin.
+// 1 and 2 (float32 audio and dB) are what a radio service from before the
+// switch sends; reading them lets the web app deploy first.
+const AUDIO_TAG = 3;
+const SPECTRUM_TAG = 4;
+const AUDIO_F32_TAG = 1;
+const SPECTRUM_F32_TAG = 2;
+const SPECTRUM_STEP_DB = 0.5;
 const DEFAULT_RATE = 12000;
 const SERVICE_URL = process.env.NEXT_PUBLIC_RADIO_WS_URL ?? "ws://localhost:8765/ws";
 
@@ -148,13 +154,21 @@ export function useRadio() {
 
   const handleBinary = useCallback((buf: ArrayBuffer) => {
     const tag = new Uint8Array(buf, 0, 1)[0];
-    // Float32Array needs 4-byte alignment, so copy past the 1-byte tag.
-    const data = new Float32Array(buf.slice(1));
+    let audio: Float32Array | null = null;
+    let row: Float32Array | null = null;
+    // Typed arrays need their element alignment, so copy past the 1-byte tag.
     if (tag === AUDIO_TAG) {
-      nodeRef.current?.port.postMessage({ type: "samples", data }, [data.buffer]);
+      audio = Float32Array.from(new Int16Array(buf.slice(1)), (v) => v / 32768);
     } else if (tag === SPECTRUM_TAG) {
-      for (const fn of listenersRef.current) fn(data, rateRef.current);
+      const base = new Float32Array(buf.slice(1, 5))[0]!;
+      row = Float32Array.from(new Uint8Array(buf, 5), (v) => base + v * SPECTRUM_STEP_DB);
+    } else if (tag === AUDIO_F32_TAG) {
+      audio = new Float32Array(buf.slice(1));
+    } else if (tag === SPECTRUM_F32_TAG) {
+      row = new Float32Array(buf.slice(1));
     }
+    if (audio) nodeRef.current?.port.postMessage({ type: "samples", data: audio }, [audio.buffer]);
+    if (row) for (const fn of listenersRef.current) fn(row, rateRef.current);
   }, []);
 
   const ensureSocket = useCallback((): Promise<WebSocket> => {

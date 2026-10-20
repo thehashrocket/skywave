@@ -192,3 +192,24 @@ def int16_iq_to_complex(interleaved: np.ndarray) -> np.ndarray:
     """Interleaved int16 I,Q,I,Q... scaled to complex64 in [-1, 1)."""
     f = interleaved.astype(np.float32) / 32768.0
     return (f[0::2] + 1j * f[1::2]).astype(np.complex64)
+
+
+# A spectrum row on the wire is a float32 base level then one uint8 per bin in
+# steps of SPECTRUM_STEP_DB above it, so 255 steps cover 127.5 dB.
+SPECTRUM_STEP_DB = 0.5
+# The base sits this far under the row's 20th percentile, the noise floor the
+# waterfall levels on. Clamping only what's below it leaves that floor exactly
+# where it was, and the waterfall never shows more than 52 dB above it.
+SPECTRUM_FLOOR_MARGIN_DB = 20.0
+
+
+def encode_audio(audio: np.ndarray) -> bytes:
+    """Audio in [-1, 1] as int16 LE. 32767, not 32768: +1.0 must not wrap to -32768."""
+    return np.round(np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+
+
+def encode_spectrum(db: np.ndarray) -> bytes:
+    """A dB row as float32 LE base level plus uint8 bins: dB = base + v * SPECTRUM_STEP_DB."""
+    base = float(np.percentile(db, 20)) - SPECTRUM_FLOOR_MARGIN_DB
+    steps = np.clip(np.round((db - base) / SPECTRUM_STEP_DB), 0, 255).astype(np.uint8)
+    return np.array([base], dtype="<f4").tobytes() + steps.tobytes()

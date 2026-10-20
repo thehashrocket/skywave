@@ -42,6 +42,13 @@ class FakeSocket {
     this.onclose?.();
   }
 
+  frame(tag: number, payload: ArrayBufferView) {
+    const buf = new Uint8Array(1 + payload.byteLength);
+    buf[0] = tag;
+    buf.set(new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength), 1);
+    this.onmessage?.({ data: buf.buffer });
+  }
+
   status(state: string, extra: Record<string, unknown> = {}) {
     this.onmessage?.({ data: JSON.stringify({ type: "status", state, sampleRate: 12000, ...extra }) });
   }
@@ -329,5 +336,53 @@ describe("useRadio", () => {
     expect(ws!.sent.at(-1)).toEqual({ type: "stop" });
     expect(result.current.status).toEqual({ state: "idle" });
   });
-});
 
+  describe("binary frames", () => {
+    async function listening() {
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.status("listening"));
+      const rows: Float32Array[] = [];
+      result.current.onSpectrum((row) => rows.push(row));
+      workletMessages.mockClear();
+      return { ws, rows };
+    }
+    const samples = () =>
+      workletMessages.mock.calls.filter(([msg]) => msg?.type === "samples").map(([msg]) => msg.data as Float32Array);
+
+    // Value: protects=int16 audio plays at the right level; fails_when=the decoder reads the bytes as Float32 or skips the /32768 scale; why_new=no test fed binary frames to useRadio; seam=none; no_claim=AudioWorklet playback in a real browser
+    it("plays int16 audio frames as floats", async () => {
+      const { ws } = await listening();
+      act(() => ws.frame(3, new Int16Array([32767, -32768, 0, 16384])));
+      expect(Array.from(samples()[0]!)).toEqual([32767 / 32768, -1, 0, 0.5]);
+    });
+
+    // Value: protects=uint8 spectrum rows decode to dB around their base; fails_when=the base is dropped or the 0.5 dB step changes on one side; why_new=no binary decode test; seam=none; no_claim=waterfall rendering
+    it("decodes uint8 spectrum rows against their base level", async () => {
+      const { ws, rows } = await listening();
+      const payload = new Uint8Array(4 + 3);
+      new DataView(payload.buffer).setFloat32(0, -150, true);
+      payload.set([0, 40, 255], 4);
+      act(() => ws.frame(4, payload));
+      expect(Array.from(rows[0]!)).toEqual([-150, -130, -22.5]);
+    });
+
+    // Value: protects=a radio service from before the switch still plays, so the web app can deploy first; fails_when=the float32 branches are deleted early; why_new=D6 deploy-order guarantee; seam=none; no_claim=none beyond protects
+    it("still reads float32 frames from an older radio service", async () => {
+      const { ws, rows } = await listening();
+      act(() => ws.frame(1, new Float32Array([0.25, -0.5])));
+      act(() => ws.frame(2, new Float32Array([-120, -60])));
+      expect(Array.from(samples()[0]!)).toEqual([0.25, -0.5]);
+      expect(Array.from(rows[0]!)).toEqual([-120, -60]);
+    });
+
+    // Value: protects=a frame tag from a newer service is dropped, not played as noise or drawn as a row; fails_when=handleBinary treats unknown tags as audio; why_new=the tag switch had no unknown-tag case; seam=none; no_claim=what a newer service would send
+    it("ignores frames with a tag it doesn't know", async () => {
+      const { ws, rows } = await listening();
+      act(() => ws.frame(9, new Uint8Array([1, 2, 3, 4])));
+      expect(samples()).toHaveLength(0);
+      expect(rows).toHaveLength(0);
+    });
+  });
+});

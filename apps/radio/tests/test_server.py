@@ -12,6 +12,7 @@ from skywave_radio.config import Settings, origin_allowed
 from skywave_radio.server import create_app
 
 from .fakekiwi import FakeKiwi
+from .frames import decode_spectrum
 
 ORIGIN = {"origin": "http://localhost:3000"}
 
@@ -38,8 +39,12 @@ def collect(ws, want_audio=3, want_spectrum=1, limit=500):
             statuses.append(json.loads(msg["text"]))
         elif msg.get("bytes"):
             b = msg["bytes"]
-            arr = np.frombuffer(b[1:], dtype="<f4")
-            (audio if b[0] == 1 else spectra).append(arr)
+            if b[0] == 3:
+                audio.append(np.frombuffer(b[1:], dtype="<i2"))
+            elif b[0] == 4:
+                spectra.append(decode_spectrum(b[1:]))
+            else:
+                raise AssertionError(f"unexpected frame tag {b[0]}")
         if len(audio) >= want_audio and len(spectra) >= want_spectrum:
             break
     return statuses, audio, spectra
@@ -117,7 +122,7 @@ def test_listen_end_to_end():
     listening = next(s for s in statuses if s.get("state") == "listening")
     assert listening["sampleRate"] == 12000.0
     assert any(s["type"] == "meter" for s in statuses)
-    assert all(a.dtype == np.float32 for a in audio)
+    assert all(a.dtype == np.int16 for a in audio)
     assert len(spectra[0]) == 512
     assert "SET mod=iq low_cut=-5000 high_cut=5000 freq=7200.000" in kiwi.commands
 
