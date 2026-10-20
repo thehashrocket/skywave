@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from skywave_radio.config import Settings, origin_allowed
 from skywave_radio.server import create_app
+from skywave_radio.session import AUDIO_TAG, SPECTRUM_TAG
 
 from .fakekiwi import BLOCK, FakeKiwi
 from .frames import decode_spectrum
@@ -39,9 +40,9 @@ def collect(ws, want_audio=3, want_spectrum=1, limit=500):
             statuses.append(json.loads(msg["text"]))
         elif msg.get("bytes"):
             b = msg["bytes"]
-            if b[0] == 3:
+            if b[:1] == AUDIO_TAG:
                 audio.append(np.frombuffer(b[1:], dtype="<i2"))
-            elif b[0] == 4:
+            elif b[:1] == SPECTRUM_TAG:
                 spectra.append(decode_spectrum(b[1:]))
             else:
                 raise AssertionError(f"unexpected frame tag {b[0]}")

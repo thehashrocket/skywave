@@ -420,5 +420,16 @@ describe("useRadio", () => {
       expect(rows).toHaveLength(0);
       expect(warn).toHaveBeenCalledTimes(1);
     });
+
+    // Value: protects=a float32 frame from an older service whose payload isn't a multiple of 4 bytes is skipped, not thrown inside onmessage; fails_when=the size % 4 checks on tags 1/2 are dropped (new Float32Array throws RangeError); why_new=the misaligned test covers only tags 3/4; seam=none; no_claim=what an older service would actually send
+    it("skips legacy float32 frames whose payload isn't whole floats", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { ws, rows } = await listening();
+      expect(() => act(() => ws.frame(1, new Uint8Array([1, 2, 3])))).not.toThrow();
+      expect(() => act(() => ws.frame(2, new Uint8Array([1, 2, 3, 4, 5])))).not.toThrow();
+      expect(samples()).toHaveLength(0);
+      expect(rows).toHaveLength(0);
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
   });
 });
