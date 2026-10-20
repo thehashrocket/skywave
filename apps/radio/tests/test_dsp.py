@@ -153,3 +153,13 @@ def test_encode_spectrum_wire_format_golden():
     assert payload[:4] == struct.pack("<f", -150.0)
     assert payload[4] == 80
     assert payload[5:] == bytes([40] * 511)
+
+
+# Value: protects=the base sits at the row's 20th percentile, the floor the waterfall's FLOOR_PERCENTILE levels on; fails_when=SPECTRUM_FLOOR_PERCENTILE moves (15 gives -220, 25 gives -150) without the waterfall; why_new=the golden row is flat, so any percentile gives the same base; seam=none; no_claim=the TypeScript side's constant
+def test_encode_spectrum_base_follows_the_20th_percentile():
+    db = np.full(512, -130.0, dtype=np.float32)
+    db[:92] = -200.0  # 18% of the row
+    db[92:113] = -170.0  # bins 18%-22%, where the 20th percentile falls
+    payload = encode_spectrum(db)
+    assert payload[:4] == struct.pack("<f", -190.0)
+    assert payload[4] == 0 and payload[4 + 100] == 40 and payload[4 + 200] == 120

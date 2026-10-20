@@ -64,8 +64,8 @@ export function Waterfall({ mode, sampleRate, active, subscribe, onClickOffset }
       }
       // Auto-level: track the noise floor (FLOOR_PERCENTILE of the row) slowly.
       const sorted = Float32Array.from(row).sort();
-      const p20 = sorted[Math.floor(sorted.length * FLOOR_PERCENTILE)]!;
-      floorRef.current = floorRef.current === null ? p20 : floorRef.current * 0.95 + p20 * 0.05;
+      const rowFloor = sorted[Math.floor(sorted.length * FLOOR_PERCENTILE)]!;
+      floorRef.current = floorRef.current === null ? rowFloor : floorRef.current * 0.95 + rowFloor * 0.05;
       const floor = floorRef.current - FLOOR_OFFSET_DB;
 
       ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height - 1, 0, 1, canvas.width, canvas.height - 1);

@@ -175,7 +175,8 @@ export function useRadio() {
     } else if (!warnedFrameRef.current) {
       // Otherwise sound and waterfall just stop while the status says listening.
       warnedFrameRef.current = true;
-      console.warn(`The radio service sent a frame this page can't read (type ${tag}, ${size} bytes). Try reloading.`);
+      const what = buf.byteLength === 0 ? "an empty frame" : `a frame this page can't read (type ${tag}, ${size} bytes)`;
+      console.warn(`The radio service sent ${what}. Try reloading.`);
     }
     if (audio) nodeRef.current?.port.postMessage({ type: "samples", data: audio }, [audio.buffer]);
     if (row) for (const fn of listenersRef.current) fn(row, rateRef.current);

@@ -421,6 +421,14 @@ describe("useRadio", () => {
       expect(warn).toHaveBeenCalledTimes(1);
     });
 
+    // Value: protects=an empty frame's warning reads as an empty frame, not "type undefined, -1 bytes"; fails_when=the empty case loses its own wording; why_new=only the warning count was checked; seam=none; no_claim=none beyond protects
+    it("names an empty frame in its warning", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { ws } = await listening();
+      act(() => ws.onmessage?.({ data: new ArrayBuffer(0) }));
+      expect(warn).toHaveBeenCalledWith("The radio service sent an empty frame. Try reloading.");
+    });
+
     // Value: protects=a float32 frame from an older service whose payload isn't a multiple of 4 bytes is skipped, not thrown inside onmessage; fails_when=the size % 4 checks on tags 1/2 are dropped (new Float32Array throws RangeError); why_new=the misaligned test covers only tags 3/4; seam=none; no_claim=what an older service would actually send
     it("skips legacy float32 frames whose payload isn't whole floats", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
