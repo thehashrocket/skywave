@@ -201,7 +201,8 @@ SPECTRUM_STEP_DB = 0.5
 # noise floor the waterfall (apps/web/src/components/Waterfall.tsx) levels on;
 # the percentile must match the one it uses. Clamping only
 # what's below it leaves each row's floor exactly where it was, and the
-# waterfall never shows more than 52 dB above it (floor - 3 + RANGE_DB 55).
+# waterfall never shows more than 52 dB above it (FLOOR_OFFSET_DB 3 below,
+# RANGE_DB 55 tall, in Waterfall.tsx).
 # Its floor is a running average, so for a moment after a retune to a much
 # noisier band it can sit under the base and show the clamp as a flat band.
 SPECTRUM_FLOOR_PERCENTILE = 20
