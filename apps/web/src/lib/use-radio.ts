@@ -156,21 +156,21 @@ export function useRadio() {
   }, []);
 
   const handleBinary = useCallback((buf: ArrayBuffer) => {
-    const tag = new Uint8Array(buf, 0, 1)[0];
+    const tag = new Uint8Array(buf)[0]; // undefined for an empty frame, which is skipped
     const size = buf.byteLength - 1;
     let audio: Float32Array | null = null;
     let row: Float32Array | null = null;
     // Typed arrays need their element alignment, so copy past the 1-byte tag.
-    // A payload that doesn't fit its tag's element size is skipped below.
-    if (tag === AUDIO_TAG && size % 2 === 0) {
+    // An empty payload, or one that doesn't fit its tag's element size, is skipped below.
+    if (tag === AUDIO_TAG && size > 0 && size % 2 === 0) {
       // The usual int16 scale: the service sends at most 32767, so this stays in [-1, 1].
       audio = Float32Array.from(new Int16Array(buf.slice(1)), (v) => v / 32768);
-    } else if (tag === SPECTRUM_TAG && size >= 4) {
+    } else if (tag === SPECTRUM_TAG && size > 4) {
       const base = new Float32Array(buf.slice(1, 5))[0]!;
       row = Float32Array.from(new Uint8Array(buf, 5), (v) => base + v * SPECTRUM_STEP_DB);
-    } else if (tag === AUDIO_F32_TAG && size % 4 === 0) {
+    } else if (tag === AUDIO_F32_TAG && size > 0 && size % 4 === 0) {
       audio = new Float32Array(buf.slice(1));
-    } else if (tag === SPECTRUM_F32_TAG && size % 4 === 0) {
+    } else if (tag === SPECTRUM_F32_TAG && size > 0 && size % 4 === 0) {
       row = new Float32Array(buf.slice(1));
     } else if (!warnedFrameRef.current) {
       // Otherwise sound and waterfall just stop while the status says listening.

@@ -413,6 +413,9 @@ describe("useRadio", () => {
       const { ws, rows } = await listening();
       expect(() => act(() => ws.frame(3, new Uint8Array([1, 2, 3])))).not.toThrow();
       expect(() => act(() => ws.frame(4, new Uint8Array([0, 0])))).not.toThrow();
+      act(() => ws.frame(4, new Uint8Array(4))); // a base with no bins would make the waterfall's floor NaN
+      act(() => ws.frame(3, new Uint8Array(0))); // tag only
+      act(() => ws.onmessage?.({ data: new ArrayBuffer(0) }));
       expect(samples()).toHaveLength(0);
       expect(rows).toHaveLength(0);
       expect(warn).toHaveBeenCalledTimes(1);
