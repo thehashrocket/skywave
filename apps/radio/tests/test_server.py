@@ -635,6 +635,32 @@ async def test_a_stalled_browser_ends_its_session(monkeypatch):
     assert slots.active == 0
 
 
+# Value: protects=a dead tab gives back its slot and the volunteer's channel soon after the send timeout, even though the Kiwi's audio has backed up behind it; fails_when=closing the Kiwi waits out websockets' 10 s default; why_new=the fake-client stall test can't see the close wait (user caught the ~25 s total); seam=none; no_claim=a real Kiwi's close timing
+async def test_a_stalled_browser_frees_its_slot_soon_with_a_real_receiver(monkeypatch):
+    from skywave_radio import kiwi as kiwi_module
+    from skywave_radio import session as session_module
+    from skywave_radio.session import ListenSession, Slots
+
+    monkeypatch.setattr(session_module, "SEND_TIMEOUT_S", 0.2)
+
+    async def send_text(_):
+        pass
+
+    async def never_returns(_):
+        await asyncio.Event().wait()
+
+    slots = Slots(1)
+    async with FakeKiwi() as kiwi:
+        session = ListenSession(settings(), send_text, never_returns, slots=slots)
+        await session.handle({"type": "tune", "host": "127.0.0.1", "port": kiwi.port, "freqKhz": 7200, "mode": "usb"})
+        started = time.monotonic()
+        await asyncio.wait_for(session._pump, 5)
+        await asyncio.sleep(0)
+        elapsed = time.monotonic() - started
+    assert slots.active == 0
+    assert elapsed < kiwi_module.CLOSE_TIMEOUT_S + 2
+
+
 # Value: protects=the browser isn't left showing "Listening" with no audio after we give up on it; fails_when=the server keeps its receive loop open after a stall; why_new=Codex O6; seam=none; no_claim=uvicorn closing the transport when the app returns (its documented behaviour)
 async def test_a_stalled_browser_is_disconnected(monkeypatch):
     from skywave_radio import session as session_module
