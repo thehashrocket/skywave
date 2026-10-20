@@ -71,7 +71,7 @@ type Chain = {
 function playing(status: RadioStatus, candidates: Receiver[], provenance: Provenance): Fallback | null {
   if ((status.state !== "listening" && status.state !== "connecting") || !status.host || !status.port) return null;
   const key = receiverKey({ host: status.host, port: status.port });
-  const { secure: _, ...details } = candidates.find((r) => receiverKey(r) === key) ?? {
+  const details = candidates.find((r) => receiverKey(r) === key) ?? {
     id: key,
     name: status.host,
     location: "",
@@ -85,7 +85,8 @@ function playing(status: RadioStatus, candidates: Receiver[], provenance: Proven
     maxKhz: 0,
   };
   const { fromList, secure } = provenance(status.host, status.port);
-  return { receiver: secure ? { ...details, secure: true } : details, fromList };
+  // The row's own `secure` says how it's listed, not how it was dialed.
+  return { receiver: { ...details, secure: secure || undefined }, fromList };
 }
 
 /**

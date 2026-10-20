@@ -163,7 +163,7 @@ describe("parseKiwiList", () => {
     expect(parseKiwiList(text)[0]!.name).toBe("Odd, ] name, }");
   });
 
-  // Value: protects=a quote or backslash in operator text can't end a string early and break the list; fails_when=the escape branch in extractArray is removed; why_new=no input had escapes; seam=none; no_claim=non-JSON escapes
+  // Value: protects=a quote or backslash in operator text can't end a string early and break the list; fails_when=the escape branch in extractEntries is removed; why_new=no input had escapes; seam=none; no_claim=non-JSON escapes
   it("handles escaped quotes and backslashes inside operator text", () => {
     const [r] = one({ name: 'He said "hi ]", ok', antenna: "C:\\" });
     expect(r!.name).toBe('He said "hi ]", ok');

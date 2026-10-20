@@ -214,8 +214,7 @@ function isNonPublicIpv4(address: string): boolean {
 const NON_PUBLIC_IPV6 = /^(::1?|f[cd][0-9a-f]{2}:.*|fe[89ab][0-9a-f]:.*|ff[0-9a-f]{2}:.*|2001:db8:.*|100::.*|2002:.*|64:ff9b:.*|::[0-9a-f]{1,4}:[0-9a-f]{1,4})$/i;
 
 /** Loopback, private-network and local-only names, as an address or a hostname. */
-function isPrivateHost(host: string): boolean {
-  const name = host.replace(/\.$/, "");
+function isPrivateHost(name: string): boolean {
   // URL parsing turns [::ffff:127.0.0.1] into ::ffff:7f00:1; check the IPv4 inside.
   const mapped = name.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
   if (mapped) {
