@@ -16,9 +16,23 @@ def _bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _split(origin: str) -> tuple[str, str | None, int | None] | None:
+    """(scheme, hostname, port) for an origin, or None if it doesn't parse.
+
+    Origin is a client-supplied header, so a port like :99999 or a broken
+    [IPv6 literal must be a refusal, not an exception in the handler.
+    """
+    try:
+        u = urlsplit(origin)
+        return u.scheme, u.hostname, u.port
+    except ValueError:
+        return None
+
+
 def is_local_origin(origin: str) -> bool:
     """True for browser origins on this machine, like http://localhost:3000."""
-    return urlsplit(origin).hostname in LOCAL_HOSTNAMES
+    parts = _split(origin)
+    return parts is not None and parts[1] in LOCAL_HOSTNAMES
 
 
 def origin_allowed(origin: str | None, allowed: tuple[str, ...]) -> bool:
@@ -29,12 +43,14 @@ def origin_allowed(origin: str | None, allowed: tuple[str, ...]) -> bool:
     """
     if "*" in allowed or origin in allowed:
         return True
-    if not origin or not is_local_origin(origin):
+    o = _split(origin) if origin else None
+    if o is None or o[1] not in LOCAL_HOSTNAMES:
         return False
-    o = urlsplit(origin)
-    return any(
-        is_local_origin(a) and urlsplit(a).scheme == o.scheme and urlsplit(a).port == o.port for a in allowed
-    )
+    for a in allowed:
+        parts = _split(a)
+        if parts and parts[1] in LOCAL_HOSTNAMES and parts[0] == o[0] and parts[2] == o[2]:
+            return True
+    return False
 
 
 @dataclass(frozen=True)

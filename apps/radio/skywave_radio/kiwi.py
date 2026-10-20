@@ -147,7 +147,9 @@ class KiwiClient:
 
     @property
     def url(self) -> str:
-        return f"ws://{self.host}:{self.port}/{int(time.time())}/SND"
+        # An IPv6 literal needs brackets, or its colons read as the port.
+        host = f"[{self.host}]" if ":" in self.host else self.host
+        return f"ws://{host}:{self.port}/{int(time.time())}/SND"
 
     async def connect(self) -> KiwiInfo:
         try:
@@ -164,6 +166,8 @@ class KiwiClient:
                 ),
                 timeout=self.timeout_s,
             )
+        except (websockets.InvalidURI, ValueError) as e:
+            raise KiwiError("invalid", f"{self.host}:{self.port} isn't an address we can dial.") from e
         except (OSError, asyncio.TimeoutError, websockets.InvalidHandshake) as e:
             # A timeout's message is empty, which left the browser showing "()".
             reason = "no answer; check the port" if isinstance(e, asyncio.TimeoutError) else str(e) or type(e).__name__

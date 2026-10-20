@@ -103,3 +103,20 @@ async def test_silent_port_gives_a_reason():
         for w in held:
             w.close()
         server.close()
+
+
+def test_ipv6_hosts_are_bracketed_in_the_url():
+    client = KiwiClient("2001:db8::1", 8073)
+    assert client.url.startswith("ws://[2001:db8::1]:8073/")
+    assert KiwiClient("kiwi.example", 8073).url.startswith("ws://kiwi.example:8073/")
+
+
+async def test_an_undialable_url_is_a_coded_error(monkeypatch):
+    # A bad URL used to escape as a bare ValueError: "Something broke" and no code.
+    def bad_url(self):
+        return "ws://2001:db8::1:8073/1/SND"  # what an unbracketed IPv6 host used to produce
+
+    monkeypatch.setattr(KiwiClient, "url", property(bad_url))
+    with pytest.raises(KiwiError) as e:
+        await KiwiClient("kiwi.example", 8073, timeout_s=0.5).connect()
+    assert e.value.code == "invalid"
