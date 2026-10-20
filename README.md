@@ -43,12 +43,15 @@ pnpm dev:radio                               # terminal 1: radio service on :876
 pnpm dev                                     # terminal 2: web app on :3000
 ```
 
-**Port 5432 already taken** (another project's Postgres)? Put `POSTGRES_PORT=5433` in a root `.env` (see `.env.example`) before `pnpm db:up`, and use the same port in `DATABASE_URL` in `apps/web/.env`. If 3000 is taken, Next.js moves the web app to the next free port; add that origin (e.g. `http://localhost:3001`) to `ALLOWED_ORIGINS` in `apps/radio/.env`.
+**Port 5432 already taken** (another project's Postgres)? Put `POSTGRES_PORT=5433` in a root `.env` (see `.env.example`) before `pnpm db:up`, and use the same port in `DATABASE_URL` in `apps/web/.env`. If 3000 is taken, Next.js moves the web app to the next free port; add that origin (e.g. `http://localhost:3001`) to `ALLOWED_ORIGINS` in `apps/radio/.env`. The service treats `localhost`, `127.0.0.1` and `[::1]` on the same port as one origin, and the dev server accepts `127.0.0.1`, so `http://127.0.0.1:3000` works too.
 
-Open http://localhost:3000, paste a receiver's address from the [public list](http://kiwisdr.com/public/) (a full URL like `http://f4kiy.ddns.net:8073/` is fine; the port is usually 8073), and hit Listen. The list site has no HTTPS, so type `http://` if your browser can't reach it. WWV on 10,000 kHz AM is the easiest first signal: it's on 24/7 and you'll hear the time ticks.
+Open http://localhost:3000 and hit **Pick best receiver**, or choose one from the list under it. WWV on 10,000 kHz AM is the easiest first signal: it's on 24/7 and you'll hear the time ticks.
+
+The list comes from [rx.linkfanel.net](http://rx.linkfanel.net/), which mirrors the [public KiwiSDR list](http://kiwisdr.com/public/) as data (kiwisdr.com itself sits behind a click-through captcha). The web server fetches it at most every 15 minutes and keeps the last good copy for up to two hours if the mirror is down. You can always paste an address yourself: a full URL like `http://f4kiy.ddns.net:8073/` is fine, and the port is usually 8073.
 
 ## Using it
 
+- **Receivers:** Pick best tunes the receiver with the highest self-reported HF signal-to-noise ratio that covers your frequency. If it's full, down or otherwise refuses, it tries the next one, up to 3 per click (refusals about the address itself, such as a dead hostname, take no channel on anyone's receiver and don't count, up to 6 receivers in all; a dead name can still take up to 10 seconds to give up on). If nothing works, or you press Stop picking, it goes back to whatever you were listening to. The list's listener counts can be 20 minutes old, so receivers it calls full are ranked last rather than hidden. Browse the list to search by name, place or antenna, sort by column, and click a receiver to switch to it, even mid-listen.
 - **Dial:** drag to tune coarsely (snaps to 5 kHz). Focus it and use arrow keys for 1 kHz steps, Shift for 10, Page Up/Down for 100. Crossing into a ham band switches to the conventional sideband automatically.
 - **Readout:** click the big number and type an exact frequency.
 - **Waterfall:** shows the ±6 kHz the Kiwi is sending. Click a signal to tune to it. The shaded strip is your current mode's passband.
@@ -80,12 +83,14 @@ apps/radio/skywave_radio/
   server.py      FastAPI app: /ws and /healthz
 apps/web/
   src/lib/use-radio.ts               WebSocket + Web Audio graph
-  src/components/                    Dial, Waterfall, SMeter, Presets, FrequencyReadout
-  src/server/                        tRPC router + Prisma client
+  src/components/                    Dial, Waterfall, SMeter, Presets, FrequencyReadout, ReceiverPicker
+  src/lib/kiwi-list.ts               parses and ranks the public receiver list
+  src/lib/use-pick-best.ts           Pick best's try-the-next-one logic
+  src/server/                        tRPC routers (presets, receivers) + Prisma client
   public/worklets/radio-player.js    jitter buffer + resampler
 ```
 
-Browser ↔ service protocol: the browser sends JSON (`{"type":"tune","host","port","freqKhz","mode"}` or `{"type":"stop"}`). The service sends JSON status and S-meter messages, plus binary frames: first byte `0x01` for mono Float32 audio at the Kiwi's sample rate, `0x02` for a 512-bin Float32 dB spectrum row.
+Browser ↔ service protocol: the browser sends JSON (`{"type":"tune","host","port","freqKhz","mode","source?"}` or `{"type":"stop"}`; `"source":"list"` marks a receiver from the public list, which the service only dials on public addresses even with `ALLOW_PRIVATE_HOSTS` on). The service sends JSON status messages (`{"type":"status","state","message?","code?","host?","port?","sampleRate?","mode","freqKhz"}`) and S-meter messages, plus binary frames: first byte `0x01` for mono Float32 audio at the Kiwi's sample rate, `0x02` for a 512-bin Float32 dB spectrum row. An error status carries a `code`: `busy`, `down`, `unreachable`, `timeout`, `password`, `redirect`, `bad_rate` or `closed` from the Kiwi connection, and `invalid`, `dns` or `blocked` when the address is refused (`invalid` also covers an address the Kiwi client can't build a URL for). The browser relies on `source` and `code`, so deploy the radio service before the web app; an older service ignores `source` and sends errors without a `code`. Pick best moves to the next receiver on any coded error (they're all about that receiver), stops on an uncoded one (a bad request, the service's own listener limit or DNS lookup capacity, an internal error, or a dropped connection), and uses `host`/`port` to ignore statuses from earlier attempts.
 
 ## Deploying the radio service
 
@@ -102,12 +107,12 @@ If the web app is reachable from the internet, set `APP_PASSWORD`. Every request
 
 ```bash
 pnpm test:radio     # DSP math, a fake Kiwi for the protocol, end-to-end WebSocket sessions
-pnpm test:web       # password gate, preset API, band/S-meter math, the audio worklet's buffer
+pnpm test:web       # password gate, preset + receiver APIs, receiver ranking and Pick best, band/S-meter math, the audio worklet's buffer
 pnpm typecheck
 ```
 
 ## Next steps
 
-1. **Receiver map:** load the public KiwiSDR list (it includes GPS coordinates) into a `Receiver` table and pick receivers by clicking a map.
+1. **Receiver map:** the public list is already loaded (`src/lib/kiwi-list.ts`) and includes GPS coordinates; plot it and pick receivers by clicking a map. That's also when a `Receiver` table starts paying for itself, so presets can point at one.
 2. **Station lookup:** import the EiBi shortwave schedule CSV so tuning 9,535 kHz at 0300 UTC tells you who's probably on and pins the transmitter site.
 3. **Wider view:** the Kiwi's separate waterfall stream (`W/F`) covers the whole 0–30 MHz band; showing it on the dial would let you see activity before tuning.
