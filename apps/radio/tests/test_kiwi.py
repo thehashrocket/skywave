@@ -33,6 +33,7 @@ async def test_handshake_and_iq_stream():
                 break
         await client.close()
 
+    assert kiwi.paths[0].startswith("/kiwi/")
     assert kiwi.paths[0].endswith("/SND")
     assert kiwi.commands[0] == "SET auth t=kiwi p="
     assert "SET AR OK in=12000 out=44100" in kiwi.commands
@@ -71,6 +72,22 @@ async def test_unsupported_sample_rate_refused(rate):
             await client.connect()
         assert e.value.code == "bad_rate"
         await client.close()
+
+
+@pytest.mark.parametrize(
+    "fake,message",
+    [
+        (FakeKiwi(silent=True), "connected but never answered"),
+        (FakeKiwi(no_rate=True), "never sent its sample rate"),
+    ],
+)
+async def test_handshake_timeout_says_whether_the_kiwi_answered(fake, message):
+    async with fake as kiwi:
+        client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=0.5)
+        with pytest.raises(KiwiError) as e:
+            await client.connect()
+        assert e.value.code == "timeout"
+        assert message in str(e.value)
 
 
 async def test_stalled_stream_times_out():

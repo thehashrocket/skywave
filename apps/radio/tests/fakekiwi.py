@@ -24,6 +24,10 @@ class FakeKiwi:
     sample_rate: str = "12000.000"
     # Seconds to wait before starting the handshake.
     handshake_delay: float = 0.0
+    # Accept the WebSocket, then never send a frame.
+    silent: bool = False
+    # Send the version but never the sample rate.
+    no_rate: bool = False
     # Handshake normally, then never send audio.
     stall: bool = False
     # Close the connection after this many SND frames.
@@ -60,8 +64,14 @@ class FakeKiwi:
             await ws.send(self.reject)
             await asyncio.sleep(0.2)
             return
+        if self.silent:
+            await ws.wait_closed()
+            return
         await asyncio.sleep(self.handshake_delay)
         await ws.send(b"MSG version_maj=1 version_min=799")
+        if self.no_rate:
+            await ws.wait_closed()
+            return
         await ws.send(b"MSG audio_rate=12000")
         await ws.send(f"MSG sample_rate={self.sample_rate}".encode())
 
