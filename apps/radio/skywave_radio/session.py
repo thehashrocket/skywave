@@ -1,14 +1,16 @@
 """One browser listener: owns a Kiwi connection and the DSP chain for it.
 
 Browser -> service (JSON text frames):
-    {"type": "tune", "host": "...", "port": 8073, "freqKhz": 9535, "mode": "am", "source": "list"}
+    {"type": "tune", "host": "...", "port": 8073, "freqKhz": 9535, "mode": "am", "source": "list", "secure": true}
     ("source": "list" marks a receiver the browser picked from the public list
     rather than one a person typed; those are only ever dialed on public
-    addresses, even with ALLOW_PRIVATE_HOSTS on.)
+    addresses, even with ALLOW_PRIVATE_HOSTS on. "secure": true dials wss://.)
     {"type": "stop"}
 
 Service -> browser:
     JSON text: {"type": "status", "state": "connecting|listening|stopped|error", ...}
+               (an uncoded error may carry "retryAfterMs": the same receiver
+               may work if tried again after that long)
     JSON text: {"type": "meter", "rssi": -73.1, "overflow": false}
     Binary:    0x01 + float32 LE mono audio at `sampleRate`
     Binary:    0x02 + float32 LE dBFS bins spanning -sampleRate/2..+sampleRate/2
@@ -19,12 +21,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Hashable
 from typing import Any
 
 from .config import Settings
 from .dsp import CW_PITCH_HZ, MODES, Demodulator, Spectrum
-from .hostguard import HostRejected, resolve_receiver
+from .hostguard import HostRejected, is_public_address, resolve_receiver
 from .kiwi import DEFAULT_PORT, KiwiClient, KiwiError
 
 log = logging.getLogger(__name__)
@@ -33,6 +35,10 @@ AUDIO_TAG = b"\x01"
 SPECTRUM_TAG = b"\x02"
 MAX_FREQ_KHZ = 32_000.0
 METER_INTERVAL_S = 0.25
+# A browser that stops reading (frozen tab, dead Wi-Fi) blocks our sends; past
+# this we give up on it so it stops holding a slot and a volunteer's channel.
+# Long enough to ride out a Wi-Fi roam or a laptop waking up.
+SEND_TIMEOUT_S = 15.0
 
 SendText = Callable[[dict[str, Any]], Awaitable[None]]
 SendBytes = Callable[[bytes], Awaitable[None]]
@@ -95,22 +101,58 @@ class ListenSession:
         slots: Slots | None = None,
         resolver: Callable[..., Awaitable[str]] = resolve_receiver,
         client_factory: Callable[..., KiwiClient] = KiwiClient,
+        client_ip: str | None = None,
+        on_stalled: Callable[[], None] | None = None,
     ):
         self.settings = settings
-        self._send_text = send_text
-        self._send_bytes = send_bytes
+        self._raw_send_text = send_text
+        self._raw_send_bytes = send_bytes
         self._slots = slots or Slots(settings.max_sessions)
         self._resolver = resolver
         self._client_factory = client_factory
+        self._client_ip = client_ip
+        self._on_stalled = on_stalled
         self._client: KiwiClient | None = None
         self._pump: asyncio.Task[None] | None = None
+        # The pump whose end releases this session's slot. Switching receivers
+        # hands the slot to the new pump instead of releasing and re-taking it,
+        # which another listener could win in between.
+        self._slot_holder: asyncio.Task[None] | None = None
         self._demod: Demodulator | None = None
         self._spectrum: Spectrum | None = None
         self._mode = "am"
         self._freq_khz = 0.0
-        # host, port and whether private addresses may be dialed for it.
-        self._target: tuple[str, int, bool] | None = None
+        # host, port, whether private addresses may be dialed for it, and wss.
+        self._target: tuple[str, int, bool, bool] | None = None
         self._listening = False
+
+    @property
+    def lookup_owner(self) -> Hashable:
+        """Who hostguard's one-lookup-at-a-time limit applies to.
+
+        The client's IP when it's public, so opening more sockets doesn't get
+        more lookups. Behind a proxy the service doesn't trust (see
+        FORWARDED_ALLOW_IPS), every listener shares the proxy's private
+        address, so fall back to this session rather than lump them together.
+        """
+        if self._client_ip and is_public_address(self._client_ip):
+            return ("ip", self._client_ip)
+        return self
+
+    async def _send_text(self, payload: dict[str, Any]) -> None:
+        await self._send_or_give_up(self._raw_send_text(payload))
+
+    async def _send_bytes(self, data: bytes) -> None:
+        await self._send_or_give_up(self._raw_send_bytes(data))
+
+    async def _send_or_give_up(self, send: Awaitable[None]) -> None:
+        try:
+            await asyncio.wait_for(send, SEND_TIMEOUT_S)
+        except asyncio.TimeoutError as e:
+            log.info("browser stopped reading for %gs; ending its session", SEND_TIMEOUT_S)
+            if self._on_stalled is not None:
+                self._on_stalled()
+            raise ClientGone() from e
 
     async def handle(self, msg: dict[str, Any]) -> None:
         kind = msg.get("type")
@@ -125,7 +167,9 @@ class ListenSession:
             await self._status("error", message=str(e))
 
     async def _tune(self, msg: dict[str, Any]) -> None:
-        host = str(msg.get("host", "")).strip()
+        # Lowercased like the resolver does, so Kiwi.Example and kiwi.example
+        # are the same receiver and a retune doesn't reconnect.
+        host = str(msg.get("host", "")).strip().lower()
         try:
             port = int(msg.get("port") or DEFAULT_PORT)
             freq = float(msg["freqKhz"])
@@ -142,10 +186,11 @@ class ListenSession:
 
         self._freq_khz = freq
         public_only = msg.get("source") == "list"
+        secure = msg.get("secure") is True
         # Same receiver means same address dialed under the same rule: a list
         # tune of an address a typed tune reached privately must restart, but
         # with private hosts off (production) the two are one receiver.
-        target = (host, port, self.settings.allow_private_hosts and not public_only)
+        target = (host, port, self.settings.allow_private_hosts and not public_only, secure)
         same_receiver = self._target == target and self._pump is not None and not self._pump.done()
         if same_receiver:
             if mode != self._mode:
@@ -164,23 +209,38 @@ class ListenSession:
                 await self._status("listening")
             return
 
-        await self.stop(None)
-        if not self._slots.try_acquire():
+        # Keep the slot the old pump holds: its done callback then releases nothing.
+        handing_over = self._slot_holder is not None
+        self._slot_holder = None
+        try:
+            await self.stop(None)
+        except BaseException:
+            if handing_over:
+                self._slots.release()
+            raise
+        if not handing_over and not self._slots.try_acquire():
             raise BadRequest("The radio service is at its listener limit. Try again in a bit.")
         self._mode = mode
         self._target = target
-        self._pump = asyncio.create_task(self._run(host, port, public_only=public_only))
+        self._pump = self._slot_holder = asyncio.create_task(
+            self._run(host, port, public_only=public_only, secure=secure)
+        )
         # A done callback, not a finally in _run: a task cancelled before it
         # first runs never enters its body.
-        self._pump.add_done_callback(lambda _: self._slots.release())
+        self._pump.add_done_callback(self._pump_done)
 
-    async def _run(self, host: str, port: int, *, public_only: bool = False) -> None:
+    def _pump_done(self, pump: asyncio.Task[None]) -> None:
+        if pump is self._slot_holder:
+            self._slot_holder = None
+            self._slots.release()
+
+    async def _run(self, host: str, port: int, *, public_only: bool = False, secure: bool = False) -> None:
         await self._status("connecting", host=host)
         try:
             allow_private = self.settings.allow_private_hosts and not public_only
-            ip = await self._resolver(host, port, allow_private=allow_private, owner=self)
+            ip = await self._resolver(host, port, allow_private=allow_private, owner=self.lookup_owner)
             client = self._client_factory(
-                host, port, connect_host=ip, user=self.settings.ident, kiwi_agc=self.settings.kiwi_agc
+                host, port, connect_host=ip, secure=secure, user=self.settings.ident, kiwi_agc=self.settings.kiwi_agc
             )
             self._client = client
             await client.tune(kiwi_freq_khz(self._freq_khz, self._mode))
@@ -215,7 +275,7 @@ class ListenSession:
         except ClientGone:
             pass
         except HostRejected as e:
-            await self._status("error", message=str(e), code=e.code)
+            await self._status("error", message=str(e), code=e.code, retryAfterMs=e.retry_after_ms)
         except KiwiError as e:
             await self._status("error", message=str(e), code=e.code)
         except asyncio.CancelledError:
@@ -232,7 +292,7 @@ class ListenSession:
     async def _status(self, state: str, **extra: Any) -> None:
         payload: dict[str, Any] = {"type": "status", "state": state, "mode": self._mode, "freqKhz": self._freq_khz}
         if self._target:
-            payload["host"], payload["port"], _ = self._target
+            payload["host"], payload["port"], _, _ = self._target
         if self._client is not None and self._client.info.sample_rate:
             payload["sampleRate"] = self._client.info.sample_rate
         payload.update({k: v for k, v in extra.items() if v is not None})

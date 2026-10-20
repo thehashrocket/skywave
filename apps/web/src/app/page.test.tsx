@@ -90,6 +90,36 @@ describe("ListenPage", () => {
     expect(JSON.parse(localStorage.getItem("skywave.receiver")!)).toEqual({ host: "f4kiy.ddns.net", port: "8074" });
   });
 
+  // Value: protects=a pasted https:// receiver is dialed over wss:// and stays secure after the field is normalized and saved; fails_when=normalizing a bare host drops the flag or typing a new host keeps it; why_new=wss dialing; seam=none; no_claim=the service's TLS (radio tests)
+  it("dials a pasted https receiver securely, remembers that, and forgets it when the host is retyped", () => {
+    const view = render(<ListenPage />);
+    const host = screen.getByLabelText("Receiver") as HTMLInputElement;
+    fireEvent.change(host, { target: { value: "https://kiwi.example.org/" } });
+    fireEvent.blur(host);
+    fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+    expect(radio.tune).toHaveBeenLastCalledWith({
+      host: "kiwi.example.org",
+      port: 443,
+      freqKhz: 10_000,
+      mode: "am",
+      secure: true,
+    });
+
+    radio.status = { state: "listening", host: "kiwi.example.org", port: 443 };
+    view.rerender(<ListenPage />);
+    expect(JSON.parse(localStorage.getItem("skywave.receiver")!)).toEqual({
+      host: "kiwi.example.org",
+      port: "443",
+      secure: true,
+    });
+
+    radio.status = { state: "idle" };
+    view.rerender(<ListenPage />);
+    fireEvent.change(host, { target: { value: "other.example" } });
+    fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+    expect(radio.tune).toHaveBeenLastCalledWith({ host: "other.example", port: 443, freqKhz: 10_000, mode: "am" });
+  });
+
   it("tunes a receiver chosen from the list, even while listening, and saves it once it plays", () => {
     radio.status = { state: "listening", host: "f4kiy.ddns.net", port: 8073 };
     const view = render(<ListenPage />);

@@ -46,6 +46,10 @@ type Chain = {
   before: RadioStatus;
   /** What was playing when the run started, to go back to if nothing works. */
   fallback: { receiver: Receiver; fromList: boolean } | null;
+  /** The current receiver was already tried again after a retryAfterMs hint. */
+  retried: boolean;
+  /** That retry, still waiting to fire. */
+  retryTimer?: ReturnType<typeof setTimeout>;
 };
 
 /**
@@ -103,10 +107,13 @@ export function usePickBest(
 
   /** End the chain, optionally leaving a note about why. */
   const finish = useCallback((why: string | null = null) => {
+    clearTimeout(chain.current?.retryTimer);
     chain.current = null;
     setRunning(false);
     setNote(why);
   }, []);
+
+  useEffect(() => () => clearTimeout(chain.current?.retryTimer), []);
 
   /** Switching away already dropped what was playing; go back to it if we can. */
   const goBack = useCallback(
@@ -131,6 +138,7 @@ export function usePickBest(
         strikes: 0,
         before,
         fallback: playing(before, candidates, wasListedRef.current),
+        retried: false,
       };
       setRunning(true);
       setNote(null);
@@ -169,8 +177,17 @@ export function usePickBest(
     // Every coded error is about that receiver, so try the next one. Uncoded
     // ones are about the service (a bad request, its listener limit, a dropped
     // connection): it can't tune anything else right now either, so stop
-    // without trying to go back.
-    if (!status.code) return finish();
+    // without trying to go back. One of them, a lookup still stuck on an
+    // earlier dead name, says when to try the same receiver again; do that once.
+    if (!status.code) {
+      if (!status.retryAfterMs || c.retried) return finish();
+      c.retried = true;
+      setNote(`Waiting on an earlier address lookup; trying ${current.name} again…`);
+      c.retryTimer = setTimeout(() => {
+        if (chain.current === c) tune(current, true);
+      }, status.retryAfterMs);
+      return;
+    }
     if (!ADDRESS_CODES.has(status.code)) c.strikes++;
     const tried = new Set(c.tried.map(receiverKey));
     // The dial may have moved since the run started; skip what no longer fits.
@@ -184,6 +201,7 @@ export function usePickBest(
       return finish(`${summary} Pick one from the list.`);
     }
     c.tried.push(next);
+    c.retried = false;
     setNote(`${current.name} ${WHY_SKIPPED[status.code]}; trying ${next.name}…`);
     tune(next, true);
   }, [status, tune, finish, goBack]);

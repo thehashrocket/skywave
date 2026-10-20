@@ -105,9 +105,13 @@ def test_listen_end_to_end():
             ws.send_text(tune_msg(kiwi.port))
             statuses, audio, spectra = collect(ws)
             ws.send_text(json.dumps({"type": "stop"}))
-        return kiwi, statuses, audio, spectra
+            stopped = until_state(ws, "stopped")
+        return kiwi, statuses, audio, spectra, stopped, client.get("/healthz").json()
 
-    kiwi, statuses, audio, spectra = run_with_fake(body, tone_hz=1000)
+    kiwi, statuses, audio, spectra, stopped, health = run_with_fake(body, tone_hz=1000)
+    # listening x stop: the session says so and gives its slot back.
+    assert stopped[-1]["message"] == "Stopped."
+    assert health["listeners"] == 0
     states = [s["state"] for s in statuses if s["type"] == "status"]
     assert states[:2] == ["connecting", "listening"]
     listening = next(s for s in statuses if s.get("state") == "listening")
@@ -536,3 +540,270 @@ def test_list_tune_of_a_typed_session_is_a_retune_when_private_hosts_are_off():
     assert [s.get("state") for s in statuses].count("connecting") == 1
     assert len(kiwi.paths) == 1
     assert "SET mod=iq low_cut=-5000 high_cut=5000 freq=7185.000" in kiwi.commands
+
+
+# Value: protects=the lookup limit follows a person, not a socket, but never lumps listeners behind an untrusted proxy together; fails_when=lookup_owner keys on private addresses or ignores the client IP; why_new=R5 per-IP keying; seam=none; no_claim=uvicorn's X-Forwarded-For handling
+@pytest.mark.parametrize(
+    "client_ip,keyed_by_ip",
+    [("8.8.8.8", True), ("2001:4860:4860::8888", True), ("172.17.0.1", False), ("127.0.0.1", False), ("203.0.113.9", False), (None, False), ("testclient", False)],
+)
+def test_lookup_owner_is_a_public_client_ip_or_else_the_session(client_ip, keyed_by_ip):
+    from skywave_radio.session import ListenSession
+
+    async def nothing(_):
+        pass
+
+    session = ListenSession(settings(), nothing, nothing, client_ip=client_ip)
+    assert session.lookup_owner == (("ip", client_ip) if keyed_by_ip else session)
+
+
+# Value: protects=Kiwi.Example then kiwi.example is a retune, not a reconnect; fails_when=_tune stops lowercasing the host; why_new=TODOS small edges; seam=none; no_claim=none beyond protects
+def test_retune_ignores_hostname_case():
+    def body(kiwi):
+        client = TestClient(create_app(settings()))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port, 7200, host="LocalHost"))
+            first = until_state(ws, "listening")
+            ws.send_text(tune_msg(kiwi.port, 7185, host="localhost"))
+            second = until_state(ws, "listening")
+        return kiwi, first + second
+
+    kiwi, statuses = run_with_fake(body)
+    assert [s.get("state") for s in statuses].count("connecting") == 1
+    assert len(kiwi.paths) == 1
+
+
+# Value: protects=the browser learns it may retry the same receiver; fails_when=retryAfterMs is dropped from the status; why_new=R7; seam=none; no_claim=the browser's retry (use-pick-best tests)
+def test_retry_hint_reaches_the_browser():
+    from skywave_radio.hostguard import HostRejected
+
+    async def busy(host, port, *, allow_private, owner):
+        raise HostRejected(None, "Still waiting on the last address lookup; try again in a moment.", retry_after_ms=5000)
+
+    client = TestClient(create_app(settings(), resolver=busy))
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.send_text(tune_msg(8073, host="next.ddns.net"))
+        error = until_state(ws, "error")[-1]
+    assert "code" not in error
+    assert error["retryAfterMs"] == 5000
+
+
+# Value: protects=a browser that stops reading gives back its slot and Kiwi channel; fails_when=sends lose their timeout; why_new=the vanish test only covers closed sockets; seam=none; no_claim=real TCP backpressure (a send that never returns)
+async def test_a_stalled_browser_ends_its_session(monkeypatch):
+    from skywave_radio import session as session_module
+    from skywave_radio.kiwi import IQBlock, KiwiInfo
+    from skywave_radio.session import ListenSession, Slots
+
+    monkeypatch.setattr(session_module, "SEND_TIMEOUT_S", 0.2)
+    stalled = []
+
+    async def send_text(_):
+        pass
+
+    async def never_returns(_):
+        await asyncio.Event().wait()
+
+    class StreamingClient:
+        def __init__(self, *args, **kwargs):
+            self.info = KiwiInfo(sample_rate=12000.0)
+
+        async def connect(self):
+            return self.info
+
+        async def tune(self, freq_khz):
+            pass
+
+        async def blocks(self):
+            while True:
+                yield IQBlock(seq=0, rssi_dbm=-73.0, samples=np.zeros(512, np.complex64), adc_overflow=False)
+
+        async def close(self):
+            pass
+
+    async def resolver(host, port, *, allow_private, owner):
+        return "127.0.0.1"
+
+    slots = Slots(1)
+    session = ListenSession(
+        settings(), send_text, never_returns, slots=slots, resolver=resolver, client_factory=StreamingClient,
+        on_stalled=lambda: stalled.append(1),
+    )
+    await session.handle({"type": "tune", "host": "kiwi.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    await asyncio.wait_for(session._pump, 5)
+    await asyncio.sleep(0)
+    assert stalled
+    assert slots.active == 0
+
+
+# Value: protects=the browser isn't left showing "Listening" with no audio after we give up on it; fails_when=the server keeps its receive loop open after a stall; why_new=Codex O6; seam=none; no_claim=uvicorn closing the transport when the app returns (its documented behaviour)
+async def test_a_stalled_browser_is_disconnected(monkeypatch):
+    from skywave_radio import session as session_module
+    from skywave_radio.kiwi import IQBlock, KiwiInfo
+
+    monkeypatch.setattr(session_module, "SEND_TIMEOUT_S", 0.2)
+
+    class StreamingClient:
+        def __init__(self, *args, **kwargs):
+            self.info = KiwiInfo(sample_rate=12000.0)
+
+        async def connect(self):
+            return self.info
+
+        async def tune(self, freq_khz):
+            pass
+
+        async def blocks(self):
+            while True:
+                yield IQBlock(seq=0, rssi_dbm=-73.0, samples=np.zeros(512, np.complex64), adc_overflow=False)
+
+        async def close(self):
+            pass
+
+    async def resolver(host, port, *, allow_private, owner):
+        return "127.0.0.1"
+
+    app = create_app(settings(max_sessions=1), resolver=resolver, client_factory=StreamingClient)
+    incoming = [
+        {"type": "websocket.connect"},
+        {"type": "websocket.receive", "text": tune_msg(8073, host="kiwi.example")},
+    ]
+
+    async def receive():
+        if incoming:
+            return incoming.pop(0)
+        await asyncio.Event().wait()  # the browser says nothing more
+
+    async def send(message):
+        if message.get("bytes") is not None:
+            await asyncio.Event().wait()  # and stops reading
+
+    scope = {
+        "type": "websocket",
+        "path": "/ws",
+        "raw_path": b"/ws",
+        "query_string": b"",
+        "headers": [(b"origin", b"http://localhost:3000")],
+        "client": ("8.8.8.8", 50000),
+        "server": ("testserver", 80),
+        "scheme": "ws",
+        "subprotocols": [],
+        "asgi": {"version": "3.0"},
+    }
+    await asyncio.wait_for(app(scope, receive, send), 5)
+    assert app.state.slots.active == 0
+
+
+# Value: protects=switching receivers never lets go of the slot, so another listener can't take it mid-switch; fails_when=_tune releases and re-acquires again; why_new=TODOS slot handover (not reachable today, fragile); seam=none; no_claim=a real second listener racing
+async def test_switching_receivers_hands_the_slot_over():
+    from skywave_radio.kiwi import KiwiInfo
+    from skywave_radio.session import ListenSession, Slots
+
+    class CountingSlots(Slots):
+        releases = 0
+
+        def release(self):
+            CountingSlots.releases += 1
+            super().release()
+
+    class QuietClient:
+        def __init__(self, *args, **kwargs):
+            self.info = KiwiInfo(sample_rate=12000.0)
+
+        async def connect(self):
+            return self.info
+
+        async def tune(self, freq_khz):
+            pass
+
+        async def blocks(self):
+            await asyncio.Event().wait()
+            yield
+
+        async def close(self):
+            pass
+
+    async def resolver(host, port, *, allow_private, owner):
+        return "127.0.0.1"
+
+    async def nothing(_):
+        pass
+
+    slots = CountingSlots(1)
+    session = ListenSession(settings(), nothing, nothing, slots=slots, resolver=resolver, client_factory=QuietClient)
+    await session.handle({"type": "tune", "host": "first.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    while not session._listening:
+        await asyncio.sleep(0.01)
+    await session.handle({"type": "tune", "host": "second.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    await asyncio.sleep(0.05)
+    assert (slots.active, CountingSlots.releases) == (1, 0)
+    assert session._listening
+    await session.close()
+    await asyncio.sleep(0)
+    assert (slots.active, CountingSlots.releases) == (0, 1)
+
+
+# Value: protects=after a receiver drops us, tuning it again reconnects rather than being taken for a retune of a dead pump; fails_when=same_receiver ignores whether the pump is still alive; why_new=state matrix ended x tune-same; seam=none; no_claim=a real Kiwi restart
+def test_tuning_the_same_receiver_after_it_dropped_reconnects():
+    def body(kiwi):
+        client = TestClient(create_app(settings(max_sessions=1)))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            dropped = until_state(ws, "error")
+            ws.send_text(tune_msg(kiwi.port))
+            again = until_state(ws, "connecting") + until_state(ws, "listening", "error")
+        return kiwi, dropped, again
+
+    kiwi, dropped, again = run_with_fake(body, drop_after=3)
+    assert dropped[-1]["code"] == "closed"
+    assert again[-1]["state"] in ("listening", "error")  # the fake drops again after 3 frames
+    assert len(kiwi.paths) == 2
+
+
+# Value: protects=switching receivers mid-handshake keeps one slot and ends on the new one; fails_when=a handshaking pump isn't cancelled or its slot is counted twice; why_new=state matrix handshaking x tune-other; seam=none; no_claim=two real Kiwis
+def test_switching_receivers_mid_handshake_keeps_one_slot():
+    def body(kiwi):
+        client = TestClient(create_app(settings(max_sessions=1)))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "connecting")
+            time.sleep(0.1)  # resolved and connected; the fake is holding the handshake
+            ws.send_text(tune_msg(kiwi.port, host="localhost"))
+            return until_state(ws, "listening", "error")
+
+    statuses = run_with_fake(body, handshake_delay=0.5)
+    assert statuses[-1]["state"] == "listening"
+    assert statuses[-1]["host"] == "localhost"
+
+
+# Value: protects=Stop during the handshake frees the slot for the next listener; fails_when=stop() leaves a handshaking client or slot behind; why_new=state matrix handshaking x stop; seam=none; no_claim=real handshake timing
+def test_stop_mid_handshake_frees_the_slot():
+    def body(kiwi):
+        client = TestClient(create_app(settings(max_sessions=1)))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "connecting")
+            time.sleep(0.1)
+            ws.send_text(json.dumps({"type": "stop"}))
+            stopped = until_state(ws, "stopped")
+            return stopped, client.get("/healthz").json()
+
+    stopped, health = run_with_fake(body, handshake_delay=0.5)
+    assert stopped[-1]["message"] == "Stopped."
+    assert health["listeners"] == 0
+
+
+# Value: protects=Stop after a receiver error is harmless and still answers; fails_when=stop() trips over the ended pump; why_new=state matrix ended x stop; seam=none; no_claim=none beyond protects
+def test_stop_after_an_error_still_answers():
+    from skywave_radio.hostguard import HostRejected
+
+    async def dead(host, port, *, allow_private, owner):
+        raise HostRejected("dns", f"Couldn't resolve {host}.")
+
+    client = TestClient(create_app(settings(), resolver=dead))
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.send_text(tune_msg(8073, host="gone.example"))
+        until_state(ws, "error")
+        ws.send_text(json.dumps({"type": "stop"}))
+        stopped = until_state(ws, "stopped")
+    assert stopped[-1]["message"] == "Stopped."
+    assert client.get("/healthz").json()["listeners"] == 0

@@ -120,6 +120,18 @@ describe("useRadio", () => {
     expect(resets()).toBe(1);
   });
 
+  // Value: protects=a code from a newer radio service can't read as "X undefined" in Pick best; fails_when=handleText casts any string to a code; why_new=TODOS unknown codes; seam=none; no_claim=which codes a future service adds
+  it("treats an error code this build doesn't know as uncoded, and keeps a retry hint", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [live] = FakeSocket.instances;
+
+    act(() => live!.status("error", { message: "Something new.", code: "brand_new", retryAfterMs: 5000 }));
+
+    expect(result.current.status.code).toBeUndefined();
+    expect(result.current.status.retryAfterMs).toBe(5000);
+  });
+
   it("passes the error code through and keeps the other status fields", async () => {
     const { result } = renderHook(() => useRadio());
     await act(() => result.current.tune(tuning));

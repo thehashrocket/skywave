@@ -12,6 +12,8 @@ export type Tuning = {
   mode: Mode;
   /** "list" for a receiver taken from the public list, which the service dials on public addresses only. */
   source?: "list";
+  /** The receiver serves https only; the service dials it over wss://. */
+  secure?: true;
 };
 
 /**
@@ -35,11 +37,18 @@ export const RADIO_ERROR_CODES = [
 
 export type RadioErrorCode = (typeof RADIO_ERROR_CODES)[number];
 
+const KNOWN_CODES: ReadonlySet<string> = new Set(RADIO_ERROR_CODES);
+
 export type RadioStatus = {
   state: RadioState;
   message?: string;
-  /** Why an error happened. Errors from our side (listener limit, bad request) have none. */
+  /**
+   * Why an error happened. Errors from our side (listener limit, bad request)
+   * have none, and neither do codes from a newer radio service than this build.
+   */
   code?: RadioErrorCode;
+  /** On an uncoded error: the same receiver may work if tried again after this long. */
+  retryAfterMs?: number;
   sampleRate?: number;
   host?: string;
   port?: number;
@@ -123,7 +132,11 @@ export function useRadio() {
       setStatus({
         state,
         message: typeof msg.message === "string" ? msg.message : undefined,
-        code: typeof msg.code === "string" ? (msg.code as RadioErrorCode) : undefined,
+        // An unknown code would read as "X undefined" in Pick best's note; treat
+        // it as uncoded, which stops Pick best like any service-side error.
+        code: typeof msg.code === "string" && KNOWN_CODES.has(msg.code) ? (msg.code as RadioErrorCode) : undefined,
+        retryAfterMs:
+          typeof msg.retryAfterMs === "number" && msg.retryAfterMs > 0 ? msg.retryAfterMs : undefined,
         sampleRate,
         host: typeof msg.host === "string" ? msg.host : undefined,
         port: typeof msg.port === "number" ? msg.port : undefined,

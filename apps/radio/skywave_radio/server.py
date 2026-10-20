@@ -5,6 +5,7 @@ Run with:  uvicorn skywave_radio.server:app --port 8765
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
@@ -73,8 +74,20 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
             except (WebSocketDisconnect, RuntimeError) as e:
                 raise ClientGone from e
 
-        session = ListenSession(settings, send_text, send_bytes, slots=slots, **session_kwargs)
-        try:
+        stalled = asyncio.Event()
+        session = ListenSession(
+            settings,
+            send_text,
+            send_bytes,
+            slots=slots,
+            # Behind a reverse proxy this is only the user's address if
+            # FORWARDED_ALLOW_IPS trusts that proxy; the session copes if not.
+            client_ip=ws.client.host if ws.client else None,
+            on_stalled=stalled.set,
+            **session_kwargs,
+        )
+
+        async def serve() -> None:
             while True:
                 message = await ws.receive()
                 if message["type"] == "websocket.disconnect":
@@ -90,11 +103,23 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
                     continue
                 if isinstance(msg, dict):
                     await session.handle(msg)
+
+        serving = asyncio.create_task(serve())
+        gave_up = asyncio.create_task(stalled.wait())
+        try:
+            await asyncio.wait({serving, gave_up}, return_when=asyncio.FIRST_COMPLETED)
+            if serving.done():
+                serving.result()
         except (WebSocketDisconnect, RuntimeError, ClientGone):
             # RuntimeError covers Starlette's WebSocketDisconnected, raised when
             # the socket already closed underneath us.
             pass
         finally:
+            # A browser that stopped reading gets no close frame (sending one
+            # would block like the audio did); returning closes the connection,
+            # which it sees once it reads again, instead of a silent "Listening".
+            serving.cancel()
+            gave_up.cancel()
             await session.close()
 
     return app

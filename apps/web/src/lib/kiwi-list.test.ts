@@ -14,12 +14,18 @@ describe("parseKiwiList", () => {
     expect(list.map((r) => r.host)).toEqual([
       "f4kiy.ddns.net",
       "irelandnorthwest3.proxy.kiwisdr.com",
-      // kiwi.770net.de is https-only; the radio service only speaks ws://.
+      "kiwi.770net.de",
       "hasenberg04.proxy.kiwisdr.com",
       "pb8w.proxy.kiwisdr.com",
       "sdr.k1vl.com",
       "swl-lippi-2.stbach.de",
     ]);
+  });
+
+  // Value: protects=https-only list receivers are offered and dialed over wss://; fails_when=toReceiver drops https URLs or loses the flag; why_new=https entries were dropped until the service spoke wss; seam=none; no_claim=the 443 port rule (PR4)
+  it("keeps https receivers and marks them secure", () => {
+    expect(byHost("kiwi.770net.de")).toMatchObject({ port: 8073, secure: true });
+    expect(byHost("f4kiy.ddns.net")).not.toHaveProperty("secure");
   });
 
   it("normalizes one entry", () => {
