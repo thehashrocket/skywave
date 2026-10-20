@@ -5,13 +5,44 @@ import type { Mode } from "./radio-types";
 
 export type RadioState = "idle" | "connecting" | "listening" | "stopped" | "error";
 
-export type Tuning = { host: string; port: number; freqKhz: number; mode: Mode };
+export type Tuning = {
+  host: string;
+  port: number;
+  freqKhz: number;
+  mode: Mode;
+  /** "list" for a receiver taken from the public list, which the service dials on public addresses only. */
+  source?: "list";
+};
+
+/**
+ * Every `code` the radio service puts on an error status: KiwiError codes
+ * (apps/radio/skywave_radio/kiwi.py) and HostRejected codes (hostguard.py).
+ * apps/radio/tests/test_error_codes.py fails if the two sides drift.
+ */
+export const RADIO_ERROR_CODES = [
+  "busy",
+  "down",
+  "unreachable",
+  "timeout",
+  "password",
+  "redirect",
+  "bad_rate",
+  "closed",
+  "invalid",
+  "dns",
+  "blocked",
+] as const;
+
+export type RadioErrorCode = (typeof RADIO_ERROR_CODES)[number];
 
 export type RadioStatus = {
   state: RadioState;
   message?: string;
+  /** Why an error happened. Errors from our side (listener limit, bad request) have none. */
+  code?: RadioErrorCode;
   sampleRate?: number;
   host?: string;
+  port?: number;
 };
 
 export type Meter = { rssi: number; overflow: boolean };
@@ -45,6 +76,9 @@ export function useRadio() {
   const volumeRef = useRef(0.8);
   const listenersRef = useRef(new Set<SpectrumListener>());
   const stoppingRef = useRef(false);
+  // Bumped by every tune and stop, so a tune still waiting on audio or the
+  // socket can tell it was superseded and must not send.
+  const generationRef = useRef(0);
 
   const ensureAudio = useCallback(async () => {
     if (ctxRef.current) {
@@ -89,8 +123,10 @@ export function useRadio() {
       setStatus({
         state,
         message: typeof msg.message === "string" ? msg.message : undefined,
+        code: typeof msg.code === "string" ? (msg.code as RadioErrorCode) : undefined,
         sampleRate,
         host: typeof msg.host === "string" ? msg.host : undefined,
+        port: typeof msg.port === "number" ? msg.port : undefined,
       });
     } else if (msg.type === "meter") {
       setMeter({ rssi: Number(msg.rssi), overflow: Boolean(msg.overflow) });
@@ -124,7 +160,12 @@ export function useRadio() {
       stoppingRef.current = false;
       ws.onopen = () => resolve(ws);
       ws.onerror = () => reject(new Error("socket"));
-      ws.onmessage = (e) => (typeof e.data === "string" ? handleText(e.data) : handleBinary(e.data as ArrayBuffer));
+      ws.onmessage = (e) => {
+        // A closing socket can still deliver a status that's no longer true.
+        if (wsRef.current !== ws) return;
+        if (typeof e.data === "string") handleText(e.data);
+        else handleBinary(e.data as ArrayBuffer);
+      };
       ws.onclose = () => {
         // Only the live socket may touch audio and status. After Stop and a
         // quick Listen, the old socket's close arrives while a new one plays.
@@ -133,11 +174,14 @@ export function useRadio() {
         nodeRef.current?.port.postMessage({ type: "reset" });
         setMeter(null);
         if (!stoppingRef.current) {
-          setStatus((s) =>
-            s.state === "error"
-              ? s
-              : { state: "error", message: "Lost the connection to the radio service. Is it running?" },
-          );
+          // Always a fresh, uncoded error: anything waiting on this socket
+          // (Pick best's retries) must see that nothing more is coming.
+          setStatus((s) => ({
+            state: "error",
+            // Keep a receiver's own explanation ("needs a password"); it's still true.
+            message:
+              s.state === "error" && s.message ? s.message : "Lost the connection to the radio service. Is it running?",
+          }));
         }
       };
     });
@@ -146,22 +190,27 @@ export function useRadio() {
   /** Start listening, or retune if already connected. Call from a click so audio can start. */
   const tune = useCallback(
     async (t: Tuning) => {
+      const generation = ++generationRef.current;
       try {
         await ensureAudio();
       } catch {
+        if (generation !== generationRef.current) return;
         setStatus({ state: "error", message: "This browser blocked audio. Click Listen again." });
         return;
       }
+      if (generation !== generationRef.current) return;
       let ws: WebSocket;
       try {
         ws = await ensureSocket();
       } catch {
+        if (generation !== generationRef.current) return;
         setStatus({
           state: "error",
           message: `Can't reach the radio service at ${SERVICE_URL}. Start it with pnpm dev:radio.`,
         });
         return;
       }
+      if (generation !== generationRef.current) return;
       ws.send(JSON.stringify({ type: "tune", ...t }));
     },
     [ensureAudio, ensureSocket],
@@ -174,6 +223,7 @@ export function useRadio() {
   }, []);
 
   const stop = useCallback(() => {
+    generationRef.current++;
     stoppingRef.current = true;
     const ws = wsRef.current;
     if (ws) {

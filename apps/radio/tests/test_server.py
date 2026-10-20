@@ -8,7 +8,7 @@ import pytest
 from fastapi import WebSocketDisconnect, status
 from fastapi.testclient import TestClient
 
-from skywave_radio.config import Settings
+from skywave_radio.config import Settings, origin_allowed
 from skywave_radio.server import create_app
 
 from .fakekiwi import FakeKiwi
@@ -150,6 +150,41 @@ def test_bad_origin_rejected():
     assert_rejected(create_app(settings()), headers={"origin": "https://evil.example"})
 
 
+def test_malformed_origin_port_closes_with_policy_violation():
+    assert_rejected(create_app(settings()), headers={"origin": "http://localhost:99999"})
+
+
+@pytest.mark.parametrize(
+    ("origin", "ok"),
+    [
+        ("http://localhost:3000", True),
+        ("http://127.0.0.1:3000", True),
+        ("http://[::1]:3000", True),
+        ("http://127.0.0.1:3001", False),
+        ("https://127.0.0.1:3000", False),
+        ("http://evil.localhost.example:3000", False),
+        (None, False),
+        # Malformed headers are refused, never an exception in the handler.
+        ("http://localhost:99999", False),
+        ("http://localhost:abc", False),
+        ("http://[::1", False),
+    ],
+)
+def test_loopback_names_are_interchangeable(origin, ok):
+    assert origin_allowed(origin, ("http://localhost:3000",)) is ok
+
+
+def test_loopback_equivalence_does_not_extend_public_origins():
+    assert not origin_allowed("http://127.0.0.1:443", ("https://radio.example",))
+
+
+def test_127_origin_accepted_end_to_end():
+    with TestClient(create_app(settings())) as client:
+        with client.websocket_connect("/ws", headers={"origin": "http://127.0.0.1:3000"}) as ws:
+            ws.send_text(json.dumps({"type": "stop"}))
+            assert json.loads(ws.receive_text())["state"] == "stopped"
+
+
 def test_empty_origin_list_refuses_everyone(caplog):
     app = create_app(settings(allowed_origins=()))
     assert "every connection will be refused" in caplog.text
@@ -198,6 +233,9 @@ def test_private_host_blocked_by_default():
         statuses = [json.loads(ws.receive_text()) for _ in range(2)]
     assert statuses[-1]["state"] == "error"
     assert "non-public" in statuses[-1]["message"]
+    # The browser's Pick best skips to the next receiver on these codes.
+    assert statuses[-1]["code"] == "blocked"
+    assert (statuses[-1]["host"], statuses[-1]["port"]) == ("127.0.0.1", 8073)
 
 
 def test_validation_errors():
@@ -249,7 +287,7 @@ def test_slot_freed_when_session_hits_time_limit():
 
 
 def test_retune_while_connecting_keeps_one_connection():
-    async def slow_resolver(host, port, *, allow_private):
+    async def slow_resolver(host, port, *, allow_private, owner=None):
         await asyncio.sleep(0.3)
         return "127.0.0.1"
 
@@ -273,6 +311,27 @@ def test_retune_while_connecting_keeps_one_connection():
     assert [c for c in kiwi.commands if c.startswith("SET mod=iq")] == [
         "SET mod=iq low_cut=-5000 high_cut=5000 freq=7185.000"
     ]
+
+
+# Value: protects=hostguard's one-lookup-per-listener limit stays switched on; fails_when=session.py stops passing owner=self (or passes a fresh object per tune); why_new=every fake resolver accepted owner=None, so dropping it passed all tests (TODOS.md gap); seam=none; no_claim=the limit itself (test_hostguard.py)
+def test_session_is_the_lookup_owner_across_tunes():
+    from skywave_radio.hostguard import HostRejected
+
+    owners = []
+
+    async def recording_resolver(host, port, *, allow_private, owner):
+        owners.append(owner)
+        raise HostRejected("dns", f"Couldn't resolve {host}.")
+
+    client = TestClient(create_app(settings(), resolver=recording_resolver))
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.send_text(tune_msg(8073, host="dead.ddns.net"))
+        first = until_state(ws, "error")
+        ws.send_text(tune_msg(8073, host="next.ddns.net"))
+        second = until_state(ws, "error")
+    assert first[-1]["code"] == second[-1]["code"] == "dns"
+    assert len(owners) == 2
+    assert owners[0] is not None and owners[0] is owners[1]
 
 
 def test_receiver_dropping_mid_stream_reports_error():
@@ -364,3 +423,116 @@ async def test_retune_as_the_kiwi_drops_is_not_a_crash():
     await session.close()
     # The failed retune neither raised nor sent its own error; the pump owns that.
     assert [s["state"] for s in sent] == ["connecting", "listening"]
+
+
+# Value: protects=receivers picked from the public list are never dialed on private addresses, even with ALLOW_PRIVATE_HOSTS on; fails_when=session ignores "source": "list"; why_new=list tunes relied on the operator's flag; seam=none; no_claim=the web client sending the tag (use-radio/page tests)
+def test_list_tunes_are_public_only_even_when_private_hosts_are_allowed():
+    client = TestClient(create_app(settings(allow_private_hosts=True)))
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.send_text(json.dumps({"type": "tune", "host": "127.0.0.1", "port": 9, "freqKhz": 7200, "mode": "usb", "source": "list"}))
+        statuses = until_state(ws, "error")
+    assert statuses[-1]["code"] == "blocked"
+
+
+def _gated_resolver(gate: threading.Event):
+    async def resolve(host, port, *, allow_private, owner=None):
+        while not gate.is_set():
+            await asyncio.sleep(0.02)
+        return "127.0.0.1"
+
+    return resolve
+
+
+# Value: protects=Stop while a hostname is still resolving frees the listener slot; fails_when=stop() stops cancelling a resolving pump or the slot callback is lost; why_new=state matrix resolving x stop was untested; seam=none; no_claim=real DNS timing
+def test_stop_while_resolving_frees_the_slot():
+    gate = threading.Event()
+
+    def body(kiwi):
+        client = TestClient(create_app(settings(max_sessions=1), resolver=_gated_resolver(gate)))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws1:
+            ws1.send_text(tune_msg(kiwi.port, host="slow.example"))
+            until_state(ws1, "connecting")
+            ws1.send_text(json.dumps({"type": "stop"}))
+            stopped = until_state(ws1, "stopped")
+            gate.set()
+            with client.websocket_connect("/ws", headers=ORIGIN) as ws2:
+                ws2.send_text(tune_msg(kiwi.port, host="slow.example"))
+                second = until_state(ws2, "listening", "error")
+        return stopped, second
+
+    stopped, second = run_with_fake(body)
+    assert stopped[-1]["message"] == "Stopped."
+    assert "host" not in stopped[-1]
+    assert second[-1]["state"] == "listening"
+
+
+# Value: protects=switching receivers before the first one resolves never needs a second slot; fails_when=tune stops calling stop() before try_acquire, so max_sessions=1 refuses the switch; why_new=state matrix resolving x tune-other was untested; seam=none; no_claim=real DNS timing
+def test_switching_receivers_while_resolving_keeps_one_slot():
+    gate = threading.Event()
+
+    def body(kiwi):
+        client = TestClient(create_app(settings(max_sessions=1), resolver=_gated_resolver(gate)))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port, host="first.example"))
+            until_state(ws, "connecting")
+            ws.send_text(tune_msg(kiwi.port, host="second.example"))
+            gate.set()
+            return until_state(ws, "listening", "error")
+
+    statuses = run_with_fake(body)
+    assert statuses[-1]["state"] == "listening"
+    assert statuses[-1]["host"] == "second.example"
+
+
+# Value: protects=switching receivers mid-listen releases the old slot before taking a new one; fails_when=the old pump's slot is released after the new try_acquire; why_new=state matrix listening x tune-other was untested; seam=none; no_claim=two real Kiwis
+def test_switching_receivers_while_listening_reuses_the_slot():
+    def body(kiwi):
+        client = TestClient(create_app(settings(max_sessions=1)))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "listening")
+            ws.send_text(tune_msg(kiwi.port, host="localhost"))
+            return until_state(ws, "connecting", "error") + until_state(ws, "listening", "error")
+
+    statuses = run_with_fake(body)
+    assert [s.get("state") for s in statuses if s.get("state") in ("connecting", "listening", "error")][-2:] == [
+        "connecting",
+        "listening",
+    ]
+    assert statuses[-1]["host"] == "localhost"
+
+
+# Value: protects=a list tune of an address a typed tune already uses restarts public-only; fails_when=same_receiver compares only host and port again; why_new=api-contract review found the short-circuit kept the typed rule; seam=none; no_claim=the browser sending the tag
+def test_list_tune_of_a_running_typed_tune_is_public_only():
+    def body(kiwi):
+        client = TestClient(create_app(settings(allow_private_hosts=True)))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "listening")
+            listed = {"type": "tune", "host": "127.0.0.1", "port": kiwi.port, "freqKhz": 7200, "mode": "usb", "source": "list"}
+            ws.send_text(json.dumps(listed))
+            return until_state(ws, "error")
+
+    statuses = run_with_fake(body)
+    assert statuses[-1]["code"] == "blocked"
+
+
+# Value: protects=with private hosts off, choosing the list row of the receiver you typed retunes instead of re-dialing; fails_when=same_receiver keys on the raw source flag; why_new=pass-2 red team found the pass-1 fix dropped the held channel; seam=none; no_claim=a real busy receiver
+def test_list_tune_of_a_typed_session_is_a_retune_when_private_hosts_are_off():
+    async def resolver(host, port, *, allow_private, owner=None):
+        return "127.0.0.1"  # the fake Kiwi; the rule under test is the session's, not hostguard's
+
+    def body(kiwi):
+        client = TestClient(create_app(settings(allow_private_hosts=False), resolver=resolver))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            typed = {"type": "tune", "host": "kiwi.example", "port": kiwi.port, "freqKhz": 7200, "mode": "usb"}
+            ws.send_text(json.dumps(typed))
+            first = until_state(ws, "listening")
+            ws.send_text(json.dumps({**typed, "freqKhz": 7185, "source": "list"}))
+            second = until_state(ws, "listening", "error")
+        return kiwi, first + second
+
+    kiwi, statuses = run_with_fake(body)
+    assert [s.get("state") for s in statuses].count("connecting") == 1
+    assert len(kiwi.paths) == 1
+    assert "SET mod=iq low_cut=-5000 high_cut=5000 freq=7185.000" in kiwi.commands

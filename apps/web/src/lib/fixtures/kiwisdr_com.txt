@@ -1,0 +1,16 @@
+// KiwiSDR.com receiver list for dyatlov map maker
+// Automatically generated from http://kiwisdr.com/public/
+// KiwiSDR.com data timestamp: Monday, 19-Oct-2026 23:29:12 GMT
+// File generation timestamp: Mon Oct 19 23:30:02 2026
+
+var kiwisdr_com =
+[
+	{"id": "3ce4b0f8f760", "status": "active", "offline": "no", "name": "0-30 MHz SDR | Brettnach F57320", "loc": "Brettnach F57320", "antenna": "vertical", "url": "http://f4kiy.ddns.net:8073", "users": "8", "users_max": "8", "snr": "44,42", "bands": "0-30000000", "freq_offset": "0.000"},
+	{"id": "e415f6f748cb", "status": "active", "offline": "no", "name": "Ireland North West 3", "loc": "Ireland", "antenna": "Dipole", "url": "http://irelandnorthwest3.proxy.kiwisdr.com", "users": "0", "users_max": "8", "snr": "42,41", "bands": "0-30000000", "freq_offset": "0.000"},
+	{"id": "38d2697cbb73", "status": "active", "offline": "no", "name": "0-30 MHz SDR Clubstation DL0HC | Hattingen NRW, Germany", "loc": "Hattingen NRW, Germany", "antenna": "PA0RDT MiniWhip (Sorry, high QRM on Low Bands!)", "url": "https://kiwi.770net.de:8073", "users": "3", "users_max": "8", "snr": "36,34", "bands": "0-30000000", "freq_offset": "0.000"},
+	{"id": "883f4a9a96dd", "status": "active", "offline": "no", "name": "110-142MHz AirBand KiwiSDR | SWITZERLAND Hasenberg04 AG 700m / Antenna: VHF Omni", "loc": "SWITZERLAND Hasenberg04 AG 700m JN47EJ", "antenna": "VHF Omni Antenna", "url": "http://hasenberg04.proxy.kiwisdr.com", "users": "0", "users_max": "8", "snr": "19,0", "bands": "110000000-142000000", "freq_offset": "110000.000"},
+	{"id": "f82e0c01a226", "status": "active", "offline": "no", "name": "🇳🇱 ► PB8W ◀ 🇳🇱 ► Willem ◀ 🇳🇱 ► PAHGOR active loop sn:001 ◀ 🇳🇱 | Assen | Netherlands", "loc": "Assen | Netherlands", "antenna": "Active Loop antenna PAHGOR (serial nr: 001) built by <b>► PA0EBC ◀</b> &#128077;", "url": "http://pb8w.proxy.kiwisdr.com", "users": "0", "users_max": "8", "snr": "42,40", "bands": "0-30000000", "freq_offset": "0.000"},
+	{"id": "38d2697cae32", "status": "active", "offline": "no", "name": "K1VL (4) Shrewsbury, Vermont, USA - 36+ receivers", "loc": "Shrewsbury, Vermont, USA", "antenna": "82m (270ft) center fed doublet @ 20m (65ft) MF through HF", "url": "http://sdr.k1vl.com:8076", "users": "4", "users_max": "8", "snr": "38,30", "bands": "10000-30000000", "freq_offset": "0.000"},
+	{"id": "f82e0c01481a", "status": "active", "offline": "no", "name": "Lippis-KiWi-SDR-2 | FREITAL, GERMANY", "loc": "FREITAL, GERMANY", "antenna": "LZ1AQ West/East/Loop", "url": "http://swl-lippi-2.stbach.de", "users": "1", "users_max": "8", "snr": "33,34", "bands": "0-30000000", "freq_offset": "0.000"},
+]
+;

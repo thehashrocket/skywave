@@ -1,7 +1,10 @@
 """One browser listener: owns a Kiwi connection and the DSP chain for it.
 
 Browser -> service (JSON text frames):
-    {"type": "tune", "host": "...", "port": 8073, "freqKhz": 9535, "mode": "am"}
+    {"type": "tune", "host": "...", "port": 8073, "freqKhz": 9535, "mode": "am", "source": "list"}
+    ("source": "list" marks a receiver the browser picked from the public list
+    rather than one a person typed; those are only ever dialed on public
+    addresses, even with ALLOW_PRIVATE_HOSTS on.)
     {"type": "stop"}
 
 Service -> browser:
@@ -105,7 +108,8 @@ class ListenSession:
         self._spectrum: Spectrum | None = None
         self._mode = "am"
         self._freq_khz = 0.0
-        self._target: tuple[str, int] | None = None
+        # host, port and whether private addresses may be dialed for it.
+        self._target: tuple[str, int, bool] | None = None
         self._listening = False
 
     async def handle(self, msg: dict[str, Any]) -> None:
@@ -137,7 +141,12 @@ class ListenSession:
             raise BadRequest("Frequency must be between 0 and 32,000 kHz.")
 
         self._freq_khz = freq
-        same_receiver = self._target == (host, port) and self._pump is not None and not self._pump.done()
+        public_only = msg.get("source") == "list"
+        # Same receiver means same address dialed under the same rule: a list
+        # tune of an address a typed tune reached privately must restart, but
+        # with private hosts off (production) the two are one receiver.
+        target = (host, port, self.settings.allow_private_hosts and not public_only)
+        same_receiver = self._target == target and self._pump is not None and not self._pump.done()
         if same_receiver:
             if mode != self._mode:
                 self._mode = mode
@@ -159,16 +168,17 @@ class ListenSession:
         if not self._slots.try_acquire():
             raise BadRequest("The radio service is at its listener limit. Try again in a bit.")
         self._mode = mode
-        self._target = (host, port)
-        self._pump = asyncio.create_task(self._run(host, port))
+        self._target = target
+        self._pump = asyncio.create_task(self._run(host, port, public_only=public_only))
         # A done callback, not a finally in _run: a task cancelled before it
         # first runs never enters its body.
         self._pump.add_done_callback(lambda _: self._slots.release())
 
-    async def _run(self, host: str, port: int) -> None:
+    async def _run(self, host: str, port: int, *, public_only: bool = False) -> None:
         await self._status("connecting", host=host)
         try:
-            ip = await self._resolver(host, port, allow_private=self.settings.allow_private_hosts)
+            allow_private = self.settings.allow_private_hosts and not public_only
+            ip = await self._resolver(host, port, allow_private=allow_private, owner=self)
             client = self._client_factory(
                 host, port, connect_host=ip, user=self.settings.ident, kiwi_agc=self.settings.kiwi_agc
             )
@@ -205,7 +215,7 @@ class ListenSession:
         except ClientGone:
             pass
         except HostRejected as e:
-            await self._status("error", message=str(e))
+            await self._status("error", message=str(e), code=e.code)
         except KiwiError as e:
             await self._status("error", message=str(e), code=e.code)
         except asyncio.CancelledError:
@@ -222,7 +232,7 @@ class ListenSession:
     async def _status(self, state: str, **extra: Any) -> None:
         payload: dict[str, Any] = {"type": "status", "state": state, "mode": self._mode, "freqKhz": self._freq_khz}
         if self._target:
-            payload["host"], payload["port"] = self._target
+            payload["host"], payload["port"], _ = self._target
         if self._client is not None and self._client.info.sample_rate:
             payload["sampleRate"] = self._client.info.sample_rate
         payload.update({k: v for k, v in extra.items() if v is not None})
