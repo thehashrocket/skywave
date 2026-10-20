@@ -16,8 +16,11 @@ import { useRadio } from "@/lib/use-radio";
 const STORAGE_KEY = "skywave.receiver";
 const CW_PITCH_KHZ = 0.7;
 
-/** `fromList` marks a receiver from the public list, which the service dials public-only. */
-type Saved = { host: string; port: string; fromList?: boolean };
+/**
+ * `fromList` marks a receiver from the public list, which the service dials
+ * public-only; `secure` one that serves https only, dialed over wss://.
+ */
+type Saved = { host: string; port: string; fromList?: boolean; secure?: boolean };
 
 function loadReceiver(): Saved {
   try {
@@ -41,6 +44,10 @@ function listSource(fromList: boolean) {
   return fromList ? { source: "list" as const } : {};
 }
 
+function wss(secure: boolean) {
+  return secure ? { secure: true as const } : {};
+}
+
 const STATE_TEXT = {
   idle: "Not listening",
   connecting: "Connecting…",
@@ -56,6 +63,9 @@ export default function ListenPage() {
   const [port, setPort] = useState(String(DEFAULT_KIWI_PORT));
   // Whether host/port came from the public list. Typing in either field clears it.
   const [fromList, setFromList] = useState(false);
+  // Whether the receiver serves https only. Set from a pasted https:// URL or a
+  // list entry; typing a new host clears it.
+  const [secure, setSecure] = useState(false);
   const [freqKhz, setFreqKhz] = useState(10_000);
   const [mode, setMode] = useState<Mode>("am");
   const [volume, setVolume] = useState(0.8);
@@ -66,6 +76,7 @@ export default function ListenPage() {
     setHost(r.host);
     setPort(r.port);
     setFromList(r.fromList === true);
+    setSecure(r.secure === true);
     // First visit: show the list so there's something to pick from.
     setBrowseOpen(!r.host);
   }, []);
@@ -77,8 +88,8 @@ export default function ListenPage() {
   // Coalesce rapid dial drags into at most ~8 retunes a second.
   const pending = useRef<{ freqKhz: number; mode: Mode } | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const tuning = useRef({ host, port, fromList });
-  tuning.current = { host, port, fromList };
+  const tuning = useRef({ host, port, fromList, secure });
+  tuning.current = { host, port, fromList, secure };
 
   const sendRetune = useCallback(
     (next: { freqKhz: number; mode: Mode }) => {
@@ -95,6 +106,7 @@ export default function ListenPage() {
           port: Number(tuning.current.port) || DEFAULT_KIWI_PORT,
           ...p,
           ...listSource(tuning.current.fromList),
+          ...wss(tuning.current.secure),
         });
       }, 120);
     },
@@ -119,15 +131,21 @@ export default function ListenPage() {
   // Pull a host and port out of a pasted URL like http://f4kiy.ddns.net:8073/.
   const normalizeReceiver = () => {
     const parsed = parseReceiver(host);
-    const r = { host: parsed.host, port: parsed.port ?? (port.trim() || String(DEFAULT_KIWI_PORT)) };
+    const r = {
+      host: parsed.host,
+      port: parsed.port ?? (port.trim() || String(DEFAULT_KIWI_PORT)),
+      // A bare hostname (including one we already took out of a URL) keeps the scheme it had.
+      secure: parsed.secure ?? secure,
+    };
     setHost(r.host);
     setPort(r.port);
+    setSecure(r.secure);
     return r;
   };
 
   const listen = () => {
     const r = normalizeReceiver();
-    void tune({ host: r.host, port: Number(r.port), freqKhz, mode, ...listSource(fromList) });
+    void tune({ host: r.host, port: Number(r.port), freqKhz, mode, ...listSource(fromList), ...wss(r.secure) });
   };
 
   // Stable so Pick best's retry effect doesn't re-run on every frequency change.
@@ -140,12 +158,14 @@ export default function ListenPage() {
       if (timer.current) clearTimeout(timer.current);
       timer.current = null;
       pending.current = null;
-      tuning.current = { host: r.host, port: String(r.port), fromList };
+      const secure = r.secure === true;
+      tuning.current = { host: r.host, port: String(r.port), fromList, secure };
       setHost(r.host);
       setPort(String(r.port));
       setFromList(fromList);
+      setSecure(secure);
       // Works while listening too: the radio service switches receivers.
-      void tune({ host: r.host, port: r.port, ...latest.current, ...listSource(fromList) });
+      void tune({ host: r.host, port: r.port, ...latest.current, ...listSource(fromList), ...wss(secure) });
     },
     [tune],
   );
@@ -176,7 +196,13 @@ export default function ListenPage() {
   useEffect(() => {
     if (status.state === "listening" && status.host) {
       const port = String(status.port ?? DEFAULT_KIWI_PORT);
-      saveReceiver({ host: status.host, port, ...(wasListed(status.host, Number(port)) && { fromList: true }) });
+      const t = tuning.current;
+      saveReceiver({
+        host: status.host,
+        port,
+        ...(wasListed(status.host, Number(port)) && { fromList: true }),
+        ...(t.secure && t.host === status.host && Number(t.port) === Number(port) && { secure: true }),
+      });
     }
   }, [status, wasListed]);
 
@@ -215,6 +241,7 @@ export default function ListenPage() {
               onChange={(e) => {
                 setHost(e.target.value);
                 setFromList(false);
+                setSecure(false);
               }}
               onBlur={normalizeReceiver}
               placeholder="kiwi hostname"

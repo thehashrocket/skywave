@@ -68,6 +68,43 @@ describe("usePickBest", () => {
     expect(tuned()).toEqual(["a", "b"]);
   });
 
+  // Value: protects=a lookup stuck on an earlier dead name costs one wait, not the run; fails_when=retryAfterMs is ignored (run stops) or retried forever; why_new=R7 retry hint; seam=none; no_claim=real resolver timing (fake timers)
+  it("waits out a retry hint once, then stops if it comes back", () => {
+    vi.useFakeTimers();
+    try {
+      const { hook, report, tuned } = setup();
+      act(() => hook.result.current.start(candidates));
+      const stuck: RadioStatus = { state: "error", host: "a", port: 8073, message: "Still waiting", retryAfterMs: 5000 };
+      report(stuck);
+      expect(tuned()).toEqual(["a"]);
+      expect(hook.result.current.running).toBe(true);
+      act(() => vi.advanceTimersByTime(5000));
+      expect(tuned()).toEqual(["a", "a"]);
+
+      report({ state: "connecting", host: "a", port: 8073 });
+      report({ ...stuck });
+      act(() => vi.advanceTimersByTime(10_000));
+      expect(tuned()).toEqual(["a", "a"]);
+      expect(hook.result.current.running).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("doesn't fire a pending retry after the run is cancelled", () => {
+    vi.useFakeTimers();
+    try {
+      const { hook, report, tuned } = setup();
+      act(() => hook.result.current.start(candidates));
+      report({ state: "error", host: "a", port: 8073, message: "Still waiting", retryAfterMs: 5000 });
+      act(() => hook.result.current.cancel());
+      act(() => vi.advanceTimersByTime(5000));
+      expect(tuned()).toEqual(["a"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it(`stops after ${MAX_ATTEMPTS} receivers`, () => {
     const { hook, report, tuned } = setup();
     act(() => hook.result.current.start(candidates));

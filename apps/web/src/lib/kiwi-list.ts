@@ -21,6 +21,8 @@ export type Receiver = {
   /** Tunable range in kHz. Already includes any transverter offset. */
   minKhz: number;
   maxKhz: number;
+  /** Listed with an https:// URL, so the radio service dials it over wss://. */
+  secure?: true;
 };
 
 type RawEntry = Record<string, unknown>;
@@ -101,15 +103,14 @@ function extractEntries(text: string): string[] {
 function toReceiver(e: RawEntry): Receiver | null {
   if (e.status !== "active" || e.offline === "yes") return null;
   const url = text(e.url);
-  // The radio service dials ws:// only, so https-only receivers can't work yet.
   // parseReceiver passes text it can't parse through as the host; from the
   // list that's junk (a space in the name, an unbracketed IPv6 address).
-  if (!/^http:\/\//i.test(url) || !URL.canParse(url)) return null;
+  if (!/^https?:\/\//i.test(url) || !URL.canParse(url)) return null;
   // Pick best dials list entries without anyone choosing them, so an entry
   // mustn't aim the radio service at a LAN address or a well-known service
   // port (ssh, smtp, databases). The service also refuses private addresses
   // for list tunes; this keeps such entries out of the list entirely.
-  const { host, port: explicitPort } = parseReceiver(url);
+  const { host, port: explicitPort, secure } = parseReceiver(url);
   if (!host || isPrivateHost(host)) return null;
   const port = explicitPort ? Number(explicitPort) : defaultPort(host);
   if ((port !== 80 && port < 1024) || SERVICE_PORTS.has(port)) return null;
@@ -131,6 +132,7 @@ function toReceiver(e: RawEntry): Receiver | null {
     snr: hfSnr(text(e.snr)),
     minKhz,
     maxKhz,
+    ...(secure && { secure: true as const }),
   };
 }
 

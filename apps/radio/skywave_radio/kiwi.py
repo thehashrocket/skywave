@@ -2,7 +2,7 @@
 
 Protocol notes, cross-checked against jks-prv/kiwiclient:
 
-* WebSocket at ws://host:port/<timestamp>/SND
+* WebSocket at ws://host:port/<timestamp>/SND (wss:// for Kiwis behind HTTPS)
 * Text commands are "SET ..." strings; the Kiwi answers with binary frames
   whose first three bytes are a tag: "MSG" (key=value status) or "SND" (audio).
 * After "SET auth", wait for audio_rate (reply "SET AR OK") and sample_rate,
@@ -22,11 +22,14 @@ import struct
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from urllib.parse import unquote
+from urllib.parse import unquote, urljoin, urlsplit
 
 import numpy as np
 import websockets
 from websockets.asyncio.client import ClientConnection
+from websockets.asyncio.client import connect as ws_connect
+from websockets.exceptions import InvalidStatus
+from websockets.uri import parse_uri
 
 from .dsp import int16_iq_to_complex
 
@@ -38,6 +41,13 @@ SND_FLAG_COMPRESSED = 0x10
 
 GPS_HEADER_BYTES = 10
 DEFAULT_PORT = 8073
+HTTPS_PORT = 443
+# How long close() waits for the Kiwi's half of the closing handshake. When
+# we stop reading (a stalled browser stops the pump), the Kiwi's audio fills
+# our queue and its close reply sits behind it, so this is how long the
+# channel and our listener slot outlive a dead tab. websockets' default is 10 s.
+CLOSE_TIMEOUT_S = 2.0
+REDIRECT_STATUSES = {300, 301, 302, 303, 307, 308}
 
 # Kiwis run at about 12 kHz (or 20.25 kHz in wideband mode). The receiver
 # reports its rate and we size DSP and browser buffers from it, so a hostile
@@ -108,6 +118,23 @@ def parse_snd(body: bytes) -> IQBlock:
     )
 
 
+class _connect(ws_connect):
+    """websockets.connect that follows no redirects on its own.
+
+    It would follow a same-host one silently, and refuses a cross-origin one
+    (we always pass `host`) with a ValueError. KiwiClient.connect decides
+    instead, so the one-hop, same-host, https-only rule holds for all of them.
+    """
+
+    def process_redirect(self, exc: Exception) -> Exception:
+        return exc
+
+
+def hostport(host: str, port: int) -> str:
+    # An IPv6 literal needs brackets, or its colons read as the port.
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
 class KiwiClient:
     """One I/Q listening channel on one KiwiSDR.
 
@@ -126,6 +153,7 @@ class KiwiClient:
         port: int = DEFAULT_PORT,
         *,
         connect_host: str | None = None,
+        secure: bool = False,
         user: str = "skywave",
         kiwi_agc: bool = True,
         passband_hz: tuple[int, int] = (-5000, 5000),
@@ -133,6 +161,9 @@ class KiwiClient:
     ):
         self.host = host
         self.port = port
+        # wss://, with the certificate checked against `host` even though we
+        # dial `connect_host`.
+        self.secure = secure
         # Resolved address to actually dial (prevents DNS rebinding between
         # validation and connect). The URL still carries the real hostname.
         self.connect_host = connect_host or host
@@ -146,32 +177,28 @@ class KiwiClient:
         self._last_keepalive = 0.0
 
     @property
+    def hostport(self) -> str:
+        return hostport(self.host, self.port)
+
+    @property
     def url(self) -> str:
-        # An IPv6 literal needs brackets, or its colons read as the port.
-        host = f"[{self.host}]" if ":" in self.host else self.host
-        return f"ws://{host}:{self.port}/{int(time.time())}/SND"
+        scheme = "wss" if self.secure else "ws"
+        return f"{scheme}://{self.hostport}/{int(time.time())}/SND"
 
     async def connect(self) -> KiwiInfo:
         try:
-            self._ws = await asyncio.wait_for(
-                websockets.connect(
-                    self.url,
-                    host=self.connect_host,
-                    port=self.port,
-                    max_size=2**20,
-                    compression=None,
-                    open_timeout=self.timeout_s,
-                    ping_interval=None,  # the Kiwi has its own keepalive
-                    user_agent_header="skywave",
-                ),
-                timeout=self.timeout_s,
-            )
-        except (websockets.InvalidURI, ValueError) as e:
-            raise KiwiError("invalid", f"{self.host}:{self.port} isn't an address we can dial.") from e
-        except (OSError, asyncio.TimeoutError, websockets.InvalidHandshake) as e:
-            # A timeout's message is empty, which left the browser showing "()".
-            reason = "no answer; check the port" if isinstance(e, asyncio.TimeoutError) else str(e) or type(e).__name__
-            raise KiwiError("unreachable", f"Couldn't connect to {self.host}:{self.port} ({reason})") from e
+            await self._dial()
+        except InvalidStatus as e:
+            upgrade = self._https_upgrade(e)
+            if upgrade is None:
+                raise self._unreachable(e) from e
+            # The same host on https: dial the address we already checked.
+            self.secure, self.port = True, upgrade
+            try:
+                await self._dial()
+            except InvalidStatus as e2:
+                # Only one hop: a second redirect is refused like any other.
+                raise self._unreachable(e2) from e2
 
         await self._send("SET auth t=kiwi p=")
         try:
@@ -180,6 +207,66 @@ class KiwiClient:
             await self.close()
             raise KiwiError("timeout", f"{self.host} never sent its sample rate") from e
         return self.info
+
+    async def _dial(self) -> None:
+        """Open the WebSocket, or raise KiwiError (InvalidStatus for a redirect)."""
+        url = self.url
+        try:
+            parse_uri(url)
+        except (websockets.InvalidURI, ValueError) as e:
+            raise KiwiError("invalid", f"{self.hostport} isn't an address we can dial.") from e
+        try:
+            self._ws = await asyncio.wait_for(
+                _connect(
+                    url,
+                    host=self.connect_host,
+                    port=self.port,
+                    # Never via a proxy from the environment: that would dial
+                    # the name, not the address hostguard checked.
+                    proxy=None,
+                    max_size=2**20,
+                    compression=None,
+                    open_timeout=self.timeout_s,
+                    close_timeout=CLOSE_TIMEOUT_S,
+                    ping_interval=None,  # the Kiwi has its own keepalive
+                    user_agent_header="skywave",
+                ),
+                timeout=self.timeout_s,
+            )
+        except InvalidStatus as e:
+            if e.response.status_code in REDIRECT_STATUSES:
+                raise
+            raise self._unreachable(e) from e
+        except (OSError, asyncio.TimeoutError, websockets.InvalidHandshake) as e:
+            raise self._unreachable(e) from e
+
+    def _https_upgrade(self, e: InvalidStatus) -> int | None:
+        """The port to redial over https, if `e` is a redirect we follow.
+
+        Only the same host moving from ws to https, on 443 or the port it
+        already uses; any other redirect could point us anywhere.
+        """
+        location = e.response.headers.get("Location")
+        if self.secure or e.response.status_code not in REDIRECT_STATUSES or not location:
+            return None
+        target = urlsplit(urljoin(f"http://{self.hostport}/", location))
+        try:
+            port = target.port or HTTPS_PORT
+        except ValueError:
+            return None
+        if target.scheme not in ("https", "wss") or (target.hostname or "") != self.host.lower():
+            return None
+        return port if port in (HTTPS_PORT, self.port) else None
+
+    def _unreachable(self, e: BaseException) -> KiwiError:
+        if isinstance(e, asyncio.TimeoutError):
+            # A timeout's message is empty, which left the browser showing "()".
+            reason = "no answer; check the port"
+        elif isinstance(e, InvalidStatus) and e.response.status_code in REDIRECT_STATUSES:
+            reason = f"it redirects to {e.response.headers.get('Location', 'somewhere else')}"
+        else:
+            reason = str(e) or type(e).__name__
+        return KiwiError("unreachable", f"Couldn't connect to {self.hostport} ({reason})")
 
     async def _handshake(self) -> None:
         assert self._ws is not None

@@ -29,7 +29,7 @@ describe("receiverSource", () => {
     const first = await get();
     advance(14 * MINUTE);
     expect(await get()).toBe(first);
-    expect(first.receivers).toHaveLength(6);
+    expect(first.receivers).toHaveLength(7);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 

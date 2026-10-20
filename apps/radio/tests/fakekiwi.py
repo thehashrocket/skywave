@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 import struct
 from dataclasses import dataclass, field
 
 import numpy as np
 from websockets.asyncio.server import ServerConnection, serve
+from websockets.http11 import Request, Response
 
 RATE = 12000.0
 BLOCK = 512
@@ -26,21 +28,32 @@ class FakeKiwi:
     stall: bool = False
     # Close the connection after this many SND frames.
     drop_after: int | None = None
+    # Serve wss:// with this context.
+    ssl: ssl.SSLContext | None = None
+    # Answer the upgrade with a 301 to this Location instead of a WebSocket.
+    redirect_to: str | None = None
     commands: list[str] = field(default_factory=list)
     paths: list[str] = field(default_factory=list)
     port: int = 0
 
     async def __aenter__(self) -> "FakeKiwi":
-        self._server = await serve(self._handle, "127.0.0.1", 0)
+        self._server = await serve(self._handle, "127.0.0.1", 0, ssl=self.ssl, process_request=self._redirect)
         self.port = self._server.sockets[0].getsockname()[1]
         return self
+
+    def _redirect(self, conn: ServerConnection, request: Request) -> Response | None:
+        self.paths.append(request.path)
+        if self.redirect_to is None:
+            return None
+        response = conn.respond(301, "Moved\n")
+        response.headers["Location"] = self.redirect_to
+        return response
 
     async def __aexit__(self, *exc) -> None:
         self._server.close()
         await self._server.wait_closed()
 
     async def _handle(self, ws: ServerConnection) -> None:
-        self.paths.append(ws.request.path)
         first = await ws.recv()
         self.commands.append(first)
         if self.reject is not None:
