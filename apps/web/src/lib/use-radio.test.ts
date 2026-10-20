@@ -379,10 +379,15 @@ describe("useRadio", () => {
 
     // Value: protects=a frame tag from a newer service is dropped, not played as noise or drawn as a row; fails_when=handleBinary treats unknown tags as audio; why_new=the tag switch had no unknown-tag case; seam=none; no_claim=what a newer service would send
     it("ignores frames with a tag it doesn't know", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const { ws, rows } = await listening();
+      act(() => ws.frame(9, new Uint8Array([1, 2, 3, 4])));
       act(() => ws.frame(9, new Uint8Array([1, 2, 3, 4])));
       expect(samples()).toHaveLength(0);
       expect(rows).toHaveLength(0);
+      // Value: protects=a tag mismatch is visible in dev tools, once per socket; fails_when=the warning is dropped or fires per frame; why_new=unknown tags were silent; seam=none; no_claim=what listeners see on the page
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
     });
   });
 });

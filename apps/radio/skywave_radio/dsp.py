@@ -198,8 +198,11 @@ def int16_iq_to_complex(interleaved: np.ndarray) -> np.ndarray:
 # steps of SPECTRUM_STEP_DB above it, so 255 steps cover 127.5 dB.
 SPECTRUM_STEP_DB = 0.5
 # The base sits this far under the row's 20th percentile, the noise floor the
-# waterfall levels on. Clamping only what's below it leaves that floor exactly
-# where it was, and the waterfall never shows more than 52 dB above it.
+# waterfall (apps/web/src/components/Waterfall.tsx) levels on. Clamping only
+# what's below it leaves each row's floor exactly where it was, and the
+# waterfall never shows more than 52 dB above it (floor - 3 + RANGE_DB 55).
+# Its floor is a running average, so for a moment after a retune to a much
+# noisier band it can sit under the base and show the clamp as a flat band.
 SPECTRUM_FLOOR_MARGIN_DB = 20.0
 
 

@@ -1,8 +1,11 @@
+import struct
+
 import numpy as np
 import pytest
 
 from skywave_radio.dsp import (
     AGC,
+    SPECTRUM_FLOOR_MARGIN_DB,
     SPECTRUM_STEP_DB,
     Demodulator,
     Spectrum,
@@ -130,3 +133,23 @@ def test_encode_spectrum_clamps_far_above_the_floor():
     out = decode_spectrum(payload)
     assert payload[4] == 255
     assert out[1] == pytest.approx(-130.0, abs=SPECTRUM_STEP_DB / 2)
+
+
+# Value: protects=bins far under the noise floor (deep nulls, filter skirts) clamp to the base instead of wrapping to the top of the row; fails_when=the lower clip bound is dropped so negative steps wrap through the uint8 cast and draw nulls as strong signals; why_new=the existing tests never put a bin below the base; seam=none; no_claim=waterfall pixels
+def test_encode_spectrum_clamps_far_below_the_floor():
+    db = np.full(512, -130.0)
+    db[:40] = -300.0  # under 20% of the row, so the floor stays at -130
+    out = decode_spectrum(encode_spectrum(db))
+    base = -130.0 - SPECTRUM_FLOOR_MARGIN_DB
+    assert out[:40] == pytest.approx(np.full(40, base), abs=SPECTRUM_STEP_DB / 2)
+    assert out[40:] == pytest.approx(np.full(472, -130.0), abs=SPECTRUM_STEP_DB / 2)
+
+
+# Value: protects=the 0x04 bytes the browser decodes with its own hardcoded 0.5 dB step; fails_when=SPECTRUM_STEP_DB or SPECTRUM_FLOOR_MARGIN_DB changes on the Python side only; why_new=the other tests decode with the module's own constants; seam=none; no_claim=the browser side (use-radio.test.ts pins it)
+def test_encode_spectrum_wire_format_golden():
+    db = np.full(512, -130.0, dtype=np.float32)
+    db[0] = -110.0
+    payload = encode_spectrum(db)
+    assert payload[:4] == struct.pack("<f", -150.0)
+    assert payload[4] == 80
+    assert payload[5:] == bytes([40] * 511)

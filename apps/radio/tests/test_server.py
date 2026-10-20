@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from skywave_radio.config import Settings, origin_allowed
 from skywave_radio.server import create_app
 
-from .fakekiwi import FakeKiwi
+from .fakekiwi import BLOCK, FakeKiwi
 from .frames import decode_spectrum
 
 ORIGIN = {"origin": "http://localhost:3000"}
@@ -122,7 +122,9 @@ def test_listen_end_to_end():
     listening = next(s for s in statuses if s.get("state") == "listening")
     assert listening["sampleRate"] == 12000.0
     assert any(s["type"] == "meter" for s in statuses)
-    assert all(a.dtype == np.int16 for a in audio)
+    # Value: protects=the session sends encode_audio's int16 under tag 3; fails_when=session.py sends float32 bytes (or rescales) under the int16 tag; why_new=the dtype check was true of any bytes read as <i2; seam=none; no_claim=what the browser plays
+    assert [len(a) for a in audio] == [BLOCK] * len(audio)
+    assert max(int(np.abs(a.astype(np.int32)).max()) for a in audio) > 1000
     assert len(spectra[0]) == 512
     assert "SET mod=iq low_cut=-5000 high_cut=5000 freq=7200.000" in kiwi.commands
 
