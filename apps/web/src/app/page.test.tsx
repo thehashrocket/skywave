@@ -337,16 +337,20 @@ describe("ListenPage", () => {
     }
   });
 
-  // Value: protects=leaving the host field splits a pasted URL and keeps a typed port; fails_when=onBlur normalize is removed or a port-less URL resets the port to 8073; why_new=existing test only covers Listen; seam=none; no_claim=server validation
-  it("splits a pasted URL on blur and keeps the port when the URL has none", () => {
+  // Value: protects=a pasted URL means what it says (no port is the scheme's port, as in the list) while a bare hostname keeps the typed port; fails_when=onBlur normalize is removed or portless URLs keep a stale port again; why_new=TODOS default ports; seam=none; no_claim=server validation
+  it("splits a pasted URL on blur, using the scheme's port when it has none", () => {
     render(<ListenPage />);
     const host = screen.getByLabelText("Receiver") as HTMLInputElement;
     const port = screen.getByLabelText("Port") as HTMLInputElement;
     fireEvent.change(port, { target: { value: "8074" } });
+    fireEvent.change(host, { target: { value: "f4kiy.ddns.net" } });
+    fireEvent.blur(host);
+    expect(port.value).toBe("8074");
+
     fireEvent.change(host, { target: { value: "http://F4KIY.ddns.net/" } });
     fireEvent.blur(host);
     expect(host.value).toBe("f4kiy.ddns.net");
-    expect(port.value).toBe("8074");
+    expect(port.value).toBe("80");
 
     fireEvent.change(host, { target: { value: "http://f4kiy.ddns.net:8075/" } });
     fireEvent.blur(host);

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { parseKiwiList, rankReceivers, type Receiver } from "./kiwi-list";
+import { MAX_FIELD, MAX_ROWS, parseKiwiList, rankReceivers, type Receiver } from "./kiwi-list";
 
 // Seven real entries from the mirror, kept in its exact format (comments,
 // `var` wrapper, trailing comma).
@@ -88,13 +88,64 @@ describe("parseKiwiList", () => {
     expect(one({ snr: "50,47" })[0]!.snr).toBe(47);
   });
 
-  // Value: protects=list entries can't aim the radio service at well-known service ports; fails_when=the port floor is removed; why_new=any port was accepted; seam=none; no_claim=hostile high ports
-  it("drops entries on well-known service ports, including database ports, but keeps unusual Kiwi ports", () => {
-    expect(() => one({ url: "http://a.example:22" })).toThrow(/no usable receivers/);
-    expect(() => one({ url: "http://a.example:6379" })).toThrow(/no usable receivers/);
-    expect(() => one({ url: "http://a.example:5432" })).toThrow(/no usable receivers/);
-    expect(one({ url: "http://a.example:18073" })[0]!.port).toBe(18073);
-    expect(one({ url: "http://a.example" })[0]!.port).toBe(80);
+  // Value: protects=a list entry can only aim the radio service at a Kiwi port, not at web or admin ports on public hosts; fails_when=the allowlist widens back to "80 or >=1024"; why_new=D2.2/D2.5 (Codex High); seam=none; no_claim=which ports real Kiwis move to later
+  it.each([
+    ["http://a.example", 80],
+    ["http://a.example:80", 80],
+    ["http://a.example:8070", 8070],
+    ["http://a.example:8073", 8073],
+    ["http://a.example:8079", 8079],
+    ["https://a.example", 443],
+    ["https://a.example:443", 443],
+    ["https://a.example:8073", 8073],
+  ])("keeps %s on port %i", (url, port) => {
+    expect(one({ url })[0]!.port).toBe(port);
+  });
+
+  it.each([
+    "http://a.example:22",
+    "http://a.example:443", // 443 only for an https entry
+    "http://a.example:5000",
+    "http://a.example:5432",
+    "http://a.example:8069",
+    "http://a.example:8080",
+    "http://a.example:8443",
+    "http://a.example:18073",
+    "https://a.example:8443",
+  ])("drops %s, which isn't on a Kiwi port", (url) => {
+    expect(() => one({ url })).toThrow(/no usable receivers/);
+  });
+
+  // Value: protects=a reverse-proxied receiver isn't offered, since the service would dial host:port and miss the path; fails_when=URLs with a path are accepted; why_new=TODOS parser hardening (0 of 873 today); seam=none; no_claim=future path-based Kiwis working
+  it("drops a receiver whose URL has a path, but not a trailing slash or query", () => {
+    expect(() => one({ url: "http://a.example:8073/kiwi/" })).toThrow(/no usable receivers/);
+    expect(one({ url: "http://a.example:8073/" })).toHaveLength(1);
+    expect(one({ url: "http://a.example:8073/?f=10000" })).toHaveLength(1);
+  });
+
+  // Value: protects=a name written with its root dot still works, since the service refuses the dot; fails_when=toReceiver keeps the dot; why_new=TODOS small edges; seam=none; no_claim=none beyond protects
+  it("drops a trailing dot from a hostname, keeping the proxy port rule", () => {
+    expect(one({ url: "http://kiwi.example.:8073" })[0]!.host).toBe("kiwi.example");
+    expect(one({ url: "http://x.proxy.kiwisdr.com." })[0]).toMatchObject({ host: "x.proxy.kiwisdr.com", port: 8073 });
+  });
+
+  // Value: protects=a giant or hostile list can't freeze the picker; fails_when=the row or field caps are removed; why_new=TODOS parser hardening (D6); seam=none; no_claim=render speed itself
+  it(`keeps at most ${MAX_ROWS} receivers, in list order, and cuts long text`, () => {
+    const many = Array.from({ length: MAX_ROWS + 5 }, (_, i) => entry({ url: `http://r${i}.example:8073` }));
+    const parsed = parseKiwiList(`var kiwisdr_com = [${many.join(",")}];`);
+    expect(parsed).toHaveLength(MAX_ROWS);
+    expect(parsed.at(-1)!.host).toBe(`r${MAX_ROWS - 1}.example`);
+
+    const [r] = one({ name: "n".repeat(10_000), loc: "l".repeat(10_000), antenna: "<b>a</b>".repeat(5_000) });
+    expect(r!.name).toHaveLength(MAX_FIELD);
+    expect(r!.location).toHaveLength(MAX_FIELD);
+    expect(r!.antenna.length).toBeLessThanOrEqual(MAX_FIELD);
+  });
+
+  // Value: protects=the parser reads the list itself, not the first bracket in whatever wraps it; fails_when=extraction starts at the first "[" again; why_new=TODOS parser hardening; seam=none; no_claim=a renamed variable (that throws, by design)
+  it("reads the kiwisdr_com array even when a bracket comes before it", () => {
+    const text = `// generated [${"2026-10-20"}]\nvar other = [1, 2];\nvar kiwisdr_com = [${entry({})},];`;
+    expect(parseKiwiList(text).map((r) => r.host)).toEqual(["a.example"]);
   });
 
   it("drops a band range wider than a Kiwi can tune", () => {
@@ -112,7 +163,7 @@ describe("parseKiwiList", () => {
     expect(parseKiwiList(text)[0]!.name).toBe("Odd, ] name, }");
   });
 
-  // Value: protects=a quote or backslash in operator text can't end a string early and break the list; fails_when=the escape branch in extractArray is removed; why_new=no input had escapes; seam=none; no_claim=non-JSON escapes
+  // Value: protects=a quote or backslash in operator text can't end a string early and break the list; fails_when=the escape branch in extractEntries is removed; why_new=no input had escapes; seam=none; no_claim=non-JSON escapes
   it("handles escaped quotes and backslashes inside operator text", () => {
     const [r] = one({ name: 'He said "hi ]", ok', antenna: "C:\\" });
     expect(r!.name).toBe('He said "hi ]", ok');
@@ -168,6 +219,20 @@ describe("parseKiwiList", () => {
     "http://[fe80::1]:8073",
     "http://[::ffff:192.168.1.1]:8073",
     "http://[::ffff:127.0.0.1]:8073",
+    // Ranges the radio service also refuses: 6to4, NAT64, IPv4-compatible,
+    // multicast, reserved, documentation and benchmarking nets.
+    "http://[2002:c0a8:101::1]:8073",
+    "http://[64:ff9b::a00:1]:8073",
+    "http://[::10.0.0.1]:8073",
+    "http://[ff02::1]:8073",
+    "http://[2001:db8::1]:8073",
+    "http://224.0.0.1:8073",
+    "http://239.255.255.250:8073",
+    "http://240.0.0.1:8073",
+    "http://255.255.255.255:8073",
+    "http://198.18.0.1:8073",
+    "http://192.0.2.1:8073",
+    "http://203.0.113.9:8073",
   ])("drops list entries on private address %s", (url) => {
     expect(() => one({ url })).toThrow(/no usable receivers/);
   });
@@ -176,6 +241,9 @@ describe("parseKiwiList", () => {
     expect(one({ url: "http://172.32.0.1:8073" })[0]!.host).toBe("172.32.0.1");
     expect(one({ url: "http://locality.example.net:8073" })[0]!.host).toBe("locality.example.net");
     expect(one({ url: "http://[::ffff:8.8.8.8]:8073" })[0]!.port).toBe(8073);
+    expect(one({ url: "http://198.20.0.1:8073" })[0]!.host).toBe("198.20.0.1");
+    expect(one({ url: "http://223.255.255.1:8073" })[0]!.host).toBe("223.255.255.1");
+    expect(one({ url: "http://[2001:4860::8888]:8073" })[0]!.host).toBe("2001:4860::8888");
   });
 
   it("lists a receiver that appears twice only once", () => {
@@ -254,5 +322,13 @@ describe("rankReceivers", () => {
       10_000,
     );
     expect(hosts(ranked)).toEqual(["quiet", "busy", "unmeasured"]);
+  });
+
+  // Value: protects=listeners don't all converge on the first of several equally good receivers, while one page's order stays put; fails_when=ties fall back to mirror order or reshuffle per call; why_new=TODOS parser hardening; seam=none; no_claim=how evenly real listeners spread
+  it("breaks full ties in an order that isn't the mirror's but holds for this page", () => {
+    const tied = Array.from({ length: 20 }, (_, i) => rx(`t${i}`));
+    const first = hosts(rankReceivers(tied, 10_000));
+    expect(first).not.toEqual(hosts(tied));
+    expect(hosts(rankReceivers([...tied].reverse(), 10_000))).toEqual(first);
   });
 });

@@ -1,4 +1,4 @@
-import { DEFAULT_KIWI_PORT, parseReceiver } from "./receiver";
+import { defaultPort, HTTPS_PORT, parseReceiver } from "./receiver";
 
 /**
  * The public KiwiSDR list, as republished by the dyatlov map maker.
@@ -27,23 +27,33 @@ export type Receiver = {
 
 type RawEntry = Record<string, unknown>;
 
+/**
+ * More than three times the real list. Past this, "Show all" would freeze
+ * the tab; rows beyond it are dropped in the mirror's order, before ranking.
+ */
+export const MAX_ROWS = 3000;
+/** Operators' names, places and antennas are cut to this many characters. */
+export const MAX_FIELD = 200;
+
 /** Parse the mirror file into receivers we can actually dial. Throws if it isn't the expected shape. */
 export function parseKiwiList(text: string): Receiver[] {
   const seen = new Set<string>();
-  const receivers = extractEntries(text).flatMap((json) => {
+  const receivers: Receiver[] = [];
+  for (const json of extractEntries(text)) {
+    if (receivers.length >= MAX_ROWS) break;
     // One operator's odd text (a JS-only escape, say) costs only their entry.
     let e: unknown;
     try {
       e = JSON.parse(json);
     } catch {
-      return [];
+      continue;
     }
     const r = e && typeof e === "object" ? toReceiver(e as RawEntry) : null;
     // The same receiver listed twice would only collide in the table.
-    if (!r || seen.has(receiverKey(r))) return [];
+    if (!r || seen.has(receiverKey(r))) continue;
     seen.add(receiverKey(r));
-    return [r];
-  });
+    receivers.push(r);
+  }
   // An empty result means the format changed under us; better to keep serving
   // the last good list than to replace it with nothing.
   if (receivers.length === 0) throw new Error("Receiver list had no usable receivers.");
@@ -51,15 +61,18 @@ export function parseKiwiList(text: string): Receiver[] {
 }
 
 /**
- * The objects and arrays in the first top-level array of the file, each as
+ * The objects and arrays in the file's `kiwisdr_com = [...]` array, each as
  * strict JSON: string-aware, so brackets or ", ]" inside an operator's text
  * can't cut one short or get rewritten, and without the trailing commas the
  * generator leaves (JSON.parse rejects them). One pass over the text: the body
  * is untrusted and up to 5 MB.
  */
 function extractEntries(text: string): string[] {
-  const start = text.indexOf("[");
-  if (start < 0) throw new Error("Receiver list has no array in it.");
+  // Anchored on the variable, so a bracket in a comment or a new wrapper line
+  // above it can't be read as the list.
+  const anchor = /\bkiwisdr_com\s*=\s*\[/.exec(text);
+  if (!anchor) throw new Error("Receiver list has no array in it.");
+  const start = anchor.index + anchor[0].length - 1;
   const entries: string[] = [];
   let pieces: string[] = [];
   let pieceStart = start;
@@ -106,14 +119,19 @@ function toReceiver(e: RawEntry): Receiver | null {
   // parseReceiver passes text it can't parse through as the host; from the
   // list that's junk (a space in the name, an unbracketed IPv6 address).
   if (!/^https?:\/\//i.test(url) || !URL.canParse(url)) return null;
+  // The service dials host and port only; a receiver behind a path (a reverse
+  // proxy at /kiwi/) would get a request it can't answer.
+  if (!/^[a-z]+:\/\/[^/?#]+\/?([?#]|$)/i.test(url)) return null;
   // Pick best dials list entries without anyone choosing them, so an entry
-  // mustn't aim the radio service at a LAN address or a well-known service
-  // port (ssh, smtp, databases). The service also refuses private addresses
-  // for list tunes; this keeps such entries out of the list entirely.
-  const { host, port: explicitPort, secure } = parseReceiver(url);
+  // mustn't aim the radio service at a LAN address or at anything but a Kiwi
+  // port. The service also refuses private addresses for list tunes; this
+  // keeps such entries out of the list entirely.
+  const { host: dotted, port: urlPort, secure = false } = parseReceiver(url);
+  // "kiwi.example." is the same name, but the service's hostname check refuses the dot.
+  const host = dotted.replace(/\.$/, "");
   if (!host || isPrivateHost(host)) return null;
-  const port = explicitPort ? Number(explicitPort) : defaultPort(host);
-  if ((port !== 80 && port < 1024) || SERVICE_PORTS.has(port)) return null;
+  const port = Number(urlPort ?? defaultPort(host, secure));
+  if (!isKiwiPort(port, secure)) return null;
   const bands = text(e.bands).match(/^(\d+)-(\d+)$/);
   if (!bands) return null;
   const minKhz = Number(bands[1]) / 1000;
@@ -121,7 +139,7 @@ function toReceiver(e: RawEntry): Receiver | null {
   // A Kiwi tunes at most 32 MHz wide; a wider claim is made up.
   if (!(minKhz < maxKhz && maxKhz - minKhz <= MAX_SPAN_KHZ)) return null;
   return {
-    id: text(e.id) || url,
+    id: text(e.id).slice(0, MAX_FIELD) || url,
     name: plain(e.name) || host,
     location: plain(e.loc),
     antenna: plain(e.antenna),
@@ -136,41 +154,77 @@ function toReceiver(e: RawEntry): Receiver | null {
   };
 }
 
-// kiwisdr.com's proxy redirects port 80 to 8073; anything else without a
-// port in its URL is really listening on 80.
-function defaultPort(host: string) {
-  return host.endsWith(".proxy.kiwisdr.com") ? DEFAULT_KIWI_PORT : 80;
+/**
+ * Ports a list entry may point at: 80 (kiwisdr.com's proxy and plain hosts)
+ * and 8070-8079, where Kiwis listen; 443 too for an https:// entry. That's
+ * 850 of 873 entries (2026-10-20); the rest would let a hostile entry aim the
+ * service at ordinary web and admin ports (8080, 8443, 5000). Typed
+ * receivers can use any port.
+ */
+function isKiwiPort(port: number, secure: boolean): boolean {
+  return port === 80 || (port >= 8070 && port <= 8079) || (secure && port === HTTPS_PORT);
 }
 
 const PRIVATE_NAME = /(^|\.)(localhost|local|lan|internal|home\.arpa)$/i;
-const PRIVATE_IPV4 =
-  /^(0|10|127)\.|^169\.254\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\.|^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./;
-const PRIVATE_IPV6 = /^(::1?|f[cd][0-9a-f]{2}:.*|fe[89ab][0-9a-f]:.*)$/i;
+
+/**
+ * IPv4 ranges that aren't the public internet, as [first octets, prefix
+ * bits]: private, loopback, link-local, carrier NAT, documentation and
+ * benchmarking nets, multicast and reserved. The radio service refuses all
+ * of these for list tunes anyway (Python's is_global).
+ */
+const NON_PUBLIC_IPV4: [number[], number][] = [
+  [[0], 8],
+  [[10], 8],
+  [[100, 64], 10],
+  [[127], 8],
+  [[169, 254], 16],
+  [[172, 16], 12],
+  [[192, 0, 0], 24],
+  [[192, 0, 2], 24],
+  [[192, 168], 16],
+  [[198, 18], 15],
+  [[198, 51, 100], 24],
+  [[203, 0, 113], 24],
+  [[224], 4], // multicast
+  [[240], 4], // reserved, and 255.255.255.255
+];
+
+function ipv4Number(octets: number[]): number {
+  return octets.reduce((n, o) => n * 256 + o, 0);
+}
+
+function isNonPublicIpv4(address: string): boolean {
+  const m = address.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const ip = ipv4Number(m.slice(1).map(Number));
+  return NON_PUBLIC_IPV4.some(([start, bits]) => {
+    const base = ipv4Number([...start, 0, 0, 0, 0].slice(0, 4));
+    const size = 2 ** (32 - bits);
+    return ip >= base && ip < base + size;
+  });
+}
+
+/**
+ * IPv6 prefixes that aren't the public internet, as URL writes them
+ * (lowercase, compressed): loopback and unspecified, unique-local,
+ * link-local, multicast, documentation, discard, 6to4 and NAT64 (which wrap
+ * an IPv4 address we'd otherwise have to unpack), and IPv4-compatible.
+ */
+const NON_PUBLIC_IPV6 = /^(::1?|f[cd][0-9a-f]{2}:.*|fe[89ab][0-9a-f]:.*|ff[0-9a-f]{2}:.*|2001:db8:.*|100::.*|2002:.*|64:ff9b:.*|::[0-9a-f]{1,4}:[0-9a-f]{1,4})$/i;
 
 /** Loopback, private-network and local-only names, as an address or a hostname. */
-function isPrivateHost(host: string): boolean {
-  const name = host.replace(/\.$/, "");
+function isPrivateHost(name: string): boolean {
   // URL parsing turns [::ffff:127.0.0.1] into ::ffff:7f00:1; check the IPv4 inside.
   const mapped = name.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
-  const ipv4 = mapped
-    ? [
-        parseInt(mapped[1]!, 16) >> 8,
-        parseInt(mapped[1]!, 16) & 255,
-        parseInt(mapped[2]!, 16) >> 8,
-        parseInt(mapped[2]!, 16) & 255,
-      ].join(".")
-    : name;
-  return (
-    PRIVATE_NAME.test(name) || PRIVATE_IPV4.test(ipv4) || (!mapped && name.includes(":") && PRIVATE_IPV6.test(name))
-  );
+  if (mapped) {
+    const [hi, lo] = [parseInt(mapped[1]!, 16), parseInt(mapped[2]!, 16)];
+    return isNonPublicIpv4([hi >> 8, hi & 255, lo >> 8, lo & 255].join("."));
+  }
+  return PRIVATE_NAME.test(name) || isNonPublicIpv4(name) || (name.includes(":") && NON_PUBLIC_IPV6.test(name));
 }
 
 const MAX_SPAN_KHZ = 32_000;
-// Databases, caches, queues and remote-admin services that live above 1024.
-// No listed Kiwi uses any of these.
-const SERVICE_PORTS = new Set([
-  1433, 1521, 2049, 2375, 2376, 3306, 3389, 5432, 5672, 5900, 5984, 6379, 9092, 9200, 9300, 11211, 27017,
-]);
 // Real Kiwis report HF SNR in the 0-50 dB range. Anything far above that is a
 // made-up number that would otherwise win every Pick best, so treat it as
 // unmeasured.
@@ -199,6 +253,7 @@ const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"'
 function plain(v: unknown): string {
   return (
     text(v)
+      .slice(0, MAX_FIELD * 4) // room for markup the next lines strip
       // The mirror cuts long fields mid-tag, so a "<a href" with no ">" is a tag too.
       .replace(/<[a-z/!][^>]*(>|$)/gi, "")
       .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, ref: string) => {
@@ -208,6 +263,7 @@ function plain(v: unknown): string {
       })
       .replace(/\s+/g, " ")
       .trim()
+      .slice(0, MAX_FIELD)
   );
 }
 
@@ -227,6 +283,17 @@ export function receiverKey(r: { host: string; port: number }) {
   return `${r.host}:${r.port}`;
 }
 
+// Fixed for the page's lifetime, so the table doesn't reshuffle on every
+// refetch, but different for each listener.
+const TIE_SEED = Math.floor(Math.random() * 2 ** 32);
+
+/** A per-page-load shuffle key, FNV-1a over the receiver's address. */
+function tieBreak(r: Receiver): number {
+  let h = 0x811c9dc5 ^ TIE_SEED;
+  for (const c of receiverKey(r)) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193);
+  return h >>> 0;
+}
+
 /**
  * The best receivers for a frequency, best first: highest HF SNR among those
  * that can tune it. Ones the list calls full go last rather than away, since
@@ -238,5 +305,11 @@ export function rankReceivers(list: readonly Receiver[], freqKhz: number): Recei
 
 /** The ranking order on its own, for sorting a list that isn't filtered by frequency. */
 export function byRank(a: Receiver, b: Receiver): number {
-  return Number(isFull(a)) - Number(isFull(b)) || (b.snr ?? -1) - (a.snr ?? -1) || freeSlots(b) - freeSlots(a);
+  return (
+    Number(isFull(a)) - Number(isFull(b)) ||
+    (b.snr ?? -1) - (a.snr ?? -1) ||
+    freeSlots(b) - freeSlots(a) ||
+    // Not the mirror's order: every listener would converge on the same receiver.
+    tieBreak(a) - tieBreak(b)
+  );
 }
