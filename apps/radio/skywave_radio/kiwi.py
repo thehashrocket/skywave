@@ -2,7 +2,9 @@
 
 Protocol notes, cross-checked against jks-prv/kiwiclient:
 
-* WebSocket at ws://host:port/<timestamp>/SND (wss:// for Kiwis behind HTTPS)
+* WebSocket at ws://host:port/kiwi/<timestamp>/SND (wss:// for Kiwis behind
+  HTTPS). Current firmware accepts the bare /<timestamp>/SND upgrade but then
+  never sends a frame; /kiwi/ works on old and new firmware alike.
 * Text commands are "SET ..." strings; the Kiwi answers with binary frames
   whose first three bytes are a tag: "MSG" (key=value status) or "SND" (audio).
 * After "SET auth", wait for audio_rate (reply "SET AR OK") and sample_rate,
@@ -175,6 +177,8 @@ class KiwiClient:
         self.freq_khz: float | None = None
         self._ws: ClientConnection | None = None
         self._last_keepalive = 0.0
+        # Whether the Kiwi has sent anything since we sent auth.
+        self._answered = False
 
     @property
     def hostport(self) -> str:
@@ -183,7 +187,7 @@ class KiwiClient:
     @property
     def url(self) -> str:
         scheme = "wss" if self.secure else "ws"
-        return f"{scheme}://{self.hostport}/{int(time.time())}/SND"
+        return f"{scheme}://{self.hostport}/kiwi/{int(time.time())}/SND"
 
     async def connect(self) -> KiwiInfo:
         try:
@@ -205,6 +209,8 @@ class KiwiClient:
             await asyncio.wait_for(self._handshake(), timeout=self.timeout_s)
         except asyncio.TimeoutError as e:
             await self.close()
+            if not self._answered:
+                raise KiwiError("timeout", f"{self.host} connected but never answered") from e
             raise KiwiError("timeout", f"{self.host} never sent its sample rate") from e
         return self.info
 
@@ -272,6 +278,7 @@ class KiwiClient:
         assert self._ws is not None
         while self.info.sample_rate is None:
             frame = await self._recv()
+            self._answered = True
             if frame[:3] == b"MSG":
                 await self._handle_msg(parse_msg(frame[4:]))
 
