@@ -242,18 +242,4 @@
 **Priority:** P3
 **Depends on:** None
 
-## Infrastructure
-
-### Add CI once the repo has a remote
-
-**What:** Run `pnpm test:radio`, `pnpm typecheck` and `pnpm test:web` on every push.
-
-**Why:** Tests and typecheck only run by hand today, so a broken change can land without anyone noticing.
-
-**Context:** The repo is on GitHub (github.com/thehashrocket/skywave), so GitHub Actions is the natural host. CI needs Node from `.nvmrc`, Python 3.13 with `apps/radio/.venv`, and `pnpm install` already works without `DATABASE_URL`. Install pnpm 12.14.0 directly (e.g. `pnpm/action-setup` with `version: 12.14.0`), not by letting a pnpm 10 runner switch to it: pnpm 10 skips pnpm 12's native-binary install script and every command then fails with ENOEXEC (see README "Run it locally"). Build scripts for `@prisma/engines`, `esbuild` and `prisma` are denied in `pnpm-workspace.yaml`; pnpm 12 errors if any new dependency adds an unlisted build script.
-
-**Effort:** S
-**Priority:** P2
-**Depends on:** None
-
 ## Completed
