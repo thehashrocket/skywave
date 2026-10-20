@@ -91,6 +91,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("useRadio", () => {
@@ -387,7 +388,34 @@ describe("useRadio", () => {
       expect(rows).toHaveLength(0);
       // Value: protects=a tag mismatch is visible in dev tools, once per socket; fails_when=the warning is dropped or fires per frame; why_new=unknown tags were silent; seam=none; no_claim=what listeners see on the page
       expect(warn).toHaveBeenCalledTimes(1);
-      warn.mockRestore();
+    });
+
+    // Value: protects=each new connection warns again about unreadable frames; fails_when=the warned flag isn't reset for a new socket; why_new=only one socket was tested; seam=none; no_claim=none beyond protects
+    it("warns again on a new connection", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      const first = FakeSocket.instances[0]!;
+      act(() => first.status("listening"));
+      act(() => first.frame(9, new Uint8Array([1])));
+      act(() => result.current.stop());
+      act(() => first.finishClose());
+      await act(() => result.current.tune(tuning));
+      const second = FakeSocket.instances[1]!;
+      act(() => second.status("listening"));
+      act(() => second.frame(9, new Uint8Array([1])));
+      expect(warn).toHaveBeenCalledTimes(2);
+    });
+
+    // Value: protects=a frame too short for its tag is skipped, not thrown inside onmessage; fails_when=the length checks are dropped; why_new=only well-formed frames were tested; seam=none; no_claim=what a buggy service would actually send
+    it("skips frames whose payload doesn't fit their tag", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { ws, rows } = await listening();
+      expect(() => act(() => ws.frame(3, new Uint8Array([1, 2, 3])))).not.toThrow();
+      expect(() => act(() => ws.frame(4, new Uint8Array([0, 0])))).not.toThrow();
+      expect(samples()).toHaveLength(0);
+      expect(rows).toHaveLength(0);
+      expect(warn).toHaveBeenCalledTimes(1);
     });
   });
 });

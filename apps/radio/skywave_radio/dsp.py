@@ -197,12 +197,14 @@ def int16_iq_to_complex(interleaved: np.ndarray) -> np.ndarray:
 # A spectrum row on the wire is a float32 base level then one uint8 per bin in
 # steps of SPECTRUM_STEP_DB above it, so 255 steps cover 127.5 dB.
 SPECTRUM_STEP_DB = 0.5
-# The base sits this far under the row's 20th percentile, the noise floor the
-# waterfall (apps/web/src/components/Waterfall.tsx) levels on. Clamping only
+# The base sits SPECTRUM_FLOOR_MARGIN_DB under the row's 20th percentile, the
+# noise floor the waterfall (apps/web/src/components/Waterfall.tsx) levels on;
+# the percentile must match the one it uses. Clamping only
 # what's below it leaves each row's floor exactly where it was, and the
 # waterfall never shows more than 52 dB above it (floor - 3 + RANGE_DB 55).
 # Its floor is a running average, so for a moment after a retune to a much
 # noisier band it can sit under the base and show the clamp as a flat band.
+SPECTRUM_FLOOR_PERCENTILE = 20
 SPECTRUM_FLOOR_MARGIN_DB = 20.0
 
 
@@ -213,6 +215,6 @@ def encode_audio(audio: np.ndarray) -> bytes:
 
 def encode_spectrum(db: np.ndarray) -> bytes:
     """A dB row as float32 LE base level plus uint8 bins: dB = base + v * SPECTRUM_STEP_DB."""
-    base = float(np.percentile(db, 20)) - SPECTRUM_FLOOR_MARGIN_DB
+    base = float(np.percentile(db, SPECTRUM_FLOOR_PERCENTILE)) - SPECTRUM_FLOOR_MARGIN_DB
     steps = np.clip(np.round((db - base) / SPECTRUM_STEP_DB), 0, 255).astype(np.uint8)
     return np.array([base], dtype="<f4").tobytes() + steps.tobytes()

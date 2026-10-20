@@ -92,8 +92,8 @@ export function useRadio() {
   const volumeRef = useRef(0.8);
   const listenersRef = useRef(new Set<SpectrumListener>());
   const stoppingRef = useRef(false);
-  // Whether this socket already warned about a frame tag we don't know.
-  const warnedTagRef = useRef(false);
+  // Whether this socket already warned about a frame we can't read.
+  const warnedFrameRef = useRef(false);
   // Bumped by every tune and stop, so a tune still waiting on audio or the
   // socket can tell it was superseded and must not send.
   const generationRef = useRef(0);
@@ -157,23 +157,25 @@ export function useRadio() {
 
   const handleBinary = useCallback((buf: ArrayBuffer) => {
     const tag = new Uint8Array(buf, 0, 1)[0];
+    const size = buf.byteLength - 1;
     let audio: Float32Array | null = null;
     let row: Float32Array | null = null;
     // Typed arrays need their element alignment, so copy past the 1-byte tag.
-    if (tag === AUDIO_TAG) {
+    // A payload that doesn't fit its tag's element size is skipped below.
+    if (tag === AUDIO_TAG && size % 2 === 0) {
       // The usual int16 scale: the service sends at most 32767, so this stays in [-1, 1].
       audio = Float32Array.from(new Int16Array(buf.slice(1)), (v) => v / 32768);
-    } else if (tag === SPECTRUM_TAG) {
+    } else if (tag === SPECTRUM_TAG && size >= 4) {
       const base = new Float32Array(buf.slice(1, 5))[0]!;
       row = Float32Array.from(new Uint8Array(buf, 5), (v) => base + v * SPECTRUM_STEP_DB);
-    } else if (tag === AUDIO_F32_TAG) {
+    } else if (tag === AUDIO_F32_TAG && size % 4 === 0) {
       audio = new Float32Array(buf.slice(1));
-    } else if (tag === SPECTRUM_F32_TAG) {
+    } else if (tag === SPECTRUM_F32_TAG && size % 4 === 0) {
       row = new Float32Array(buf.slice(1));
-    } else if (!warnedTagRef.current) {
+    } else if (!warnedFrameRef.current) {
       // Otherwise sound and waterfall just stop while the status says listening.
-      warnedTagRef.current = true;
-      console.warn(`The radio service sent frame type ${tag}, which this page doesn't know. Try reloading.`);
+      warnedFrameRef.current = true;
+      console.warn(`The radio service sent a frame this page can't read (type ${tag}, ${size} bytes). Try reloading.`);
     }
     if (audio) nodeRef.current?.port.postMessage({ type: "samples", data: audio }, [audio.buffer]);
     if (row) for (const fn of listenersRef.current) fn(row, rateRef.current);
@@ -193,7 +195,7 @@ export function useRadio() {
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
       stoppingRef.current = false;
-      warnedTagRef.current = false;
+      warnedFrameRef.current = false;
       ws.onopen = () => resolve(ws);
       ws.onerror = () => reject(new Error("socket"));
       ws.onmessage = (e) => {
