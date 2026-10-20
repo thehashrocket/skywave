@@ -1,3 +1,6 @@
+/** The port KiwiSDRs listen on unless their owner changed it. */
+export const DEFAULT_KIWI_PORT = 8073;
+
 /**
  * Turn whatever was pasted into the receiver field into a host and port.
  * The public receiver list links to pages like http://f4kiy.ddns.net:8073/,
