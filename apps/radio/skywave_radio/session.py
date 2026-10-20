@@ -257,6 +257,7 @@ class ListenSession:
             started = time.monotonic()
             limit_s = self.settings.max_session_minutes * 60
             last_meter = 0.0
+            last_samples = started
             async for block in client.blocks():
                 if time.monotonic() - started > limit_s:
                     await self._status(
@@ -266,9 +267,14 @@ class ListenSession:
                     )
                     return
                 # A short SND block has no samples: the demodulator's filter
-                # can't take an empty array, and there's nothing to send.
+                # can't take an empty array, and there's nothing to send. Only
+                # empty blocks for the client's timeout counts as gone silent,
+                # or a broken receiver would hold the slot until the limit.
                 if not block.samples.size:
+                    if time.monotonic() - last_samples > client.timeout_s:
+                        raise KiwiError("timeout", f"{host} stopped sending audio")
                     continue
+                last_samples = time.monotonic()
                 audio = self._demod.process(block.samples)
                 await self._send_bytes(AUDIO_TAG + encode_audio(audio))
                 for frame in self._spectrum.process(block.samples):

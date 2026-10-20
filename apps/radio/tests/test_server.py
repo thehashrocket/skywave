@@ -2,6 +2,7 @@ import asyncio
 import json
 import threading
 import time
+from functools import partial
 
 import numpy as np
 import pytest
@@ -9,6 +10,7 @@ from fastapi import WebSocketDisconnect, status
 from fastapi.testclient import TestClient
 
 from skywave_radio.config import Settings, origin_allowed
+from skywave_radio.kiwi import KiwiClient
 from skywave_radio.server import create_app
 from skywave_radio.session import AUDIO_TAG, SPECTRUM_TAG
 
@@ -115,6 +117,19 @@ def test_empty_kiwi_blocks_send_no_audio_frame():
 
     audio = run_with_fake(body, empty_blocks=3)
     assert audio and all(len(a) == BLOCK for a in audio)
+
+
+# Value: protects=a receiver sending only empty blocks ends with the usual timeout instead of holding a listener slot until the session limit; fails_when=empty blocks are skipped without a deadline; why_new=Codex found the empty-block skip let a broken Kiwi pin a slot; seam=none; no_claim=a real Kiwi's empty-block pattern
+def test_receiver_sending_only_empty_blocks_times_out():
+    def body(kiwi):
+        app = create_app(settings(), client_factory=partial(KiwiClient, timeout_s=0.5))
+        with TestClient(app).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            return until_state(ws, "error")
+
+    statuses = run_with_fake(body, empty_blocks=10**6)
+    assert statuses[-1]["code"] == "timeout"
+    assert "stopped sending audio" in statuses[-1]["message"]
 
 
 def test_listen_end_to_end():
