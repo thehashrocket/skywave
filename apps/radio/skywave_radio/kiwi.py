@@ -42,6 +42,11 @@ SND_FLAG_COMPRESSED = 0x10
 GPS_HEADER_BYTES = 10
 DEFAULT_PORT = 8073
 HTTPS_PORT = 443
+# How long close() waits for the Kiwi's half of the closing handshake. When
+# we stop reading (a stalled browser stops the pump), the Kiwi's audio fills
+# our queue and its close reply sits behind it, so this is how long the
+# channel and our listener slot outlive a dead tab. websockets' default is 10 s.
+CLOSE_TIMEOUT_S = 2.0
 REDIRECT_STATUSES = {300, 301, 302, 303, 307, 308}
 
 # Kiwis run at about 12 kHz (or 20.25 kHz in wideband mode). The receiver
@@ -222,6 +227,7 @@ class KiwiClient:
                     max_size=2**20,
                     compression=None,
                     open_timeout=self.timeout_s,
+                    close_timeout=CLOSE_TIMEOUT_S,
                     ping_interval=None,  # the Kiwi has its own keepalive
                     user_agent_header="skywave",
                 ),
