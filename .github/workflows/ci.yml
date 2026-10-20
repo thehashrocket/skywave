@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Install pnpm 12 directly: a pnpm 10 runner switching to 12 skips its
+      # native-binary install script and every command fails with ENOEXEC.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.14.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test:web
+
+  radio:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: apps/radio/pyproject.toml
+      # test:radio runs apps/radio/.venv/bin/python, so build the venv there.
+      - run: python -m venv apps/radio/.venv
+      - run: apps/radio/.venv/bin/pip install -e "apps/radio[dev]"
+      # Same command as `pnpm test:radio`, without installing Node for it.
+      - run: cd apps/radio && .venv/bin/python -m pytest -q
