@@ -114,10 +114,16 @@ def _run_lookup(fut: Future, host: str, port: int) -> None:
         fut.set_exception(e)
 
 
+def _in_flight(owner: Hashable | None) -> Future | None:
+    """This client's lookup whose thread is still running, if any."""
+    prev = _last_lookup.get(owner) if owner is not None else None
+    return prev if prev is not None and not prev.done() else None
+
+
 async def _wait_for_previous_lookup(owner: Hashable | None) -> None:
     """Let this client's earlier lookup finish before starting another."""
-    prev = _last_lookup.get(owner) if owner is not None else None
-    if prev is None or prev.done():
+    prev = _in_flight(owner)
+    if prev is None:
         return
     try:
         await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(prev)), timeout=DNS_TIMEOUT_S)
@@ -143,8 +149,7 @@ def _lookup(host: str, port: int, owner: Hashable | None) -> asyncio.Future:
     with _pending_lock:
         # Checked and claimed under the lock: several sockets from one client
         # can all see the previous lookup finish at once, and only one may go.
-        prev = _last_lookup.get(owner) if owner is not None else None
-        if prev is not None and not prev.done():
+        if _in_flight(owner):
             raise _still_waiting()
         if _pending >= MAX_PENDING_LOOKUPS:
             raise HostRejected(None, "The radio service has too many address lookups stuck; try again shortly.")
