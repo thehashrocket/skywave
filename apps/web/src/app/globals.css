@@ -161,6 +161,261 @@ a {
   font-size: 0.92rem;
 }
 
+/* Public receiver list */
+
+.receivers {
+  display: grid;
+  gap: 10px;
+  margin-top: -8px;
+}
+
+.receivers-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.pick-best {
+  font: inherit;
+  font-weight: 700;
+  padding: 7px 16px;
+  border-radius: var(--radius-knob);
+  border: 1px solid var(--brass);
+  background: transparent;
+  color: var(--brass);
+  cursor: pointer;
+}
+
+.pick-best:hover:not(:disabled) {
+  background: rgba(193, 154, 75, 0.12);
+}
+
+.pick-best:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.receivers-note {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.receivers-browse summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--glass);
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 1.15rem;
+}
+
+.receivers-table-wrap {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 14px 16px;
+  background: var(--enamel-raised);
+  border-radius: var(--radius-panel);
+}
+
+.receivers-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 20px;
+}
+
+.receivers-search input {
+  width: min(280px, 100%);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 8px;
+  font-size: 0.92rem;
+}
+
+.check input {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--brass);
+}
+
+.link-button {
+  justify-self: start;
+  padding: 0 0 8px;
+  font: inherit;
+  font-size: 0.92rem;
+  color: var(--lamp);
+  background: none;
+  border: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.link-button.inline {
+  padding: 0;
+  font-size: inherit;
+}
+
+.receivers-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 1rem;
+}
+
+/* The table scrolls on its own so the dial stays near the top of the page. */
+.receivers-scroll {
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+  /* Keep a focused row from scrolling in under the sticky header. */
+  scroll-padding-top: 2.5rem;
+}
+
+/* The scroll box clips anything outside it, so draw focus rings inside. */
+.receivers-scroll :focus-visible {
+  outline-offset: -2px;
+}
+
+.receivers-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  background: var(--enamel-raised);
+  /* A border would stay behind under border-collapse; a shadow moves with the sticky cell. */
+  box-shadow: inset 0 -1px 0 var(--rule);
+}
+
+.receivers-table th button {
+  padding: 4px 0;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.receivers-table th button:hover,
+.receivers-table th[aria-sort] button {
+  color: var(--text);
+}
+
+.receivers-table th button:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* The empty alt text after "/" keeps screen readers on aria-sort instead of reading the glyphs. */
+.receivers-table th:not([aria-sort]) button::after {
+  content: " ↕" / "";
+  opacity: 0.5;
+}
+
+.receivers-table th[aria-sort="ascending"] button::after {
+  content: " ▲" / "";
+}
+
+.receivers-table th[aria-sort="descending"] button::after {
+  content: " ▼" / "";
+}
+
+.receivers-table td {
+  padding: 2px 8px 2px 0;
+  border-bottom: 1px solid rgba(43, 85, 96, 0.5);
+  vertical-align: middle;
+}
+
+.receivers-table tbody tr {
+  cursor: pointer;
+}
+
+.receivers-table tbody tr:hover td {
+  background: rgba(212, 230, 216, 0.08);
+}
+
+.receivers-table .num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.receivers-table tr[data-full] .num:last-child {
+  color: var(--muted);
+}
+
+.receivers-table tr[data-current] .receiver-name {
+  color: var(--lamp);
+}
+
+.receiver-choose {
+  display: grid;
+  width: 100%;
+  padding: 6px 0;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.receivers-table tbody tr:hover .receiver-name {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* The tuned row keeps its lamp colour under the pointer. */
+.receivers-table tbody tr:not([data-current]):hover .receiver-name {
+  color: var(--glass);
+}
+
+.receiver-name,
+.receiver-host {
+  overflow-wrap: anywhere;
+}
+
+.receiver-host {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.receiver-tuned {
+  color: var(--lamp);
+}
+
+.col-location {
+  max-width: 22ch;
+  color: var(--muted);
+}
+
+.receivers-credit,
+.receivers-sort-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.receivers-sort-note {
+  padding-bottom: 8px;
+}
+
+.receivers-empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.receivers-empty p {
+  margin: 0;
+}
+
 /* The dial: the one loud thing on the page */
 
 .dial {
@@ -723,6 +978,24 @@ a {
   }
   .field-host {
     flex: 1 1 100%;
+  }
+  .col-location {
+    display: none;
+  }
+  .pick-best,
+  .link-button,
+  .receivers-table th button {
+    min-height: 44px;
+  }
+  .receivers-browse summary {
+    padding-block: 10px;
+  }
+  /* Inside a sentence, a link keeps the line's height. */
+  .link-button.inline {
+    min-height: 0;
+  }
+  .receivers-table-wrap {
+    padding: 12px;
   }
   .waterfall-screen canvas {
     height: 180px;
