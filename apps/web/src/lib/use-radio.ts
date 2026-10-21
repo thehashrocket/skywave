@@ -23,6 +23,7 @@ export type Tuning = {
  */
 export const RADIO_ERROR_CODES = [
   "busy",
+  "no_apps",
   "down",
   "unreachable",
   "timeout",

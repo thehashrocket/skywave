@@ -13,6 +13,7 @@ export const MAX_ATTEMPTS = 3; // README "Using it" quotes this number.
 /** How the skip note describes each failure. Every code needs one. */
 const WHY_SKIPPED: Record<RadioErrorCode, string> = {
   busy: "was full",
+  no_apps: "only takes listeners on its own web page",
   down: "is down",
   unreachable: "didn't answer",
   timeout: "didn't answer",
