@@ -341,8 +341,11 @@ describe("ReceiverPicker", () => {
   });
 
   // Value: protects=the folded table says what it holds, and the list refreshes just after the server's copy expires; fails_when=the summary text is dropped or the poll ignores fetchedAt; why_new=DT1 fold, R8 refetch, adversarial review (polls ran a full TTL late); seam=react-query observer options; no_claim=react-query's timer itself
-  it("folds the table under All receivers (N) and refetches every 15 minutes", async () => {
-    const { queryClient } = renderPicker(Promise.resolve({ receivers, fetchedAt: Date.now() - 10 * 60_000 }));
+  it("folds the table under All receivers (N) and polls just after the server's copy expires", async () => {
+    // The server's clock is an hour off; only the age it reports matters.
+    const { queryClient } = renderPicker(
+      Promise.resolve({ receivers, fetchedAt: Date.now() + 60 * 60_000, ageMs: 10 * 60_000 }),
+    );
     await screen.findByText("All receivers (4)");
     const [query] = queryClient.getQueryCache().getAll();
     const interval = query!.observers[0]!.options.refetchInterval as (q: typeof query) => number;
@@ -351,19 +354,18 @@ describe("ReceiverPicker", () => {
     expect(interval(query)).toBeLessThanOrEqual(5 * 60_000 + 5_000);
   });
 
+  // Value: protects=the list is polled just after the server's copy expires, then at the server's retry pace, and soon after a failed first load; fails_when=nextRefetchMs's age thresholds or the floor/ceiling drift; why_new=list polling (PR 1 review, skew-proof in PR 2a); seam=none; no_claim=react-query's timer itself
   it.each([
-    ["a copy fetched 10 min ago", 0, 10 * 60_000, 5 * 60_000 + 5_000],
-    ["a copy fetched just now", 0, 0, 15 * 60_000],
-    ["a copy a moment from expiring", 0, 15 * 60_000 - 1, 5_001],
-    ["a copy that just expired (the server is refreshing it)", 0, 15 * 60_000, 15_000],
-    ["an expired copy within the server's retry window", 0, 16 * 60_000 - 1, 15_000],
-    ["a copy still old after the server's retry (mirror down)", 0, 16 * 60_000, 60_000],
-    ["a stale copy from a long outage", 0, 60 * 60_000, 60_000],
-    ["a server clock far ahead of the viewer's", 30 * 60_000, 0, 15 * 60_000],
-    ["a viewer clock far ahead of the server's", 0, 25 * 60 * 60_000, 60_000],
-    ["no copy yet", undefined, 0, 15 * 60_000],
-  ])("polls again just after the server's copy expires: %s", (_case, fetchedAt, now, wait) => {
-    expect(nextRefetchMs(fetchedAt, now)).toBe(wait);
+    ["a copy 10 min old", 10 * 60_000, 5 * 60_000 + 5_000],
+    ["a copy fetched just now", 0, 15 * 60_000],
+    ["a copy a moment from expiring", 15 * 60_000 - 1, 5_001],
+    ["a copy that just expired (the server is refreshing it)", 15 * 60_000, 15_000],
+    ["an expired copy within the server's retry window", 16 * 60_000 - 1, 15_000],
+    ["a copy still old after the server's retry (mirror down)", 16 * 60_000, 60_000],
+    ["a stale copy from a long outage", 60 * 60_000, 60_000],
+    ["no copy yet (the first load failed)", undefined, 15_000],
+  ])("polls again at the right time: %s", (_case, age, wait) => {
+    expect(nextRefetchMs(age)).toBe(wait);
   });
 });
 
@@ -442,8 +444,10 @@ describe("ReceiverTable Night column", () => {
     expect([night("Alpha"), night("Charlie")]).toEqual(["Night", "Day"]);
     expect(names()).toEqual(["Charlie", "Alpha", "Bravo"]);
 
-    // A fresh list is a fresh sort.
+    // A fresh list waits until it's taken, then sorts by the sun now.
     view.rerender(table([...placed], midnight));
+    expect(names()).toEqual(["Charlie", "Alpha", "Bravo"]);
+    fireEvent.click(screen.getByRole("button", { name: "Show it" }));
     expect(names()).toEqual(["Alpha", "Charlie", "Bravo"]);
   });
 
@@ -453,5 +457,81 @@ describe("ReceiverTable Night column", () => {
     view.rerender(table(placed, midnight));
     fireEvent.click(screen.getByRole("button", { name: "Night" }));
     expect(names()).toEqual(["Alpha", "Charlie", "Bravo"]);
+  });
+});
+
+describe("ReceiverTable when the list refreshes", () => {
+  const table = (list: Receiver[]) => (
+    <ReceiverTable receivers={list} freqKhz={10_000} current={null} sun={null} onChoose={() => {}} />
+  );
+  const names = () =>
+    within(screen.getByRole("table"))
+      .queryAllByRole("button", { name: /\.example:8073/ })
+      .map((b) => b.querySelector(".receiver-name")!.textContent);
+  // Alpha now has the best signal, Charlie fills up: a new list would reorder the rows.
+  const refreshed = [
+    rx("Alpha", { snr: 45 }),
+    rx("Bravo", { snr: 40, users: 8 }),
+    rx("Charlie", { snr: 30, users: 8 }),
+    rx("Delta", { snr: 50, minKhz: 110_000, maxKhz: 142_000 }),
+  ];
+
+  // Value: protects=a background refresh never moves or removes rows under the reader's click; fails_when=the table renders each new list as it arrives; why_new=Claude adversarial (PR 1): a poll could reorder rows just before a click; seam=rerender with a new list; no_claim=react-query's structural sharing of unchanged lists
+  it("keeps the rows as shown and offers the new list", () => {
+    const view = render(table(receivers));
+    expect(names()).toEqual(["Charlie", "Alpha", "Bravo"]);
+    view.rerender(table(refreshed));
+    expect(names()).toEqual(["Charlie", "Alpha", "Bravo"]);
+    expect(screen.getByRole("status", { name: "" }).textContent).toMatch(/List updated/);
+    fireEvent.click(screen.getByRole("button", { name: "Show it" }));
+    expect(names()).toEqual(["Alpha", "Bravo", "Charlie"]);
+    expect(screen.queryByRole("button", { name: "Show it" })).toBeNull();
+  });
+
+  // Value: protects=keyboard users keep their place after taking the new list (the button goes away); fails_when=focus is left on the removed button, falling back to the page; why_new=a11y review (PR 2a); seam=none; no_claim=screen reader announcement wording
+  it("moves focus to the table after showing the new list", async () => {
+    const view = render(table(receivers));
+    view.rerender(table(refreshed));
+    const show = screen.getByRole("button", { name: "Show it" });
+    show.focus();
+    fireEvent.click(show);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("table", { name: "Public receivers" })));
+  });
+
+  // Value: protects=recovering from an over-filtered table shows the newest list; fails_when=Clear filters resets the filters but keeps the old list; why_new=coverage audit (PR 2a); seam=none; no_claim=none beyond protects
+  it("takes the new list when filters are cleared", () => {
+    const view = render(table(receivers));
+    fireEvent.change(screen.getByLabelText("Search"), { target: { value: "nothing like it" } });
+    view.rerender(table(refreshed));
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(names()).toEqual(["Delta", "Alpha", "Bravo", "Charlie"]);
+  });
+
+  // Value: protects=the listener's own sort or filter shows the newest list; fails_when=adopt() isn't called from the table's controls, so the table stays on an old list until the link is found; why_new=steady rows; seam=none; no_claim=none beyond protects
+  it("takes the new list on the listener's next sort or filter", () => {
+    const view = render(table(receivers));
+    view.rerender(table(refreshed));
+    fireEvent.click(screen.getByLabelText("Has a free slot"));
+    expect(names()).toEqual(["Alpha"]);
+  });
+
+  // Value: protects=a column sort shows the newest list, not the frozen one; fails_when=sortBy stops calling adopt() (it doesn't go through edit()), so a header click re-sorts the old rows and the notice stays; why_new=ship coverage audit (PR 2a): only the checkbox path was tested; seam=rerender with a new list; no_claim=sort direction defaults (other tests)
+  it("takes the new list on a column sort", () => {
+    const view = render(table(receivers));
+    view.rerender(table(refreshed));
+    fireEvent.click(screen.getByRole("button", { name: "SNR" }));
+    expect(names()).toEqual(["Alpha", "Bravo", "Charlie"]);
+    expect(screen.queryByRole("button", { name: "Show it" })).toBeNull();
+  });
+
+  // Value: protects=keyboard focus stays in the list when the new list has no matching rows (no table to focus); fails_when=showUpdated drops the search fallback, so focus falls to the page body; why_new=ship coverage audit (PR 2a): only the table branch was tested; seam=none; no_claim=screen reader announcement wording
+  it("moves focus to the search when the new list shows no rows", async () => {
+    const view = render(table(receivers));
+    view.rerender(table([rx("Delta", { minKhz: 110_000, maxKhz: 142_000 })]));
+    const show = screen.getByRole("button", { name: "Show it" });
+    show.focus();
+    fireEvent.click(show);
+    expect(screen.getByText("No receivers match.")).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Search")));
   });
 });

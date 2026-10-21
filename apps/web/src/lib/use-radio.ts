@@ -39,6 +39,8 @@ export const RADIO_ERROR_CODES = [
 export type RadioErrorCode = (typeof RADIO_ERROR_CODES)[number];
 
 const KNOWN_CODES: ReadonlySet<string> = new Set(RADIO_ERROR_CODES);
+// How long a new connection to the radio service may take to open.
+const CONNECT_TIMEOUT_MS = 10_000;
 
 export type RadioStatus = {
   state: RadioState;
@@ -119,12 +121,14 @@ export function useRadio() {
   // receiver arrives before the service answers a tune; it doesn't count.
   const tuningRef = useRef(false);
   const heardAudioRef = useRef(false);
-  // The receiver the pending tune is for. A dial retune on the last receiver
-  // can still be answered after a switch; that answer doesn't end this tune.
-  const pendingRef = useRef<{ host: string; port: number } | null>(null);
+  // The tune in progress: which receiver an answer must name to end it (a
+  // dial retune on the last receiver can still be answered after a switch),
+  // and what it will send (dial moves while audio or the socket start land here).
+  const pendingRef = useRef<Tuning | null>(null);
 
   const setTuningBoth = useCallback((v: boolean) => {
     tuningRef.current = v;
+    if (!v) pendingRef.current = null;
     setTuning(v);
   }, []);
   const setHeardAudioBoth = useCallback((v: boolean) => {
@@ -175,19 +179,20 @@ export function useRadio() {
         const host = typeof msg.host === "string" ? msg.host : undefined;
         const port = typeof msg.port === "number" ? msg.port : undefined;
         const pending = pendingRef.current;
+        // An unknown code would read as "X undefined" in Pick best's note; treat
+        // it as uncoded, which stops Pick best like any service-side error.
+        const code =
+          typeof msg.code === "string" && KNOWN_CODES.has(msg.code) ? (msg.code as RadioErrorCode) : undefined;
         // A tune the service rejects outright (an uncoded error) still names the
         // old receiver, and does end it. A coded error naming the old receiver is
         // that receiver dropping as we leave it; the new tune is still coming.
-        const rejected = state === "error" && typeof msg.code !== "string";
+        const rejected = state === "error" && !code;
         const forAnother =
           pending !== null &&
           !rejected &&
           host !== undefined &&
           (host.toLowerCase() !== pending.host.toLowerCase() || (port !== undefined && port !== pending.port));
-        if (!forAnother) {
-          pendingRef.current = null;
-          setTuningBoth(false);
-        }
+        if (!forAnother) setTuningBoth(false);
         if (state !== "listening") {
           setMeter(null);
           setHeardAudioBoth(false);
@@ -195,9 +200,7 @@ export function useRadio() {
         setStatus({
           state,
           message: typeof msg.message === "string" ? msg.message : undefined,
-          // An unknown code would read as "X undefined" in Pick best's note; treat
-          // it as uncoded, which stops Pick best like any service-side error.
-          code: typeof msg.code === "string" && KNOWN_CODES.has(msg.code) ? (msg.code as RadioErrorCode) : undefined,
+          code,
           retryAfterMs: typeof msg.retryAfterMs === "number" && msg.retryAfterMs > 0 ? msg.retryAfterMs : undefined,
           sampleRate,
           host,
@@ -255,6 +258,8 @@ export function useRadio() {
       return new Promise((resolve, reject) => {
         existing.addEventListener("open", () => resolve(existing), { once: true });
         existing.addEventListener("error", () => reject(new Error("socket")), { once: true });
+        // The connect timeout closes it; don't rely on the browser firing error first.
+        existing.addEventListener("close", () => reject(new Error("socket")), { once: true });
       });
     }
     return new Promise((resolve, reject) => {
@@ -263,8 +268,22 @@ export function useRadio() {
       wsRef.current = ws;
       stoppingRef.current = false;
       warnedFrameRef.current = false;
-      ws.onopen = () => resolve(ws);
-      ws.onerror = () => reject(new Error("socket"));
+      // A service behind an address that drops packets never answers; don't
+      // leave the page connecting until the browser gives up.
+      const timer = setTimeout(() => {
+        if (ws.readyState !== WebSocket.CONNECTING) return;
+        if (wsRef.current === ws) wsRef.current = null;
+        ws.close();
+        reject(new Error("timeout"));
+      }, CONNECT_TIMEOUT_MS);
+      ws.onopen = () => {
+        clearTimeout(timer);
+        resolve(ws);
+      };
+      ws.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error("socket"));
+      };
       ws.onmessage = (e) => {
         // A closing socket can still deliver a status that's no longer true.
         if (wsRef.current !== ws) return;
@@ -301,7 +320,7 @@ export function useRadio() {
   const tune = useCallback(
     async (t: Tuning) => {
       const generation = ++generationRef.current;
-      pendingRef.current = { host: t.host, port: t.port };
+      pendingRef.current = t;
       setTuningBoth(true);
       setHeardAudioBoth(false);
       try {
@@ -326,13 +345,19 @@ export function useRadio() {
         return;
       }
       if (generation !== generationRef.current) return;
-      ws.send(JSON.stringify({ type: "tune", ...t }));
+      // gstack-shortcut(dec-9ddd7713): a dial move answered mid-switch can be undone by this send, upgrade when PR 2b touches use-radio (TODOS: "Don't let a late tune undo a dial move made mid-switch")
+      ws.send(JSON.stringify({ type: "tune", ...(pendingRef.current ?? t) }));
     },
     [ensureAudio, ensureSocket, setTuningBoth, setHeardAudioBoth],
   );
 
-  /** Retune only if already listening; never opens a connection on its own. */
+  /**
+   * Retune the receiver being listened to or tuned; never opens a connection
+   * on its own. A tune still starting sends this instead of what it began with.
+   */
   const retune = useCallback((t: Tuning) => {
+    const pending = pendingRef.current;
+    if (pending && pending.host === t.host && pending.port === t.port) pendingRef.current = t;
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "tune", ...t }));
   }, []);

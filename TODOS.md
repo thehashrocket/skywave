@@ -16,88 +16,52 @@
 
 ## Web app
 
-### Back: keep the right target through Stop, refusals and new dial flags
+### Don't let a late tune undo a dial move made mid-switch
 
-**What:** Rework the Back target in `apps/web/src/app/page.tsx` (`heard` history and `backTo`) so it handles three cases it gets wrong today.
+**What:** In `use-radio`'s `tune()`, skip the final `ws.send` when this generation's tune was already answered (the service named the pending receiver), or keep the latest Tuning in a ref that only `tune`/`stop` reset.
 
-**Why:** Stop pressed while a switch is still connecting (or just failed) makes Back disappear or jump two receivers back, because the idle branch always returns `previous`. A receiver reached again later from the list or over https keeps the flags it was first dialed with, so Back can redial it the old way. And after a refused (`no_apps`) receiver is dropped from the history and then plays again, Back can offer the receiver just stopped.
+**Why:** With the socket open, `tune(B@f1)` can stall in `ensureAudio()` (a suspended audio device, common on phones). A dial drag then sends `retune(B@f2)` at once; the service answers for B, which ends the tune and clears `pendingRef`. When audio resumes, `tune()` sends its own `t` (B@f1), so the radio plays f1 while the dial shows f2, with no error. The next dial move corrects it.
 
-**Context:** Deferred from the receiver map PR 1 /ship review (Codex structured P2, Codex adversarial, Claude adversarial; 2026-10-21); fix at the start of PR 2, which adds Back to the map card and the map's "last" ring. Likely shape: treat the receiver in the fields as "shown" when idle (so Stop mid-switch keeps pointing at the one left), refresh `fromList`/`secure`/`label` when a receiver plays again, and never promote `previous` to `last` when they are the same receiver. Also decide whether Back should name a host-less failure (service drop) as a retry or fall back to `previous`, and whether the status line should name the receiver it is connecting to. Tests in `page.test.tsx` next to the existing Back tests.
-
-**Effort:** S
-**Priority:** P2
-**Depends on:** None
-
-### Don't stall on an error code this build doesn't know
-
-**What:** In `use-radio.ts`, decide whether an error ends a pending tune from the sanitized code (`KNOWN_CODES`), not the raw one.
-
-**Why:** A rejected tune names the old receiver. If a newer radio service sends a code this web build doesn't know, the status is shown as uncoded but the pending-tune check still treats it as coded, so the page stays on "Connecting…" with locked fields until Stop.
-
-**Context:** Deferred from the receiver map PR 1 /ship review (Claude adversarial + Codex structured P3, 2026-10-21); only reachable when the service ships a new code before the web app, which the README's deploy order rules out for codes so far. One-line fix at `const rejected = …` plus a test with an unknown code naming the old receiver.
+**Context:** Found by the final Claude adversarial pass in PR 2a's /ship (2026-10-21) after the review cycle cap; deferred by decision 9ddd7713. `pendingRef` is cleared in `setTuningBoth(false)`, which made it both the "awaiting answer" marker and the retune payload. Natural home: PR 2b, which touches this hook.
 
 **Effort:** S
 **Priority:** P2
 **Depends on:** None
 
-### Time out a radio-service connection that never opens
+### Show progress when Try again is pressed
 
-**What:** Give `ensureSocket()` in `use-radio.ts` its own connect deadline (say 10 s) that fails the tune with the existing "Can't reach the radio service" error.
+**What:** While a user-started list retry runs with no list yet, show it next to the still-mounted Try again button (label or `aria-busy`), not on background polls.
 
-**Why:** A tune now shows "Connecting…" and locks the fields from the click. If the radio service's address silently drops packets, the WebSocket stays in CONNECTING until the browser's own network timeout; Stop works, but nothing tells the listener the service is unreachable.
+**Why:** With `retry: false`, pressing Try again changes nothing on screen until the fetch settles, and an identical failure isn't re-announced. A "Trying again…" note that replaced the button (tried in PR 2a) dropped keyboard focus and re-announced every 15 s poll.
 
-**Context:** Deferred from the receiver map PR 1 /ship review (Codex adversarial, 2026-10-21). Close the half-open socket on timeout and keep the generation guard so a late open can't revive it. Test with a `FakeSocket` that never opens and fake timers.
-
-**Effort:** S
-**Priority:** P2
-**Depends on:** None
-
-### Keep table rows still while the list refreshes
-
-**What:** Hold the receiver table's row order (and filtered set) steady when a background refetch delivers a new list, until the listener changes sort, filter or search, or presses a "List updated" control.
-
-**Why:** The list is now polled while the table is open. Default order and "Has a free slot" depend on listener counts, so a refresh can move rows just before a click and the click lands on a different receiver than the one aimed at.
-
-**Context:** Deferred from the receiver map PR 1 /ship review (Claude adversarial, 2026-10-21). The Night sort already freezes its order (`sortSun` in `ReceiverPicker.tsx`); extend that idea to the whole order. Fold in the polling follow-ups from the same review: each poll re-downloads the whole list (a small "has it changed?" query or an `unchanged` reply would make repeat polls cheap), and a viewer clock 15-16 minutes ahead of the server polls every 15 s (have the server send the copy's age instead of comparing two clocks).
-
-**Effort:** M
-**Priority:** P2
-**Depends on:** None
-
-### Keep dial changes made while a first connection starts
-
-**What:** Send the newest frequency and mode once a tune that started from idle or an error is answered, instead of dropping dial, readout, preset and mode changes made in that window.
-
-**Why:** `sendRetune` (`apps/web/src/app/page.tsx`) only sends while the status is connecting or listening, but `tune()` waits on audio setup and the socket first, which can take seconds on a cold start. The page already shows that window as "Connecting…", so the service then connects on the old frequency while the readout shows the new one.
-
-**Context:** Deferred from the receiver map PR 1 /ship review (red team pass 3, 2026-10-21); fix at the start of PR 2. Either read the latest freq/mode right before `ws.send` in `use-radio`'s `tune()`, or send one retune when the pending receiver's first status arrives and it differs from what was sent. Test: start a tune with audio setup stalled (`workletReady`), move the dial, then check the tune or the follow-up retune carries the new frequency.
+**Context:** PR 2a /ship final review (2026-10-21). Track a local "manual retry" flag rather than `list.isFetching`.
 
 **Effort:** S
-**Priority:** P2
+**Priority:** P3
 **Depends on:** None
 
-### Don't leave a port-0 tune stuck on "Connecting…"
+### Small receiver-table follow-ups from PR 2a review
 
-**What:** Normalize a typed port of 0 (or anything outside 1-65535) to the default port, or reject it, before tuning.
+**What:** (1) "Show all N" should `adopt()` the new list like the other row-shaping controls. (2) The held table's "fetched N ago" freezes when a poll returns identical rows (react-query keeps the `receivers` reference); refresh `view.fetchedAt` silently. (3) The credit's age still subtracts the server's `fetchedAt` from the browser clock; use `ageMs` like the poller. (4) `validPort` accepts `0x1F90` and `1e3`; require digits.
 
-**Why:** The field and `parseReceiver` accept `0`; the service quietly dials 8073 (`int(port or DEFAULT_PORT)` in `session.py`) and reports port 8073, so `use-radio`'s pending-receiver check never matches. The receiver plays while the page shows "Connecting…" with the fields locked, and it's never saved or offered as Back.
+**Why:** Each is a small inconsistency left after the steady-rows work; none breaks listening.
 
-**Context:** Deferred from the receiver map PR 1 /ship review (red team pass 3, 2026-10-21); fix at the start of PR 2. Fix in `normalizeReceiver`/`listen` in `page.tsx` (or make the service reject port 0 with a BadRequest). Test: type `host:0`, Listen, deliver `listening` on 8073, and check the page leaves the connecting state.
+**Context:** Codex structured + Claude adversarial passes, PR 2a /ship (2026-10-21). Also noted there and judged fine: Pick best ranks the newest list while the table is held (it should use the freshest data).
 
 **Effort:** S
-**Priority:** P2
+**Priority:** P3
 **Depends on:** None
 
-### Give Pick best's fallback the old receiver's real scheme and list tag
+### Make repeat list polls cheap
 
-**What:** When Pick best returns to the receiver that was playing before it started, dial it with that receiver's own `secure` and list tag.
+**What:** Let the receiver table's background polls skip the full list when nothing changed: a small `receivers.version` query (fetchedAt/stale only), or `receivers.list` accepting the client's `fetchedAt` and answering `{ unchanged: true }`.
 
-**Why:** `provenance` (`apps/web/src/app/page.tsx`) only knows the receiver the page is tuned to. If Pick best starts in the moment after a table or Back click, before the service answers, the fallback is the old receiver but the page is already tuned to the new one, so the old one is dialed as typed and insecure: an https-only receiver fails over ws://, and a list receiver loses its public-only rule when `ALLOW_PRIVATE_HOSTS` is on.
+**Why:** Each poll re-downloads the whole list (about 700 receivers) even when the server's copy is the same, which during a mirror outage means a full transfer a minute per open tab.
 
-**Context:** Deferred from the receiver map PR 1 /ship review (red team pass 3, 2026-10-21); fix at the start of PR 2. Look the fallback up in the page's Back history (`heard.last` / `heard.previous`) before defaulting. Test in `page.test.tsx`: secure receiver A playing, click a list receiver, start Pick best before any status, fail every candidate, and check A is redialed with `secure: true`.
+**Context:** Split from "Keep table rows still while the list refreshes" (PR 2a, 2026-10-21), which shipped the steady rows and skew-proof timing. Polls already back off to the server's retry pace (`LIST_RETRY_MS`), so this is cost, not correctness.
 
 **Effort:** S
-**Priority:** P2
+**Priority:** P3
 **Depends on:** None
 
 ### Decide what Preset.receiverHost / receiverPort become
@@ -161,6 +125,97 @@
 **Depends on:** None
 
 ## Completed
+
+### Back: keep the right target through Stop, refusals and new dial flags
+
+**What:** Rework the Back target in `apps/web/src/app/page.tsx` (`heard` history and `backTo`) so it handles three cases it gets wrong today.
+
+**Why:** Stop pressed while a switch is still connecting (or just failed) makes Back disappear or jump two receivers back, because the idle branch always returns `previous`. A receiver reached again later from the list or over https keeps the flags it was first dialed with, so Back can redial it the old way. And after a refused (`no_apps`) receiver is dropped from the history and then plays again, Back can offer the receiver just stopped.
+
+**Context:** Deferred from the receiver map PR 1 /ship review (Codex structured P2, Codex adversarial, Claude adversarial; 2026-10-21); fix at the start of PR 2, which adds Back to the map card and the map's "last" ring. Likely shape: treat the receiver in the fields as "shown" when idle (so Stop mid-switch keeps pointing at the one left), refresh `fromList`/`secure`/`label` when a receiver plays again, and never promote `previous` to `last` when they are the same receiver. Also decide whether Back should name a host-less failure (service drop) as a retry or fall back to `previous`, and whether the status line should name the receiver it is connecting to. Tests in `page.test.tsx` next to the existing Back tests.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+**Completed:** receiver map PR 2a (2026-10-21)
+
+### Don't stall on an error code this build doesn't know
+
+**What:** In `use-radio.ts`, decide whether an error ends a pending tune from the sanitized code (`KNOWN_CODES`), not the raw one.
+
+**Why:** A rejected tune names the old receiver. If a newer radio service sends a code this web build doesn't know, the status is shown as uncoded but the pending-tune check still treats it as coded, so the page stays on "Connecting…" with locked fields until Stop.
+
+**Context:** Deferred from the receiver map PR 1 /ship review (Claude adversarial + Codex structured P3, 2026-10-21); only reachable when the service ships a new code before the web app, which the README's deploy order rules out for codes so far. One-line fix at `const rejected = …` plus a test with an unknown code naming the old receiver.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+**Completed:** receiver map PR 2a (2026-10-21)
+
+### Time out a radio-service connection that never opens
+
+**What:** Give `ensureSocket()` in `use-radio.ts` its own connect deadline (say 10 s) that fails the tune with the existing "Can't reach the radio service" error.
+
+**Why:** A tune now shows "Connecting…" and locks the fields from the click. If the radio service's address silently drops packets, the WebSocket stays in CONNECTING until the browser's own network timeout; Stop works, but nothing tells the listener the service is unreachable.
+
+**Context:** Deferred from the receiver map PR 1 /ship review (Codex adversarial, 2026-10-21). Close the half-open socket on timeout and keep the generation guard so a late open can't revive it. Test with a `FakeSocket` that never opens and fake timers.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+**Completed:** receiver map PR 2a (2026-10-21)
+
+### Keep table rows still while the list refreshes
+
+**What:** Hold the receiver table's row order (and filtered set) steady when a background refetch delivers a new list, until the listener changes sort, filter or search, or presses a "List updated" control.
+
+**Why:** The list is now polled while the table is open. Default order and "Has a free slot" depend on listener counts, so a refresh can move rows just before a click and the click lands on a different receiver than the one aimed at.
+
+**Context:** Deferred from the receiver map PR 1 /ship review (Claude adversarial, 2026-10-21). The Night sort already freezes its order (`sortSun` in `ReceiverPicker.tsx`); extend that idea to the whole order. Fold in the polling follow-ups from the same review: each poll re-downloads the whole list (a small "has it changed?" query or an `unchanged` reply would make repeat polls cheap), and a viewer clock 15-16 minutes ahead of the server polls every 15 s (have the server send the copy's age instead of comparing two clocks).
+
+**Effort:** M
+**Priority:** P2
+**Depends on:** None
+**Completed:** receiver map PR 2a (2026-10-21)
+
+### Keep dial changes made while a first connection starts
+
+**What:** Send the newest frequency and mode once a tune that started from idle or an error is answered, instead of dropping dial, readout, preset and mode changes made in that window.
+
+**Why:** `sendRetune` (`apps/web/src/app/page.tsx`) only sends while the status is connecting or listening, but `tune()` waits on audio setup and the socket first, which can take seconds on a cold start. The page already shows that window as "Connecting…", so the service then connects on the old frequency while the readout shows the new one.
+
+**Context:** Deferred from the receiver map PR 1 /ship review (red team pass 3, 2026-10-21); fix at the start of PR 2. Either read the latest freq/mode right before `ws.send` in `use-radio`'s `tune()`, or send one retune when the pending receiver's first status arrives and it differs from what was sent. Test: start a tune with audio setup stalled (`workletReady`), move the dial, then check the tune or the follow-up retune carries the new frequency.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+**Completed:** receiver map PR 2a (2026-10-21)
+
+### Don't leave a port-0 tune stuck on "Connecting…"
+
+**What:** Normalize a typed port of 0 (or anything outside 1-65535) to the default port, or reject it, before tuning.
+
+**Why:** The field and `parseReceiver` accept `0`; the service quietly dials 8073 (`int(port or DEFAULT_PORT)` in `session.py`) and reports port 8073, so `use-radio`'s pending-receiver check never matches. The receiver plays while the page shows "Connecting…" with the fields locked, and it's never saved or offered as Back.
+
+**Context:** Deferred from the receiver map PR 1 /ship review (red team pass 3, 2026-10-21); fix at the start of PR 2. Fix in `normalizeReceiver`/`listen` in `page.tsx` (or make the service reject port 0 with a BadRequest). Test: type `host:0`, Listen, deliver `listening` on 8073, and check the page leaves the connecting state.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+**Completed:** receiver map PR 2a (2026-10-21)
+
+### Give Pick best's fallback the old receiver's real scheme and list tag
+
+**What:** When Pick best returns to the receiver that was playing before it started, dial it with that receiver's own `secure` and list tag.
+
+**Why:** `provenance` (`apps/web/src/app/page.tsx`) only knows the receiver the page is tuned to. If Pick best starts in the moment after a table or Back click, before the service answers, the fallback is the old receiver but the page is already tuned to the new one, so the old one is dialed as typed and insecure: an https-only receiver fails over ws://, and a list receiver loses its public-only rule when `ALLOW_PRIVATE_HOSTS` is on.
+
+**Context:** Deferred from the receiver map PR 1 /ship review (red team pass 3, 2026-10-21); fix at the start of PR 2. Look the fallback up in the page's Back history (`heard.last` / `heard.previous`) before defaulting. Test in `page.test.tsx`: secure receiver A playing, click a list receiver, start Pick best before any status, fail every candidate, and check A is redialed with `secure: true`.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+**Completed:** receiver map PR 2a (2026-10-21)
 
 ### Find out why some Kiwis send `too_busy=0` ten seconds in
 

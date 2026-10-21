@@ -172,4 +172,24 @@ describe("receivers.list", () => {
       message: "Couldn't load the public receiver list.",
     });
   });
+
+  // Value: protects=the browser can time its poll from the server's own clock; fails_when=list stops reporting ageMs or measures it from another clock; why_new=red team + Claude adversarial (PR 1): clock skew; seam=fake system time; no_claim=network latency
+  it("reports how old its copy is by its own clock", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // Past the failed load's 10-second cold retry above.
+      vi.setSystemTime(Date.now() + 60_000);
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(FIXTURE)),
+      );
+      const { appRouter } = await import("@/server/root");
+      const caller = appRouter.createCaller({ db: {} } as never);
+      expect((await caller.receivers.list()).ageMs).toBe(0);
+      vi.setSystemTime(Date.now() + 5 * MINUTE);
+      expect((await caller.receivers.list()).ageMs).toBe(5 * MINUTE);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

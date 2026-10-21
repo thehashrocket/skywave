@@ -436,6 +436,52 @@ describe("ListenPage", () => {
     expect(radio.stop).toHaveBeenCalledTimes(1);
   });
 
+  // Value: protects=a port the service can't dial (0, out of range) becomes the Kiwi default before tuning; fails_when=validPort is bypassed, so the service quietly dials 8073 while the page waits on port 0; why_new=red team (PR 1); seam=none; no_claim=receivers on unusual ports
+  it.each(["0", "70000"])("dials the default port for port %s", (typed) => {
+    render(<ListenPage />);
+    fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "kiwi.example" } });
+    fireEvent.change(screen.getByLabelText("Port"), { target: { value: typed } });
+    fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+    expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "kiwi.example", port: 8073 }));
+    expect((screen.getByLabelText("Port") as HTMLInputElement).value).toBe("8073");
+  });
+
+  // Value: protects=dial moves while a first connection starts reach the radio; fails_when=sendRetune only runs once the service says connecting; why_new=red team (PR 1); seam=fake timers; no_claim=use-radio's handling (use-radio.test)
+  it("retunes from the dial while a tune is starting", () => {
+    vi.useFakeTimers();
+    try {
+      radio.tuning = true;
+      localStorage.setItem("skywave.receiver", JSON.stringify({ host: "kiwi.example", port: "8073" }));
+      render(<ListenPage />);
+      radio.retune.mockClear();
+      fireEvent.keyDown(screen.getByRole("slider", { name: "Tuning dial" }), { key: "ArrowUp" });
+      act(() => vi.advanceTimersByTime(500));
+      expect(radio.retune).toHaveBeenCalledWith(expect.objectContaining({ host: "kiwi.example", freqKhz: 10_001 }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=Pick best's way back dials the old receiver as it was reached (https here), even after the page moved on to a new choice; fails_when=provenance only knows the receiver the page is tuned to; why_new=red team (PR 1); seam=none; no_claim=use-pick-best's ranking (its own tests)
+  it("lets Pick best return to the old receiver over https after a click moved on", () => {
+    const view = render(<ListenPage />);
+    fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "https://kiwi.example.org/" } });
+    fireEvent.blur(screen.getByLabelText("Receiver"));
+    fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+    radio.status = { state: "listening", host: "kiwi.example.org", port: 443 };
+    view.rerender(<ListenPage />);
+    // A table click, then Pick best before the service answers it.
+    fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+    act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+    for (const r of [listed, backup]) {
+      radio.status = { state: "error", code: "busy", message: "full", host: r.host, port: r.port };
+      view.rerender(<ListenPage />);
+    }
+    expect(radio.tune).toHaveBeenLastCalledWith(
+      expect.objectContaining({ host: "kiwi.example.org", port: 443, secure: true }),
+    );
+  });
+
   // Value: protects=a tune started from idle or an error reads as connecting and can be stopped, matching the locked fields; fails_when=the button and status follow only the service's status; why_new=design review pass 2 (locked fields beside "Listen" and "Not listening"); seam=none; no_claim=how long the service takes to answer
   it("shows a tune that's starting as connecting, with Stop and no stale error", () => {
     radio.status = { state: "error", message: "This browser blocked audio. Click Listen again." };
@@ -634,6 +680,56 @@ describe("ListenPage", () => {
       expect(radio.tune).not.toHaveBeenCalledWith(expect.objectContaining({ host: "sdr.k1vl.com" }));
     });
 
+    // Value: protects=Stop pressed while a switch connects keeps Back on the receiver you left; fails_when=Back ignores the receiver in the fields once nothing is playing; why_new=Codex structured P2 (PR 1); seam=none; no_claim=none beyond protects
+    it("keeps Back on the receiver you left when Stop interrupts a switch", () => {
+      const view = render(<ListenPage />);
+      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "kiwi.example" } });
+      fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+      radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+      radio.tuning = true;
+      view.rerender(<ListenPage />);
+      // Stop before the service answers.
+      radio.tuning = false;
+      radio.status = { state: "idle" };
+      view.rerender(<ListenPage />);
+      expect(screen.getByRole("button", { name: "Back to kiwi.example" })).toBeTruthy();
+    });
+
+    // Value: protects=when the radio service drops, Back offers the receiver before the one that dropped, not a retry of it; fails_when=a host-less error leaves Back pointing at the receiver just lost; why_new=Codex adversarial (PR 1); seam=none; no_claim=reconnecting by itself
+    it("offers the receiver before when the service drops the current one", () => {
+      const view = heardTwo();
+      radio.status = { state: "error", message: "Lost the connection to the radio service. Is it running?" };
+      view.rerender(<ListenPage />);
+      expect(screen.getByRole("button", { name: "Back to kiwi.example" })).toBeTruthy();
+    });
+
+    // Value: protects=Back redials a receiver the way it was last reached (list tag, https); fails_when=the history keeps the flags from the first time it played; why_new=Codex adversarial (PR 1); seam=none; no_claim=server enforcement of source:"list"
+    it("remembers how a receiver was last reached", () => {
+      const view = render(<ListenPage />);
+      // First typed by hand...
+      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "sdr.k1vl.com" } });
+      fireEvent.change(screen.getByLabelText("Port"), { target: { value: "8076" } });
+      fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      // ...then chosen from the list while it plays; the service answers again.
+      fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      radio.status = { state: "idle" };
+      view.rerender(<ListenPage />);
+      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "kiwi.example" } });
+      fireEvent.change(screen.getByLabelText("Port"), { target: { value: "8073" } });
+      fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+      radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      radio.tune.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Back to K1VL" }));
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "sdr.k1vl.com", source: "list" }));
+    });
+
     // Value: protects=a switch that fails offers Back to the receiver you were just hearing; fails_when=Back only learns a receiver once the next one plays; why_new=adversarial review (Claude + Codex, 3 sources); seam=none; no_claim=none beyond protects
     it("offers Back to the receiver you were hearing when a switch fails", () => {
       const view = render(<ListenPage />);
@@ -651,7 +747,6 @@ describe("ListenPage", () => {
 
       // Two receivers in, a third fails: Back goes to the second.
       const two = heardTwo();
-      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "third.example" } });
       // The listed receiver is playing; stop it first so the fields unlock.
       radio.status = { state: "idle" };
       two.rerender(<ListenPage />);
@@ -707,6 +802,7 @@ describe("ListenPage", () => {
       expect(screen.queryByRole("button", { name: "Back to K1VL" })).toBeNull();
       expect(screen.getByRole("button", { name: "Back to kiwi.example" })).toBeTruthy();
     });
+
     // Value: protects=Back is a user choice like the table: it ends Pick best and drops a queued dial retune; fails_when=Back bypasses switchTo; why_new=E1/O1 shared switch path; seam=fake timers; no_claim=real socket ordering
     it("ends Pick best and drops a queued dial retune", () => {
       vi.useFakeTimers();
