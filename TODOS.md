@@ -16,6 +16,42 @@
 
 ## Web app
 
+### Don't let a late tune undo a dial move made mid-switch
+
+**What:** In `use-radio`'s `tune()`, skip the final `ws.send` when this generation's tune was already answered (the service named the pending receiver), or keep the latest Tuning in a ref that only `tune`/`stop` reset.
+
+**Why:** With the socket open, `tune(B@f1)` can stall in `ensureAudio()` (a suspended audio device, common on phones). A dial drag then sends `retune(B@f2)` at once; the service answers for B, which ends the tune and clears `pendingRef`. When audio resumes, `tune()` sends its own `t` (B@f1), so the radio plays f1 while the dial shows f2, with no error. The next dial move corrects it.
+
+**Context:** Found by the final Claude adversarial pass in PR 2a's /ship (2026-10-21) after the review cycle cap; deferred by decision 9ddd7713. `pendingRef` is cleared in `setTuningBoth(false)`, which made it both the "awaiting answer" marker and the retune payload. Natural home: PR 2b, which touches this hook.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+
+### Show progress when Try again is pressed
+
+**What:** While a user-started list retry runs with no list yet, show it next to the still-mounted Try again button (label or `aria-busy`), not on background polls.
+
+**Why:** With `retry: false`, pressing Try again changes nothing on screen until the fetch settles, and an identical failure isn't re-announced. A "Trying again…" note that replaced the button (tried in PR 2a) dropped keyboard focus and re-announced every 15 s poll.
+
+**Context:** PR 2a /ship final review (2026-10-21). Track a local "manual retry" flag rather than `list.isFetching`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+### Small receiver-table follow-ups from PR 2a review
+
+**What:** (1) "Show all N" should `adopt()` the new list like the other row-shaping controls. (2) The held table's "fetched N ago" freezes when a poll returns identical rows (react-query keeps the `receivers` reference); refresh `view.fetchedAt` silently. (3) The credit's age still subtracts the server's `fetchedAt` from the browser clock; use `ageMs` like the poller. (4) `validPort` accepts `0x1F90` and `1e3`; require digits.
+
+**Why:** Each is a small inconsistency left after the steady-rows work; none breaks listening.
+
+**Context:** Codex structured + Claude adversarial passes, PR 2a /ship (2026-10-21). Also noted there and judged fine: Pick best ranks the newest list while the table is held (it should use the freshest data).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
 ### Make repeat list polls cheap
 
 **What:** Let the receiver table's background polls skip the full list when nothing changed: a small `receivers.version` query (fetchedAt/stale only), or `receivers.list` accepting the client's `fetchedAt` and answering `{ unchanged: true }`.

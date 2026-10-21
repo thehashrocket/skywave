@@ -345,6 +345,7 @@ export function useRadio() {
         return;
       }
       if (generation !== generationRef.current) return;
+      // gstack-shortcut(dec-9ddd7713): a dial move answered mid-switch can be undone by this send, upgrade when PR 2b touches use-radio (TODOS: "Don't let a late tune undo a dial move made mid-switch")
       ws.send(JSON.stringify({ type: "tune", ...(pendingRef.current ?? t) }));
     },
     [ensureAudio, ensureSocket, setTuningBoth, setHeardAudioBoth],
