@@ -8,6 +8,7 @@ import {
   freeSlots,
   isFull,
   LIST_MAX_AGE_MS,
+  LIST_RETRY_MS,
   rankReceivers,
   receiverKey,
   type Receiver,
@@ -18,18 +19,23 @@ import { useTRPC } from "@/lib/trpc";
 
 const PAGE = 50;
 
+// Slack after the server's copy expires, so the poll finds the new one.
+const EXPIRY_SLACK_MS = 5_000;
+// Just after expiry the server is fetching a new copy; ask again soon.
+const JUST_EXPIRED_POLL_MS = 15_000;
+
 /**
  * When to poll the list again: just after the server's copy (fetched at
- * `fetchedAt`) expires. An expired copy means the server is refreshing it in
- * the background, so ask again shortly; a much older one means the mirror is
- * down, so ask once a minute. Never longer than one cache lifetime, whatever
- * the two clocks say.
+ * `fetchedAt`, by the server's clock) expires. For one retry window after
+ * that, ask again soon; later, the mirror is down (or the clocks disagree),
+ * so follow the server's own retry pace. Never longer than one cache lifetime.
  */
 export function nextRefetchMs(fetchedAt: number | undefined, now: number): number {
   if (fetchedAt === undefined) return LIST_MAX_AGE_MS;
   const age = now - fetchedAt;
-  if (age >= LIST_MAX_AGE_MS) return age < 2 * LIST_MAX_AGE_MS ? 15_000 : 60_000;
-  return Math.min(LIST_MAX_AGE_MS, LIST_MAX_AGE_MS - age) + 5_000;
+  if (age >= LIST_MAX_AGE_MS + LIST_RETRY_MS) return LIST_RETRY_MS;
+  if (age >= LIST_MAX_AGE_MS) return JUST_EXPIRED_POLL_MS;
+  return Math.min(LIST_MAX_AGE_MS, LIST_MAX_AGE_MS - age + EXPIRY_SLACK_MS);
 }
 
 export type Playing = { host: string; port: number; phase: "connecting" | "listening" };

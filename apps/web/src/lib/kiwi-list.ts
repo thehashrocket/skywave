@@ -261,6 +261,8 @@ export function parseGps(raw: string): { lat: number; lon: number } | Record<str
 
 /** How long the server keeps the list; the picker refetches on the same beat. */
 export const LIST_MAX_AGE_MS = 15 * 60_000;
+/** After a failed refresh the server keeps its copy this long before asking the mirror again. */
+export const LIST_RETRY_MS = 60_000;
 
 /** The mirror sends every field as a string today; accept numbers too in case that changes. */
 function text(v: unknown): string {

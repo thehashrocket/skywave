@@ -624,12 +624,14 @@ describe("ListenPage", () => {
 
     // Value: protects=a double-click on Back switches once, not there and straight back; fails_when=Back's click ignores e.detail; why_new=red team (the button flips to the receiver just left); seam=none; no_claim=real double-click timing
     it("switches once on a double-click", () => {
-      heardTwo();
+      const view = heardTwo();
       fireEvent.click(screen.getByRole("button", { name: "Back to kiwi.example" }), { detail: 1 });
       radio.tuning = true;
-      fireEvent.click(screen.getByRole("button", { name: /^Back to/ }), { detail: 2 });
+      view.rerender(<ListenPage />);
+      // The button now offers the receiver just left; the second click lands there.
+      fireEvent.click(screen.getByRole("button", { name: "Back to K1VL" }), { detail: 2 });
       expect(radio.tune).toHaveBeenCalledTimes(1);
-      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "kiwi.example" }));
+      expect(radio.tune).not.toHaveBeenCalledWith(expect.objectContaining({ host: "sdr.k1vl.com" }));
     });
 
     // Value: protects=a switch that fails offers Back to the receiver you were just hearing; fails_when=Back only learns a receiver once the next one plays; why_new=adversarial review (Claude + Codex, 3 sources); seam=none; no_claim=none beyond protects

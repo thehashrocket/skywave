@@ -353,10 +353,14 @@ describe("ReceiverPicker", () => {
 
   it.each([
     ["a copy fetched 10 min ago", 0, 10 * 60_000, 5 * 60_000 + 5_000],
-    ["a copy fetched just now", 0, 0, 15 * 60_000 + 5_000],
-    ["an expired copy the server is refreshing", 0, 16 * 60_000, 15_000],
-    ["a stale copy from a mirror outage", 0, 60 * 60_000, 60_000],
-    ["a server clock ahead of the viewer's", 30 * 60_000, 0, 15 * 60_000 + 5_000],
+    ["a copy fetched just now", 0, 0, 15 * 60_000],
+    ["a copy a moment from expiring", 0, 15 * 60_000 - 1, 5_001],
+    ["a copy that just expired (the server is refreshing it)", 0, 15 * 60_000, 15_000],
+    ["an expired copy within the server's retry window", 0, 16 * 60_000 - 1, 15_000],
+    ["a copy still old after the server's retry (mirror down)", 0, 16 * 60_000, 60_000],
+    ["a stale copy from a long outage", 0, 60 * 60_000, 60_000],
+    ["a server clock far ahead of the viewer's", 30 * 60_000, 0, 15 * 60_000],
+    ["a viewer clock far ahead of the server's", 0, 25 * 60 * 60_000, 60_000],
     ["no copy yet", undefined, 0, 15 * 60_000],
   ])("polls again just after the server's copy expires: %s", (_case, fetchedAt, now, wait) => {
     expect(nextRefetchMs(fetchedAt, now)).toBe(wait);
