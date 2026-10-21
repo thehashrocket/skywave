@@ -14,18 +14,6 @@
 **Priority:** P4
 **Depends on:** A receiver that reproduces the failure
 
-### Send Kiwi keepalives from their own task
-
-**What:** Move `SET keepalive` out of the receive loop in `KiwiClient.blocks()` into a task that runs once a second regardless of what the caller is doing.
-
-**Why:** Keepalives only go out when a SND frame is processed. While the session is stuck sending to a stalled browser (up to `SEND_TIMEOUT_S`, 15 s), none go out, and the Kiwi may drop a healthy receiver. Since feat/stream-hardening the deadline no longer blames the receiver for that stall, but the connection can still be lost to it.
-
-**Context:** Raised by the Codex adversarial review of feat/stream-hardening; predates that branch. `_keepalive` is in `apps/radio/skywave_radio/kiwi.py`. The task must stop on `close()` and use the bounded `_send`. Check how long a real Kiwi tolerates a missed keepalive before choosing the design.
-
-**Effort:** M
-**Priority:** P3
-**Depends on:** None
-
 ## Web app
 
 ### Decide what Preset.receiverHost / receiverPort become
@@ -64,7 +52,37 @@
 **Priority:** P4
 **Depends on:** None
 
+### Let Pick best move past a receiver that refuses after audio starts
+
+**What:** Keep Pick best's run open for a short while after "listening", so a `no_apps` refusal in that window moves on to the next receiver with its note.
+
+**Why:** Pick best finishes on "listening" (`apps/web/src/lib/use-pick-best.ts`), but a receiver whose owner allows no apps (`ext_api=0`) plays for about 10 s before it refuses (live probe 2026-10-21: 213 blocks, then `no_apps` at 10.8 s). The list hides these receivers, so Pick best only lands on one when an owner changed the setting since the list was fetched; the listener then sees the right error but has to pick again by hand.
+
+**Context:** Found by the fix/ext-api-receivers /ship review. The window would need to cover about 15 s and must not resume a run the listener has since replaced (the `host`/`port` check on statuses). Test with a status sequence `listening` → `error no_apps` in `use-pick-best.test.ts`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
 ## Completed
+
+### Find out why some Kiwis send `too_busy=0` ten seconds in
+
+**What:** Work out what `too_busy=0` means and whether `KiwiClient._handle_msg` should treat it as "full".
+
+**Why:** In a 2026-10-21 probe, receivers with free slots sent `too_busy=0` about 10 s after connect, with audio flowing and with or without keepalives, and listeners got "is full (0 channels in use)".
+
+**Completed:** fix/ext-api-receivers (2026-10-21). It's the owner's `ext_api` setting: how many connections may come from anything but the Kiwi's own web page. At 0 the Kiwi plays for about 10 s, sends `too_busy=0` and closes, even if we ignore the message (6 of 6 receivers matched; same owner, g8ure:8076 with `ext_api=4` kept us, g8ure:8071 with 0 kicked us). That was 143 of 873 online receivers. The list now drops `ext_api=0` entries (a missing field stays listed), and `too_busy=0` says the receiver only allows its own web page. Other values now read "N listeners max", which is what the number means in the Kiwi's own client, not channels in use. It gets its own error code, `no_apps`; deploy the web app before the radio service for it, so the list stops offering these receivers first. Pick best's note for it only shows when the refusal comes before audio, which no probed receiver did (see "Let Pick best move past a receiver that refuses after audio starts").
+
+### Send Kiwi keepalives from their own task
+
+**What:** Move `SET keepalive` out of the receive loop in `KiwiClient.blocks()` into a task that runs once a second regardless of what the caller is doing.
+
+**Why:** Keepalives only go out when a SND frame is processed. While the session is stuck sending to a stalled browser (up to `SEND_TIMEOUT_S`, 15 s), none go out, and the Kiwi may drop a healthy receiver.
+
+**Context:** Raised by the Codex adversarial review of feat/stream-hardening.
+
+**Closed without a change (2026-10-21):** measured. With audio flowing and no keepalives, f4kiy.ddns.net:8073 dropped us at 61.3 s and 60.7 s, and wessex.zapto.org:8073 at 61.1 s. With keepalives, wessex stayed connected for the full 150 s. A Kiwi tolerates about 60 s without a keepalive, and the session ends after a 15 s browser stall (`SEND_TIMEOUT_S`), so the stall can't cost us the receiver. Reopen if `SEND_TIMEOUT_S` goes above about 45 s.
 
 ### Don't time out a frame that's already queued at the deadline
 
