@@ -33,5 +33,10 @@
     "apps/web/src/lib/use-radio.ts": [
       "apps/radio/tests/test_error_codes.py"
     ]
+  },
+  "strays": {
+    "allow": [
+      "docs/"
+    ]
   }
 }
