@@ -51,7 +51,7 @@ The list comes from [rx.linkfanel.net](http://rx.linkfanel.net/), which mirrors 
 
 ## Using it
 
-- **Receivers:** Pick best tunes the receiver with the highest self-reported HF signal-to-noise ratio that covers your frequency. If it's full, down or otherwise refuses, it tries the next one, up to 3 per click (refusals about the address itself, such as a dead hostname, take no channel on anyone's receiver and don't count, up to 6 receivers in all; a dead name can still take up to 10 seconds to give up on). If nothing works, or you press Stop picking, it goes back to whatever you were listening to. The list's listener counts can be 20 minutes old, so receivers it calls full are ranked last rather than hidden. If the mirror stops answering, the last copy stays in use and the picker says how old it is. Browse the list to search by name, place or antenna, sort by column, and click a receiver to switch to it, even mid-listen.
+- **Receivers:** Pick best tunes the receiver with the highest self-reported HF signal-to-noise ratio that covers your frequency. If it's full, down or otherwise refuses, it tries the next one, up to 3 per click (refusals about the address itself, such as a dead hostname, take no channel on anyone's receiver and don't count, up to 6 receivers in all; a dead name can still take up to 10 seconds to give up on). If nothing works, or you press Stop picking, it goes back to whatever you were listening to. The list's listener counts can be 20 minutes old, so receivers it calls full are ranked last rather than hidden. If the mirror stops answering, the last copy stays in use and the picker says how old it is. Browse the list to search by name, place or antenna, sort by column, and click a receiver to switch to it, even mid-listen. The Night column says whether the sun has set at each receiver right now (sort by it to put the night side first); it's a hint about propagation, not a ranking. After a switch, the **Back to …** button beside the status line names the receiver you heard before and returns to it.
 - **Dial:** drag to tune coarsely (snaps to 5 kHz). Focus it and use arrow keys for 1 kHz steps, Shift for 10, Page Up/Down for 100. Crossing into a ham band switches to the conventional sideband automatically.
 - **Readout:** click the big number and type an exact frequency.
 - **Waterfall:** shows the ±6 kHz the Kiwi is sending. Click a signal to tune to it. The shaded strip is your current mode's passband.
@@ -84,7 +84,9 @@ apps/radio/skywave_radio/
 apps/web/
   src/lib/use-radio.ts               WebSocket + Web Audio graph
   src/components/                    Dial, Waterfall, SMeter, Presets, FrequencyReadout, ReceiverPicker
-  src/lib/kiwi-list.ts               parses and ranks the public receiver list
+  src/lib/kiwi-list.ts               parses and ranks the public receiver list (with positions)
+  src/lib/solar.ts                   where the sun is; which receivers are in darkness
+  src/lib/use-solar-clock.ts         one minute clock for the page's Night column and map
   src/lib/use-pick-best.ts           Pick best's try-the-next-one logic
   src/server/                        tRPC routers (presets, receivers) + Prisma client
   public/worklets/radio-player.js    jitter buffer + resampler
@@ -110,12 +112,12 @@ If the web app is reachable from the internet, set `APP_PASSWORD`. Every request
 
 ```bash
 pnpm test:radio     # DSP math, a fake Kiwi for the protocol, end-to-end WebSocket sessions, scripts/pregate-run.sh
-pnpm test:web       # password gate, preset + receiver APIs, receiver ranking and Pick best, band/S-meter math, the audio worklet's buffer
+pnpm test:web       # password gate, preset + receiver APIs, receiver ranking and Pick best, sun position, band/S-meter math, the audio worklet's buffer
 pnpm typecheck
 ```
 
 ## Next steps
 
-1. **Receiver map:** the public list is already loaded (`src/lib/kiwi-list.ts`) and includes GPS coordinates; plot it and pick receivers by clicking a map. That's also when a `Receiver` table starts paying for itself, so presets can point at one.
+1. **Receiver map:** the public list is already loaded (`src/lib/kiwi-list.ts`) and includes GPS coordinates; plot it and pick receivers by clicking a map. In progress: the table already shows which receivers are in darkness (design in `docs/designs/receiver-map.md`). A receiver stays identified by `host:port`; there's no `Receiver` table.
 2. **Station lookup:** import the EiBi shortwave schedule CSV so tuning 9,535 kHz at 0300 UTC tells you who's probably on and pins the transmitter site.
 3. **Wider view:** the Kiwi's separate waterfall stream (`W/F`) covers the whole 0–30 MHz band; showing it on the dial would let you see activity before tuning.

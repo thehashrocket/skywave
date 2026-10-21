@@ -4,14 +4,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Dial } from "@/components/Dial";
 import { FrequencyReadout } from "@/components/FrequencyReadout";
 import { Presets } from "@/components/Presets";
-import { ReceiverPicker } from "@/components/ReceiverPicker";
+import { ReceiverPicker, type Playing } from "@/components/ReceiverPicker";
 import { SMeter } from "@/components/SMeter";
 import { Waterfall } from "@/components/Waterfall";
-import { covers, type Receiver } from "@/lib/kiwi-list";
+import { covers, receiverKey, type Receiver } from "@/lib/kiwi-list";
 import { MODE_LABELS, MODES, guessMode, type Mode } from "@/lib/radio-types";
 import { DEFAULT_KIWI_PORT, parseReceiver } from "@/lib/receiver";
 import { usePickBest } from "@/lib/use-pick-best";
 import { useRadio } from "@/lib/use-radio";
+import { useSolarClock } from "@/lib/use-solar-clock";
 
 const STORAGE_KEY = "skywave.receiver";
 const CW_PITCH_KHZ = 0.7;
@@ -21,6 +22,12 @@ const CW_PITCH_KHZ = 0.7;
  * public-only; `secure` one that serves https only, dialed over wss://.
  */
 type Saved = { host: string; port: string; fromList?: boolean; secure?: boolean };
+
+/** A receiver to switch to: one from the list, or one heard earlier. */
+type Target = { host: string; port: number; secure?: boolean; name?: string };
+
+/** A receiver that played, so Back can return to it exactly as it was dialed. */
+type Heard = { host: string; port: number; fromList: boolean; secure: boolean; label: string };
 
 function loadReceiver(): Saved {
   try {
@@ -75,6 +82,7 @@ const STATE_TEXT = {
 export default function ListenPage() {
   const radio = useRadio();
   const { status, meter, tune } = radio;
+  const sun = useSolarClock();
   const [host, setHost] = useState("");
   const [port, setPort] = useState(String(DEFAULT_KIWI_PORT));
   // Whether host/port came from the public list. Typing in either field clears it.
@@ -98,6 +106,11 @@ export default function ListenPage() {
   }, []);
 
   const live = status.state === "listening" || status.state === "connecting";
+  // A tune from idle or an error is under way before the service says so;
+  // the form treats it as connecting.
+  const starting = radio.tuning && !live;
+  const busy = live || starting;
+  const shownState = starting ? "connecting" : status.state;
   const liveRef = useRef(live);
   liveRef.current = live;
 
@@ -167,13 +180,16 @@ export default function ListenPage() {
   // Stable so Pick best's retry effect doesn't re-run on every frequency change.
   const latest = useRef({ freqKhz, mode });
   latest.current = { freqKhz, mode };
+  // List names by host:port, so Back can say where it goes.
+  const names = useRef(new Map<string, string>());
   const tuneReceiver = useCallback(
-    (r: Receiver, fromList: boolean) => {
+    (r: Target, fromList: boolean) => {
       // A dial retune still waiting on its timer would otherwise go to the old
       // receiver after this tune and switch the service back.
       if (timer.current) clearTimeout(timer.current);
       timer.current = null;
       pending.current = null;
+      if (r.name) names.current.set(receiverKey(r), r.name);
       const secure = r.secure === true;
       tuning.current = { host: r.host, port: String(r.port), fromList, secure };
       setHost(r.host);
@@ -205,20 +221,35 @@ export default function ListenPage() {
   const stopPicking = useCallback(() => {
     if (!stopPickBest()) radio.stop();
   }, [stopPickBest, radio]);
-  const chooseReceiver = useCallback(
-    (r: Receiver) => {
+  /** Switches receiver from the table or Back: ends any Pick best run, then tunes. */
+  const switchTo = useCallback(
+    (r: Target, fromList: boolean) => {
       cancelPickBest();
-      tuneReceiver(r, true);
+      tuneReceiver(r, fromList);
     },
     [cancelPickBest, tuneReceiver],
   );
-  // The table's dot marks what's playing (or connecting), not what the fields say.
-  const playingHost = live ? status.host : undefined;
-  const playingPort = live ? status.port : undefined;
+  const chooseReceiver = useCallback((r: Receiver) => switchTo(r, true), [switchTo]);
+  // The table's dot marks what's playing (or connecting), not what the fields
+  // say. From the click until the service answers, that's the receiver being
+  // tuned: the status still names the old one.
+  const pendingHost = radio.tuning ? host : undefined;
+  const pendingPort = radio.tuning ? Number(port) || DEFAULT_KIWI_PORT : undefined;
+  const playingHost = pendingHost ?? (live ? status.host : undefined);
+  const playingPort = pendingPort ?? (live ? status.port : undefined);
+  const playingPhase = radio.tuning ? "connecting" : live ? (status.state as Playing["phase"]) : undefined;
   const current = useMemo(
-    () => (playingHost && playingPort ? { host: playingHost, port: playingPort } : null),
-    [playingHost, playingPort],
+    () =>
+      playingHost && playingPort && playingPhase ? { host: playingHost, port: playingPort, phase: playingPhase } : null,
+    [playingHost, playingPort, playingPhase],
   );
+
+  // The last two receivers that played, for Back. They change only when a
+  // different receiver starts playing, so retunes and errors keep them.
+  const [heard, setHeard] = useState<{ last: Heard | null; previous: Heard | null }>({
+    last: null,
+    previous: null,
+  });
 
   // Remember a receiver only once it actually plays, so a typo or a failed
   // Pick best run never becomes the saved default. Only the receiver the page
@@ -226,8 +257,19 @@ export default function ListenPage() {
   // isn't one we know the list tag of.
   const lastSaved = useRef<string | null>(null);
   useEffect(() => {
-    if (status.state !== "listening" || !status.host || !isTarget(status.host, status.port ?? DEFAULT_KIWI_PORT)) return;
+    if (status.state !== "listening" || !status.host || !isTarget(status.host, status.port ?? DEFAULT_KIWI_PORT))
+      return;
     const t = tuning.current;
+    const target = { host: t.host, port: Number(t.port) };
+    const playing: Heard = {
+      ...target,
+      fromList: t.fromList,
+      secure: t.secure,
+      label: names.current.get(receiverKey(target)) ?? t.host,
+    };
+    setHeard((h) =>
+      h.last && receiverKey(h.last) === receiverKey(playing) ? h : { last: playing, previous: h.last ?? h.previous },
+    );
     const saved = JSON.stringify({
       host: t.host,
       port: t.port,
@@ -245,11 +287,28 @@ export default function ListenPage() {
   // don't offer it as the default again.
   useEffect(() => {
     if (status.state !== "error" || status.code !== "no_apps" || !status.host) return;
+    // Nor as the place Back goes.
+    const refused = receiverKey({ host: status.host, port: status.port ?? DEFAULT_KIWI_PORT });
+    const keep = (r: Heard | null) => (r && receiverKey(r) === refused ? null : r);
+    setHeard((h) => ({ last: keep(h.last), previous: keep(h.previous) }));
     const saved = loadReceiver();
     if (saved.host !== status.host || Number(saved.port) !== (status.port ?? DEFAULT_KIWI_PORT)) return;
     forgetReceiver();
     lastSaved.current = null;
   }, [status]);
+
+  // Back goes to the last receiver that played, unless the page is showing
+  // that one (playing, connecting or just failed); then to the one before.
+  // So a switch that fails offers the receiver you were just hearing.
+  const backTo = useMemo(() => {
+    const { last, previous } = heard;
+    // After Stop, nothing is shown; Back keeps pointing where it did.
+    if (status.state === "idle" && !current) return previous;
+    const shown = current ?? (status.host ? { host: status.host, port: status.port ?? DEFAULT_KIWI_PORT } : null);
+    const isShown = (r: Heard | null) => !!r && !!shown && receiverKey(r) === receiverKey(shown);
+    if (last && !isShown(last)) return last;
+    return previous && !isShown(previous) ? previous : null;
+  }, [heard, current, status.state, status.host, status.port]);
 
   const onDial = useCallback(
     (khz: number) => {
@@ -274,7 +333,7 @@ export default function ListenPage() {
           onSubmit={(e) => {
             e.preventDefault();
             cancelPickBest();
-            if (live) radio.stop();
+            if (busy) radio.stop();
             else listen();
           }}
         >
@@ -292,7 +351,7 @@ export default function ListenPage() {
               placeholder="kiwi hostname"
               autoComplete="off"
               spellCheck={false}
-              disabled={live}
+              disabled={busy}
               required
             />
           </div>
@@ -306,34 +365,22 @@ export default function ListenPage() {
                 setFromList(false);
               }}
               inputMode="numeric"
-              disabled={live}
+              disabled={busy}
             />
           </div>
-          <button type="submit" className={live ? "power power-on" : "power"}>
-            {live ? "Stop" : "Listen"}
+          <button
+            type="submit"
+            className={busy ? "power power-on" : "power"}
+            onClick={(e) => {
+              // Listen turns into Stop at once; the second click of a
+              // double-click mustn't stop what the first one started.
+              if (e.detail > 1) e.preventDefault();
+            }}
+          >
+            {busy ? "Stop" : "Listen"}
           </button>
         </form>
       </header>
-
-      <p className="receiver-help">
-        Let skywave pick a receiver, choose one from the list, or paste any address from{" "}
-        <a href="http://kiwisdr.com/public/" target="_blank" rel="noreferrer">
-          kiwisdr.com/public
-        </a>
-        . They're run by volunteers and most allow only a handful of listeners, so stop when you're done.
-      </p>
-
-      <ReceiverPicker
-        freqKhz={freqKhz}
-        current={current}
-        open={browseOpen}
-        onOpenChange={setBrowseOpen}
-        onChoose={chooseReceiver}
-        onPickBest={pickBest.start}
-        picking={pickBest.running}
-        onStopPicking={stopPicking}
-        note={pickBest.note}
-      />
 
       <Dial freqKhz={freqKhz} onChange={onDial} />
 
@@ -370,12 +417,48 @@ export default function ListenPage() {
         </div>
       </section>
 
-      <div className="status" role="status" data-state={status.state}>
-        <span className="status-lamp" aria-hidden="true" />
-        <span className="status-state">{STATE_TEXT[status.state]}</span>
-        {status.state === "listening" && status.host && <span className="status-detail">on {status.host}</span>}
-        {status.message && <span className="status-message">{status.message}</span>}
+      <div className="status-row">
+        <div className="status" role="status" data-state={shownState}>
+          <span className="status-lamp" aria-hidden="true" />
+          <span className="status-state">{STATE_TEXT[shownState]}</span>
+          {status.state === "listening" && status.host && <span className="status-detail">on {status.host}</span>}
+          {status.message && !starting && <span className="status-message">{status.message}</span>}
+        </div>
+        {/* Outside the live region, so a new Back target isn't announced. */}
+        {backTo && (
+          <button
+            type="button"
+            className="link-button status-back"
+            onClick={(e) => {
+              // The button flips to the receiver just left; a double-click would switch straight back.
+              if (e.detail <= 1) switchTo(backTo, backTo.fromList);
+            }}
+          >
+            Back to {backTo.label}
+          </button>
+        )}
       </div>
+
+      <ReceiverPicker
+        freqKhz={freqKhz}
+        current={current}
+        sun={sun}
+        open={browseOpen}
+        onOpenChange={setBrowseOpen}
+        onChoose={chooseReceiver}
+        onPickBest={pickBest.start}
+        picking={pickBest.running}
+        onStopPicking={stopPicking}
+        note={pickBest.note}
+      >
+        <p className="receiver-help">
+          Let skywave pick a receiver, choose one from the list, or paste any address from{" "}
+          <a href="http://kiwisdr.com/public/" target="_blank" rel="noreferrer">
+            kiwisdr.com/public
+          </a>
+          . They're run by volunteers and most allow only a handful of listeners, so stop when you're done.
+        </p>
+      </ReceiverPicker>
 
       <Waterfall
         mode={mode}

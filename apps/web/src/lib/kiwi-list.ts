@@ -23,6 +23,9 @@ export type Receiver = {
   maxKhz: number;
   /** Listed with an https:// URL, so the radio service dials it over wss://. */
   secure?: true;
+  /** Where the receiver is, in degrees; both absent when the list has no usable position. */
+  lat?: number;
+  lon?: number;
 };
 
 type RawEntry = Record<string, unknown>;
@@ -155,6 +158,7 @@ function toReceiver(e: RawEntry): Receiver | null {
     minKhz,
     maxKhz,
     ...(secure && { secure: true as const }),
+    ...parseGps(text(e.gps)),
   };
 }
 
@@ -215,7 +219,8 @@ function isNonPublicIpv4(address: string): boolean {
  * link-local, multicast, documentation, discard, 6to4 and NAT64 (which wrap
  * an IPv4 address we'd otherwise have to unpack), and IPv4-compatible.
  */
-const NON_PUBLIC_IPV6 = /^(::1?|f[cd][0-9a-f]{2}:.*|fe[89ab][0-9a-f]:.*|ff[0-9a-f]{2}:.*|2001:db8:.*|100::.*|2002:.*|64:ff9b:.*|::[0-9a-f]{1,4}:[0-9a-f]{1,4})$/i;
+const NON_PUBLIC_IPV6 =
+  /^(::1?|f[cd][0-9a-f]{2}:.*|fe[89ab][0-9a-f]:.*|ff[0-9a-f]{2}:.*|2001:db8:.*|100::.*|2002:.*|64:ff9b:.*|::[0-9a-f]{1,4}:[0-9a-f]{1,4})$/i;
 
 /** Loopback, private-network and local-only names, as an address or a hostname. */
 function isPrivateHost(name: string): boolean {
@@ -240,6 +245,24 @@ function hfSnr(raw: string): number | null {
   const snr = parts[1] ?? parts[0];
   return snr !== undefined && Number.isFinite(snr) && snr > 0 && snr <= MAX_PLAUSIBLE_SNR ? snr : null;
 }
+
+/**
+ * "(59.546000, 12.526000)" is latitude, longitude. Anything else, out of
+ * range, or exactly (0, 0) (a Kiwi with no position set) gives no position.
+ */
+export function parseGps(raw: string): { lat: number; lon: number } | Record<string, never> {
+  const m = /^\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)$/.exec(raw.trim());
+  if (!m) return {};
+  const lat = Number(m[1]);
+  const lon = Number(m[2]);
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180 || (lat === 0 && lon === 0)) return {};
+  return { lat, lon };
+}
+
+/** How long the server keeps the list; the picker refetches on the same beat. */
+export const LIST_MAX_AGE_MS = 15 * 60_000;
+/** After a failed refresh the server keeps its copy this long before asking the mirror again. */
+export const LIST_RETRY_MS = 60_000;
 
 /** The mirror sends every field as a string today; accept numbers too in case that changes. */
 function text(v: unknown): string {

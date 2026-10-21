@@ -155,7 +155,7 @@ a {
 }
 
 .receiver-help {
-  margin: -8px 0 0;
+  margin: 0;
   max-width: 70ch;
   color: var(--muted);
   font-size: 0.92rem;
@@ -166,7 +166,6 @@ a {
 .receivers {
   display: grid;
   gap: 10px;
-  margin-top: -8px;
 }
 
 .receivers-bar {
@@ -401,6 +400,16 @@ a {
 
 .col-location {
   color: var(--muted);
+}
+
+/* Context, not a ranking: night reads a little brighter, day quieter. */
+.col-night {
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.receivers-table td[data-night="true"] {
+  color: var(--glass);
 }
 
 .location-text {
@@ -764,6 +773,21 @@ a {
 
 .status[data-state="error"] .status-message {
   color: var(--danger);
+}
+
+.status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 16px;
+}
+
+.status-back.link-button {
+  padding: 0;
+  /* Receiver names run long; a wrapped button label would center. */
+  text-align: left;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 /* Waterfall */

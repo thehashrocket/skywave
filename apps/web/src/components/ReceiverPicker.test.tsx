@@ -5,9 +5,10 @@ import { observable } from "@trpc/server/observable";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Receiver } from "@/lib/kiwi-list";
+import { sunPosition } from "@/lib/solar";
 import { TRPCProvider } from "@/lib/trpc";
 import type { AppRouter } from "@/server/root";
-import { ReceiverPicker, ReceiverTable } from "./ReceiverPicker";
+import { nextRefetchMs, ReceiverPicker, ReceiverTable } from "./ReceiverPicker";
 
 afterEach(cleanup);
 
@@ -38,7 +39,13 @@ const receivers = [
 function setup() {
   const onChoose = vi.fn();
   render(
-    <ReceiverTable receivers={receivers} freqKhz={10_000} current={{ host: "", port: 8073 }} onChoose={onChoose} />,
+    <ReceiverTable
+      receivers={receivers}
+      freqKhz={10_000}
+      current={{ host: "", port: 8073, phase: "listening" }}
+      sun={null}
+      onChoose={onChoose}
+    />,
   );
   const names = () =>
     within(screen.getByRole("table"))
@@ -91,7 +98,8 @@ describe("ReceiverTable", () => {
       <ReceiverTable
         receivers={receivers}
         freqKhz={10_000}
-        current={{ host: "charlie.example", port: 8073 }}
+        current={{ host: "charlie.example", port: 8073, phase: "listening" }}
+        sun={null}
         onChoose={() => {}}
       />,
     );
@@ -170,7 +178,8 @@ describe("ReceiverTable", () => {
         receivers={receivers}
         fetchedAt={age === undefined ? undefined : Date.now() - age}
         freqKhz={10_000}
-        current={{ host: "", port: 8073 }}
+        current={{ host: "", port: 8073, phase: "listening" }}
+        sun={null}
         onChoose={() => {}}
       />,
     );
@@ -179,7 +188,15 @@ describe("ReceiverTable", () => {
 
   it("shows 50 rows until asked for all", () => {
     const many = Array.from({ length: 60 }, (_, i) => rx(`R${String(i).padStart(2, "0")}`));
-    render(<ReceiverTable receivers={many} freqKhz={10_000} current={{ host: "", port: 8073 }} onChoose={() => {}} />);
+    render(
+      <ReceiverTable
+        receivers={many}
+        freqKhz={10_000}
+        current={{ host: "", port: 8073, phase: "listening" }}
+        sun={null}
+        onChoose={() => {}}
+      />,
+    );
     expect(screen.getAllByRole("row")).toHaveLength(51); // plus the header
     fireEvent.click(screen.getByRole("button", { name: "Show all 60" }));
     expect(screen.getAllByRole("row")).toHaveLength(61);
@@ -191,6 +208,7 @@ function renderPicker(
   load: Promise<unknown> | (() => Promise<unknown>),
   note: string | null = null,
   onStopPicking: (() => void) | null = null,
+  children: React.ReactNode = null,
 ) {
   const link: TRPCLink<AppRouter> = () => () =>
     observable((obs) => {
@@ -210,7 +228,8 @@ function renderPicker(
       <TRPCProvider trpcClient={trpcClient} queryClient={queryClient}>
         <ReceiverPicker
           freqKhz={10_000}
-          current={{ host: "", port: 8073 }}
+          current={{ host: "", port: 8073, phase: "listening" }}
+          sun={null}
           open={false}
           onOpenChange={() => {}}
           onChoose={() => {}}
@@ -218,7 +237,9 @@ function renderPicker(
           picking={onStopPicking !== null}
           onStopPicking={onStopPicking ?? (() => {})}
           note={note}
-        />
+        >
+          {children}
+        </ReceiverPicker>
       </TRPCProvider>
     </QueryClientProvider>,
   );
@@ -267,7 +288,7 @@ describe("ReceiverPicker", () => {
     );
     await screen.findByText(/Couldn't load the public receiver list/);
     expect(button().disabled).toBe(true);
-    expect(screen.queryByText(/public receivers$/)).toBeNull(); // no empty Browse section
+    expect(screen.queryByText(/^All receivers/)).toBeNull(); // no empty Browse section
 
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(button().disabled).toBe(false));
@@ -292,7 +313,9 @@ describe("ReceiverPicker", () => {
   it("keeps Pick best usable and quiet when a refetch fails but the list is still there", async () => {
     let calls = 0;
     const { queryClient, button } = renderPicker(() =>
-      ++calls === 1 ? Promise.resolve({ receivers, fetchedAt: 0, stale: false }) : Promise.reject(new Error("BAD_GATEWAY")),
+      ++calls === 1
+        ? Promise.resolve({ receivers, fetchedAt: 0, stale: false })
+        : Promise.reject(new Error("BAD_GATEWAY")),
     );
     await waitFor(() => expect(button().disabled).toBe(false));
     await queryClient.refetchQueries();
@@ -306,12 +329,129 @@ describe("ReceiverPicker", () => {
     renderPicker(Promise.resolve({ receivers, fetchedAt: Date.now() - 3 * 60 * 60_000, stale: true }));
     await screen.findByText(/isn't answering, so this is the copy from 3 h ago/);
   });
+
+  // Value: protects=the page's help text shows inside the receivers section, under its heading and above Pick best; fails_when=ReceiverPicker stops rendering children (the page test mocks the picker, so it can't see this); why_new=DT1 children slot; seam=none; no_claim=the help text's wording (page test)
+  it("shows its children under the heading, above Pick best", async () => {
+    const { button } = renderPicker(Promise.resolve({ receivers, fetchedAt: 0 }), null, null, <p>help text</p>);
+    const help = screen.getByText("help text");
+    const heading = screen.getByRole("heading", { name: "Receivers" });
+    expect(heading.compareDocumentPosition(help) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(help.compareDocumentPosition(button()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await waitFor(() => expect(button().disabled).toBe(false));
+  });
+
+  // Value: protects=the folded table says what it holds, and the list refreshes just after the server's copy expires; fails_when=the summary text is dropped or the poll ignores fetchedAt; why_new=DT1 fold, R8 refetch, adversarial review (polls ran a full TTL late); seam=react-query observer options; no_claim=react-query's timer itself
+  it("folds the table under All receivers (N) and refetches every 15 minutes", async () => {
+    const { queryClient } = renderPicker(Promise.resolve({ receivers, fetchedAt: Date.now() - 10 * 60_000 }));
+    await screen.findByText("All receivers (4)");
+    const [query] = queryClient.getQueryCache().getAll();
+    const interval = query!.observers[0]!.options.refetchInterval as (q: typeof query) => number;
+    // A copy 10 min old: the next poll comes just after its 15 min run out.
+    expect(interval(query)).toBeGreaterThan(5 * 60_000 - 1_000);
+    expect(interval(query)).toBeLessThanOrEqual(5 * 60_000 + 5_000);
+  });
+
+  it.each([
+    ["a copy fetched 10 min ago", 0, 10 * 60_000, 5 * 60_000 + 5_000],
+    ["a copy fetched just now", 0, 0, 15 * 60_000],
+    ["a copy a moment from expiring", 0, 15 * 60_000 - 1, 5_001],
+    ["a copy that just expired (the server is refreshing it)", 0, 15 * 60_000, 15_000],
+    ["an expired copy within the server's retry window", 0, 16 * 60_000 - 1, 15_000],
+    ["a copy still old after the server's retry (mirror down)", 0, 16 * 60_000, 60_000],
+    ["a stale copy from a long outage", 0, 60 * 60_000, 60_000],
+    ["a server clock far ahead of the viewer's", 30 * 60_000, 0, 15 * 60_000],
+    ["a viewer clock far ahead of the server's", 0, 25 * 60 * 60_000, 60_000],
+    ["no copy yet", undefined, 0, 15 * 60_000],
+  ])("polls again just after the server's copy expires: %s", (_case, fetchedAt, now, wait) => {
+    expect(nextRefetchMs(fetchedAt, now)).toBe(wait);
+  });
 });
 
 describe("ReceiverTable tuned mark", () => {
   // Value: protects=the dot marks only what's playing; fails_when=the table can't take "nothing playing"; why_new=the dot followed the host field; seam=none; no_claim=what the page passes (page test)
   it("marks nothing when nothing is playing", () => {
-    render(<ReceiverTable receivers={receivers} freqKhz={10_000} current={null} onChoose={() => {}} />);
+    render(<ReceiverTable receivers={receivers} freqKhz={10_000} current={null} sun={null} onChoose={() => {}} />);
     expect(document.querySelector("[aria-current]")).toBeNull();
+  });
+
+  // Value: protects=connecting and playing look different in the table, as on the map and status lamp; fails_when=the phase is ignored or the connecting cue is visual only; why_new=O3 phase prop; seam=none; no_claim=colors
+  it("rings a receiver that's connecting and fills the dot once it plays", () => {
+    const view = render(
+      <ReceiverTable
+        receivers={receivers}
+        freqKhz={10_000}
+        current={{ host: "charlie.example", port: 8073, phase: "connecting" }}
+        sun={null}
+        onChoose={() => {}}
+      />,
+    );
+    const charlie = () => screen.getByRole("button", { name: /charlie\.example:8073/ });
+    expect(charlie().getAttribute("aria-current")).toBe("true");
+    expect(charlie().textContent).toMatch(/^○ Charlie \(connecting\)/);
+
+    view.rerender(
+      <ReceiverTable
+        receivers={receivers}
+        freqKhz={10_000}
+        current={{ host: "charlie.example", port: 8073, phase: "listening" }}
+        sun={null}
+        onChoose={() => {}}
+      />,
+    );
+    expect(charlie().textContent).toMatch(/^● Charlie[^(]/);
+  });
+});
+
+describe("ReceiverTable Night column", () => {
+  const noon = sunPosition(Date.parse("2026-10-20T12:00:00Z")); // sun over the Atlantic
+  const midnight = sunPosition(Date.parse("2026-10-21T00:00:00Z")); // sun over the Pacific
+  const placed = [
+    rx("Alpha", { snr: 10, lat: 0, lon: 0 }),
+    rx("Bravo", { snr: 40 }), // no position
+    rx("Charlie", { snr: 30, lat: 0, lon: 180 }),
+  ];
+  const table = (list: Receiver[], sun: ReturnType<typeof sunPosition> | null) => (
+    <ReceiverTable receivers={list} freqKhz={10_000} current={null} sun={sun} onChoose={() => {}} />
+  );
+  const night = (name: string) =>
+    screen
+      .getByRole("button", { name: new RegExp(`${name.toLowerCase()}\\.example`) })
+      .closest("tr")!
+      .querySelector(".col-night")!.textContent;
+  const names = () =>
+    within(screen.getByRole("table"))
+      .queryAllByRole("button", { name: /\.example:8073/ })
+      .map((b) => b.querySelector(".receiver-name")!.textContent);
+
+  // Value: protects=the table says which receivers are in darkness, from the page clock, and says so in text; fails_when=lat/lon or the sun prop is ignored; why_new=D15 Night indicator; seam=none; no_claim=solar accuracy (solar.test)
+  it("says Night, Day or – for each receiver", () => {
+    render(table(placed, noon));
+    expect([night("Alpha"), night("Bravo"), night("Charlie")]).toEqual(["Day", "–", "Night"]);
+  });
+
+  // Value: protects=sorting by Night doesn't reshuffle rows under the reader each minute; fails_when=the comparator reads the live clock; why_new=E3 frozen sort; seam=rerender with a new sun; no_claim=none beyond protects
+  it("sorts night first with unknowns last, and holds that order as the clock moves", () => {
+    const view = render(table(placed, noon));
+    fireEvent.click(screen.getByRole("button", { name: "Night" }));
+    expect(names()).toEqual(["Charlie", "Alpha", "Bravo"]);
+    fireEvent.click(screen.getByRole("button", { name: "Night" }));
+    expect(names()).toEqual(["Alpha", "Charlie", "Bravo"]);
+    fireEvent.click(screen.getByRole("button", { name: "Night" }));
+
+    view.rerender(table(placed, midnight));
+    expect([night("Alpha"), night("Charlie")]).toEqual(["Night", "Day"]);
+    expect(names()).toEqual(["Charlie", "Alpha", "Bravo"]);
+
+    // A fresh list is a fresh sort.
+    view.rerender(table([...placed], midnight));
+    expect(names()).toEqual(["Alpha", "Charlie", "Bravo"]);
+  });
+
+  // Value: protects=choosing the Night sort uses the sun now, not the sun from when the table opened; fails_when=sortBy stops refreshing the frozen sun, so a table left open for hours sorts by stale daylight; why_new=the frozen-sort test only covers holding, not refreshing on a click; seam=rerender with a new sun; no_claim=solar accuracy (solar.test)
+  it("sorts by the sun at the time Night is clicked", () => {
+    const view = render(table(placed, noon));
+    view.rerender(table(placed, midnight));
+    fireEvent.click(screen.getByRole("button", { name: "Night" }));
+    expect(names()).toEqual(["Alpha", "Charlie", "Bravo"]);
   });
 });

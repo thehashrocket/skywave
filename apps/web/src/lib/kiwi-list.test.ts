@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { MAX_FIELD, MAX_ROWS, parseKiwiList, rankReceivers, type Receiver } from "./kiwi-list";
+import { MAX_FIELD, MAX_ROWS, parseGps, parseKiwiList, rankReceivers, type Receiver } from "./kiwi-list";
 
 // Seven real entries from the mirror, kept in its exact format (comments,
 // `var` wrapper, trailing comma).
@@ -277,6 +277,27 @@ describe("parseKiwiList", () => {
       null,
     ];`;
     expect(parseKiwiList(text).map((r) => r.host)).toEqual(["c.example"]);
+  });
+
+  // Value: protects=only real positions place a receiver on the map; fails_when=the gps parser accepts junk, swaps lat/lon or keeps (0, 0); why_new=gps was ignored before the receiver map; seam=none; no_claim=a Kiwi's position being accurate
+  it.each([
+    ["(59.546000, 12.526000)", { lat: 59.546, lon: 12.526 }],
+    ["(-33.86,151.21)", { lat: -33.86, lon: 151.21 }],
+    [" ( 0, 12.5 ) ", { lat: 0, lon: 12.5 }],
+    ["(0.000000, 0.000000)", {}],
+    ["(91, 10)", {}],
+    ["(10, -181)", {}],
+    ["", {}],
+    ["59.5, 12.5", {}],
+    ["(abc, 1)", {}],
+  ])("reads gps %j", (raw, position) => {
+    expect(parseGps(raw)).toEqual(position);
+  });
+
+  it("puts a receiver's position on it only when the list has one", () => {
+    expect(one({ gps: "(59.546000, 12.526000)" })[0]).toMatchObject({ lat: 59.546, lon: 12.526 });
+    expect(one({ gps: "(0.000000, 0.000000)" })[0]).not.toHaveProperty("lat");
+    expect(one({})[0]).not.toHaveProperty("lon");
   });
 
   // Value: protects=receivers that refuse apps (ext_api=0) are never offered or picked; fails_when=the ext_api check is removed or matches the missing field; why_new=Pick best handed listeners a receiver that hangs up after 10 s; seam=none; no_claim=owners changing the setting between list refreshes

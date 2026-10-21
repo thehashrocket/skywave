@@ -488,4 +488,150 @@ describe("useRadio", () => {
       expect(warn).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe("tuning and heardAudio", () => {
+    // Value: protects=the map waits for real sound and never mounts mid-connect; fails_when=tuning stays false while audio or the socket starts, or clears before the service answers; why_new=O2 idle gate and R7 first-audio gate; seam=workletReady; no_claim=real audio output
+    it("is tuning from the click until the service answers", async () => {
+      let finishAudio!: () => void;
+      workletReady = new Promise((resolve) => (finishAudio = resolve));
+      const { result } = renderHook(() => useRadio());
+      let pending!: Promise<void>;
+      act(() => {
+        pending = result.current.tune(tuning);
+      });
+      expect(result.current.tuning).toBe(true);
+      expect(result.current.status.state).toBe("idle");
+      await act(async () => {
+        finishAudio();
+        await pending;
+      });
+      expect(result.current.tuning).toBe(true);
+      act(() => FakeSocket.instances[0]!.status("connecting"));
+      expect(result.current.tuning).toBe(false);
+    });
+
+    it("stops tuning when Stop replaces the tune or the socket drops", async () => {
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      expect(result.current.tuning).toBe(true);
+      act(() => result.current.stop());
+      expect(result.current.tuning).toBe(false);
+
+      await act(() => result.current.tune(tuning));
+      act(() => FakeSocket.instances[1]!.finishClose());
+      expect(result.current.tuning).toBe(false);
+    });
+
+    // Value: protects=a switch stays "tuning" until the new receiver answers, and the old receiver's sound doesn't count; fails_when=any status (a late answer to a dial retune on the last receiver) ends the tune; why_new=red team R1, the map's mount gate relies on it; seam=none; no_claim=real service timing
+    it("isn't ended by a late answer about the last receiver", async () => {
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.status("listening", { host: "kiwi.example", port: 8073 }));
+
+      await act(() => result.current.tune({ ...tuning, host: "other.example" }));
+      act(() => ws.status("listening", { host: "kiwi.example", port: 8073 }));
+      act(() => ws.frame(3, new Int16Array([1, 2])));
+      expect(result.current.tuning).toBe(true);
+      expect(result.current.heardAudio).toBe(false);
+
+      // The old receiver dropping as we leave it (a coded error) doesn't end it...
+      act(() => ws.status("error", { message: "gone", code: "down", host: "kiwi.example", port: 8073 }));
+      expect(result.current.tuning).toBe(true);
+      // ...but a rejected tune does, though the service names the old receiver on it.
+      act(() => ws.status("error", { message: "bad", host: "kiwi.example", port: 8073 }));
+      expect(result.current.tuning).toBe(false);
+
+      await act(() => result.current.tune({ ...tuning, host: "other.example" }));
+      act(() => ws.status("connecting", { host: "other.example", port: 8073 }));
+      expect(result.current.tuning).toBe(false);
+    });
+
+    // Value: protects=the pending match ignores host case (the service lowercases it) but not the port; fails_when=the case fold is dropped (a mixed-case host never ends its tune) or the port is ignored (a late answer for the old port ends the new tune); why_new=testing review pass 2; seam=none; no_claim=none beyond protects
+    it("matches the service's lowercased host, and tells ports apart", async () => {
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune({ ...tuning, host: "KiwiSDR.Example" }));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.status("listening", { host: "kiwisdr.example", port: 8073 }));
+      expect(result.current.tuning).toBe(false);
+
+      await act(() => result.current.tune({ ...tuning, host: "kiwisdr.example", port: 8074 }));
+      act(() => ws.status("listening", { host: "kiwisdr.example", port: 8073 }));
+      expect(result.current.tuning).toBe(true);
+      act(() => ws.status("listening", { host: "kiwisdr.example", port: 8074 }));
+      expect(result.current.tuning).toBe(false);
+    });
+    // Value: protects=a tune that fails before the service answers stops counting as connecting, so the table's ring and the page's pending receiver clear on the error; fails_when=either catch in tune() (audio blocked, service unreachable) leaves tuning set; why_new=only Stop and a socket drop were checked; seam=FakeSocket subclass that errors instead of opening; no_claim=real browser autoplay or network errors
+    it("stops tuning when audio is blocked or the service can't be reached", async () => {
+      workletReady = Promise.reject(new Error("blocked"));
+      workletReady.catch(() => {});
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      expect(result.current.status.message).toMatch(/blocked audio/);
+      expect(result.current.tuning).toBe(false);
+
+      workletReady = Promise.resolve();
+      class Unreachable extends FakeSocket {
+        constructor(url: string) {
+          super(url);
+          // Never opens: the queued open finds no handler, then the error lands.
+          Object.defineProperty(this, "onopen", { get: () => null, set: () => {} });
+          queueMicrotask(() => this.onerror?.());
+        }
+      }
+      vi.stubGlobal("WebSocket", Unreachable);
+      await act(() => result.current.tune(tuning));
+      expect(result.current.status.message).toMatch(/Can't reach the radio service/);
+      expect(result.current.tuning).toBe(false);
+    });
+
+    // Value: protects=first audio means sound from this receiver; fails_when=spectrum rows, junk frames or the last receiver's audio count; why_new=R7 first-audio gate; seam=none; no_claim=none beyond protects
+    it("hears audio only after the service answers the latest tune", async () => {
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.frame(3, new Int16Array([1, 2])));
+      expect(result.current.heardAudio).toBe(false);
+
+      act(() => ws.status("listening"));
+      act(() => ws.frame(4, new Uint8Array(4)));
+      act(() => ws.frame(9, new Uint8Array(4)));
+      expect(result.current.heardAudio).toBe(false);
+      act(() => ws.frame(1, new Float32Array([0.1])));
+      expect(result.current.heardAudio).toBe(true);
+
+      // Switching receivers: the old one's audio still arriving doesn't count.
+      await act(() => result.current.tune({ ...tuning, host: "other.example" }));
+      expect(result.current.heardAudio).toBe(false);
+      act(() => ws.frame(3, new Int16Array([1, 2])));
+      expect(result.current.heardAudio).toBe(false);
+      act(() => ws.status("connecting"));
+      act(() => ws.status("listening"));
+      act(() => ws.frame(3, new Int16Array([1, 2])));
+      expect(result.current.heardAudio).toBe(true);
+    });
+
+    it("forgets the audio on an error, Stop or a drop", async () => {
+      const { result } = renderHook(() => useRadio());
+      const hear = async () => {
+        await act(() => result.current.tune(tuning));
+        const ws = FakeSocket.instances.at(-1)!;
+        act(() => ws.status("listening"));
+        act(() => ws.frame(3, new Int16Array([1])));
+        expect(result.current.heardAudio).toBe(true);
+        return ws;
+      };
+      const ws = await hear();
+      act(() => ws.status("error", { message: "gone" }));
+      expect(result.current.heardAudio).toBe(false);
+
+      await hear();
+      act(() => result.current.stop());
+      expect(result.current.heardAudio).toBe(false);
+
+      const third = await hear();
+      act(() => third.finishClose());
+      expect(result.current.heardAudio).toBe(false);
+    });
+  });
 });

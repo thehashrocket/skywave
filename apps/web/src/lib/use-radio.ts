@@ -94,6 +94,13 @@ function serviceUrl() {
 export function useRadio() {
   const [status, setStatus] = useState<RadioStatus>({ state: "idle" });
   const [meter, setMeter] = useState<Meter | null>(null);
+  // A tune is waiting on audio, the socket or the service's first answer. The
+  // status alone can't say so: it stays as it was until the service replies.
+  const [tuning, setTuning] = useState(false);
+  // Sound has arrived since the latest tune: what "it's playing" really means.
+  // Per tune, so it drops on every switch; anything that should stay once
+  // sound has played (the map, once mounted) must latch it.
+  const [heardAudio, setHeardAudio] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
@@ -108,6 +115,22 @@ export function useRadio() {
   // Bumped by every tune and stop, so a tune still waiting on audio or the
   // socket can tell it was superseded and must not send.
   const generationRef = useRef(0);
+  // Mirrors tuning for the frame handler. Audio still in flight from the last
+  // receiver arrives before the service answers a tune; it doesn't count.
+  const tuningRef = useRef(false);
+  const heardAudioRef = useRef(false);
+  // The receiver the pending tune is for. A dial retune on the last receiver
+  // can still be answered after a switch; that answer doesn't end this tune.
+  const pendingRef = useRef<{ host: string; port: number } | null>(null);
+
+  const setTuningBoth = useCallback((v: boolean) => {
+    tuningRef.current = v;
+    setTuning(v);
+  }, []);
+  const setHeardAudioBoth = useCallback((v: boolean) => {
+    heardAudioRef.current = v;
+    setHeardAudio(v);
+  }, []);
 
   const ensureAudio = useCallback(async () => {
     if (ctxRef.current) {
@@ -134,68 +157,96 @@ export function useRadio() {
     await ctx.resume();
   }, []);
 
-  const handleText = useCallback((raw: string) => {
-    let msg: { type: string; [k: string]: unknown };
-    try {
-      msg = JSON.parse(raw);
-    } catch {
-      return;
-    }
-    if (msg.type === "status") {
-      const sampleRate = typeof msg.sampleRate === "number" ? msg.sampleRate : undefined;
-      if (sampleRate && Math.abs(sampleRate - rateRef.current) > 0.5) {
-        rateRef.current = sampleRate;
-        nodeRef.current?.port.postMessage({ type: "rate", rate: sampleRate });
+  const handleText = useCallback(
+    (raw: string) => {
+      let msg: { type: string; [k: string]: unknown };
+      try {
+        msg = JSON.parse(raw);
+      } catch {
+        return;
       }
-      const state = msg.state as RadioState;
-      if (state !== "listening") setMeter(null);
-      setStatus({
-        state,
-        message: typeof msg.message === "string" ? msg.message : undefined,
-        // An unknown code would read as "X undefined" in Pick best's note; treat
-        // it as uncoded, which stops Pick best like any service-side error.
-        code: typeof msg.code === "string" && KNOWN_CODES.has(msg.code) ? (msg.code as RadioErrorCode) : undefined,
-        retryAfterMs:
-          typeof msg.retryAfterMs === "number" && msg.retryAfterMs > 0 ? msg.retryAfterMs : undefined,
-        sampleRate,
-        host: typeof msg.host === "string" ? msg.host : undefined,
-        port: typeof msg.port === "number" ? msg.port : undefined,
-      });
-    } else if (msg.type === "meter") {
-      setMeter({ rssi: Number(msg.rssi), overflow: Boolean(msg.overflow) });
-    }
-  }, []);
+      if (msg.type === "status") {
+        const sampleRate = typeof msg.sampleRate === "number" ? msg.sampleRate : undefined;
+        if (sampleRate && Math.abs(sampleRate - rateRef.current) > 0.5) {
+          rateRef.current = sampleRate;
+          nodeRef.current?.port.postMessage({ type: "rate", rate: sampleRate });
+        }
+        const state = msg.state as RadioState;
+        const host = typeof msg.host === "string" ? msg.host : undefined;
+        const port = typeof msg.port === "number" ? msg.port : undefined;
+        const pending = pendingRef.current;
+        // A tune the service rejects outright (an uncoded error) still names the
+        // old receiver, and does end it. A coded error naming the old receiver is
+        // that receiver dropping as we leave it; the new tune is still coming.
+        const rejected = state === "error" && typeof msg.code !== "string";
+        const forAnother =
+          pending !== null &&
+          !rejected &&
+          host !== undefined &&
+          (host.toLowerCase() !== pending.host.toLowerCase() || (port !== undefined && port !== pending.port));
+        if (!forAnother) {
+          pendingRef.current = null;
+          setTuningBoth(false);
+        }
+        if (state !== "listening") {
+          setMeter(null);
+          setHeardAudioBoth(false);
+        }
+        setStatus({
+          state,
+          message: typeof msg.message === "string" ? msg.message : undefined,
+          // An unknown code would read as "X undefined" in Pick best's note; treat
+          // it as uncoded, which stops Pick best like any service-side error.
+          code: typeof msg.code === "string" && KNOWN_CODES.has(msg.code) ? (msg.code as RadioErrorCode) : undefined,
+          retryAfterMs: typeof msg.retryAfterMs === "number" && msg.retryAfterMs > 0 ? msg.retryAfterMs : undefined,
+          sampleRate,
+          host,
+          port,
+        });
+      } else if (msg.type === "meter") {
+        setMeter({ rssi: Number(msg.rssi), overflow: Boolean(msg.overflow) });
+      }
+    },
+    [setTuningBoth, setHeardAudioBoth],
+  );
 
-  const handleBinary = useCallback((buf: ArrayBuffer) => {
-    const tag = new Uint8Array(buf)[0]; // undefined for an empty frame, which is skipped
-    const size = buf.byteLength - 1;
-    let audio: Float32Array | null = null;
-    let row: Float32Array | null = null;
-    // Typed arrays need their element alignment, so copy past the 1-byte tag.
-    // A frame that doesn't fit its tag (empty, misaligned, audio over
-    // MAX_AUDIO_SAMPLES, a row that isn't SPECTRUM_BINS long) falls through.
-    if (tag === AUDIO_TAG && size > 0 && size % 2 === 0 && size / 2 <= MAX_AUDIO_SAMPLES) {
-      // The usual int16 scale: the service sends at most 32767, so this stays in [-1, 1].
-      audio = Float32Array.from(new Int16Array(buf.slice(1)), (v) => v / 32768);
-    } else if (tag === SPECTRUM_TAG && size === 4 + SPECTRUM_BINS) {
-      const base = new Float32Array(buf.slice(1, 5))[0]!;
-      row = Float32Array.from(new Uint8Array(buf, 5), (v) => base + v * SPECTRUM_STEP_DB);
-    } else if (tag === AUDIO_F32_TAG && size > 0 && size % 4 === 0 && size / 4 <= MAX_AUDIO_SAMPLES) {
-      audio = new Float32Array(buf.slice(1));
-    } else if (tag === SPECTRUM_F32_TAG && size === 4 * SPECTRUM_BINS) {
-      row = new Float32Array(buf.slice(1));
-    }
-    // A row with a value past MAX_ABS_DB is skipped too; NaN fails the check.
-    if (row && !row.every((v) => Math.abs(v) <= MAX_ABS_DB)) row = null;
-    if (!audio && !row && !warnedFrameRef.current) {
-      // Otherwise sound and waterfall just stop while the status says listening.
-      warnedFrameRef.current = true;
-      const what = buf.byteLength === 0 ? "an empty frame" : `a frame this page can't read (type ${tag}, ${size} bytes)`;
-      console.warn(`The radio service sent ${what}. Try reloading.`);
-    }
-    if (audio) nodeRef.current?.port.postMessage({ type: "samples", data: audio }, [audio.buffer]);
-    if (row) for (const fn of listenersRef.current) fn(row, rateRef.current);
-  }, []);
+  const handleBinary = useCallback(
+    (buf: ArrayBuffer) => {
+      const tag = new Uint8Array(buf)[0]; // undefined for an empty frame, which is skipped
+      const size = buf.byteLength - 1;
+      let audio: Float32Array | null = null;
+      let row: Float32Array | null = null;
+      // Typed arrays need their element alignment, so copy past the 1-byte tag.
+      // A frame that doesn't fit its tag (empty, misaligned, audio over
+      // MAX_AUDIO_SAMPLES, a row that isn't SPECTRUM_BINS long) falls through.
+      if (tag === AUDIO_TAG && size > 0 && size % 2 === 0 && size / 2 <= MAX_AUDIO_SAMPLES) {
+        // The usual int16 scale: the service sends at most 32767, so this stays in [-1, 1].
+        audio = Float32Array.from(new Int16Array(buf.slice(1)), (v) => v / 32768);
+      } else if (tag === SPECTRUM_TAG && size === 4 + SPECTRUM_BINS) {
+        const base = new Float32Array(buf.slice(1, 5))[0]!;
+        row = Float32Array.from(new Uint8Array(buf, 5), (v) => base + v * SPECTRUM_STEP_DB);
+      } else if (tag === AUDIO_F32_TAG && size > 0 && size % 4 === 0 && size / 4 <= MAX_AUDIO_SAMPLES) {
+        audio = new Float32Array(buf.slice(1));
+      } else if (tag === SPECTRUM_F32_TAG && size === 4 * SPECTRUM_BINS) {
+        row = new Float32Array(buf.slice(1));
+      }
+      // A row with a value past MAX_ABS_DB is skipped too; NaN fails the check.
+      if (row && !row.every((v) => Math.abs(v) <= MAX_ABS_DB)) row = null;
+      if (!audio && !row && !warnedFrameRef.current) {
+        // Otherwise sound and waterfall just stop while the status says listening.
+        warnedFrameRef.current = true;
+        const what =
+          buf.byteLength === 0 ? "an empty frame" : `a frame this page can't read (type ${tag}, ${size} bytes)`;
+        console.warn(`The radio service sent ${what}. Try reloading.`);
+      }
+      if (audio) {
+        nodeRef.current?.port.postMessage({ type: "samples", data: audio }, [audio.buffer]);
+        if (!heardAudioRef.current && !tuningRef.current) setHeardAudioBoth(true);
+      }
+      if (row) for (const fn of listenersRef.current) fn(row, rateRef.current);
+    },
+    [setHeardAudioBoth],
+  );
 
   const ensureSocket = useCallback((): Promise<WebSocket> => {
     const existing = wsRef.current;
@@ -227,6 +278,8 @@ export function useRadio() {
         wsRef.current = null;
         nodeRef.current?.port.postMessage({ type: "reset" });
         setMeter(null);
+        setTuningBoth(false);
+        setHeardAudioBoth(false);
         if (!stoppingRef.current) {
           // Always a fresh, uncoded error: anything waiting on this socket
           // (Pick best's retries) must see that nothing more is coming.
@@ -242,16 +295,20 @@ export function useRadio() {
         }
       };
     });
-  }, [handleBinary, handleText]);
+  }, [handleBinary, handleText, setTuningBoth, setHeardAudioBoth]);
 
   /** Start listening, or retune if already connected. Call from a click so audio can start. */
   const tune = useCallback(
     async (t: Tuning) => {
       const generation = ++generationRef.current;
+      pendingRef.current = { host: t.host, port: t.port };
+      setTuningBoth(true);
+      setHeardAudioBoth(false);
       try {
         await ensureAudio();
       } catch {
         if (generation !== generationRef.current) return;
+        setTuningBoth(false);
         setStatus({ state: "error", message: "This browser blocked audio. Click Listen again." });
         return;
       }
@@ -261,6 +318,7 @@ export function useRadio() {
         ws = await ensureSocket();
       } catch {
         if (generation !== generationRef.current) return;
+        setTuningBoth(false);
         setStatus({
           state: "error",
           message: `Can't reach the radio service at ${SERVICE_URL}. Start it with pnpm dev:radio.`,
@@ -270,7 +328,7 @@ export function useRadio() {
       if (generation !== generationRef.current) return;
       ws.send(JSON.stringify({ type: "tune", ...t }));
     },
-    [ensureAudio, ensureSocket],
+    [ensureAudio, ensureSocket, setTuningBoth, setHeardAudioBoth],
   );
 
   /** Retune only if already listening; never opens a connection on its own. */
@@ -290,8 +348,10 @@ export function useRadio() {
     }
     nodeRef.current?.port.postMessage({ type: "reset" });
     setMeter(null);
+    setTuningBoth(false);
+    setHeardAudioBoth(false);
     setStatus({ state: "idle" });
-  }, []);
+  }, [setTuningBoth, setHeardAudioBoth]);
 
   const setVolume = useCallback((v: number) => {
     volumeRef.current = v;
@@ -315,5 +375,5 @@ export function useRadio() {
     [],
   );
 
-  return { status, meter, tune, retune, stop, setVolume, onSpectrum };
+  return { status, meter, tuning, heardAudio, tune, retune, stop, setVolume, onSpectrum };
 }

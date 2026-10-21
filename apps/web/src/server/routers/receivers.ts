@@ -1,15 +1,15 @@
 import { TRPCError } from "@trpc/server";
-import { KIWI_LIST_URL, parseKiwiList, type Receiver } from "@/lib/kiwi-list";
+import { KIWI_LIST_URL, LIST_MAX_AGE_MS, LIST_RETRY_MS, parseKiwiList, type Receiver } from "@/lib/kiwi-list";
 import { publicProcedure, router } from "../trpc";
 
-const TTL_MS = 15 * 60_000;
+const TTL_MS = LIST_MAX_AGE_MS;
 // Past this the list is still served (the server only keeps it in memory, so
 // it's never older than the process, and Pick best skips receivers that have
 // gone), but marked stale so the picker can say how old it is.
 const STALE_AFTER_MS = 2 * 60 * 60_000;
 // After a failed refresh, keep serving what we have for a minute before
 // asking the mirror again, so a down mirror isn't hit on every page load.
-const RETRY_AFTER_MS = 60_000;
+const RETRY_AFTER_MS = LIST_RETRY_MS;
 // With nothing to serve, retry sooner, so "Try again" isn't a dead button.
 const COLD_RETRY_AFTER_MS = 10_000;
 const TIMEOUT_MS = 10_000;
