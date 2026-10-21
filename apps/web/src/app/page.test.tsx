@@ -422,6 +422,20 @@ describe("ListenPage", () => {
     expect((screen.getByLabelText("Port") as HTMLInputElement).disabled).toBe(true);
   });
 
+  // Value: protects=a double-click on Listen starts listening and doesn't stop it again; fails_when=the submit button ignores the second click now that Listen turns into Stop at once; why_new=red team; seam=none; no_claim=real double-click timing
+  it("ignores the second click of a double-click on Listen", () => {
+    const view = render(<ListenPage />);
+    fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "kiwi.example" } });
+    fireEvent.click(screen.getByRole("button", { name: "Listen" }), { detail: 1 });
+    expect(radio.tune).toHaveBeenCalledTimes(1);
+    radio.tuning = true;
+    view.rerender(<ListenPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }), { detail: 2 });
+    expect(radio.stop).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }), { detail: 1 });
+    expect(radio.stop).toHaveBeenCalledTimes(1);
+  });
+
   // Value: protects=a tune started from idle or an error reads as connecting and can be stopped, matching the locked fields; fails_when=the button and status follow only the service's status; why_new=design review pass 2 (locked fields beside "Listen" and "Not listening"); seam=none; no_claim=how long the service takes to answer
   it("shows a tune that's starting as connecting, with Stop and no stale error", () => {
     radio.status = { state: "error", message: "This browser blocked audio. Click Listen again." };
@@ -608,6 +622,16 @@ describe("ListenPage", () => {
       });
     });
 
+    // Value: protects=a double-click on Back switches once, not there and straight back; fails_when=Back's click ignores e.detail; why_new=red team (the button flips to the receiver just left); seam=none; no_claim=real double-click timing
+    it("switches once on a double-click", () => {
+      heardTwo();
+      fireEvent.click(screen.getByRole("button", { name: "Back to kiwi.example" }), { detail: 1 });
+      radio.tuning = true;
+      fireEvent.click(screen.getByRole("button", { name: /^Back to/ }), { detail: 2 });
+      expect(radio.tune).toHaveBeenCalledTimes(1);
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "kiwi.example" }));
+    });
+
     // Value: protects=a switch that fails offers Back to the receiver you were just hearing; fails_when=Back only learns a receiver once the next one plays; why_new=adversarial review (Claude + Codex, 3 sources); seam=none; no_claim=none beyond protects
     it("offers Back to the receiver you were hearing when a switch fails", () => {
       const view = render(<ListenPage />);
@@ -644,6 +668,29 @@ describe("ListenPage", () => {
       radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 7_000 } as RadioStatus;
       view.rerender(<ListenPage />);
       expect(screen.getByRole("button", { name: "Back to kiwi.example" })).toBeTruthy();
+    });
+
+    // Value: protects=after Stop, Back still points where it did while playing, not at the receiver just stopped; fails_when=backTo's idle branch is dropped, so Stop flips Back to the receiver you just left; why_new=the Back tests set idle only to unlock the fields and never assert Back there; seam=none; no_claim=what Back shows before anything has played
+    it("keeps Back pointing where it did after Stop", () => {
+      const view = heardTwo();
+      expect(screen.getByRole("button", { name: "Back to kiwi.example" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+      expect(radio.stop).toHaveBeenCalledTimes(1);
+      radio.status = { state: "idle" };
+      view.rerender(<ListenPage />);
+      expect(screen.getByRole("button", { name: "Back to kiwi.example" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Back to K1VL" })).toBeNull();
+    });
+
+    // Value: protects=from the click until the service answers, Back offers the receiver being left, never the one being tuned; fails_when=backTo reads the service's status (still the old receiver) instead of the pending choice; why_new=the Back tests only check the connecting phase once the service has named the new receiver, with tuning false; seam=none; no_claim=how long the service takes to answer
+    it("offers the receiver being left while a switch waits on the service", () => {
+      const view = heardTwo();
+      fireEvent.click(screen.getByRole("button", { name: "Back to kiwi.example" }));
+      // The service hasn't answered: its status still names the listed receiver.
+      radio.tuning = true;
+      view.rerender(<ListenPage />);
+      expect(screen.queryByRole("button", { name: "Back to kiwi.example" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Back to K1VL" })).toBeTruthy();
     });
 
     // Value: protects=Back never offers a receiver that refuses apps (it plays ~10 s first); fails_when=the no_apps handler leaves it as the last receiver heard; why_new=red team R2; seam=none; no_claim=the service's no_apps detection (radio tests)

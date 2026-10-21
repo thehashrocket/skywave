@@ -19,13 +19,17 @@ import { useTRPC } from "@/lib/trpc";
 const PAGE = 50;
 
 /**
- * Time until the server's copy of the list (fetched at `fetchedAt`) expires,
- * plus a little slack, so the next poll gets a fresh one. Never sooner than a
- * minute, so a stale copy from a mirror outage isn't polled in a loop.
+ * When to poll the list again: just after the server's copy (fetched at
+ * `fetchedAt`) expires. An expired copy means the server is refreshing it in
+ * the background, so ask again shortly; a much older one means the mirror is
+ * down, so ask once a minute. Never longer than one cache lifetime, whatever
+ * the two clocks say.
  */
 export function nextRefetchMs(fetchedAt: number | undefined, now: number): number {
   if (fetchedAt === undefined) return LIST_MAX_AGE_MS;
-  return Math.max(60_000, fetchedAt + LIST_MAX_AGE_MS - now + 5_000);
+  const age = now - fetchedAt;
+  if (age >= LIST_MAX_AGE_MS) return age < 2 * LIST_MAX_AGE_MS ? 15_000 : 60_000;
+  return Math.min(LIST_MAX_AGE_MS, LIST_MAX_AGE_MS - age) + 5_000;
 }
 
 export type Playing = { host: string; port: number; phase: "connecting" | "listening" };

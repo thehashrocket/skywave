@@ -221,7 +221,7 @@ export default function ListenPage() {
   const stopPicking = useCallback(() => {
     if (!stopPickBest()) radio.stop();
   }, [stopPickBest, radio]);
-  /** The one way the page changes receiver on the user's say-so: the table, and Back. */
+  /** Switches receiver from the table or Back: ends any Pick best run, then tunes. */
   const switchTo = useCallback(
     (r: Target, fromList: boolean) => {
       cancelPickBest();
@@ -368,7 +368,15 @@ export default function ListenPage() {
               disabled={busy}
             />
           </div>
-          <button type="submit" className={busy ? "power power-on" : "power"}>
+          <button
+            type="submit"
+            className={busy ? "power power-on" : "power"}
+            onClick={(e) => {
+              // Listen turns into Stop at once; the second click of a
+              // double-click mustn't stop what the first one started.
+              if (e.detail > 1) e.preventDefault();
+            }}
+          >
             {busy ? "Stop" : "Listen"}
           </button>
         </form>
@@ -418,7 +426,14 @@ export default function ListenPage() {
         </div>
         {/* Outside the live region, so a new Back target isn't announced. */}
         {backTo && (
-          <button type="button" className="link-button status-back" onClick={() => switchTo(backTo, backTo.fromList)}>
+          <button
+            type="button"
+            className="link-button status-back"
+            onClick={(e) => {
+              // The button flips to the receiver just left; a double-click would switch straight back.
+              if (e.detail <= 1) switchTo(backTo, backTo.fromList);
+            }}
+          >
             Back to {backTo.label}
           </button>
         )}

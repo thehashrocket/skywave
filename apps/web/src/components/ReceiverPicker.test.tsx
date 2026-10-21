@@ -342,17 +342,21 @@ describe("ReceiverPicker", () => {
 
   // Value: protects=the folded table says what it holds, and the list refreshes just after the server's copy expires; fails_when=the summary text is dropped or the poll ignores fetchedAt; why_new=DT1 fold, R8 refetch, adversarial review (polls ran a full TTL late); seam=react-query observer options; no_claim=react-query's timer itself
   it("folds the table under All receivers (N) and refetches every 15 minutes", async () => {
-    const { queryClient } = renderPicker(Promise.resolve({ receivers, fetchedAt: 0 }));
+    const { queryClient } = renderPicker(Promise.resolve({ receivers, fetchedAt: Date.now() - 10 * 60_000 }));
     await screen.findByText("All receivers (4)");
     const [query] = queryClient.getQueryCache().getAll();
     const interval = query!.observers[0]!.options.refetchInterval as (q: typeof query) => number;
-    expect(interval(query)).toBe(nextRefetchMs(0, Date.now()));
+    // A copy 10 min old: the next poll comes just after its 15 min run out.
+    expect(interval(query)).toBeGreaterThan(5 * 60_000 - 1_000);
+    expect(interval(query)).toBeLessThanOrEqual(5 * 60_000 + 5_000);
   });
 
   it.each([
     ["a copy fetched 10 min ago", 0, 10 * 60_000, 5 * 60_000 + 5_000],
     ["a copy fetched just now", 0, 0, 15 * 60_000 + 5_000],
-    ["a stale copy past its age", 0, 60 * 60_000, 60_000],
+    ["an expired copy the server is refreshing", 0, 16 * 60_000, 15_000],
+    ["a stale copy from a mirror outage", 0, 60 * 60_000, 60_000],
+    ["a server clock ahead of the viewer's", 30 * 60_000, 0, 15 * 60_000 + 5_000],
     ["no copy yet", undefined, 0, 15 * 60_000],
   ])("polls again just after the server's copy expires: %s", (_case, fetchedAt, now, wait) => {
     expect(nextRefetchMs(fetchedAt, now)).toBe(wait);
