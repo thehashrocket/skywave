@@ -64,6 +64,18 @@
 **Priority:** P3
 **Depends on:** None
 
+### Write a DESIGN.md for the web app
+
+**What:** Run `/design-consultation` to write `DESIGN.md` from the tokens and components in `apps/web/src/app/globals.css`, including the receiver map's `--map-*` tokens.
+
+**Why:** skywave's look (enamel teal, glass dial, brass, amber lamp, Barlow Condensed + Atkinson Hyperlegible) exists only as CSS variables, so each design review has to reverse-engineer it.
+
+**Context:** Raised by the receiver map design review (2026-10-20), which calibrated against `globals.css` because no DESIGN.md exists.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None (better after the receiver map adds its tokens)
+
 ## Completed
 
 ### Find out why some Kiwis send `too_busy=0` ten seconds in
