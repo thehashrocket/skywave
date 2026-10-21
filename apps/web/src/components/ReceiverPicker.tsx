@@ -1,17 +1,25 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { memo, useDeferredValue, useMemo, useState } from "react";
+import { memo, useDeferredValue, useMemo, useState, type ReactNode } from "react";
 import { byRank, covers, freeSlots, isFull, rankReceivers, receiverKey, type Receiver } from "@/lib/kiwi-list";
 import { formatHostPort } from "@/lib/receiver";
+import { isNight, type SunPosition } from "@/lib/solar";
 import { useTRPC } from "@/lib/trpc";
 
 const PAGE = 50;
+// The server caches the list for 15 minutes; refetch on that beat while the
+// tab is visible, so listener counts and full receivers stay current.
+const REFETCH_MS = 15 * 60_000;
+
+export type Playing = { host: string; port: number; phase: "connecting" | "listening" };
 
 type Props = {
   freqKhz: number;
   /** The receiver playing or connecting, marked in the table; null when nothing is. */
-  current: { host: string; port: number } | null;
+  current: Playing | null;
+  /** Where the sun is now, from the page's clock; null before it starts. */
+  sun: SunPosition | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onChoose: (r: Receiver) => void;
@@ -20,12 +28,15 @@ type Props = {
   picking: boolean;
   onStopPicking: () => void;
   note: string | null;
+  /** Shown under the heading, above the Pick best bar. */
+  children?: ReactNode;
 };
 
 /** The public receiver list: a Pick best button plus a table to browse. */
 export function ReceiverPicker({
   freqKhz,
   current,
+  sun,
   open,
   onOpenChange,
   onChoose,
@@ -33,17 +44,23 @@ export function ReceiverPicker({
   picking,
   onStopPicking,
   note,
+  children,
 }: Props) {
   const trpc = useTRPC();
   // The list changes slowly and the server caches it for 15 minutes, so
   // don't refetch on every focus.
-  const list = useQuery({ ...trpc.receivers.list.queryOptions(), staleTime: 5 * 60_000 });
+  const list = useQuery({
+    ...trpc.receivers.list.queryOptions(),
+    staleTime: 5 * 60_000,
+    refetchInterval: REFETCH_MS,
+  });
   const receivers = list.data?.receivers;
   const fetchedAt = list.data?.fetchedAt;
 
   return (
     <section className="receivers" aria-labelledby="receivers-heading">
-      <h2 id="receivers-heading">Choose a receiver</h2>
+      <h2 id="receivers-heading">Receivers</h2>
+      {children}
       <div className="receivers-bar">
         {/* Distinct keys, so the second click of a double-click lands on the
             other button (detail 2) and is ignored there instead of undoing the
@@ -95,7 +112,7 @@ export function ReceiverPicker({
 
       {receivers && (
         <details className="receivers-browse" open={open} onToggle={(e) => onOpenChange(e.currentTarget.open)}>
-          <summary>Browse {receivers.length.toLocaleString("en-US")} public receivers</summary>
+          <summary>All receivers ({receivers.length.toLocaleString("en-US")})</summary>
           {/* Closed, it renders nothing, so S-meter ticks on the page cost nothing here. */}
           {open && (
             <ReceiverTable
@@ -103,6 +120,7 @@ export function ReceiverPicker({
               fetchedAt={fetchedAt}
               freqKhz={freqKhz}
               current={current}
+              sun={sun}
               onChoose={onChoose}
             />
           )}
@@ -112,29 +130,37 @@ export function ReceiverPicker({
   );
 }
 
-type SortKey = "name" | "location" | "snr" | "free";
+type SortKey = "name" | "location" | "night" | "snr" | "free";
 
+// Listeners stays last: the full-row style mutes the last numeric cell.
 const COLUMNS: { key: SortKey; label: string; className?: string }[] = [
   { key: "name", label: "Receiver" },
   { key: "location", label: "Location", className: "col-location" },
+  { key: "night", label: "Night", className: "col-night" },
   { key: "snr", label: "SNR", className: "num" },
   { key: "free", label: "Listeners", className: "num" },
 ];
 
-const COMPARE: Record<SortKey, (a: Receiver, b: Receiver) => number> = {
+const COMPARE: Record<Exclude<SortKey, "night">, (a: Receiver, b: Receiver) => number> = {
   name: (a, b) => a.name.localeCompare(b.name),
   location: (a, b) => a.location.localeCompare(b.location),
   snr: (a, b) => (a.snr ?? -1) - (b.snr ?? -1),
   free: (a, b) => freeSlots(a) - freeSlots(b),
 };
 
-// Numbers read best biggest-first; text reads best A to Z.
-const FIRST_DIRECTION: Record<SortKey, 1 | -1> = { name: 1, location: 1, snr: -1, free: -1 };
+// Numbers read best biggest-first; text reads best A to Z; night first.
+const FIRST_DIRECTION: Record<SortKey, 1 | -1> = { name: 1, location: 1, night: -1, snr: -1, free: -1 };
+
+/** Whether the sun has set at a receiver; null when we don't know where it is or when it is. */
+function nightAt(r: Receiver, sun: SunPosition | null): boolean | null {
+  return sun && r.lat !== undefined && r.lon !== undefined ? isNight(r.lat, r.lon, sun) : null;
+}
 
 type TableProps = {
   receivers: readonly Receiver[];
   freqKhz: number;
-  current: { host: string; port: number } | null;
+  current: Playing | null;
+  sun: SunPosition | null;
   onChoose: (r: Receiver) => void;
   /** When the server fetched the list (ms since epoch). */
   fetchedAt?: number;
@@ -152,6 +178,7 @@ export const ReceiverTable = memo(function ReceiverTable({
   fetchedAt,
   freqKhz,
   current,
+  sun,
   onChoose,
 }: TableProps) {
   const [query, setQuery] = useState("");
@@ -160,6 +187,15 @@ export const ReceiverTable = memo(function ReceiverTable({
   // null is the default: best first, the same order Pick best uses.
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
   const [showAll, setShowAll] = useState(false);
+  // The Night sort uses the sun from when it was chosen (or the list last
+  // changed), so rows don't reshuffle under the reader every minute. The
+  // badges still follow the clock.
+  const [sortSun, setSortSun] = useState(sun);
+  const [sortedList, setSortedList] = useState(receivers);
+  if (sortedList !== receivers) {
+    setSortedList(receivers);
+    setSortSun(sun);
+  }
 
   const searchText = useMemo(
     () => new Map(receivers.map((r) => [r, `${r.name} ${r.location} ${r.antenna} ${r.host}`.toLowerCase()])),
@@ -178,16 +214,28 @@ export const ReceiverTable = memo(function ReceiverTable({
       return words.every((w) => haystack.includes(w));
     });
     if (!sort) return matches.sort(byRank);
+    if (sort.key === "night") {
+      const night = new Map(matches.map((r) => [r, nightAt(r, sortSun)]));
+      // Receivers with no position go last whichever way the column sorts.
+      return matches.sort((a, b) => {
+        const x = night.get(a)!;
+        const y = night.get(b)!;
+        if (x === null || y === null) return (x === null ? 1 : 0) - (y === null ? 1 : 0) || byRank(a, b);
+        return sort.dir * (Number(x) - Number(y)) || byRank(a, b);
+      });
+    }
     const compare = COMPARE[sort.key];
     return matches.sort((a, b) => sort.dir * compare(a, b) || byRank(a, b));
-  }, [receivers, searchText, listQuery, onlyFree, onlyCovering, listFreqKhz, sort]);
+  }, [receivers, searchText, listQuery, onlyFree, onlyCovering, listFreqKhz, sort, sortSun]);
 
   const shown = showAll ? rows : rows.slice(0, PAGE);
   const currentKey = current && receiverKey(current);
   const freqText = freqKhz.toLocaleString("en-US", { maximumFractionDigits: 2 });
 
-  const sortBy = (key: SortKey) =>
+  const sortBy = (key: SortKey) => {
+    if (key === "night") setSortSun(sun);
     setSort((s) => (s?.key === key ? { key, dir: s.dir === 1 ? -1 : 1 } : { key, dir: FIRST_DIRECTION[key] }));
+  };
 
   return (
     <div className="receivers-table-wrap">
@@ -259,7 +307,8 @@ export const ReceiverTable = memo(function ReceiverTable({
                 <ReceiverRow
                   key={receiverKey(r)}
                   receiver={r}
-                  tuned={receiverKey(r) === currentKey}
+                  tuned={receiverKey(r) === currentKey ? current!.phase : undefined}
+                  night={nightAt(r, sun)}
                   onChoose={onChoose}
                 />
               ))}
@@ -284,17 +333,23 @@ export const ReceiverTable = memo(function ReceiverTable({
   );
 });
 
-type RowProps = { receiver: Receiver; tuned: boolean; onChoose: (r: Receiver) => void };
+type RowProps = {
+  receiver: Receiver;
+  /** Set on the receiver that's playing or connecting. */
+  tuned: Playing["phase"] | undefined;
+  night: boolean | null;
+  onChoose: (r: Receiver) => void;
+};
 
 /**
  * One table row. Memoized so dial drags, which re-render the table header,
  * don't redo every row. The whole row is clickable; the name button is the
  * keyboard target, and its click bubbles to the row.
  */
-const ReceiverRow = memo(function ReceiverRow({ receiver: r, tuned, onChoose }: RowProps) {
+const ReceiverRow = memo(function ReceiverRow({ receiver: r, tuned, night, onChoose }: RowProps) {
   return (
     <tr
-      data-current={tuned || undefined}
+      data-current={tuned}
       data-full={isFull(r) || undefined}
       onClick={(e) => {
         // Dragging across this row to select text (say, to copy an address)
@@ -305,14 +360,16 @@ const ReceiverRow = memo(function ReceiverRow({ receiver: r, tuned, onChoose }: 
       }}
     >
       <td>
-        <button type="button" className="receiver-choose" aria-current={tuned || undefined}>
+        <button type="button" className="receiver-choose" aria-current={tuned ? "true" : undefined}>
           <span className="receiver-name">
+            {/* A ring while connecting, a filled dot once it plays: the map's marks. */}
             {tuned && (
               <span className="receiver-tuned" aria-hidden="true">
-                ●{" "}
+                {tuned === "connecting" ? "○" : "●"}{" "}
               </span>
             )}
             {r.name}
+            {tuned === "connecting" && <span className="visually-hidden"> (connecting)</span>}
           </span>
           <span className="receiver-host">
             {formatHostPort(r.host, r.port)}
@@ -323,6 +380,9 @@ const ReceiverRow = memo(function ReceiverRow({ receiver: r, tuned, onChoose }: 
       <td className="col-location">
         {/* Browsers ignore max-width on a table cell; this one holds it. */}
         <span className="location-text">{r.location}</span>
+      </td>
+      <td className="col-night" data-night={night ?? undefined}>
+        {night === null ? "–" : night ? "Night" : "Day"}
       </td>
       <td className="num">{r.snr ?? "–"}</td>
       <td className="num">

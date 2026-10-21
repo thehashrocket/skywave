@@ -41,9 +41,11 @@ vi.mock("@/components/ReceiverPicker", () => ({
     onChoose,
     onPickBest,
     onStopPicking,
+    children,
   }: {
     open: boolean;
-    current: { host: string; port: number } | null;
+    current: { host: string; port: number; phase: string } | null;
+    children?: React.ReactNode;
     onChoose: (r: Receiver) => void;
     onPickBest: (r: Receiver[]) => void;
     onStopPicking: () => void;
@@ -51,6 +53,7 @@ vi.mock("@/components/ReceiverPicker", () => ({
     <>
       <output aria-label="browse">{open ? "open" : "closed"}</output>
       <output aria-label="tuned">{current ? `${current.host}:${current.port}` : "none"}</output>
+      <output aria-label="phase">{current?.phase ?? "none"}</output>
       <button type="button" onClick={() => onChoose(listed)}>
         choose listed
       </button>
@@ -60,6 +63,7 @@ vi.mock("@/components/ReceiverPicker", () => ({
       <button type="button" onClick={onStopPicking}>
         stop picking
       </button>
+      {children}
     </>
   ),
 }));
@@ -388,10 +392,12 @@ describe("ListenPage", () => {
     radio.status = { state: "connecting", host: "f4kiy.ddns.net", port: 8073 };
     view.rerender(<ListenPage />);
     expect(screen.getByLabelText("tuned").textContent).toBe("f4kiy.ddns.net:8073");
+    expect(screen.getByLabelText("phase").textContent).toBe("connecting");
 
     radio.status = { state: "listening", host: "sdr.k1vl.com", port: 8076 };
     view.rerender(<ListenPage />);
     expect(screen.getByLabelText("tuned").textContent).toBe("sdr.k1vl.com:8076");
+    expect(screen.getByLabelText("phase").textContent).toBe("listening");
   });
 
   // Value: protects=a bad saved value can't crash the page on load; fails_when=loadReceiver trusts storage again; why_new=TODOS small edges; seam=none; no_claim=other storage keys
@@ -413,7 +419,13 @@ describe("ListenPage", () => {
       setItem.mockClear();
       const view = render(<ListenPage />);
       for (const freqKhz of [10_000, 10_001, 10_002]) {
-        radio.status = { state: "listening", host: "f4kiy.ddns.net", port: 8073, sampleRate: 12000, freqKhz } as RadioStatus;
+        radio.status = {
+          state: "listening",
+          host: "f4kiy.ddns.net",
+          port: 8073,
+          sampleRate: 12000,
+          freqKhz,
+        } as RadioStatus;
         view.rerender(<ListenPage />);
       }
       expect(setItem).toHaveBeenCalledTimes(1);
@@ -447,7 +459,13 @@ describe("ListenPage", () => {
     render(<ListenPage />);
     act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
     fireEvent.click(screen.getByRole("button", { name: "stop picking" }));
-    expect(radio.tune).toHaveBeenLastCalledWith({ host: "far.example", port: 443, freqKhz: 10_000, mode: "am", secure: true });
+    expect(radio.tune).toHaveBeenLastCalledWith({
+      host: "far.example",
+      port: 443,
+      freqKhz: 10_000,
+      mode: "am",
+      secure: true,
+    });
   });
 
   // Value: protects=a dial retune queued during a Pick best run can't follow the run to its next receiver and switch back; fails_when=Pick best's next tune skips clearing the retune timer; why_new=state matrix pending-retune x Pick best next; seam=none; no_claim=real timer jitter
@@ -480,5 +498,81 @@ describe("ListenPage", () => {
       expect.objectContaining({ host: listed.host, port: listed.port, source: "list" }),
     );
   });
-});
 
+  describe("Back to the previous receiver", () => {
+    /** Plays a typed receiver, then the listed one, so Back has somewhere to go. */
+    function heardTwo() {
+      const view = render(<ListenPage />);
+      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "kiwi.example" } });
+      fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+      radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      radio.tune.mockClear();
+      return view;
+    }
+
+    // Value: protects=Back returns to the receiver exactly as it was dialed (list tag, scheme) and toggles; fails_when=Back reuses chooseReceiver's list-only path or forgets the previous on a switch; why_new=E1 Back path; seam=none; no_claim=the map's last ring (PR 2)
+    it("offers the receiver that played before, dialed the way it was, and toggles", () => {
+      const view = render(<ListenPage />);
+      expect(screen.queryByRole("button", { name: /^Back to/ })).toBeNull();
+      cleanup();
+
+      const two = heardTwo();
+      fireEvent.click(screen.getByRole("button", { name: "Back to kiwi.example" }));
+      expect(radio.tune).toHaveBeenLastCalledWith({ host: "kiwi.example", port: 8073, freqKhz: 10_000, mode: "am" });
+      // While it connects, Back would point at itself; it hides.
+      radio.status = { state: "connecting", host: "kiwi.example", port: 8073 };
+      two.rerender(<ListenPage />);
+      expect(screen.queryByRole("button", { name: /^Back to/ })).toBeNull();
+
+      radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
+      two.rerender(<ListenPage />);
+      fireEvent.click(screen.getByRole("button", { name: "Back to K1VL" }));
+      expect(radio.tune).toHaveBeenLastCalledWith({
+        host: "sdr.k1vl.com",
+        port: 8076,
+        freqKhz: 10_000,
+        mode: "am",
+        source: "list",
+      });
+      view.unmount();
+    });
+
+    // Value: protects=Back is a user choice like the table: it ends Pick best and drops a queued dial retune; fails_when=Back bypasses switchTo; why_new=E1/O1 shared switch path; seam=fake timers; no_claim=real socket ordering
+    it("ends Pick best and drops a queued dial retune", () => {
+      vi.useFakeTimers();
+      try {
+        const view = heardTwo();
+        act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+        radio.retune.mockClear();
+        fireEvent.keyDown(screen.getByRole("slider", { name: "Tuning dial" }), { key: "ArrowUp" });
+        fireEvent.click(screen.getByRole("button", { name: "Back to kiwi.example" }));
+        act(() => vi.advanceTimersByTime(500));
+        expect(radio.retune).not.toHaveBeenCalled();
+
+        radio.tune.mockClear();
+        radio.status = { state: "error", code: "busy", message: "full", host: listed.host, port: listed.port };
+        view.rerender(<ListenPage />);
+        expect(radio.tune).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  // Value: protects=the radio comes first and receivers sit between it and the waterfall; fails_when=the picker moves back above the dial; why_new=DT1 page order; seam=picker mock; no_claim=visual spacing
+  it("puts the receivers after the radio's controls and status", () => {
+    render(<ListenPage />);
+    const dial = screen.getByRole("slider", { name: "Tuning dial" });
+    const status = screen.getByText("Not listening");
+    const picker = screen.getByLabelText("browse");
+    const help = screen.getByText(/run by volunteers/);
+    const after = (a: Node, b: Node) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(after(dial, status)).toBe(true);
+    expect(after(status, picker)).toBe(true);
+    expect(after(picker, help)).toBe(true);
+  });
+});
