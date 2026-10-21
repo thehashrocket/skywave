@@ -422,6 +422,18 @@ describe("ListenPage", () => {
     expect((screen.getByLabelText("Port") as HTMLInputElement).disabled).toBe(true);
   });
 
+  // Value: protects=a tune started from idle or an error reads as connecting and can be stopped, matching the locked fields; fails_when=the button and status follow only the service's status; why_new=design review pass 2 (locked fields beside "Listen" and "Not listening"); seam=none; no_claim=how long the service takes to answer
+  it("shows a tune that's starting as connecting, with Stop and no stale error", () => {
+    radio.status = { state: "error", message: "This browser blocked audio. Click Listen again." };
+    radio.tuning = true;
+    render(<ListenPage />);
+    expect(screen.getByText("Connecting…")).toBeTruthy();
+    expect(screen.queryByText(/Click Listen again/)).toBeNull();
+    expect(document.querySelector(".status")!.getAttribute("data-state")).toBe("connecting");
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(radio.stop).toHaveBeenCalledTimes(1);
+  });
+
   // Value: protects=the table's Night column gets the page's sun; fails_when=page passes no sun and every Night cell reads "–"; why_new=O6 shared clock; seam=picker mock; no_claim=the sun's position (solar.test)
   it("hands the picker the page's sun", () => {
     render(<ListenPage />);

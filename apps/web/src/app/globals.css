@@ -782,14 +782,12 @@ a {
   gap: 6px 16px;
 }
 
-.status-row .status {
-  flex: 1 1 auto;
-}
-
 .status-back.link-button {
   padding: 0;
   /* Receiver names run long; a wrapped button label would center. */
   text-align: left;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 /* Waterfall */

@@ -106,6 +106,11 @@ export default function ListenPage() {
   }, []);
 
   const live = status.state === "listening" || status.state === "connecting";
+  // A tune from idle or an error is under way before the service says so;
+  // the form treats it as connecting.
+  const starting = radio.tuning && !live;
+  const busy = live || starting;
+  const shownState = starting ? "connecting" : status.state;
   const liveRef = useRef(live);
   liveRef.current = live;
 
@@ -315,7 +320,7 @@ export default function ListenPage() {
           onSubmit={(e) => {
             e.preventDefault();
             cancelPickBest();
-            if (live) radio.stop();
+            if (busy) radio.stop();
             else listen();
           }}
         >
@@ -333,7 +338,7 @@ export default function ListenPage() {
               placeholder="kiwi hostname"
               autoComplete="off"
               spellCheck={false}
-              disabled={live || radio.tuning}
+              disabled={busy}
               required
             />
           </div>
@@ -347,11 +352,11 @@ export default function ListenPage() {
                 setFromList(false);
               }}
               inputMode="numeric"
-              disabled={live || radio.tuning}
+              disabled={busy}
             />
           </div>
-          <button type="submit" className={live ? "power power-on" : "power"}>
-            {live ? "Stop" : "Listen"}
+          <button type="submit" className={busy ? "power power-on" : "power"}>
+            {busy ? "Stop" : "Listen"}
           </button>
         </form>
       </header>
@@ -392,11 +397,11 @@ export default function ListenPage() {
       </section>
 
       <div className="status-row">
-        <div className="status" role="status" data-state={status.state}>
+        <div className="status" role="status" data-state={shownState}>
           <span className="status-lamp" aria-hidden="true" />
-          <span className="status-state">{STATE_TEXT[status.state]}</span>
+          <span className="status-state">{STATE_TEXT[shownState]}</span>
           {status.state === "listening" && status.host && <span className="status-detail">on {status.host}</span>}
-          {status.message && <span className="status-message">{status.message}</span>}
+          {status.message && !starting && <span className="status-message">{status.message}</span>}
         </div>
         {/* Outside the live region, so a new previous receiver isn't announced. */}
         {previous && !(current && receiverKey(current) === receiverKey(previous)) && (

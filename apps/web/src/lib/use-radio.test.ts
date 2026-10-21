@@ -544,6 +544,21 @@ describe("useRadio", () => {
       act(() => ws.status("connecting", { host: "other.example", port: 8073 }));
       expect(result.current.tuning).toBe(false);
     });
+
+    // Value: protects=the pending match ignores host case (the service lowercases it) but not the port; fails_when=the case fold is dropped (a mixed-case host never ends its tune) or the port is ignored (a late answer for the old port ends the new tune); why_new=testing review pass 2; seam=none; no_claim=none beyond protects
+    it("matches the service's lowercased host, and tells ports apart", async () => {
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune({ ...tuning, host: "KiwiSDR.Example" }));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.status("listening", { host: "kiwisdr.example", port: 8073 }));
+      expect(result.current.tuning).toBe(false);
+
+      await act(() => result.current.tune({ ...tuning, host: "kiwisdr.example", port: 8074 }));
+      act(() => ws.status("listening", { host: "kiwisdr.example", port: 8073 }));
+      expect(result.current.tuning).toBe(true);
+      act(() => ws.status("listening", { host: "kiwisdr.example", port: 8074 }));
+      expect(result.current.tuning).toBe(false);
+    });
     // Value: protects=a tune that fails before the service answers stops counting as connecting, so the table's ring and the page's pending receiver clear on the error; fails_when=either catch in tune() (audio blocked, service unreachable) leaves tuning set; why_new=only Stop and a socket drop were checked; seam=FakeSocket subclass that errors instead of opening; no_claim=real browser autoplay or network errors
     it("stops tuning when audio is blocked or the service can't be reached", async () => {
       workletReady = Promise.reject(new Error("blocked"));
