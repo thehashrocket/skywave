@@ -61,6 +61,14 @@ describe("usePickBest", () => {
     expect(tuned()).toEqual(["a", "b"]);
   });
 
+  // Value: protects=a receiver that refuses apps isn't reported as full; fails_when=no_apps loses its own note or maps to busy's; why_new=too_busy=0 read "was full" before; seam=none; no_claim=none beyond protects
+  it("says why it left a receiver that refuses apps", () => {
+    const { hook, report } = setup();
+    act(() => hook.result.current.start(candidates));
+    report(fail("a", "no_apps"));
+    expect(hook.result.current.note).toBe("A only takes listeners on its own web page; trying B…");
+  });
+
   it.each(RADIO_ERROR_CODES.filter((c) => c !== "busy"))("retries on %s", (code) => {
     const { hook, report, tuned } = setup();
     act(() => hook.result.current.start(candidates));

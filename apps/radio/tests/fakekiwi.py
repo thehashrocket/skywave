@@ -43,6 +43,8 @@ class FakeKiwi:
     empty_after: int | None = None
     # Close the connection after this many SND frames.
     drop_after: int | None = None
+    # With drop_after, send this MSG frame just before closing, e.g. b"MSG too_busy=0".
+    last_words: bytes | None = None
     # Serve wss:// with this context.
     ssl: ssl.SSLContext | None = None
     # Answer the upgrade with a 301 to this Location instead of a WebSocket.
@@ -123,6 +125,9 @@ class FakeKiwi:
                 seq += 1
                 n += size
                 await asyncio.sleep(BLOCK / RATE / 4)  # faster than real time
+            if self.last_words is not None:
+                await ws.send(self.last_words)
+                await asyncio.sleep(0.2)
         except Exception:
             pass
         finally:

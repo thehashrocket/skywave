@@ -52,7 +52,6 @@ async def test_handshake_and_iq_stream():
 @pytest.mark.parametrize(
     "reject,code",
     [
-        (b"MSG too_busy=4", "busy"),
         (b"MSG badp=1", "password"),
         (b"MSG down", "down"),
         (b"MSG redirect=http%3A%2F%2Fother.example%3A8073", "redirect"),
@@ -64,6 +63,41 @@ async def test_kiwi_refusals_raise_coded_errors(reject, code):
         with pytest.raises(KiwiError) as e:
             await client.connect()
         assert e.value.code == code
+        await client.close()
+
+
+@pytest.mark.parametrize(
+    "reject,code,says",
+    [
+        (b"MSG too_busy=4", "busy", "is full (4 listeners max)"),
+        (b"MSG too_busy", "busy", "is full. Try"),
+        (b"MSG too_busy=0", "no_apps", "only lets listeners in through its own web page"),
+    ],
+)
+async def test_too_busy_message_matches_the_reason(reject, code, says):
+    # too_busy=0 is a Kiwi that refuses apps (ext_api=0), not a full one.
+    async with FakeKiwi(reject=reject) as kiwi:
+        client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=3)
+        with pytest.raises(KiwiError) as e:
+            await client.connect()
+        assert e.value.code == code
+        assert says in str(e.value)
+        await client.close()
+
+
+async def test_too_busy_while_streaming_ends_with_its_reason():
+    # Real ext_api=0 Kiwis send audio for about 10 s before too_busy=0.
+    async with FakeKiwi(drop_after=20, last_words=b"MSG too_busy=0") as kiwi:
+        client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=3)
+        await client.tune(9535)
+        await client.connect()
+        got = 0
+        with pytest.raises(KiwiError) as e:
+            async for _ in client.blocks():
+                got += 1
+        assert got == 20
+        assert e.value.code == "no_apps"
+        assert "own web page" in str(e.value)
         await client.close()
 
 

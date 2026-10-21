@@ -310,7 +310,17 @@ class KiwiClient:
     async def _handle_msg(self, params: dict[str, str | None]) -> None:
         for name, value in params.items():
             if name == "too_busy":
-                raise KiwiError("busy", f"{self.host} is full ({value} channels in use). Try another receiver.")
+                # The value is the receiver's channel count. 0 is how a Kiwi
+                # whose owner allows no connections but its own web page
+                # (ext_api=0 in the public list) turns us away, about 10 s in.
+                if value == "0":
+                    raise KiwiError(
+                        "no_apps",
+                        f"{self.host} only lets listeners in through its own web page, "
+                        "not apps like this one. Try another receiver.",
+                    )
+                most = f" ({value} listeners max)" if value else ""
+                raise KiwiError("busy", f"{self.host} is full{most}. Try another receiver.")
             if name == "badp" and value not in (None, "0"):
                 raise KiwiError("password", f"{self.host} requires a password.")
             if name == "down":
