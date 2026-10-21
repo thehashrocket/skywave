@@ -425,6 +425,11 @@ a {
   font-size: 0.85rem;
 }
 
+/* A link inside the "List updated" sentence keeps the sentence's size. */
+.receivers-updated .link-button {
+  font-size: inherit;
+}
+
 .receivers-sort-note {
   padding-bottom: 8px;
 }

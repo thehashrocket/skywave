@@ -363,7 +363,7 @@ describe("ReceiverPicker", () => {
     ["an expired copy within the server's retry window", 16 * 60_000 - 1, 15_000],
     ["a copy still old after the server's retry (mirror down)", 16 * 60_000, 60_000],
     ["a stale copy from a long outage", 60 * 60_000, 60_000],
-    ["no copy yet", undefined, 15 * 60_000],
+    ["no copy yet (the first load failed)", undefined, 15_000],
   ])("polls again just after the server's copy expires: %s", (_case, age, wait) => {
     expect(nextRefetchMs(age)).toBe(wait);
   });
@@ -489,13 +489,26 @@ describe("ReceiverTable when the list refreshes", () => {
   });
 
   // Value: protects=keyboard users keep their place after taking the new list (the button goes away); fails_when=focus is left on the removed button, falling back to the page; why_new=a11y review (PR 2a); seam=none; no_claim=screen reader announcement wording
-  it("moves focus to the table after showing the new list", async () => {
+  it("moves focus to the first receiver after showing the new list", async () => {
     const view = render(table(receivers));
     view.rerender(table(refreshed));
     const show = screen.getByRole("button", { name: "Show it" });
     show.focus();
     fireEvent.click(show);
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("table")));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        within(screen.getByRole("table")).getAllByRole("button", { name: /\.example:8073/ })[0],
+      ),
+    );
+  });
+
+  // Value: protects=recovering from an over-filtered table shows the newest list; fails_when=Clear filters resets the filters but keeps the old list; why_new=coverage audit (PR 2a); seam=none; no_claim=none beyond protects
+  it("takes the new list when filters are cleared", () => {
+    const view = render(table(receivers));
+    fireEvent.change(screen.getByLabelText("Search"), { target: { value: "nothing like it" } });
+    view.rerender(table(refreshed));
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(names()).toEqual(["Delta", "Alpha", "Bravo", "Charlie"]);
   });
 
   // Value: protects=the listener's own sort or filter shows the newest list; fails_when=adopt() isn't called from the table's controls, so the table stays on an old list until the link is found; why_new=steady rows; seam=none; no_claim=none beyond protects
@@ -504,5 +517,25 @@ describe("ReceiverTable when the list refreshes", () => {
     view.rerender(table(refreshed));
     fireEvent.click(screen.getByLabelText("Has a free slot"));
     expect(names()).toEqual(["Alpha"]);
+  });
+
+  // Value: protects=a column sort shows the newest list, not the frozen one; fails_when=sortBy stops calling adopt() (it doesn't go through edit()), so a header click re-sorts the old rows and the notice stays; why_new=ship coverage audit (PR 2a): only the checkbox path was tested; seam=rerender with a new list; no_claim=sort direction defaults (other tests)
+  it("takes the new list on a column sort", () => {
+    const view = render(table(receivers));
+    view.rerender(table(refreshed));
+    fireEvent.click(screen.getByRole("button", { name: "SNR" }));
+    expect(names()).toEqual(["Alpha", "Bravo", "Charlie"]);
+    expect(screen.queryByRole("button", { name: "Show it" })).toBeNull();
+  });
+
+  // Value: protects=keyboard focus stays in the list when the new list has no matching rows (no table to focus); fails_when=showUpdated drops the search fallback, so focus falls to the page body; why_new=ship coverage audit (PR 2a): only the table branch was tested; seam=none; no_claim=screen reader announcement wording
+  it("moves focus to the search when the new list shows no rows", async () => {
+    const view = render(table(receivers));
+    view.rerender(table([rx("Delta", { minKhz: 110_000, maxKhz: 142_000 })]));
+    const show = screen.getByRole("button", { name: "Show it" });
+    show.focus();
+    fireEvent.click(show);
+    expect(screen.getByText("No receivers match.")).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Search")));
   });
 });

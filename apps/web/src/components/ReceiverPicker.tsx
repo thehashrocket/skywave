@@ -31,7 +31,8 @@ const JUST_EXPIRED_POLL_MS = 15_000;
  * than one cache lifetime.
  */
 export function nextRefetchMs(age: number | undefined): number {
-  if (age === undefined) return LIST_MAX_AGE_MS;
+  // No list yet (the first load failed): try again soon, after the server's own short backoff.
+  if (age === undefined) return JUST_EXPIRED_POLL_MS;
   if (age >= LIST_MAX_AGE_MS + LIST_RETRY_MS) return LIST_RETRY_MS;
   if (age >= LIST_MAX_AGE_MS) return JUST_EXPIRED_POLL_MS;
   return Math.min(LIST_MAX_AGE_MS, LIST_MAX_AGE_MS - age + EXPIRY_SLACK_MS);
@@ -245,8 +246,8 @@ export const ReceiverTable = memo(function ReceiverTable({
   const searchRef = useRef<HTMLInputElement>(null);
   const showUpdated = () => {
     adopt();
-    // The button goes away; keep keyboard focus in the list, not on the page.
-    setTimeout(() => (tableRef.current ?? searchRef.current)?.focus());
+    // The button goes away; keep keyboard focus in the list, on the first receiver.
+    setTimeout(() => (tableRef.current?.querySelector<HTMLElement>(".receiver-choose") ?? searchRef.current)?.focus());
   };
 
   const searchText = useMemo(
@@ -321,17 +322,6 @@ export const ReceiverTable = memo(function ReceiverTable({
         ) : (
           <span className="receivers-sort-note">Best first</span>
         )}
-        {/* Always present, so screen readers announce the notice when it appears. */}
-        <span className="receivers-updated" role="status">
-          {updated && (
-            <>
-              List updated.{" "}
-              <button type="button" className="link-button" onClick={showUpdated}>
-                Show it
-              </button>
-            </>
-          )}
-        </span>
       </div>
 
       {rows.length === 0 ? (
@@ -352,7 +342,7 @@ export const ReceiverTable = memo(function ReceiverTable({
         </div>
       ) : (
         <div className="receivers-scroll">
-          <table className="receivers-table" ref={tableRef} tabIndex={-1} aria-label="Public receivers">
+          <table className="receivers-table" ref={tableRef}>
             <thead>
               <tr>
                 {COLUMNS.map((c) => (
@@ -388,6 +378,17 @@ export const ReceiverTable = memo(function ReceiverTable({
           Show all {rows.length.toLocaleString("en-US")}
         </button>
       )}
+      {/* Below the table, so it never moves the rows; always present, so screen readers announce it. */}
+      <span className="receivers-updated" role="status">
+        {updated && (
+          <>
+            List updated.{" "}
+            <button type="button" className="link-button" onClick={showUpdated}>
+              Show it
+            </button>
+          </>
+        )}
+      </span>
       <p className="receivers-credit">
         List {fetchedAt ? `fetched ${ago(Date.now() - fetchedAt)}` : "fetched"} from{" "}
         <a href="http://rx.linkfanel.net/" target="_blank" rel="noreferrer">
