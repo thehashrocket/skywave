@@ -20,6 +20,27 @@ vi.mock("@/lib/use-radio", () => ({ useRadio: () => radio }));
 // These talk to tRPC or draw on a canvas; the page's own wiring is what's under test.
 vi.mock("@/components/Presets", () => ({ Presets: () => <output aria-label="presets" /> }));
 vi.mock("@/components/Waterfall", () => ({ Waterfall: () => <output aria-label="waterfall" /> }));
+vi.mock("@/components/MapPanel", () => ({
+  MapPanel: ({
+    admitted,
+    onListen,
+    onBrowse,
+  }: {
+    admitted: boolean;
+    onListen: (r: Receiver) => void;
+    onBrowse: () => void;
+  }) => (
+    <>
+      <output aria-label="map admitted">{admitted ? "yes" : "no"}</output>
+      <button type="button" onClick={() => onListen(listed)}>
+        map listen
+      </button>
+      <button type="button" onClick={onBrowse}>
+        map browse
+      </button>
+    </>
+  ),
+}));
 
 const listed: Receiver = {
   id: "k1vl",
@@ -45,6 +66,7 @@ vi.mock("@/components/ReceiverPicker", () => ({
     onPickBest,
     onStopPicking,
     children,
+    map,
   }: {
     open: boolean;
     current: { host: string; port: number; phase: string } | null;
@@ -53,6 +75,7 @@ vi.mock("@/components/ReceiverPicker", () => ({
     onChoose: (r: Receiver) => void;
     onPickBest: (r: Receiver[]) => void;
     onStopPicking: () => void;
+    map?: (list: { receivers: Receiver[]; ageMs: number; failed: boolean; retry: () => void }) => React.ReactNode;
   }) => (
     <>
       <output aria-label="browse">{open ? "open" : "closed"}</output>
@@ -69,6 +92,7 @@ vi.mock("@/components/ReceiverPicker", () => ({
         stop picking
       </button>
       {children}
+      {map?.({ receivers: [listed, backup], ageMs: 0, failed: false, retry: () => {} })}
     </>
   ),
 }));
@@ -79,6 +103,7 @@ beforeEach(() => {
   localStorage.clear();
   radio.status = { state: "idle" };
   radio.tuning = false;
+  radio.heardAudio = false;
   radio.tune.mockClear();
   radio.stop.mockClear();
 });
@@ -196,6 +221,46 @@ describe("ListenPage", () => {
     radio.status = { state: "error", code: "busy", message: "full", host: listed.host, port: listed.port };
     view.rerender(<ListenPage />);
     expect(radio.tune).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=Listen on the map is a user choice like the table: it ends a running Pick best chain; fails_when=the map's onListen bypasses chooseReceiver (tuneReceiver directly), so a late busy tunes over the user's pick; why_new=R1; seam=MapPanel mocked; no_claim=the card itself (ReceiverMap tests)
+  it("listening from the map ends Pick best, so a late failure doesn't override the choice", () => {
+    const view = render(<ListenPage />);
+    act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+    fireEvent.click(screen.getByRole("button", { name: "map listen" }));
+    expect(radio.tune).toHaveBeenLastCalledWith(
+      expect.objectContaining({ host: listed.host, port: listed.port, source: "list" }),
+    );
+    radio.tune.mockClear();
+    radio.status = { state: "error", code: "busy", message: "full", host: listed.host, port: listed.port };
+    view.rerender(<ListenPage />);
+    expect(radio.tune).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=the map stays out of the network between "listening" and the session's first audio, then loads; fails_when=the page gates on status instead of use-radio's heardAudio, or treats listening-without-audio as idle; why_new=R7; seam=fake timers, use-radio mocked; no_claim=idle-callback timing (hook tests)
+  it("admits the map only once audio arrives", () => {
+    vi.useFakeTimers();
+    try {
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      const view = render(<ListenPage />);
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(screen.getByLabelText("map admitted").textContent).toBe("no");
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(screen.getByLabelText("map admitted").textContent).toBe("yes");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=a map that can't draw still leaves a way to pick a receiver; fails_when=Browse receivers doesn't open the table; why_new=design state table (map failed); seam=MapPanel mocked; no_claim=focus/scroll in a real browser
+  it("opens the receiver table from the map's Browse receivers", () => {
+    localStorage.setItem("skywave.receiver", JSON.stringify({ host: "f4kiy.ddns.net", port: "8073" }));
+    render(<ListenPage />);
+    expect(screen.getByLabelText("browse").textContent).toBe("closed");
+    fireEvent.click(screen.getByRole("button", { name: "map browse" }));
+    expect(screen.getByLabelText("browse").textContent).toBe("open");
   });
 
   // Value: protects=a first-time visitor sees the receiver list open, a returning one doesn't get it in the way; fails_when=the first-visit setBrowseOpen(!host) is dropped or inverted; why_new=the picker mock ignored `open`; seam=none; no_claim=the details element's own toggle

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Dial } from "@/components/Dial";
 import { FrequencyReadout } from "@/components/FrequencyReadout";
+import { MapPanel } from "@/components/MapPanel";
 import { Presets } from "@/components/Presets";
 import { ReceiverPicker, type Playing } from "@/components/ReceiverPicker";
 import { SMeter } from "@/components/SMeter";
@@ -11,6 +12,7 @@ import { covers, receiverKey, type Receiver } from "@/lib/kiwi-list";
 import { MODE_LABELS, MODES, guessMode, type Mode } from "@/lib/radio-types";
 import { DEFAULT_KIWI_PORT, parseReceiver } from "@/lib/receiver";
 import { usePickBest } from "@/lib/use-pick-best";
+import { useMapAdmission } from "@/lib/use-map-admission";
 import { useRadio } from "@/lib/use-radio";
 import { useSolarClock } from "@/lib/use-solar-clock";
 
@@ -337,6 +339,14 @@ export default function ListenPage() {
     return otherThan(heard, shown ? receiverKey(shown) : undefined);
   }, [heard, current, status.host, status.port, fieldsHost, fieldsPort]);
 
+  // The map waits for the radio: the session's first audio, or 5 s with nothing to wait for.
+  const mapAdmitted = useMapAdmission({ heardAudio: radio.heardAudio, busy });
+  const lastPlace = useMemo(() => backTo && { host: backTo.host, port: backTo.port }, [backTo]);
+  const openBrowse = useCallback(() => {
+    setBrowseOpen(true);
+    document.querySelector<HTMLElement>(".receivers-browse summary")?.focus();
+  }, []);
+
   const onDial = useCallback(
     (khz: number) => {
       // Dragging across band edges picks the conventional mode for you.
@@ -477,6 +487,18 @@ export default function ListenPage() {
         picking={pickBest.running}
         onStopPicking={stopPicking}
         note={pickBest.note}
+        map={(list) => (
+          <MapPanel
+            admitted={mapAdmitted}
+            list={list}
+            freqKhz={freqKhz}
+            sun={sun}
+            playing={current}
+            last={lastPlace}
+            onListen={chooseReceiver}
+            onBrowse={openBrowse}
+          />
+        )}
       >
         <p className="receiver-help">
           Let skywave pick a receiver, choose one from the list, or paste any address from{" "}
