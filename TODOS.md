@@ -16,6 +16,25 @@
 
 ## Web app
 
+### Receiver map follow-ups from PR 2b review
+
+**What:**
+- **Retry after a redeploy:** when the map's code chunk is gone (a deploy replaced it), "Retry map" asks for the same missing file; offer "Reload page" for a ChunkLoadError.
+- **Audio that never arrives:** admission waits for first audio while the radio is busy; a service that holds "listening" with no frames keeps the map waiting. Consider a hard cap (say 20 s), which changes the agreed radio-first rule.
+- **Worker cache key:** the worker URL is keyed on the maplibre-gl version; a patched or rebuilt package of the same version would pair a cached worker with new page code. Key on a content hash if packages are ever patched.
+- **Tile-loading colour:** before tiles arrive the frame is land colour (the design says sea); OpenMapTiles has no land layer, so this needs a land polygon source or a sea background with land drawn from tiles.
+- **"Zoom into this area"** doesn't switch follow to stay, so the next listening change pulls the camera away; decide whether it counts as a user move.
+- **Slow links:** the worker's shared chunk (~150 KB gzipped) is a second download inside the 30 s budget, alongside live audio; check it's served compressed.
+- **Tests:** the page's `lastPlace` → map `last` wiring, the per-attempt lazy retry, and use-radio's per-socket retune check have no tests.
+
+**Why:** Found by the PR 2b /ship review rounds (2026-10-21) and left for after merge; none blocks using the map.
+
+**Context:** `apps/web/src/components/ReceiverMap.tsx`, `MapPanel.tsx`, `apps/web/src/lib/use-map-admission.ts`, `apps/web/src/app/vendor/maplibre/`.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** None
+
 ### Show progress when Try again is pressed
 
 **What:** While a user-started list retry runs with no list yet, show it next to the still-mounted Try again button (label or `aria-busy`), not on background polls.
