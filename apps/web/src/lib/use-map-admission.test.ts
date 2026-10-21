@@ -71,6 +71,14 @@ describe("useMapAdmission", () => {
     expect(result.current).toBe(false);
   });
 
+  // Value: protects=once audio has played, a quick Stop or switch before the idle moment doesn't send the map back to the 5 s wait; fails_when=admission follows heardAudio back to false; why_new=Codex structured P2 (PR 2b ship); seam=props, fake timers; no_claim=idle timing
+  it("keeps counting audio heard once, until admitted", () => {
+    const { result, rerender } = setup({ heardAudio: true, busy: true });
+    rerender({ heardAudio: false, busy: true });
+    act(() => vi.advanceTimersByTime(IDLE_FALLBACK_MS));
+    expect(result.current).toBe(true);
+  });
+
   // Value: protects=switching receivers never unloads the map; fails_when=admission follows the radio back to false; why_new=O4 (adapter kept mounted); seam=none; no_claim=none beyond protects
   it("stays admitted once admitted", () => {
     const { result, rerender } = setup({ heardAudio: true, busy: false });

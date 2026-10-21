@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** With nothing playing or connecting this long, the map may load anyway. */
 export const IDLE_ADMIT_MS = 5_000;
@@ -22,7 +22,12 @@ type Radio = {
  */
 export function useMapAdmission({ heardAudio, busy }: Radio): boolean {
   const [admitted, setAdmitted] = useState(false);
-  const ready = heardAudio || !busy;
+  // Audio once is enough: a switch or Stop right after the first frame
+  // mustn't send the map back to waiting.
+  const heard = useRef(false);
+  if (heardAudio) heard.current = true;
+  const audio = heard.current;
+  const ready = audio || !busy;
 
   useEffect(() => {
     if (admitted || !ready) return;
@@ -36,15 +41,15 @@ export function useMapAdmission({ heardAudio, busy }: Radio): boolean {
       else fallback = setTimeout(admit, IDLE_FALLBACK_MS);
     };
     // Audio is playing: load at the next idle moment. Otherwise wait out the quiet period first.
-    const wait = heardAudio ? undefined : setTimeout(whenIdle, IDLE_ADMIT_MS);
-    if (heardAudio) whenIdle();
+    const wait = audio ? undefined : setTimeout(whenIdle, IDLE_ADMIT_MS);
+    if (audio) whenIdle();
     // A tune starting cancels anything scheduled.
     return () => {
       clearTimeout(wait);
       clearTimeout(fallback);
       if (idle !== undefined) window.cancelIdleCallback(idle);
     };
-  }, [admitted, ready, heardAudio]);
+  }, [admitted, ready, audio]);
 
   return admitted;
 }

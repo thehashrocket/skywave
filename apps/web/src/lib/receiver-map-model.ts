@@ -58,7 +58,14 @@ export function markFeatures(receivers: readonly Receiver[], playing: MapPlaying
 export const NAME_LIMIT = 28;
 
 export function shortName(name: string): string {
-  return name.length > NAME_LIMIT ? `${name.slice(0, NAME_LIMIT - 1).trimEnd()}…` : name;
+  // By character, not UTF-16 unit, so an emoji is never cut in half.
+  const chars = Array.from(name);
+  return chars.length > NAME_LIMIT
+    ? `${chars
+        .slice(0, NAME_LIMIT - 1)
+        .join("")
+        .trimEnd()}…`
+    : name;
 }
 
 /** How one dot is drawn; MapLibre feature state, read by the style's paint expressions. */

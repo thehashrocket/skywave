@@ -123,6 +123,7 @@ function setup(over: Partial<ReceiverMapProps> = {}) {
 function load() {
   act(() => {
     map().emit("style.load");
+    map().emit("sourcedata", { sourceId: "receivers", isSourceLoaded: true });
     map().emit("load");
   });
 }
@@ -358,6 +359,7 @@ describe("ReceiverMap", () => {
       act(() => vi.advanceTimersByTime(15_000));
       expect(lost.props.onFail).not.toHaveBeenCalled();
       act(() => map().emit("webglcontextlost"));
+      act(() => vi.advanceTimersByTime(5_000));
       expect(lost.props.onFail).toHaveBeenCalledWith("the browser dropped its graphics context");
     } finally {
       vi.useRealTimers();
@@ -373,11 +375,14 @@ describe("ReceiverMap", () => {
   });
 
   // Value: protects=a map that's only slow (big first tiles, a background tab) isn't torn down; only a style that never arrives is; fails_when=the watchdog waits for the full "load" (tiles + animation frames); why_new=cycle-2 red team (PR 2b ship); seam=fake timers, mocked events; no_claim=real network timing
-  it("times only the style, not the first tiles", () => {
+  it("times the receivers' first draw, not the base tiles", () => {
     vi.useFakeTimers();
     try {
       const { props } = setup();
-      act(() => map().emit("style.load"));
+      act(() => {
+        map().emit("style.load");
+        map().emit("sourcedata", { sourceId: "receivers", isSourceLoaded: true });
+      });
       act(() => vi.advanceTimersByTime(60_000));
       expect(props.onFail).not.toHaveBeenCalled();
     } finally {
@@ -437,6 +442,43 @@ describe("ReceiverMap", () => {
     expect(view.container.querySelector(".map-tooltip")).toBeNull();
   });
 
+  // Value: protects=a worker that fails to load (a 404 on the deploy host) ends in Map unavailable, even after the style is in; fails_when=non-tile errors after style.load are ignored or the clock stops at style.load, leaving a silently blank map; why_new=final adversarial pass (PR 2b ship): a regression from the previous fix; seam=fake timers, mocked events; no_claim=MapLibre's worker error text
+  it("fails a map whose receivers never draw, whatever the reason", () => {
+    vi.useFakeTimers();
+    try {
+      const silent = setup();
+      act(() => map().emit("style.load"));
+      act(() => vi.advanceTimersByTime(15_100));
+      expect(silent.props.onFail).toHaveBeenCalledWith("it couldn't start drawing");
+      cleanup();
+
+      const worker = setup();
+      act(() => map().emit("style.load"));
+      act(() => map().emit("error", { error: { message: "Worker failed to load." } }));
+      expect(worker.props.onFail).toHaveBeenCalledWith("it couldn't start drawing");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=a brief GPU reset doesn't tear the map down, and a blocked base map counts as tiles failing; fails_when=context loss fails at once, or an openmaptiles source error is ignored; why_new=final adversarial pass (PR 2b ship); seam=fake timers, mocked events; no_claim=MapLibre's restore internals
+  it("waits for a lost context to come back, and counts base-map source errors", () => {
+    vi.useFakeTimers();
+    try {
+      const { props } = setup();
+      load();
+      act(() => map().emit("webglcontextlost"));
+      act(() => vi.advanceTimersByTime(4_000));
+      act(() => map().emit("webglcontextrestored"));
+      act(() => vi.advanceTimersByTime(10_000));
+      expect(props.onFail).not.toHaveBeenCalled();
+      for (let i = 0; i < 5; i++) act(() => map().emit("error", { sourceId: "openmaptiles", error: { message: "x" } }));
+      expect(props.onFail).toHaveBeenCalledWith("map tiles aren't loading");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // Value: protects=only the user's own pan or zoom stops the camera following; fails_when=our own easeTo (no originalEvent) counts as a user move and follow switches itself off; why_new=design D8; seam=mocked events; no_claim=MapLibre's event payloads beyond originalEvent
   it("reports only user pans and zooms", () => {
     const { props } = setup();
@@ -484,7 +526,8 @@ describe("ReceiverMap", () => {
     act(() => map().emit("click", { point: { x: 100, y: 100 }, lngLat: { lng: 5, lat: 6 }, originalEvent: {} }));
     expect(screen.getAllByRole("button", { name: "Listen" })).toHaveLength(10);
     fireEvent.click(screen.getByRole("button", { name: "Zoom into this area" }));
-    expect(map().easeTo).toHaveBeenCalledWith({ center: [5, 6], zoom: 5, duration: 600 });
+    // Centered on the nearest receiver (r0, at 100,100), not the tap point.
+    expect(map().easeTo).toHaveBeenCalledWith({ center: [100, 100], zoom: 5, duration: 600 });
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 

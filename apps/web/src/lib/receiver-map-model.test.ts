@@ -181,5 +181,7 @@ describe("markFeatures", () => {
   it("cuts long names at 28 characters", () => {
     expect(shortName("A very long receiver name that goes on and on")).toBe("A very long receiver name t…");
     expect(shortName("Short")).toBe("Short");
+    // An emoji at the cut is kept whole, never half a surrogate pair.
+    expect(shortName(`${"x".repeat(26)}📻📻📻`)).toBe(`${"x".repeat(26)}📻…`);
   });
 });

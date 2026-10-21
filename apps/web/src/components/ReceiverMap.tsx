@@ -43,8 +43,10 @@ const WORLD: [[number, number], [number, number]] = [
 /** This many tile errors within the window and the map gives up. */
 const TILE_ERROR_LIMIT = 5;
 const TILE_ERROR_WINDOW_MS = 30_000;
-/** A style that hasn't loaded by now isn't coming (a hung request has no timeout of its own). */
+/** A map that can't draw its receivers by now isn't going to (a hung request has no timeout of its own). */
 export const LOAD_TIMEOUT_MS = 15_000;
+/** A lost graphics context usually comes back (a GPU switch or reset); give it this long. */
+export const CONTEXT_RESTORE_MS = 5_000;
 /** How long the listening dot is emphasised when playback starts. */
 export const EMPHASIS_MS = 600;
 
@@ -150,32 +152,47 @@ export default memo(function ReceiverMap({
       failed = true;
       callbacks.current.onFail(reason);
     };
-    // Only the style is timed ("load" also waits for every first tile), and
-    // only visible time: MapLibre needs an animation frame to apply the style,
-    // and a background tab gets none, so the clock starts at the first frame.
+    // The clock runs until the receivers source has loaded: that needs the
+    // style and MapLibre's worker, but not the base tiles. Only visible time
+    // counts: MapLibre applies the style on an animation frame, which a
+    // background tab doesn't get, so the clock starts at the first frame.
     let watchdog: ReturnType<typeof setTimeout> | undefined;
     let styled = false;
+    let ready = false;
+    const notReady = () => (styled ? "it couldn't start drawing" : "the map style didn't load");
     const startFrame = requestAnimationFrame(() => {
-      if (!styled) watchdog = setTimeout(() => fail("the map style didn't load"), LOAD_TIMEOUT_MS);
+      if (!ready) watchdog = setTimeout(() => fail(notReady()), LOAD_TIMEOUT_MS);
     });
     // Dots and the greyline go up as soon as the style (and with it their
     // sources) is in; base tiles fill in behind them, however slowly.
     created.on("style.load", () => {
       styled = true;
-      clearTimeout(watchdog);
       setMap(created);
     });
-    created.on("error", (e: ErrorEvent & { tile?: unknown }) => {
-      // Before the style is in, anything but a tile failing is the style itself.
-      if (!styled && !e.tile) return fail("the map style didn't load");
-      // After it, only tiles count toward giving up (a missing label glyph doesn't).
-      if (!e.tile) return;
+    created.on("sourcedata", (e: { sourceId?: string; isSourceLoaded?: boolean }) => {
+      if (e.sourceId !== SOURCES.receivers || !e.isSourceLoaded) return;
+      ready = true;
+      clearTimeout(watchdog);
+    });
+    created.on("error", (e: ErrorEvent & { tile?: unknown; sourceId?: string }) => {
+      // Until the receivers can draw, any other failure (the style, the
+      // worker) means they won't.
+      if (!ready && !e.tile) return fail(notReady());
+      // After that, only the base map counts toward giving up (a missing label glyph doesn't).
+      if (!e.tile && e.sourceId !== "openmaptiles") return;
       const now = Date.now();
       tileErrors.push(now);
       while (tileErrors[0]! < now - TILE_ERROR_WINDOW_MS) tileErrors.shift();
       if (tileErrors.length >= TILE_ERROR_LIMIT) fail("map tiles aren't loading");
     });
-    created.on("webglcontextlost", () => fail("the browser dropped its graphics context"));
+    let contextTimer: ReturnType<typeof setTimeout> | undefined;
+    created.on("webglcontextlost", () => {
+      contextTimer = setTimeout(() => fail("the browser dropped its graphics context"), CONTEXT_RESTORE_MS);
+    });
+    created.on("webglcontextrestored", () => clearTimeout(contextTimer));
+    // Back online: MapLibre reloads tiles; errors from the outage don't count.
+    const online = () => (tileErrors.length = 0);
+    window.addEventListener("online", online);
     // Only the user's own pans and zooms stop the camera following; ours carry no originalEvent.
     for (const type of ["dragstart", "zoomstart"] as const) {
       created.on(type, (e: { originalEvent?: unknown }) => {
@@ -201,7 +218,9 @@ export default memo(function ReceiverMap({
         : typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
       const { keys, more } = hitGroup(project(), e.point, touch ? HIT_RADIUS.touch : HIT_RADIUS.mouse);
       setTooltip(null);
-      setCard(keys.length ? { keys, more, lngLat: [e.lngLat.lng, e.lngLat.lat] } : null);
+      // Anchored on the nearest receiver, not the tap, so it stays with the dot.
+      const first = keys.length ? drawnRef.current.find((r) => receiverKey(r) === keys[0]) : undefined;
+      setCard(first ? { keys, more, lngLat: [first.lon!, first.lat!] } : null);
     });
     // Hover: one hit test per frame, at the pointer's latest position; the
     // tooltip sits on the dot, so it only changes between dots.
@@ -227,6 +246,8 @@ export default memo(function ReceiverMap({
 
     return () => {
       clearTimeout(watchdog);
+      clearTimeout(contextTimer);
+      window.removeEventListener("online", online);
       cancelAnimationFrame(startFrame);
       cancelAnimationFrame(hoverFrame);
       setMap(null);
@@ -236,7 +257,7 @@ export default memo(function ReceiverMap({
     };
   }, []);
 
-  // A new list replaces the source, which drops all feature state: re-apply it (R3).
+  // A new list: set its dots and re-apply every state (R3; cheap, and safe whether or not MapLibre kept them).
   useEffect(() => {
     if (!map) return;
     (map.getSource(SOURCES.receivers) as GeoJSONSource).setData(receiverFeatures(drawn));
@@ -248,10 +269,15 @@ export default memo(function ReceiverMap({
     if (!map) return;
     const frame = requestAnimationFrame(() => {
       const next = dotStates(drawn, { sun, freqKhz, playing, last });
-      for (const [key, s] of changedStates(applied.current, next)) {
-        map.setFeatureState({ source: SOURCES.receivers, id: key }, { ...s, phase: s.phase ?? "none" });
+      try {
+        for (const [key, s] of changedStates(applied.current, next)) {
+          map.setFeatureState({ source: SOURCES.receivers, id: key }, { ...s, phase: s.phase ?? "none" });
+        }
+        applied.current = next;
+      } catch {
+        // The map is mid-reset (a lost graphics context); apply everything once it's back.
+        applied.current = null;
       }
-      applied.current = next;
     });
     return () => cancelAnimationFrame(frame);
   }, [map, drawn, sun, freqKhz, playing, last]);
@@ -325,6 +351,11 @@ export default memo(function ReceiverMap({
   }, [card]);
 
   const cardReceivers = card ? card.keys.map((k) => byKey.get(k)).filter((r): r is Receiver => !!r) : [];
+  // A list refresh can take away every receiver an open card shows; then it closes.
+  const emptyCard = card !== null && cardReceivers.length === 0;
+  useEffect(() => {
+    if (emptyCard) setCard(null);
+  }, [emptyCard]);
   const at = card && map ? map.project(card.lngLat) : null;
 
   return (
