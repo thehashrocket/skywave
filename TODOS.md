@@ -76,6 +76,42 @@
 **Priority:** P3
 **Depends on:** None (better after the receiver map adds its tokens)
 
+### Keep dial changes made while a first connection starts
+
+**What:** Send the newest frequency and mode once a tune that started from idle or an error is answered, instead of dropping dial, readout, preset and mode changes made in that window.
+
+**Why:** `sendRetune` (`apps/web/src/app/page.tsx`) only sends while the status is connecting or listening, but `tune()` waits on audio setup and the socket first, which can take seconds on a cold start. The page already shows that window as "Connecting…", so the service then connects on the old frequency while the readout shows the new one.
+
+**Context:** Deferred from the receiver map PR 1 /ship review (red team pass 3, 2026-10-21); fix at the start of PR 2. Either read the latest freq/mode right before `ws.send` in `use-radio`'s `tune()`, or send one retune when the pending receiver's first status arrives and it differs from what was sent. Test: start a tune with audio setup stalled (`workletReady`), move the dial, then check the tune or the follow-up retune carries the new frequency.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+
+### Don't leave a port-0 tune stuck on "Connecting…"
+
+**What:** Normalize a typed port of 0 (or anything outside 1-65535) to the default port, or reject it, before tuning.
+
+**Why:** The field and `parseReceiver` accept `0`; the service quietly dials 8073 (`int(port or DEFAULT_PORT)` in `session.py`) and reports port 8073, so `use-radio`'s pending-receiver check never matches. The receiver plays while the page shows "Connecting…" with the fields locked, and it's never saved or offered as Back.
+
+**Context:** Deferred from the receiver map PR 1 /ship review (red team pass 3, 2026-10-21); fix at the start of PR 2. Fix in `normalizeReceiver`/`listen` in `page.tsx` (or make the service reject port 0 with a BadRequest). Test: type `host:0`, Listen, deliver `listening` on 8073, and check the page leaves the connecting state.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+
+### Give Pick best's fallback the old receiver's real scheme and list tag
+
+**What:** When Pick best returns to the receiver that was playing before it started, dial it with that receiver's own `secure` and list tag.
+
+**Why:** `provenance` (`apps/web/src/app/page.tsx`) only knows the receiver the page is tuned to. If Pick best starts in the moment after a table or Back click, before the service answers, the fallback is the old receiver but the page is already tuned to the new one, so the old one is dialed as typed and insecure: an https-only receiver fails over ws://, and a list receiver loses its public-only rule when `ALLOW_PRIVATE_HOSTS` is on.
+
+**Context:** Deferred from the receiver map PR 1 /ship review (red team pass 3, 2026-10-21); fix at the start of PR 2. Look the fallback up in the page's Back history (`heard.last` / `heard.previous`) before defaulting. Test in `page.test.tsx`: secure receiver A playing, click a list receiver, start Pick best before any status, fail every candidate, and check A is redialed with `secure: true`.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+
 ## Completed
 
 ### Find out why some Kiwis send `too_busy=0` ten seconds in
