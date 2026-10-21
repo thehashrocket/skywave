@@ -54,6 +54,20 @@ describe("useMapAdmission", () => {
     expect(result.current).toBe(true);
   });
 
+  // Value: protects=a tune starting after the 5 s wait, while the idle callback is still queued, keeps the map from loading mid-connect; fails_when=cleanup stops cancelling the requestIdleCallback handle; why_new=the cancel test runs where requestIdleCallback is missing (setTimeout fallback); seam=a stubbed requestIdleCallback; no_claim=browser idle timing
+  it("cancels a queued idle callback when a tune starts", () => {
+    const callbacks = new Map<number, () => void>();
+    let next = 0;
+    vi.stubGlobal("requestIdleCallback", (cb: () => void) => (callbacks.set(++next, cb), next));
+    vi.stubGlobal("cancelIdleCallback", (id: number) => callbacks.delete(id));
+    const { result, rerender } = setup({ heardAudio: false, busy: false });
+    act(() => vi.advanceTimersByTime(IDLE_ADMIT_MS));
+    expect(callbacks.size).toBe(1);
+    rerender({ heardAudio: false, busy: true });
+    act(() => callbacks.forEach((cb) => cb()));
+    expect(result.current).toBe(false);
+  });
+
   // Value: protects=switching receivers never unloads the map; fails_when=admission follows the radio back to false; why_new=O4 (adapter kept mounted); seam=none; no_claim=none beyond protects
   it("stays admitted once admitted", () => {
     const { result, rerender } = setup({ heardAudio: true, busy: false });

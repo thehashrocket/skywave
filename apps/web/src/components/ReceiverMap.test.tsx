@@ -246,12 +246,37 @@ describe("ReceiverMap", () => {
     expect(map().easeTo).not.toHaveBeenCalled();
     rerender({ playing: { host: "a.example", port: 8073, phase: "listening" } });
     expect(map().easeTo).toHaveBeenCalledWith({ center: [100, 100], duration: 600 });
+    // Value: protects=the listening dot gets its name label once it plays; fails_when=the marks source isn't updated when playing changes; why_new=markFeatures is unit-tested but its wiring to the map wasn't; seam=mocked map source; no_claim=label placement
+    const labels = map().getSource("marks")!.setData.mock.calls.at(-1)![0].features;
+    expect(labels.map((f: { properties: { label: string } }) => f.properties.label)).toEqual(["a.example name"]);
 
     map().easeTo.mockClear();
     rerender({ follow: "stay", playing: { host: "b.example", port: 8073, phase: "listening" } });
     expect(map().easeTo).not.toHaveBeenCalled();
     rerender({ follow: "follow", centerRequest: 1 });
     expect(map().easeTo).toHaveBeenCalledWith({ center: [104, 100], duration: 600 });
+  });
+
+  // Value: protects=someone who asked for reduced motion gets an instant camera move, not a 600 ms glide; fails_when=the prefers-reduced-motion check is dropped and follow always eases; why_new=only the animated path was tested; seam=a stubbed matchMedia; no_claim=MapLibre's own animation settings
+  it("jumps instead of easing when reduced motion is preferred", () => {
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q.includes("reduce") }));
+    const { rerender } = setup();
+    load();
+    rerender({ playing: { host: "a.example", port: 8073, phase: "listening" } });
+    expect(map().jumpTo).toHaveBeenCalledWith({ center: [100, 100] });
+    expect(map().easeTo).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=a crowded spot's card says there are more and Zoom into this area zooms there and closes the card; fails_when=the more flag isn't shown or the button doesn't move the camera; why_new=hitGroup's limit is unit-tested, the card's action wasn't; seam=mocked map; no_claim=real zoom levels or tile loading
+  it("offers to zoom into a spot with more receivers than the card lists", () => {
+    const crowd = Array.from({ length: 12 }, (_, i) => rx(`r${i}.example`, { lon: 100 + i / 2, lat: 100 }));
+    setup({ receivers: crowd });
+    load();
+    act(() => map().emit("click", { point: { x: 100, y: 100 }, lngLat: { lng: 5, lat: 6 }, originalEvent: {} }));
+    expect(screen.getAllByRole("button", { name: "Listen" })).toHaveLength(10);
+    fireEvent.click(screen.getByRole("button", { name: "Zoom into this area" }));
+    expect(map().easeTo).toHaveBeenCalledWith({ center: [5, 6], zoom: 5, duration: 600 });
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   // Value: protects=a browser without WebGL, a style that won't load, or a tile host that's down ends in a stated reason instead of a blank panel; fails_when=a failure path is silent or tile errors outside the 30 s window still count; why_new=failure modes table, design state table; seam=mocked constructor and error events; no_claim=MapLibre's own error wording

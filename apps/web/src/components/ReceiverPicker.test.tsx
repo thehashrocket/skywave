@@ -8,6 +8,7 @@ import type { Receiver } from "@/lib/kiwi-list";
 import { sunPosition } from "@/lib/solar";
 import { TRPCProvider } from "@/lib/trpc";
 import type { AppRouter } from "@/server/root";
+import type { MapList } from "./MapPanel";
 import { nextRefetchMs, ReceiverPicker, ReceiverTable } from "./ReceiverPicker";
 
 afterEach(cleanup);
@@ -209,6 +210,7 @@ function renderPicker(
   note: string | null = null,
   onStopPicking: (() => void) | null = null,
   children: React.ReactNode = null,
+  map?: (list: MapList) => React.ReactNode,
 ) {
   const link: TRPCLink<AppRouter> = () => () =>
     observable((obs) => {
@@ -237,6 +239,7 @@ function renderPicker(
           picking={onStopPicking !== null}
           onStopPicking={onStopPicking ?? (() => {})}
           note={note}
+          map={map}
         >
           {children}
         </ReceiverPicker>
@@ -297,6 +300,38 @@ describe("ReceiverPicker", () => {
 
     renderPicker(new Promise(() => {}), "A was full; trying B…");
     expect(screen.getByRole("status").textContent).toBe("A was full; trying B…");
+  });
+
+  // Value: protects=the map is told the list failed only after a load fails (not while loading), can retry it, and gets the list's age; fails_when=failed keys on !receivers alone or retry/ageMs are miswired; why_new=page and MapPanel tests mock the picker/list, so this derivation was unexercised; seam=none; no_claim=MapPanel's rendering of these (its own tests)
+  it("hands the map slot the list, its failure state, a retry and its age", async () => {
+    let calls = 0;
+    const seen: MapList[] = [];
+    let resolveFirst!: (e: unknown) => void;
+    renderPicker(
+      () =>
+        ++calls === 1
+          ? new Promise((_, reject) => (resolveFirst = reject))
+          : Promise.resolve({ receivers, fetchedAt: 0, ageMs: 3 * 60_000 }),
+      null,
+      null,
+      null,
+      (list) => {
+        seen.push(list);
+        return null;
+      },
+    );
+    // Still loading: no list, but not a failure either.
+    expect(seen.at(-1)).toMatchObject({ receivers: undefined, ageMs: undefined, failed: false });
+    resolveFirst(new Error("BAD_GATEWAY"));
+    await waitFor(() => expect(seen.at(-1)!.failed).toBe(true));
+
+    seen.at(-1)!.retry();
+    await waitFor(() => expect(seen.at(-1)!.receivers).toHaveLength(4));
+    expect(calls).toBe(2);
+    expect(seen.at(-1)!.failed).toBe(false);
+    // The server's age plus this browser's time since the answer.
+    expect(seen.at(-1)!.ageMs).toBeGreaterThanOrEqual(3 * 60_000);
+    expect(seen.at(-1)!.ageMs).toBeLessThan(3 * 60_000 + 5_000);
   });
 
   // Value: protects=the second click of a double-click on Stop picking can't start a new run on the restored button; fails_when=the Pick button loses its detail guard; why_new=TODOS Pick best edges; seam=none; no_claim=real browser click timing
