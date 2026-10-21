@@ -747,7 +747,6 @@ describe("ListenPage", () => {
 
       // Two receivers in, a third fails: Back goes to the second.
       const two = heardTwo();
-      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "third.example" } });
       // The listed receiver is playing; stop it first so the fields unlock.
       radio.status = { state: "idle" };
       two.rerender(<ListenPage />);
@@ -803,6 +802,7 @@ describe("ListenPage", () => {
       expect(screen.queryByRole("button", { name: "Back to K1VL" })).toBeNull();
       expect(screen.getByRole("button", { name: "Back to kiwi.example" })).toBeTruthy();
     });
+
     // Value: protects=Back is a user choice like the table: it ends Pick best and drops a queued dial retune; fails_when=Back bypasses switchTo; why_new=E1/O1 shared switch path; seam=fake timers; no_claim=real socket ordering
     it("ends Pick best and drops a queued dial retune", () => {
       vi.useFakeTimers();

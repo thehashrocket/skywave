@@ -29,6 +29,14 @@ type Target = { host: string; port: number; secure?: boolean; name?: string };
 /** A receiver that played, so Back can return to it exactly as it was dialed. */
 type Heard = { host: string; port: number; fromList: boolean; secure: boolean; label: string };
 
+/** The last two receivers that played, for Back. */
+type History = { last: Heard | null; previous: Heard | null };
+
+/** The newest receiver in the history that isn't the one with this key. */
+function otherThan(h: History, key: string | undefined): Heard | null {
+  return [h.last, h.previous].find((r) => r && receiverKey(r) !== key) ?? null;
+}
+
 function loadReceiver(): Saved {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -215,8 +223,12 @@ export default function ListenPage() {
     const t = tuning.current;
     return t.host === h && Number(t.port) === p;
   }, []);
-  // The Back history, for Pick best returning to a receiver the page has moved on from.
-  const heardRef = useRef<{ last: Heard | null; previous: Heard | null }>({ last: null, previous: null });
+  // The Back history. It changes only when a different receiver starts
+  // playing, so retunes and errors keep it. Pick best reads it too, to return
+  // to a receiver the page has moved on from.
+  const [heard, setHeard] = useState<History>({ last: null, previous: null });
+  const heardRef = useRef(heard);
+  heardRef.current = heard;
   const provenance = useCallback(
     (h: string, p: number) => {
       const t = tuning.current;
@@ -256,14 +268,6 @@ export default function ListenPage() {
     [playingHost, playingPort, playingPhase],
   );
 
-  // The last two receivers that played, for Back. They change only when a
-  // different receiver starts playing, so retunes and errors keep them.
-  const [heard, setHeard] = useState<{ last: Heard | null; previous: Heard | null }>({
-    last: null,
-    previous: null,
-  });
-  heardRef.current = heard;
-
   // Remember a receiver only once it actually plays, so a typo or a failed
   // Pick best run never becomes the saved default. Only the receiver the page
   // is tuned to: a late "listening" from an attempt Pick best already left
@@ -288,9 +292,8 @@ export default function ListenPage() {
           h.last.fromList === playing.fromList && h.last.secure === playing.secure && h.last.label === playing.label;
         return same ? h : { ...h, last: playing };
       }
-      // With no last (a refused one was dropped), the previous one moves up, unless it's this one.
-      const previous = h.last ?? (h.previous && receiverKey(h.previous) !== key ? h.previous : null);
-      return { last: playing, previous };
+      // With no last (a refused one was dropped), the previous one stays, unless it's this one.
+      return { last: playing, previous: otherThan(h, key) };
     });
     const saved = JSON.stringify({
       host: t.host,
@@ -327,14 +330,11 @@ export default function ListenPage() {
   const fieldsHost = host.trim();
   const fieldsPort = Number(validPort(port));
   const backTo = useMemo(() => {
-    const { last, previous } = heard;
     const shown =
       current ??
       (status.host ? { host: status.host, port: status.port ?? DEFAULT_KIWI_PORT } : null) ??
       (fieldsHost ? { host: fieldsHost, port: fieldsPort } : null);
-    const isShown = (r: Heard | null) => !!r && !!shown && receiverKey(r) === receiverKey(shown);
-    if (last && !isShown(last)) return last;
-    return previous && !isShown(previous) ? previous : null;
+    return otherThan(heard, shown ? receiverKey(shown) : undefined);
   }, [heard, current, status.host, status.port, fieldsHost, fieldsPort]);
 
   const onDial = useCallback(

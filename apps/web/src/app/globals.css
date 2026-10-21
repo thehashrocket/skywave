@@ -418,6 +418,7 @@ a {
 }
 
 .receivers-credit,
+.receivers-updated,
 .receivers-sort-note {
   margin: 0;
   color: var(--muted);

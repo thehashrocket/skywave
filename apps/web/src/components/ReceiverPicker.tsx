@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { memo, useDeferredValue, useMemo, useState, type ReactNode } from "react";
+import { memo, useDeferredValue, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   byRank,
   covers,
@@ -234,6 +234,20 @@ export const ReceiverTable = memo(function ReceiverTable({
     setView({ receivers: latest, fetchedAt: latestFetchedAt });
     setSortSun(sun);
   };
+  // Every control that reshapes the rows takes the new list first.
+  const edit =
+    <T,>(set: (v: T) => void) =>
+    (v: T) => {
+      adopt();
+      set(v);
+    };
+  const tableRef = useRef<HTMLTableElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const showUpdated = () => {
+    adopt();
+    // The button goes away; keep keyboard focus in the list, not on the page.
+    setTimeout(() => (tableRef.current ?? searchRef.current)?.focus());
+  };
 
   const searchText = useMemo(
     () => new Map(receivers.map((r) => [r, `${r.name} ${r.location} ${r.antenna} ${r.host}`.toLowerCase()])),
@@ -284,57 +298,40 @@ export const ReceiverTable = memo(function ReceiverTable({
           <input
             id="receiver-search"
             type="search"
+            ref={searchRef}
             value={query}
-            onChange={(e) => {
-              adopt();
-              setQuery(e.target.value);
-            }}
+            onChange={(e) => edit(setQuery)(e.target.value)}
             placeholder="name, place or antenna"
             autoComplete="off"
             spellCheck={false}
           />
         </div>
         <label className="check">
-          <input
-            type="checkbox"
-            checked={onlyCovering}
-            onChange={(e) => {
-              adopt();
-              setOnlyCovering(e.target.checked);
-            }}
-          />
+          <input type="checkbox" checked={onlyCovering} onChange={(e) => edit(setOnlyCovering)(e.target.checked)} />
           Covers {freqText} kHz
         </label>
         <label className="check">
-          <input
-            type="checkbox"
-            checked={onlyFree}
-            onChange={(e) => {
-              adopt();
-              setOnlyFree(e.target.checked);
-            }}
-          />
+          <input type="checkbox" checked={onlyFree} onChange={(e) => edit(setOnlyFree)(e.target.checked)} />
           Has a free slot
         </label>
         {sort ? (
-          <button
-            type="button"
-            className="link-button"
-            onClick={() => {
-              adopt();
-              setSort(null);
-            }}
-          >
+          <button type="button" className="link-button" onClick={() => edit(setSort)(null)}>
             Sort by best
           </button>
         ) : (
           <span className="receivers-sort-note">Best first</span>
         )}
-        {updated && (
-          <button type="button" className="link-button" onClick={adopt}>
-            List updated · Show
-          </button>
-        )}
+        {/* Always present, so screen readers announce the notice when it appears. */}
+        <span className="receivers-updated" role="status">
+          {updated && (
+            <>
+              List updated.{" "}
+              <button type="button" className="link-button" onClick={showUpdated}>
+                Show it
+              </button>
+            </>
+          )}
+        </span>
       </div>
 
       {rows.length === 0 ? (
@@ -355,7 +352,7 @@ export const ReceiverTable = memo(function ReceiverTable({
         </div>
       ) : (
         <div className="receivers-scroll">
-          <table className="receivers-table">
+          <table className="receivers-table" ref={tableRef} tabIndex={-1} aria-label="Public receivers">
             <thead>
               <tr>
                 {COLUMNS.map((c) => (

@@ -354,6 +354,7 @@ describe("ReceiverPicker", () => {
     expect(interval(query)).toBeLessThanOrEqual(5 * 60_000 + 5_000);
   });
 
+  // Value: protects=the list is polled just after the server's copy expires, then at the server's retry pace; fails_when=nextRefetchMs's age thresholds or the floor/ceiling drift; why_new=list polling (PR 1 review, skew-proof in PR 2a); seam=none; no_claim=react-query's timer itself
   it.each([
     ["a copy 10 min old", 10 * 60_000, 5 * 60_000 + 5_000],
     ["a copy fetched just now", 0, 15 * 60_000],
@@ -446,7 +447,7 @@ describe("ReceiverTable Night column", () => {
     // A fresh list waits until it's taken, then sorts by the sun now.
     view.rerender(table([...placed], midnight));
     expect(names()).toEqual(["Charlie", "Alpha", "Bravo"]);
-    fireEvent.click(screen.getByRole("button", { name: "List updated · Show" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show it" }));
     expect(names()).toEqual(["Alpha", "Charlie", "Bravo"]);
   });
 
@@ -481,9 +482,20 @@ describe("ReceiverTable when the list refreshes", () => {
     expect(names()).toEqual(["Charlie", "Alpha", "Bravo"]);
     view.rerender(table(refreshed));
     expect(names()).toEqual(["Charlie", "Alpha", "Bravo"]);
-    fireEvent.click(screen.getByRole("button", { name: "List updated · Show" }));
+    expect(screen.getByRole("status", { name: "" }).textContent).toMatch(/List updated/);
+    fireEvent.click(screen.getByRole("button", { name: "Show it" }));
     expect(names()).toEqual(["Alpha", "Bravo", "Charlie"]);
-    expect(screen.queryByRole("button", { name: "List updated · Show" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show it" })).toBeNull();
+  });
+
+  // Value: protects=keyboard users keep their place after taking the new list (the button goes away); fails_when=focus is left on the removed button, falling back to the page; why_new=a11y review (PR 2a); seam=none; no_claim=screen reader announcement wording
+  it("moves focus to the table after showing the new list", async () => {
+    const view = render(table(receivers));
+    view.rerender(table(refreshed));
+    const show = screen.getByRole("button", { name: "Show it" });
+    show.focus();
+    fireEvent.click(show);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("table")));
   });
 
   // Value: protects=the listener's own sort or filter shows the newest list; fails_when=adopt() isn't called from the table's controls, so the table stays on an old list until the link is found; why_new=steady rows; seam=none; no_claim=none beyond protects
