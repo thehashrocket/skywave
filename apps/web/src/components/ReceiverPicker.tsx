@@ -128,8 +128,6 @@ export function ReceiverPicker({
           {note ??
             (list.isPending ? (
               "Loading the public receiver list…"
-            ) : !receivers && list.isFetching ? (
-              "Trying again…"
             ) : !receivers ? (
               <>
                 Couldn't load the public receiver list.{" "}
