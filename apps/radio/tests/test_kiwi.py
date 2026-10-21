@@ -1,10 +1,13 @@
 import asyncio
+import itertools
 import ssl
+import struct
 
 import numpy as np
 import pytest
 import trustme
 import websockets.asyncio.client
+from websockets.asyncio.server import serve
 
 from skywave_radio import kiwi as kiwi_module
 from skywave_radio.kiwi import KiwiClient, KiwiError, parse_msg
@@ -130,6 +133,165 @@ async def test_send_to_a_kiwi_that_stopped_reading_times_out():
         await client._send("SET keepalive")
     assert e.value.code == "timeout"
     assert "stopped reading" in str(e.value)
+
+
+def snd(samples: int) -> bytes:
+    """A stereo SND frame carrying this many silent I/Q pairs."""
+    return b"SND" + struct.pack("<BI", 0x08, 0) + struct.pack(">H", 0) + bytes(10) + bytes(samples * 4)
+
+
+class QueuedSocket:
+    """A Kiwi whose first frame arrives late and the rest are already queued.
+
+    The first keepalive send is slow, standing in for our own work (parsing,
+    a send) using up the window. Timeline with streaming_client's 1 s
+    window: first frame at 0.5 s, keepalive done at 1.25 s, so every later
+    frame is read past the deadline.
+    """
+
+    def __init__(self, frames):
+        self.frames = iter(frames)
+        self.first = True
+        self.slow_send = True
+        self.sent = []
+
+    async def recv(self):
+        if self.first:
+            self.first = False
+            await asyncio.sleep(0.5)
+        return next(self.frames)
+
+    async def send(self, msg):
+        self.sent.append(msg)
+        # Always yield, so a test's wait_for can still cancel a loop that
+        # otherwise never waits (frames are always queued).
+        await asyncio.sleep(0.75 if self.slow_send else 0)
+        self.slow_send = False
+
+
+def streaming_client(ws) -> KiwiClient:
+    client = KiwiClient("kiwi.example", 8073, timeout_s=1.0)
+    client._ws = ws
+    client.info.sample_rate = 12000.0  # so a window needs 1200 samples
+    return client
+
+
+# Value: protects=a frame already queued when our own work uses up the window still counts; fails_when=blocks() waits with wait_for(..., 0), which raises without reading the socket; why_new=a receiver at the audio floor was dropped for a frame it sent in time; seam=KiwiClient._ws (a stub socket whose frames are always queued); no_claim=real socket queueing
+async def test_frame_queued_at_the_deadline_still_counts():
+    # 1000 samples in time, then a queued 500 makes 1500 of the 1200 needed.
+    sizes = []
+    async for b in streaming_client(QueuedSocket([snd(1000), snd(500)])).blocks():
+        sizes.append(b.samples.size)
+        if len(sizes) == 2:
+            break
+    assert sizes == [1000, 500]
+
+
+# Value: protects=time we spend sending a keepalive isn't taken out of the receiver's next window; fails_when=the window is reset before the keepalive send on the frame that meets the floor; why_new=that order was briefly introduced on this branch and caught in review; seam=KiwiClient._ws (a stub socket with paced frames); no_claim=real send backpressure
+async def test_a_slow_keepalive_does_not_shorten_the_next_window():
+    class PacedSocket(QueuedSocket):
+        async def recv(self):
+            delay, frame = next(self.frames)
+            await asyncio.sleep(delay)
+            return frame
+
+    # The 1200 samples a window needs land at 0.5 s and our keepalive takes
+    # until 1.25 s. The next window starts after that send, so the next full
+    # window's audio at 1.95 s is in time (it would be late against 1.5 s).
+    ws = PacedSocket([(0.5, snd(1200)), (0.7, snd(1200))])
+    sizes = []
+    async for b in streaming_client(ws).blocks():
+        sizes.append(b.samples.size)
+        if len(sizes) == 2:
+            break
+    assert sizes == [1200, 1200]
+
+
+# Value: protects=a real websockets recv() hands back a frame already queued past the deadline, which the fix relies on; fails_when=a websockets upgrade makes recv() suspend on a queued frame, so asyncio.timeout(0) cancels it; why_new=the queued-frame tests use a stub socket that never suspends; seam=KiwiClient._ws (a real connection with its send slowed); no_claim=a real KiwiSDR's frame pacing
+async def test_frame_queued_on_a_real_socket_at_the_deadline_still_counts():
+    async def kiwi(ws):
+        await asyncio.sleep(0.5)  # the first frame lands mid-window
+        await ws.send(snd(1000))
+        await ws.send(snd(500))
+        await ws.wait_closed()
+
+    async with serve(kiwi, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        ws = await websockets.asyncio.client.connect(f"ws://127.0.0.1:{port}")
+        send = ws.send
+        first = True
+
+        async def slow_first_send(msg):
+            nonlocal first
+            if first:
+                first = False
+                await asyncio.sleep(0.75)  # done at 1.25 s, past the 1 s window
+            await send(msg)
+
+        ws.send = slow_first_send
+        sizes = []
+        async for b in streaming_client(ws).blocks():
+            sizes.append(b.samples.size)
+            if len(sizes) == 2:
+                break
+        await ws.close()
+    assert sizes == [1000, 500]
+
+
+# Value: protects=past the deadline only the one frame that completes the window is taken; fails_when=every queued frame past the deadline is read (a plain asyncio.timeout swap), so a receiver that already missed its window gets unlimited tries; why_new=the queued-frame grace needs a bound; seam=KiwiClient._ws (a stub socket whose frames are always queued); no_claim=real socket queueing
+async def test_a_queued_frame_that_misses_the_floor_ends_the_stream():
+    # 1 sample in time, then queued frames that would refill the window only on the third try.
+    frames = itertools.chain([snd(1), snd(1), snd(1)], itertools.repeat(snd(1500)))
+    sizes = []
+
+    async def drain():
+        async for b in streaming_client(QueuedSocket(frames)).blocks():
+            sizes.append(b.samples.size)
+
+    with pytest.raises(KiwiError) as e:
+        await asyncio.wait_for(drain(), timeout=3)
+    assert e.value.code == "timeout"
+    assert sizes == [1]
+
+
+# Value: protects=past the deadline a queued non-audio frame (status MSG or unknown tag) ends the stream, unhandled, rather than buying more time; fails_when=the overdue check is dropped from the non-SND branch, so a Kiwi flooding status frames gets unlimited tries, or runs after _handle_msg, so an overdue audio_rate MSG makes us send to a Kiwi that may have stopped reading; why_new=FakeKiwi's status-only receiver paces its frames, so it only reaches the recv timeout; seam=KiwiClient._ws (a stub socket whose frames are always queued); no_claim=real socket queueing
+@pytest.mark.parametrize(
+    "filler",
+    [b"MSG status=ok", b"MSG audio_rate=12000", b"XYZ"],
+    ids=["status MSG", "audio_rate MSG", "unknown tag"],
+)
+async def test_a_queued_non_audio_frame_past_the_deadline_ends_the_stream(filler):
+    # 1 sample in time, then queued filler, then audio that would refill the window.
+    frames = itertools.chain([snd(1)], itertools.repeat(filler, 50), itertools.repeat(snd(1500)))
+    ws = QueuedSocket(frames)
+    sizes = []
+
+    async def drain():
+        async for b in streaming_client(ws).blocks():
+            sizes.append(b.samples.size)
+
+    with pytest.raises(KiwiError) as e:
+        await asyncio.wait_for(drain(), timeout=3)
+    assert e.value.code == "timeout"
+    assert sizes == [1]
+    # An overdue MSG isn't handled: answering audio_rate would be a send that
+    # a Kiwi which stopped reading could stall, holding the slot.
+    assert ws.sent == ["SET keepalive"]
+
+
+# Value: protects=keepalives keep going out while audio streams; fails_when=the keepalive call is lost from blocks() (it moved in this change); why_new=no test streamed past the 1 s keepalive interval and looked at commands; seam=none; no_claim=how long a real Kiwi waits before dropping a silent client
+async def test_keepalives_are_sent_while_streaming():
+    async with FakeKiwi() as kiwi:
+        client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=1)
+        await client.tune(9535.0)
+        await client.connect()
+        started = asyncio.get_running_loop().time()
+        async for _ in client.blocks():
+            if asyncio.get_running_loop().time() - started > 2.5:
+                break
+        await client.close()
+    # One is forced at connect; the rest come from blocks(), at most one a second.
+    assert kiwi.commands.count("SET keepalive") >= 3
 
 
 # Value: protects=a receiver that sent real audio and then only empty blocks still times out; fails_when=the audio count isn't cleared when the deadline resets, so one good window keeps every later block resetting it; why_new=server tests' empty receivers never send real audio first; seam=none; no_claim=a real Kiwi's failure pattern (FakeKiwi stands in)

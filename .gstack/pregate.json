@@ -1,6 +1,26 @@
 {
+  "runner": "apps/radio/.venv/bin/python -m pytest {files}",
   "dependencies": {
-    "apps/radio/skywave_radio/**": ["apps/radio/tests/**"],
-    "apps/radio/pyproject.toml": ["apps/radio/tests/**"]
+    "apps/radio/skywave_radio/**": [
+      "apps/radio/tests/test_dsp.py",
+      "apps/radio/tests/test_error_codes.py",
+      "apps/radio/tests/test_hostguard.py",
+      "apps/radio/tests/test_kiwi.py",
+      "apps/radio/tests/test_server.py"
+    ],
+    "apps/radio/pyproject.toml": [
+      "apps/radio/tests/test_dsp.py",
+      "apps/radio/tests/test_error_codes.py",
+      "apps/radio/tests/test_hostguard.py",
+      "apps/radio/tests/test_kiwi.py",
+      "apps/radio/tests/test_server.py"
+    ],
+    "apps/radio/tests/*.py": [
+      "apps/radio/tests/test_dsp.py",
+      "apps/radio/tests/test_error_codes.py",
+      "apps/radio/tests/test_hostguard.py",
+      "apps/radio/tests/test_kiwi.py",
+      "apps/radio/tests/test_server.py"
+    ]
   }
 }
