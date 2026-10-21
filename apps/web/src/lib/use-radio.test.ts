@@ -735,6 +735,32 @@ describe("useRadio", () => {
       expect(ws.sent.at(-1)).toEqual({ type: "tune", ...other, freqKhz: 7_100 });
     });
 
+    // Value: protects=going back to a receiver still sends that tune when a late answer for it (from earlier dial moves) arrives mid-switch; fails_when=the late-send skip treats any answer naming the receiver as this tune's answer, so "Back to A" leaves the service on B; why_new=red team (PR 2b ship); seam=a stalled AudioContext.resume; no_claim=service ordering
+    it("still sends a switch back when a stale answer for that receiver arrives first", async () => {
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.status("listening", { host: tuning.host, port: tuning.port }));
+      const other = { ...tuning, host: "other.example" };
+      await act(() => result.current.tune(other));
+
+      let finishResume!: () => void;
+      vi.spyOn(FakeAudioContext.prototype, "resume").mockImplementationOnce(
+        () => new Promise<void>((resolve) => (finishResume = resolve)),
+      );
+      let pending!: Promise<void>;
+      act(() => {
+        pending = result.current.tune(tuning);
+      });
+      // An answer to an earlier dial move on the first receiver, still in flight.
+      act(() => ws.status("listening", { host: tuning.host, port: tuning.port }));
+      await act(async () => {
+        finishResume();
+        await pending;
+      });
+      expect(ws.sent.at(-1)).toEqual({ type: "tune", ...tuning });
+    });
+
     // Value: protects=first audio means sound from this receiver; fails_when=spectrum rows, junk frames or the last receiver's audio count; why_new=R7 first-audio gate; seam=none; no_claim=none beyond protects
     it("hears audio only after the service answers the latest tune", async () => {
       const { result } = renderHook(() => useRadio());

@@ -1307,14 +1307,20 @@ a {
   :root {
     --map-height: 220px;
   }
-  /* The card docks under the map instead of covering it. */
+  /* The card docks under the map instead of covering it; relative keeps its ✕ on the card. */
   .map-card {
-    position: static;
+    position: relative;
+    left: auto;
+    top: auto;
     width: auto;
     max-height: 240px;
     border-radius: 0;
     border-width: 1px 0 0;
   }
+}
+
+/* Fingers, at any width (a tablet, a touch laptop): map controls at 44px. */
+@media (max-width: 520px), (pointer: coarse) {
   .map-listen,
   .map-card-close,
   .map-frame .maplibregl-ctrl-group button {

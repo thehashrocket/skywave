@@ -39,8 +39,16 @@ const fake = vi.hoisted(() => {
     project([lon, lat]: [number, number]) {
       return { x: lon, y: lat };
     }
+    canvas = {
+      style: {} as Record<string, string>,
+      tabIndex: 0,
+      attrs: {} as Record<string, string>,
+      setAttribute(k: string, v: string) {
+        this.attrs[k] = v;
+      },
+    };
     getCanvas() {
-      return { style: {} };
+      return this.canvas;
     }
     getZoom() {
       return 2;
@@ -53,6 +61,7 @@ vi.mock("maplibre-gl", () => ({
   Map: fake.FakeMap,
   NavigationControl: class {},
   setWorkerUrl: vi.fn(),
+  getVersion: () => "6.12.0",
 }));
 
 const map = () => fake.FakeMap.instances.at(-1)!;
@@ -223,9 +232,126 @@ describe("ReceiverMap", () => {
     );
     load();
     act(() => map().emit("click", { point: { x: 300, y: 300 }, lngLat: { lng: 0, lat: 0 }, originalEvent: {} }));
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.body, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement?.getAttribute("aria-label")).toBe("Receiver map");
+  });
+
+  // Value: protects=Esc while typing elsewhere on the page doesn't close the card or steal focus, but a click outside the map does close it; fails_when=the Esc handler acts on any key anywhere, or outside clicks leave a stale card; why_new=design review (PR 2b ship); seam=DOM events; no_claim=screen reader behaviour
+  it("keeps Esc to the map and closes the card on an outside click", () => {
+    render(
+      <>
+        <input aria-label="elsewhere" />
+        <div data-map-region tabIndex={-1}>
+          <ReceiverMap
+            receivers={list}
+            freqKhz={9_535}
+            sun={null}
+            playing={null}
+            last={null}
+            follow="follow"
+            centerRequest={0}
+            onUserMove={() => {}}
+            onListen={() => {}}
+            onFail={() => {}}
+          />
+        </div>
+      </>,
+    );
+    load();
+    const open = () =>
+      act(() => map().emit("click", { point: { x: 300, y: 300 }, lngLat: { lng: 0, lat: 0 }, originalEvent: {} }));
+    open();
+    const elsewhere = screen.getByLabelText("elsewhere");
+    elsewhere.focus();
+    fireEvent.keyDown(elsewhere, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(document.activeElement).toBe(elsewhere);
+    fireEvent.pointerDown(elsewhere);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  // Value: protects=closing the card with its own buttons leaves keyboard focus on the map, not the page; fails_when=✕ or Listen unmounts the focused button and focus drops to <body>; why_new=design review (PR 2b ship); seam=DOM focus; no_claim=screen reader behaviour
+  it("returns focus to the map when the card's own button closes it", () => {
+    render(
+      <div data-map-region tabIndex={-1} aria-label="frame">
+        <ReceiverMap
+          receivers={list}
+          freqKhz={9_535}
+          sun={null}
+          playing={null}
+          last={null}
+          follow="follow"
+          centerRequest={0}
+          onUserMove={() => {}}
+          onListen={() => {}}
+          onFail={() => {}}
+        />
+      </div>,
+    );
+    load();
+    act(() => map().emit("click", { point: { x: 300, y: 300 }, lngLat: { lng: 0, lat: 0 }, originalEvent: {} }));
+    const close = screen.getByRole("button", { name: "Close" });
+    close.focus();
+    fireEvent.click(close);
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("frame");
+  });
+
+  // Value: protects=the canvas is hidden from screen readers but the zoom and attribution controls are not; fails_when=aria-hidden goes back on the container that holds the controls, hiding focusable buttons; why_new=design review CRITICAL (PR 2b ship); seam=mocked canvas; no_claim=MapLibre's control markup
+  it("hides only the canvas from assistive tech", () => {
+    const { view } = setup();
+    expect(map().canvas.attrs["aria-hidden"]).toBe("true");
+    expect(map().canvas.tabIndex).toBe(-1);
+    expect(view.container.querySelector(".map-canvas")!.hasAttribute("aria-hidden")).toBe(false);
+  });
+
+  // Value: protects=a receiver list that arrives after playback started still brings the camera to the receiver; fails_when=the camera effect ignores the target appearing (list loaded late or retried); why_new=testing + red team (PR 2b ship); seam=mocked easeTo; no_claim=animation
+  it("follows once the playing receiver's position arrives", () => {
+    const { rerender } = setup({ receivers: [], playing: { host: "a.example", port: 8073, phase: "listening" } });
+    load();
+    expect(map().easeTo).not.toHaveBeenCalled();
+    rerender({ receivers: list });
+    expect(map().easeTo).toHaveBeenCalledWith({ center: [100, 100], duration: 600 });
+    map().easeTo.mockClear();
+    rerender({ receivers: [...list] });
+    expect(map().easeTo).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=playback starting is marked once, briefly, and never under reduced motion; fails_when=the emphasis never clears, repeats on refreshes, or ignores the preference; why_new=design decision 11 (plan PARTIAL closed in PR 2b ship); seam=fake timers, mocked matchMedia; no_claim=how it looks
+  it("emphasises the dot once when playback starts", () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = setup();
+      load();
+      rerender({ playing: { host: "a.example", port: 8073, phase: "listening" } });
+      const id = { source: "receivers", id: "a.example:8073" };
+      expect(map().setFeatureState).toHaveBeenCalledWith(id, { emphasis: true });
+      map().setFeatureState.mockClear();
+      act(() => vi.advanceTimersByTime(600));
+      expect(map().setFeatureState).toHaveBeenCalledWith(id, { emphasis: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=a map whose style never arrives, or whose graphics context the browser drops, says so instead of sitting blank; fails_when=there's no load watchdog or no webglcontextlost handler; why_new=red team (PR 2b ship); seam=fake timers, mocked events; no_claim=MapLibre's own retry behaviour
+  it("gives up on a style that never loads, and on a lost graphics context", () => {
+    vi.useFakeTimers();
+    try {
+      const hung = setup();
+      act(() => vi.advanceTimersByTime(15_000));
+      expect(hung.props.onFail).toHaveBeenCalledWith("the map style didn't load");
+      cleanup();
+
+      const lost = setup();
+      load();
+      act(() => vi.advanceTimersByTime(15_000));
+      expect(lost.props.onFail).not.toHaveBeenCalled();
+      act(() => map().emit("webglcontextlost"));
+      expect(lost.props.onFail).toHaveBeenCalledWith("the browser dropped its graphics context");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Value: protects=only the user's own pan or zoom stops the camera following; fails_when=our own easeTo (no originalEvent) counts as a user move and follow switches itself off; why_new=design D8; seam=mocked events; no_claim=MapLibre's event payloads beyond originalEvent

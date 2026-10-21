@@ -123,7 +123,8 @@ export function buildStyle(t: MapTokens): StyleSpecification {
         type: "circle",
         source: SOURCES.receivers,
         paint: {
-          "circle-radius": ["case", tuned, 6, 4],
+          // Playback starting gets one brief, larger dot (ReceiverMap clears it).
+          "circle-radius": ["case", state("emphasis"), 9, tuned, 6, 4],
           "circle-color": ["case", ["==", phase, "listening"], t.playing, t.dot],
           // Full and connecting dots are rings.
           "circle-opacity": [

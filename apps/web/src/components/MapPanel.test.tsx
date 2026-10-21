@@ -6,11 +6,12 @@ import { MapPanel, type MapList } from "./MapPanel";
 import type { ReceiverMapProps } from "./ReceiverMap";
 
 // The adapter needs WebGL; stand in for it and keep what it was given.
-const adapter = vi.hoisted(() => ({ props: [] as ReceiverMapProps[], mounts: 0 }));
+const adapter = vi.hoisted(() => ({ props: [] as ReceiverMapProps[], mounts: 0, throwing: false }));
 vi.mock("./ReceiverMap", async () => {
   const { useEffect } = await import("react");
   return {
     default: function FakeReceiverMap(props: ReceiverMapProps) {
+      if (adapter.throwing) throw new Error("Loading chunk failed");
       adapter.props.push(props);
       useEffect(() => {
         adapter.mounts++;
@@ -129,6 +130,31 @@ describe("MapPanel", () => {
     rerender(<MapPanel {...props} playing={{ host: "typed.example", port: 8073, phase: "listening" }} />);
     expect((screen.getByRole("button", { name: "Center on receiver" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText("Playing typed.example:8073 · no location")).toBeTruthy();
+  });
+
+  // Value: protects=the map's code failing to load (a redeploy, a dropped connection) shows "Map unavailable" with Retry instead of crashing the page and the radio with it; fails_when=there's no error boundary around the lazy adapter; why_new=red team CRITICAL (PR 2b ship); seam=the mocked adapter throws on render; no_claim=Next's chunk loading
+  it("turns a map that fails to load into Map unavailable, and retries", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    adapter.throwing = true;
+    setup();
+    expect(await screen.findByText("Map unavailable: its code didn't load.")).toBeTruthy();
+    adapter.throwing = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry map" }));
+    expect(await screen.findByTestId("adapter")).toBeTruthy();
+    vi.mocked(console.error).mockRestore();
+  });
+
+  // Value: protects=Center is offered only when pressing it can move the map (listening, located, map up); fails_when=Center is enabled while connecting or before the map loads and looks like it does nothing; why_new=red team (PR 2b ship); seam=none; no_claim=the camera (adapter tests)
+  it("enables Center only while listening with the map up", async () => {
+    const connecting = { host: "a.example", port: 8073, phase: "connecting" as const };
+    const { rerender, props } = setup({ admitted: false, playing: connecting });
+    const center = () => screen.getByRole("button", { name: "Center on receiver" }) as HTMLButtonElement;
+    expect(center().disabled).toBe(true);
+    rerender(<MapPanel {...props} admitted playing={connecting} />);
+    await screen.findByTestId("adapter");
+    expect(center().disabled).toBe(true);
+    rerender(<MapPanel {...props} admitted playing={{ ...connecting, phase: "listening" }} />);
+    expect(center().disabled).toBe(false);
   });
 
   // Value: protects=the card's Listen reaches the page's switch path untouched; fails_when=MapPanel swallows or rewraps onListen; why_new=R1; seam=adapter props; no_claim=chooseReceiver (page tests)

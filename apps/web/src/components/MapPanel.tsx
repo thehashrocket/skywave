@@ -1,12 +1,29 @@
 "use client";
 
-import { lazy, Suspense, useCallback, useState } from "react";
+import { Component, lazy, Suspense, useCallback, useRef, useState, type ReactNode } from "react";
 import { receiverKey, type Receiver } from "@/lib/kiwi-list";
 import type { Follow, MapPlaying, Place } from "@/lib/receiver-map-model";
 import { formatHostPort } from "@/lib/receiver";
 import type { SolarClock } from "@/lib/use-solar-clock";
 
 const ReceiverMap = lazy(() => import("./ReceiverMap"));
+
+/** Stands in while there's no list, so the map's props don't change on every render. */
+const NO_RECEIVERS: readonly Receiver[] = [];
+
+/** The map's code failing to load (a new deploy, a dropped connection) mustn't take the radio down with it. */
+class MapBoundary extends Component<{ onError: (reason: string) => void; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch() {
+    this.props.onError("its code didn't load");
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
 
 /** The list's age turns to a warning past this. */
 const OLD_LIST_MS = 30 * 60_000;
@@ -47,10 +64,13 @@ export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen
   const [attempt, setAttempt] = useState(0);
   const onUserMove = useCallback(() => setFollow("stay"), []);
   const onFail = useCallback((reason: string) => setFailure(reason), []);
+  const frameRef = useRef<HTMLDivElement>(null);
 
   const receivers = list.receivers;
   const playingReceiver = playing && receivers?.find((r) => receiverKey(r) === receiverKey(playing));
   const located = playingReceiver?.lat !== undefined && playingReceiver?.lon !== undefined;
+  // Center does something only with a map showing and a receiver listening at a known place.
+  const canCenter = located && playing?.phase === "listening" && admitted && !failure;
   const freqText = freqKhz.toLocaleString("en-US");
 
   return (
@@ -64,7 +84,7 @@ export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen
             type="button"
             className="map-center"
             aria-label="Center on receiver"
-            disabled={!located}
+            disabled={!canCenter}
             onClick={() => {
               setFollow("follow");
               setCenterRequest((n) => n + 1);
@@ -75,23 +95,25 @@ export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen
         )}
       </div>
 
-      <div className="map-frame" role="region" aria-label="Receiver map" tabIndex={-1} data-map-region>
+      {/* Focus lands here after the card closes; the section is already the "Receiver map" region. */}
+      <div className="map-frame" ref={frameRef} tabIndex={-1} data-map-region>
         {admitted && !failure ? (
-          <Suspense fallback={null}>
-            <ReceiverMap
-              key={attempt}
-              receivers={receivers ?? []}
-              freqKhz={freqKhz}
-              sun={sun}
-              playing={playing}
-              last={last}
-              follow={follow}
-              centerRequest={centerRequest}
-              onUserMove={onUserMove}
-              onListen={onListen}
-              onFail={onFail}
-            />
-          </Suspense>
+          <MapBoundary key={attempt} onError={onFail}>
+            <Suspense fallback={null}>
+              <ReceiverMap
+                receivers={receivers ?? NO_RECEIVERS}
+                freqKhz={freqKhz}
+                sun={sun}
+                playing={playing}
+                last={last}
+                follow={follow}
+                centerRequest={centerRequest}
+                onUserMove={onUserMove}
+                onListen={onListen}
+                onFail={onFail}
+              />
+            </Suspense>
+          </MapBoundary>
         ) : (
           !failure && <p className="map-shell">Map loads once the radio is playing</p>
         )}
@@ -106,6 +128,8 @@ export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen
                 onClick={() => {
                   setFailure(null);
                   setAttempt((n) => n + 1);
+                  // The button goes away; keep focus on the map.
+                  frameRef.current?.focus();
                 }}
               >
                 Retry map
@@ -138,9 +162,23 @@ export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen
 
       <p className="map-legend">
         <span>
-          Shaded: night now · <span className="key-night">●</span> night · <span className="key-full">○</span> full ·
-          faint: can&apos;t tune {freqText} · <span className="key-listening">●</span> listening ·{" "}
-          <span className="key-last">○</span> last
+          Shaded: night now ·{" "}
+          <span className="key-night" aria-hidden="true">
+            ●
+          </span>{" "}
+          night ·{" "}
+          <span className="key-full" aria-hidden="true">
+            ○
+          </span>{" "}
+          full · faint: can&apos;t tune {freqText} ·{" "}
+          <span className="key-listening" aria-hidden="true">
+            ●
+          </span>{" "}
+          listening ·{" "}
+          <span className="key-last" aria-hidden="true">
+            ○
+          </span>{" "}
+          last
         </span>
         <span className="map-legend-times">
           {sun && `Greyline ${utcTime(sun.at)} UTC`}

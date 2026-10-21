@@ -125,6 +125,10 @@ export function useRadio() {
   // dial retune on the last receiver can still be answered after a switch),
   // and what it will send (dial moves while audio or the socket start land here).
   const pendingRef = useRef<Tuning | null>(null);
+  // Whether a dial move for the tune in progress already went to the service
+  // (the socket was open): then the service has the newer tuning, and the
+  // tune's own send would undo it.
+  const retunedRef = useRef(false);
 
   const setTuningBoth = useCallback((v: boolean) => {
     tuningRef.current = v;
@@ -321,6 +325,7 @@ export function useRadio() {
     async (t: Tuning) => {
       const generation = ++generationRef.current;
       pendingRef.current = t;
+      retunedRef.current = false;
       setTuningBoth(true);
       setHeardAudioBoth(false);
       try {
@@ -345,10 +350,9 @@ export function useRadio() {
         return;
       }
       if (generation !== generationRef.current) return;
-      // The service already answered this tune (a dial move while audio woke
-      // went out at once): sending it now would undo that move.
-      if (!pendingRef.current) return;
-      ws.send(JSON.stringify({ type: "tune", ...pendingRef.current }));
+      // A dial move while audio woke already went out for this receiver; sending now would undo it.
+      if (retunedRef.current) return;
+      ws.send(JSON.stringify({ type: "tune", ...(pendingRef.current ?? t) }));
     },
     [ensureAudio, ensureSocket, setTuningBoth, setHeardAudioBoth],
   );
@@ -359,9 +363,13 @@ export function useRadio() {
    */
   const retune = useCallback((t: Tuning) => {
     const pending = pendingRef.current;
-    if (pending && pending.host === t.host && pending.port === t.port) pendingRef.current = t;
+    const forPending = !!pending && pending.host === t.host && pending.port === t.port;
+    if (forPending) pendingRef.current = t;
     const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "tune", ...t }));
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "tune", ...t }));
+      if (forPending) retunedRef.current = true;
+    }
   }, []);
 
   const stop = useCallback(() => {

@@ -7,9 +7,10 @@ const config: NextConfig = {
   allowedDevOrigins: ["127.0.0.1"],
   // The map's worker route reads these from the installed package.
   outputFileTracingIncludes: {
-    "/vendor/maplibre/*": [
+    "/vendor/maplibre/**": [
       "./node_modules/maplibre-gl/dist/maplibre-gl-worker.mjs",
       "./node_modules/maplibre-gl/dist/maplibre-gl-shared.mjs",
+      "./node_modules/maplibre-gl/package.json",
     ],
   },
 };
