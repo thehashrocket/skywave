@@ -788,6 +788,8 @@ a {
 
 .status-back.link-button {
   padding: 0;
+  /* Receiver names run long; a wrapped button label would center. */
+  text-align: left;
 }
 
 /* Waterfall */

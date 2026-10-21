@@ -208,6 +208,7 @@ function renderPicker(
   load: Promise<unknown> | (() => Promise<unknown>),
   note: string | null = null,
   onStopPicking: (() => void) | null = null,
+  children: React.ReactNode = null,
 ) {
   const link: TRPCLink<AppRouter> = () => () =>
     observable((obs) => {
@@ -236,7 +237,9 @@ function renderPicker(
           picking={onStopPicking !== null}
           onStopPicking={onStopPicking ?? (() => {})}
           note={note}
-        />
+        >
+          {children}
+        </ReceiverPicker>
       </TRPCProvider>
     </QueryClientProvider>,
   );
@@ -327,6 +330,16 @@ describe("ReceiverPicker", () => {
     await screen.findByText(/isn't answering, so this is the copy from 3 h ago/);
   });
 
+  // Value: protects=the page's help text shows inside the receivers section, under its heading and above Pick best; fails_when=ReceiverPicker stops rendering children (the page test mocks the picker, so it can't see this); why_new=DT1 children slot; seam=none; no_claim=the help text's wording (page test)
+  it("shows its children under the heading, above Pick best", async () => {
+    const { button } = renderPicker(Promise.resolve({ receivers, fetchedAt: 0 }), null, null, <p>help text</p>);
+    const help = screen.getByText("help text");
+    const heading = screen.getByRole("heading", { name: "Receivers" });
+    expect(heading.compareDocumentPosition(help) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(help.compareDocumentPosition(button()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await waitFor(() => expect(button().disabled).toBe(false));
+  });
+
   // Value: protects=the folded table says what it holds, and the list refreshes on the server's 15-minute beat; fails_when=the summary text or refetchInterval is dropped; why_new=DT1 fold and R8 refetch; seam=react-query observer options; no_claim=react-query's timer itself
   it("folds the table under All receivers (N) and refetches every 15 minutes", async () => {
     const { queryClient } = renderPicker(Promise.resolve({ receivers, fetchedAt: 0 }));
@@ -413,6 +426,14 @@ describe("ReceiverTable Night column", () => {
 
     // A fresh list is a fresh sort.
     view.rerender(table([...placed], midnight));
+    expect(names()).toEqual(["Alpha", "Charlie", "Bravo"]);
+  });
+
+  // Value: protects=choosing the Night sort uses the sun now, not the sun from when the table opened; fails_when=sortBy stops refreshing the frozen sun, so a table left open for hours sorts by stale daylight; why_new=the frozen-sort test only covers holding, not refreshing on a click; seam=rerender with a new sun; no_claim=solar accuracy (solar.test)
+  it("sorts by the sun at the time Night is clicked", () => {
+    const view = render(table(placed, noon));
+    view.rerender(table(placed, midnight));
+    fireEvent.click(screen.getByRole("button", { name: "Night" }));
     expect(names()).toEqual(["Alpha", "Charlie", "Bravo"]);
   });
 });

@@ -1,8 +1,8 @@
 import { TRPCError } from "@trpc/server";
-import { KIWI_LIST_URL, parseKiwiList, type Receiver } from "@/lib/kiwi-list";
+import { KIWI_LIST_URL, LIST_MAX_AGE_MS, parseKiwiList, type Receiver } from "@/lib/kiwi-list";
 import { publicProcedure, router } from "../trpc";
 
-const TTL_MS = 15 * 60_000;
+const TTL_MS = LIST_MAX_AGE_MS;
 // Past this the list is still served (the server only keeps it in memory, so
 // it's never older than the process, and Pick best skips receivers that have
 // gone), but marked stale so the picker can say how old it is.

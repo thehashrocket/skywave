@@ -2,15 +2,21 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { memo, useDeferredValue, useMemo, useState, type ReactNode } from "react";
-import { byRank, covers, freeSlots, isFull, rankReceivers, receiverKey, type Receiver } from "@/lib/kiwi-list";
+import {
+  byRank,
+  covers,
+  freeSlots,
+  isFull,
+  LIST_MAX_AGE_MS,
+  rankReceivers,
+  receiverKey,
+  type Receiver,
+} from "@/lib/kiwi-list";
 import { formatHostPort } from "@/lib/receiver";
 import { isNight, type SunPosition } from "@/lib/solar";
 import { useTRPC } from "@/lib/trpc";
 
 const PAGE = 50;
-// The server caches the list for 15 minutes; refetch on that beat while the
-// tab is visible, so listener counts and full receivers stay current.
-const REFETCH_MS = 15 * 60_000;
 
 export type Playing = { host: string; port: number; phase: "connecting" | "listening" };
 
@@ -52,7 +58,9 @@ export function ReceiverPicker({
   const list = useQuery({
     ...trpc.receivers.list.queryOptions(),
     staleTime: 5 * 60_000,
-    refetchInterval: REFETCH_MS,
+    // On the server cache's beat while the tab is visible, so listener counts
+    // and full receivers stay current.
+    refetchInterval: LIST_MAX_AGE_MS,
   });
   const receivers = list.data?.receivers;
   const fetchedAt = list.data?.fetchedAt;

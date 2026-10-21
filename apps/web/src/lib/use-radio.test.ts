@@ -522,6 +522,52 @@ describe("useRadio", () => {
       expect(result.current.tuning).toBe(false);
     });
 
+    // Value: protects=a switch stays "tuning" until the new receiver answers, and the old receiver's sound doesn't count; fails_when=any status (a late answer to a dial retune on the last receiver) ends the tune; why_new=red team R1, the map's mount gate relies on it; seam=none; no_claim=real service timing
+    it("isn't ended by a late answer about the last receiver", async () => {
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.status("listening", { host: "kiwi.example", port: 8073 }));
+
+      await act(() => result.current.tune({ ...tuning, host: "other.example" }));
+      act(() => ws.status("listening", { host: "kiwi.example", port: 8073 }));
+      act(() => ws.frame(3, new Int16Array([1, 2])));
+      expect(result.current.tuning).toBe(true);
+      expect(result.current.heardAudio).toBe(false);
+
+      // An error ends it whichever receiver it names: the service names the
+      // old one when it rejects a tune outright.
+      act(() => ws.status("error", { message: "bad", host: "kiwi.example", port: 8073 }));
+      expect(result.current.tuning).toBe(false);
+
+      await act(() => result.current.tune({ ...tuning, host: "other.example" }));
+      act(() => ws.status("connecting", { host: "other.example", port: 8073 }));
+      expect(result.current.tuning).toBe(false);
+    });
+    // Value: protects=a tune that fails before the service answers stops counting as connecting, so the table's ring and the page's pending receiver clear on the error; fails_when=either catch in tune() (audio blocked, service unreachable) leaves tuning set; why_new=only Stop and a socket drop were checked; seam=FakeSocket subclass that errors instead of opening; no_claim=real browser autoplay or network errors
+    it("stops tuning when audio is blocked or the service can't be reached", async () => {
+      workletReady = Promise.reject(new Error("blocked"));
+      workletReady.catch(() => {});
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      expect(result.current.status.message).toMatch(/blocked audio/);
+      expect(result.current.tuning).toBe(false);
+
+      workletReady = Promise.resolve();
+      class Unreachable extends FakeSocket {
+        constructor(url: string) {
+          super(url);
+          // Never opens: the queued open finds no handler, then the error lands.
+          Object.defineProperty(this, "onopen", { get: () => null, set: () => {} });
+          queueMicrotask(() => this.onerror?.());
+        }
+      }
+      vi.stubGlobal("WebSocket", Unreachable);
+      await act(() => result.current.tune(tuning));
+      expect(result.current.status.message).toMatch(/Can't reach the radio service/);
+      expect(result.current.tuning).toBe(false);
+    });
+
     // Value: protects=first audio means sound from this receiver; fails_when=spectrum rows, junk frames or the last receiver's audio count; why_new=R7 first-audio gate; seam=none; no_claim=none beyond protects
     it("hears audio only after the service answers the latest tune", async () => {
       const { result } = renderHook(() => useRadio());

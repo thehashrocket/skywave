@@ -414,6 +414,14 @@ describe("ListenPage", () => {
     expect(screen.getByLabelText("phase").textContent).toBe("connecting");
   });
 
+  // Value: protects=the fields can't change under a tune that's still connecting; fails_when=the fields unlock while tuning, so the ring and saving follow what was typed instead; why_new=red team R3; seam=none; no_claim=none beyond protects
+  it("locks the receiver fields while a tune is in progress", () => {
+    radio.tuning = true;
+    render(<ListenPage />);
+    expect((screen.getByLabelText("Receiver") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Port") as HTMLInputElement).disabled).toBe(true);
+  });
+
   // Value: protects=the table's Night column gets the page's sun; fails_when=page passes no sun and every Night cell reads "–"; why_new=O6 shared clock; seam=picker mock; no_claim=the sun's position (solar.test)
   it("hands the picker the page's sun", () => {
     render(<ListenPage />);
@@ -564,6 +572,51 @@ describe("ListenPage", () => {
       view.unmount();
     });
 
+    // Value: protects=Back to an https-only receiver dials it over wss again; fails_when=the remembered receiver drops its secure flag, so Back dials ws:// and the receiver never answers; why_new=the Back test only covers a plain typed receiver and a listed one; seam=none; no_claim=the service's TLS (radio tests)
+    it("goes back to a secure receiver securely", () => {
+      const view = render(<ListenPage />);
+      const host = screen.getByLabelText("Receiver");
+      fireEvent.change(host, { target: { value: "https://kiwi.example.org/" } });
+      fireEvent.blur(host);
+      fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+      radio.status = { state: "listening", host: "kiwi.example.org", port: 443 };
+      view.rerender(<ListenPage />);
+      fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+
+      fireEvent.click(screen.getByRole("button", { name: "Back to kiwi.example.org" }));
+      expect(radio.tune).toHaveBeenLastCalledWith({
+        host: "kiwi.example.org",
+        port: 443,
+        freqKhz: 10_000,
+        mode: "am",
+        secure: true,
+      });
+    });
+
+    // Value: protects=Back keeps pointing at the earlier receiver through retunes and errors on this one; fails_when=previous updates on any listening status, not only a new receiver; why_new=testing specialist gap; seam=none; no_claim=none beyond protects
+    it("keeps Back through a retune or an error on the current receiver", () => {
+      const view = heardTwo();
+      radio.status = { state: "error", message: "hiccup", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 7_000 } as RadioStatus;
+      view.rerender(<ListenPage />);
+      expect(screen.getByRole("button", { name: "Back to kiwi.example" })).toBeTruthy();
+    });
+
+    // Value: protects=Back never offers a receiver that refuses apps (it plays ~10 s first); fails_when=the no_apps handler leaves it as the last receiver heard; why_new=red team R2; seam=none; no_claim=the service's no_apps detection (radio tests)
+    it("never offers Back to a receiver that refused apps", () => {
+      const view = heardTwo();
+      radio.status = { state: "error", code: "no_apps", message: "own page", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "third.example" } });
+      fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+      radio.status = { state: "listening", host: "third.example", port: 8076 };
+      view.rerender(<ListenPage />);
+      expect(screen.queryByRole("button", { name: "Back to K1VL" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Back to kiwi.example" })).toBeTruthy();
+    });
     // Value: protects=Back is a user choice like the table: it ends Pick best and drops a queued dial retune; fails_when=Back bypasses switchTo; why_new=E1/O1 shared switch path; seam=fake timers; no_claim=real socket ordering
     it("ends Pick best and drops a queued dial retune", () => {
       vi.useFakeTimers();

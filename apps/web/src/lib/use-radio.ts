@@ -119,6 +119,9 @@ export function useRadio() {
   // receiver arrives before the service answers a tune; it doesn't count.
   const tuningRef = useRef(false);
   const heardAudioRef = useRef(false);
+  // The receiver the pending tune is for. A dial retune on the last receiver
+  // can still be answered after a switch; that answer doesn't end this tune.
+  const pendingRef = useRef<{ host: string; port: number } | null>(null);
 
   const setTuningBoth = useCallback((v: boolean) => {
     tuningRef.current = v;
@@ -169,7 +172,19 @@ export function useRadio() {
           nodeRef.current?.port.postMessage({ type: "rate", rate: sampleRate });
         }
         const state = msg.state as RadioState;
-        setTuningBoth(false);
+        const host = typeof msg.host === "string" ? msg.host : undefined;
+        const port = typeof msg.port === "number" ? msg.port : undefined;
+        const pending = pendingRef.current;
+        // Errors always end it: the service names the old receiver on a tune it rejects outright.
+        const forAnother =
+          pending !== null &&
+          state !== "error" &&
+          host !== undefined &&
+          (host.toLowerCase() !== pending.host.toLowerCase() || (port !== undefined && port !== pending.port));
+        if (!forAnother) {
+          pendingRef.current = null;
+          setTuningBoth(false);
+        }
         if (state !== "listening") {
           setMeter(null);
           setHeardAudioBoth(false);
@@ -182,8 +197,8 @@ export function useRadio() {
           code: typeof msg.code === "string" && KNOWN_CODES.has(msg.code) ? (msg.code as RadioErrorCode) : undefined,
           retryAfterMs: typeof msg.retryAfterMs === "number" && msg.retryAfterMs > 0 ? msg.retryAfterMs : undefined,
           sampleRate,
-          host: typeof msg.host === "string" ? msg.host : undefined,
-          port: typeof msg.port === "number" ? msg.port : undefined,
+          host,
+          port,
         });
       } else if (msg.type === "meter") {
         setMeter({ rssi: Number(msg.rssi), overflow: Boolean(msg.overflow) });
@@ -283,6 +298,7 @@ export function useRadio() {
   const tune = useCallback(
     async (t: Tuning) => {
       const generation = ++generationRef.current;
+      pendingRef.current = { host: t.host, port: t.port };
       setTuningBoth(true);
       setHeardAudioBoth(false);
       try {

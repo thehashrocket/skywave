@@ -282,6 +282,10 @@ export default function ListenPage() {
   // don't offer it as the default again.
   useEffect(() => {
     if (status.state !== "error" || status.code !== "no_apps" || !status.host) return;
+    // Nor as the place Back goes.
+    const refused = { host: status.host, port: status.port ?? DEFAULT_KIWI_PORT };
+    if (lastHeard.current && receiverKey(lastHeard.current) === receiverKey(refused)) lastHeard.current = null;
+    setPrevious((p) => (p && receiverKey(p) === receiverKey(refused) ? null : p));
     const saved = loadReceiver();
     if (saved.host !== status.host || Number(saved.port) !== (status.port ?? DEFAULT_KIWI_PORT)) return;
     forgetReceiver();
@@ -329,7 +333,7 @@ export default function ListenPage() {
               placeholder="kiwi hostname"
               autoComplete="off"
               spellCheck={false}
-              disabled={live}
+              disabled={live || radio.tuning}
               required
             />
           </div>
@@ -343,7 +347,7 @@ export default function ListenPage() {
                 setFromList(false);
               }}
               inputMode="numeric"
-              disabled={live}
+              disabled={live || radio.tuning}
             />
           </div>
           <button type="submit" className={live ? "power power-on" : "power"}>
