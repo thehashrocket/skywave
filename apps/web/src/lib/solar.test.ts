@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { NIGHT_ELEVATION, isNight, sunElevation, sunPosition } from "./solar";
+import {
+  MAX_MERCATOR_LAT,
+  NIGHT_ELEVATION,
+  TWILIGHT_ELEVATION,
+  darkRegion,
+  isNight,
+  sunElevation,
+  sunPosition,
+} from "./solar";
 
 describe("sunPosition", () => {
   // Value: protects=the Night column and greyline put the dark side in the right place; fails_when=the declination formula or epoch is wrong; why_new=receiver map needs the sun; seam=none; no_claim=precision better than ~0.1°
@@ -53,5 +61,67 @@ describe("sunElevation", () => {
     expect(isNight(-sun.declination, sun.subsolarLon + 180, sun)).toBe(true);
     // Just past the horizon is still day: the sun's disc and refraction.
     expect(isNight(sun.declination, sun.subsolarLon + 90.5, sun)).toBe(false);
+  });
+});
+
+/** Whether a point is inside GeoJSON MultiPolygon coordinates (even-odd rule). */
+function inside(region: [number, number][][][], lon: number, lat: number): boolean {
+  let hit = false;
+  for (const [ring] of region) {
+    for (let i = 0, j = ring!.length - 1; i < ring!.length; j = i++) {
+      const [xi, yi] = ring![i]!;
+      const [xj, yj] = ring![j]!;
+      if (yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) hit = !hit;
+    }
+  }
+  return hit;
+}
+
+describe("darkRegion", () => {
+  const sunAt = (declination: number, subsolarLon: number) => ({ declination, subsolarLon });
+
+  // Value: protects=the shading matches where the sun is actually down, at solstices, equinox and near-equinox; fails_when=the cap is centered wrongly, closed on the wrong pole, or not cut at the date line; why_new=receiver map greyline (R6); seam=none; no_claim=points within half a degree of the edge or past Mercator's limit
+  it.each([
+    ["June solstice", sunAt(23.44, 30), NIGHT_ELEVATION],
+    ["December solstice", sunAt(-23.44, -150), NIGHT_ELEVATION],
+    ["equinox", sunAt(0, 100), NIGHT_ELEVATION],
+    ["+0.5° (no pole)", sunAt(0.5, 170), NIGHT_ELEVATION],
+    ["-0.5° (no pole)", sunAt(-0.5, -175), NIGHT_ELEVATION],
+    ["twilight at +6.5°", sunAt(6.5, 0), TWILIGHT_ELEVATION],
+    ["twilight at -5.5°", sunAt(-5.5, 179), TWILIGHT_ELEVATION],
+  ])("covers exactly where the sun is below the threshold: %s", (_case, sun, threshold) => {
+    const region = darkRegion(sun, threshold);
+    for (let lat = -84; lat <= 84; lat += 3) {
+      for (let lon = -179; lon <= 179; lon += 4) {
+        const e = sunElevation(lat, lon, sun);
+        if (Math.abs(e - threshold) < 0.5) continue;
+        expect(inside(region, lon, lat), `${lon},${lat} at elevation ${e.toFixed(2)}`).toBe(e < threshold);
+      }
+    }
+  });
+
+  // Value: protects=MapLibre gets valid Web Mercator rings; fails_when=a point escapes ±180°/±85.05° or a ring isn't closed; why_new=receiver map; seam=none; no_claim=none beyond protects
+  it.each([sunAt(23.44, 179.5), sunAt(0, -180), sunAt(-10, 0)])("stays on the map: %o", (sun) => {
+    for (const [ring] of darkRegion(sun, NIGHT_ELEVATION)) {
+      expect(ring![0]).toEqual(ring![ring!.length - 1]);
+      for (const [lon, lat] of ring!) {
+        expect(Math.abs(lon)).toBeLessThanOrEqual(180);
+        expect(Math.abs(lat)).toBeLessThanOrEqual(MAX_MERCATOR_LAT);
+      }
+    }
+  });
+
+  // Value: protects=the polar night is shaded all the way up; fails_when=the pole closure picks the wrong pole or is skipped; why_new=R6; seam=none; no_claim=none beyond protects
+  it("closes along the pole the night contains, and only then", () => {
+    // June: the south pole is in darkness, the north isn't.
+    const june = darkRegion(sunAt(23.44, 0), NIGHT_ELEVATION);
+    expect(inside(june, 0, -84.9)).toBe(true);
+    expect(inside(june, 0, 84.9)).toBe(false);
+    // Close to the equinox, neither pole: the cap is a loop. It still reaches
+    // the map's top edge on the night side, but the day side there stays clear.
+    const near = darkRegion(sunAt(0.5, 0), NIGHT_ELEVATION);
+    expect(inside(near, 179, 84.9)).toBe(true);
+    expect(inside(near, 0, 84.9)).toBe(false);
+    expect(inside(near, 0, -84.9)).toBe(false);
   });
 });

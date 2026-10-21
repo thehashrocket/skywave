@@ -16,16 +16,23 @@
 
 ## Web app
 
-### Don't let a late tune undo a dial move made mid-switch
+### Receiver map follow-ups from PR 2b review
 
-**What:** In `use-radio`'s `tune()`, skip the final `ws.send` when this generation's tune was already answered (the service named the pending receiver), or keep the latest Tuning in a ref that only `tune`/`stop` reset.
+**What:**
+- **Retry after a redeploy:** when the map's code chunk is gone (a deploy replaced it), "Retry map" asks for the same missing file; offer "Reload page" for a ChunkLoadError.
+- **Audio that never arrives:** admission waits for first audio while the radio is busy; a service that holds "listening" with no frames keeps the map waiting. Consider a hard cap (say 20 s), which changes the agreed radio-first rule.
+- **Worker cache key:** the worker URL is keyed on the maplibre-gl version; a patched or rebuilt package of the same version would pair a cached worker with new page code. Key on a content hash if packages are ever patched.
+- **Tile-loading colour:** before tiles arrive the frame is land colour (the design says sea); OpenMapTiles has no land layer, so this needs a land polygon source or a sea background with land drawn from tiles.
+- **"Zoom into this area"** doesn't switch follow to stay, so the next listening change pulls the camera away; decide whether it counts as a user move.
+- **Slow links:** the worker's shared chunk (~150 KB gzipped) is a second download inside the 30 s budget, alongside live audio; check it's served compressed.
+- **Tests:** the page's `lastPlace` → map `last` wiring, the per-attempt lazy retry, and use-radio's per-socket retune check have no tests.
 
-**Why:** With the socket open, `tune(B@f1)` can stall in `ensureAudio()` (a suspended audio device, common on phones). A dial drag then sends `retune(B@f2)` at once; the service answers for B, which ends the tune and clears `pendingRef`. When audio resumes, `tune()` sends its own `t` (B@f1), so the radio plays f1 while the dial shows f2, with no error. The next dial move corrects it.
+**Why:** Found by the PR 2b /ship review rounds (2026-10-21) and left for after merge; none blocks using the map.
 
-**Context:** Found by the final Claude adversarial pass in PR 2a's /ship (2026-10-21) after the review cycle cap; deferred by decision 9ddd7713. `pendingRef` is cleared in `setTuningBoth(false)`, which made it both the "awaiting answer" marker and the retune payload. Natural home: PR 2b, which touches this hook.
+**Context:** `apps/web/src/components/ReceiverMap.tsx`, `MapPanel.tsx`, `apps/web/src/lib/use-map-admission.ts`, `apps/web/src/app/vendor/maplibre/`.
 
-**Effort:** S
-**Priority:** P2
+**Effort:** M
+**Priority:** P3
 **Depends on:** None
 
 ### Show progress when Try again is pressed
@@ -125,6 +132,19 @@
 **Depends on:** None
 
 ## Completed
+
+### Don't let a late tune undo a dial move made mid-switch
+
+**What:** In `use-radio`'s `tune()`, skip the final `ws.send` when this generation's tune was already answered (the service named the pending receiver), or keep the latest Tuning in a ref that only `tune`/`stop` reset.
+
+**Why:** With the socket open, `tune(B@f1)` can stall in `ensureAudio()` (a suspended audio device, common on phones). A dial drag then sends `retune(B@f2)` at once; the service answers for B, which ends the tune and clears `pendingRef`. When audio resumes, `tune()` sends its own `t` (B@f1), so the radio plays f1 while the dial shows f2, with no error. The next dial move corrects it.
+
+**Context:** Found by the final Claude adversarial pass in PR 2a's /ship (2026-10-21) after the review cycle cap; deferred by decision 9ddd7713. `pendingRef` is cleared in `setTuningBoth(false)`, which made it both the "awaiting answer" marker and the retune payload. Natural home: PR 2b, which touches this hook.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+**Completed:** receiver map PR 2b (2026-10-21)
 
 ### Back: keep the right target through Stop, refusals and new dial flags
 

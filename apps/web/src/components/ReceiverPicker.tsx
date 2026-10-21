@@ -16,6 +16,7 @@ import {
 import { formatHostPort } from "@/lib/receiver";
 import { isNight, type SunPosition } from "@/lib/solar";
 import { useTRPC } from "@/lib/trpc";
+import type { MapList } from "./MapPanel";
 
 const PAGE = 50;
 
@@ -56,6 +57,8 @@ type Props = {
   note: string | null;
   /** Shown under the heading, above the Pick best bar. */
   children?: ReactNode;
+  /** The receiver map, drawn from this list, between the Pick best bar and the table. */
+  map?: (list: MapList) => ReactNode;
 };
 
 /** The public receiver list: a Pick best button plus a table to browse. */
@@ -71,6 +74,7 @@ export function ReceiverPicker({
   onStopPicking,
   note,
   children,
+  map,
 }: Props) {
   const trpc = useTRPC();
   // The list changes slowly and the server caches it for 15 minutes, so
@@ -144,6 +148,13 @@ export function ReceiverPicker({
             ))}
         </span>
       </div>
+
+      {map?.({
+        receivers,
+        ageMs: list.data && (list.data.ageMs ?? 0) + (Date.now() - list.dataUpdatedAt),
+        failed: !list.isPending && !receivers,
+        retry: () => void list.refetch(),
+      })}
 
       {receivers && (
         <details className="receivers-browse" open={open} onToggle={(e) => onOpenChange(e.currentTarget.open)}>
