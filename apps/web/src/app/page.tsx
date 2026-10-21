@@ -7,7 +7,7 @@ import { Presets } from "@/components/Presets";
 import { ReceiverPicker, type Playing } from "@/components/ReceiverPicker";
 import { SMeter } from "@/components/SMeter";
 import { Waterfall } from "@/components/Waterfall";
-import { covers, type Receiver } from "@/lib/kiwi-list";
+import { covers, receiverKey, type Receiver } from "@/lib/kiwi-list";
 import { MODE_LABELS, MODES, guessMode, type Mode } from "@/lib/radio-types";
 import { DEFAULT_KIWI_PORT, parseReceiver } from "@/lib/receiver";
 import { usePickBest } from "@/lib/use-pick-best";
@@ -184,7 +184,7 @@ export default function ListenPage() {
       if (timer.current) clearTimeout(timer.current);
       timer.current = null;
       pending.current = null;
-      if (r.name) names.current.set(`${r.host}:${r.port}`, r.name);
+      if (r.name) names.current.set(receiverKey(r), r.name);
       const secure = r.secure === true;
       tuning.current = { host: r.host, port: String(r.port), fromList, secure };
       setHost(r.host);
@@ -225,10 +225,14 @@ export default function ListenPage() {
     [cancelPickBest, tuneReceiver],
   );
   const chooseReceiver = useCallback((r: Receiver) => switchTo(r, true), [switchTo]);
-  // The table's dot marks what's playing (or connecting), not what the fields say.
-  const playingHost = live ? status.host : undefined;
-  const playingPort = live ? status.port : undefined;
-  const playingPhase = live ? (status.state as Playing["phase"]) : undefined;
+  // The table's dot marks what's playing (or connecting), not what the fields
+  // say. From the click until the service answers, that's the receiver being
+  // tuned: the status still names the old one.
+  const pendingHost = radio.tuning ? host : undefined;
+  const pendingPort = radio.tuning ? Number(port) || DEFAULT_KIWI_PORT : undefined;
+  const playingHost = pendingHost ?? (live ? status.host : undefined);
+  const playingPort = pendingPort ?? (live ? status.port : undefined);
+  const playingPhase = radio.tuning ? "connecting" : live ? (status.state as Playing["phase"]) : undefined;
   const current = useMemo(
     () =>
       playingHost && playingPort && playingPhase ? { host: playingHost, port: playingPort, phase: playingPhase } : null,
@@ -249,12 +253,12 @@ export default function ListenPage() {
     if (status.state !== "listening" || !status.host || !isTarget(status.host, status.port ?? DEFAULT_KIWI_PORT))
       return;
     const t = tuning.current;
+    const target = { host: t.host, port: Number(t.port) };
     const heard: Heard = {
-      host: t.host,
-      port: Number(t.port),
+      ...target,
       fromList: t.fromList,
       secure: t.secure,
-      label: names.current.get(`${t.host}:${Number(t.port)}`) ?? t.host,
+      label: names.current.get(receiverKey(target)) ?? t.host,
     };
     const last = lastHeard.current;
     if (!last || last.host !== heard.host || last.port !== heard.port) {
@@ -383,12 +387,15 @@ export default function ListenPage() {
         </div>
       </section>
 
-      <div className="status" role="status" data-state={status.state}>
-        <span className="status-lamp" aria-hidden="true" />
-        <span className="status-state">{STATE_TEXT[status.state]}</span>
-        {status.state === "listening" && status.host && <span className="status-detail">on {status.host}</span>}
-        {status.message && <span className="status-message">{status.message}</span>}
-        {previous && !(current?.host === previous.host && current.port === previous.port) && (
+      <div className="status-row">
+        <div className="status" role="status" data-state={status.state}>
+          <span className="status-lamp" aria-hidden="true" />
+          <span className="status-state">{STATE_TEXT[status.state]}</span>
+          {status.state === "listening" && status.host && <span className="status-detail">on {status.host}</span>}
+          {status.message && <span className="status-message">{status.message}</span>}
+        </div>
+        {/* Outside the live region, so a new previous receiver isn't announced. */}
+        {previous && !(current && receiverKey(current) === receiverKey(previous)) && (
           <button
             type="button"
             className="link-button status-back"

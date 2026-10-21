@@ -48,7 +48,7 @@ Rejected for now: we'd build pan, zoom and hit-testing ourselves for crowded reg
 Measured on the 2026-10-20 list (after the `ext_api=0` filter): 730 receivers, all with usable GPS; 586 (80%) cover 0-30 MHz, the rest start at 10 kHz to 1.8 MHz or reach 32 MHz; 44 were full; up to 7 receivers share one exact coordinate (multi-port sites).
 
 **Data**
-- `kiwi-list.ts`: parse `gps` into `lat`/`lon` on `Receiver` (both null when missing, unparseable, out of range, or `(0, 0)`). Keep the rest of `toReceiver` unchanged; receivers without coordinates still appear in the table.
+- `kiwi-list.ts`: parse `gps` into `lat`/`lon` on `Receiver` (both absent when missing, unparseable, out of range, or `(0, 0)`; check with `!== undefined`). Keep the rest of `toReceiver` unchanged; receivers without coordinates still appear in the table.
 - Frequency coverage is the existing `bands` field, already parsed into `minKhz`/`maxKhz` and tested by `covers(r, freqKhz)`. Because most receivers cover all of HF, coverage is a secondary cue (dim when the dial is outside a receiver's range, which mostly matters on LW/MW and above 30 MHz), not the main visual.
 - The map draws the same filtered list the table renders (`ext_api=0` receivers stay out). No new endpoint.
 

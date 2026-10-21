@@ -84,7 +84,9 @@ apps/radio/skywave_radio/
 apps/web/
   src/lib/use-radio.ts               WebSocket + Web Audio graph
   src/components/                    Dial, Waterfall, SMeter, Presets, FrequencyReadout, ReceiverPicker
-  src/lib/kiwi-list.ts               parses and ranks the public receiver list
+  src/lib/kiwi-list.ts               parses and ranks the public receiver list (with positions)
+  src/lib/solar.ts                   where the sun is; which receivers are in darkness
+  src/lib/use-solar-clock.ts         one minute clock for the page's Night column and map
   src/lib/use-pick-best.ts           Pick best's try-the-next-one logic
   src/server/                        tRPC routers (presets, receivers) + Prisma client
   public/worklets/radio-player.js    jitter buffer + resampler
@@ -110,12 +112,12 @@ If the web app is reachable from the internet, set `APP_PASSWORD`. Every request
 
 ```bash
 pnpm test:radio     # DSP math, a fake Kiwi for the protocol, end-to-end WebSocket sessions, scripts/pregate-run.sh
-pnpm test:web       # password gate, preset + receiver APIs, receiver ranking and Pick best, band/S-meter math, the audio worklet's buffer
+pnpm test:web       # password gate, preset + receiver APIs, receiver ranking and Pick best, sun position, band/S-meter math, the audio worklet's buffer
 pnpm typecheck
 ```
 
 ## Next steps
 
-1. **Receiver map:** the public list is already loaded (`src/lib/kiwi-list.ts`) and includes GPS coordinates; plot it and pick receivers by clicking a map. That's also when a `Receiver` table starts paying for itself, so presets can point at one.
+1. **Receiver map:** the public list is already loaded (`src/lib/kiwi-list.ts`) and includes GPS coordinates; plot it and pick receivers by clicking a map. In progress: the table already shows which receivers are in darkness (design in `docs/designs/receiver-map.md`). A receiver stays identified by `host:port`; there's no `Receiver` table.
 2. **Station lookup:** import the EiBi shortwave schedule CSV so tuning 9,535 kHz at 0300 UTC tells you who's probably on and pins the transmitter site.
 3. **Wider view:** the Kiwi's separate waterfall stream (`W/F`) covers the whole 0–30 MHz band; showing it on the dial would let you see activity before tuning.

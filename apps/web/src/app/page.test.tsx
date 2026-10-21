@@ -7,6 +7,8 @@ import type { RadioStatus } from "@/lib/use-radio";
 const radio = {
   status: { state: "idle" } as RadioStatus,
   meter: null,
+  tuning: false,
+  heardAudio: false,
   tune: vi.fn(async () => {}),
   retune: vi.fn(),
   stop: vi.fn(),
@@ -16,8 +18,8 @@ const radio = {
 
 vi.mock("@/lib/use-radio", () => ({ useRadio: () => radio }));
 // These talk to tRPC or draw on a canvas; the page's own wiring is what's under test.
-vi.mock("@/components/Presets", () => ({ Presets: () => null }));
-vi.mock("@/components/Waterfall", () => ({ Waterfall: () => null }));
+vi.mock("@/components/Presets", () => ({ Presets: () => <output aria-label="presets" /> }));
+vi.mock("@/components/Waterfall", () => ({ Waterfall: () => <output aria-label="waterfall" /> }));
 
 const listed: Receiver = {
   id: "k1vl",
@@ -38,6 +40,7 @@ vi.mock("@/components/ReceiverPicker", () => ({
   ReceiverPicker: ({
     open,
     current,
+    sun,
     onChoose,
     onPickBest,
     onStopPicking,
@@ -45,6 +48,7 @@ vi.mock("@/components/ReceiverPicker", () => ({
   }: {
     open: boolean;
     current: { host: string; port: number; phase: string } | null;
+    sun: unknown;
     children?: React.ReactNode;
     onChoose: (r: Receiver) => void;
     onPickBest: (r: Receiver[]) => void;
@@ -54,6 +58,7 @@ vi.mock("@/components/ReceiverPicker", () => ({
       <output aria-label="browse">{open ? "open" : "closed"}</output>
       <output aria-label="tuned">{current ? `${current.host}:${current.port}` : "none"}</output>
       <output aria-label="phase">{current?.phase ?? "none"}</output>
+      <output aria-label="sun">{sun ? "set" : "none"}</output>
       <button type="button" onClick={() => onChoose(listed)}>
         choose listed
       </button>
@@ -73,6 +78,7 @@ const { default: ListenPage } = await import("./page");
 beforeEach(() => {
   localStorage.clear();
   radio.status = { state: "idle" };
+  radio.tuning = false;
   radio.tune.mockClear();
   radio.stop.mockClear();
 });
@@ -398,6 +404,20 @@ describe("ListenPage", () => {
     view.rerender(<ListenPage />);
     expect(screen.getByLabelText("tuned").textContent).toBe("sdr.k1vl.com:8076");
     expect(screen.getByLabelText("phase").textContent).toBe("listening");
+
+    // A new choice is marked from the click, before the service says anything.
+    fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+    radio.status = { state: "listening", host: "f4kiy.ddns.net", port: 8073 };
+    radio.tuning = true;
+    view.rerender(<ListenPage />);
+    expect(screen.getByLabelText("tuned").textContent).toBe("sdr.k1vl.com:8076");
+    expect(screen.getByLabelText("phase").textContent).toBe("connecting");
+  });
+
+  // Value: protects=the table's Night column gets the page's sun; fails_when=page passes no sun and every Night cell reads "–"; why_new=O6 shared clock; seam=picker mock; no_claim=the sun's position (solar.test)
+  it("hands the picker the page's sun", () => {
+    render(<ListenPage />);
+    expect(screen.getByLabelText("sun").textContent).toBe("set");
   });
 
   // Value: protects=a bad saved value can't crash the page on load; fails_when=loadReceiver trusts storage again; why_new=TODOS small edges; seam=none; no_claim=other storage keys
@@ -521,7 +541,10 @@ describe("ListenPage", () => {
       cleanup();
 
       const two = heardTwo();
-      fireEvent.click(screen.getByRole("button", { name: "Back to kiwi.example" }));
+      const back = screen.getByRole("button", { name: "Back to kiwi.example" });
+      // A live region would announce every new Back target.
+      expect(back.closest('[role="status"]')).toBeNull();
+      fireEvent.click(back);
       expect(radio.tune).toHaveBeenLastCalledWith({ host: "kiwi.example", port: 8073, freqKhz: 10_000, mode: "am" });
       // While it connects, Back would point at itself; it hides.
       radio.status = { state: "connecting", host: "kiwi.example", port: 8073 };
@@ -564,15 +587,18 @@ describe("ListenPage", () => {
   });
 
   // Value: protects=the radio comes first and receivers sit between it and the waterfall; fails_when=the picker moves back above the dial; why_new=DT1 page order; seam=picker mock; no_claim=visual spacing
-  it("puts the receivers after the radio's controls and status", () => {
+  it("puts the receivers between the radio and the waterfall", () => {
     render(<ListenPage />);
-    const dial = screen.getByRole("slider", { name: "Tuning dial" });
-    const status = screen.getByText("Not listening");
-    const picker = screen.getByLabelText("browse");
-    const help = screen.getByText(/run by volunteers/);
-    const after = (a: Node, b: Node) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(after(dial, status)).toBe(true);
-    expect(after(status, picker)).toBe(true);
-    expect(after(picker, help)).toBe(true);
+    const order = [
+      screen.getByRole("slider", { name: "Tuning dial" }),
+      screen.getByText("Not listening"),
+      screen.getByLabelText("browse"),
+      screen.getByText(/run by volunteers/),
+      screen.getByLabelText("waterfall"),
+      screen.getByLabelText("presets"),
+    ];
+    for (let i = 1; i < order.length; i++) {
+      expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
   });
 });

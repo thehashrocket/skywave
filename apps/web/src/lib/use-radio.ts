@@ -98,6 +98,8 @@ export function useRadio() {
   // status alone can't say so: it stays as it was until the service replies.
   const [tuning, setTuning] = useState(false);
   // Sound has arrived since the latest tune: what "it's playing" really means.
+  // Per tune, so it drops on every switch; anything that should stay once
+  // sound has played (the map, once mounted) must latch it.
   const [heardAudio, setHeardAudio] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);

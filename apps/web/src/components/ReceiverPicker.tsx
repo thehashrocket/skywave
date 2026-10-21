@@ -191,9 +191,9 @@ export const ReceiverTable = memo(function ReceiverTable({
   // changed), so rows don't reshuffle under the reader every minute. The
   // badges still follow the clock.
   const [sortSun, setSortSun] = useState(sun);
-  const [sortedList, setSortedList] = useState(receivers);
-  if (sortedList !== receivers) {
-    setSortedList(receivers);
+  const [prevReceivers, setPrevReceivers] = useState(receivers);
+  if (prevReceivers !== receivers) {
+    setPrevReceivers(receivers);
     setSortSun(sun);
   }
 
@@ -220,7 +220,7 @@ export const ReceiverTable = memo(function ReceiverTable({
       return matches.sort((a, b) => {
         const x = night.get(a)!;
         const y = night.get(b)!;
-        if (x === null || y === null) return (x === null ? 1 : 0) - (y === null ? 1 : 0) || byRank(a, b);
+        if (x === null || y === null) return Number(x === null) - Number(y === null) || byRank(a, b);
         return sort.dir * (Number(x) - Number(y)) || byRank(a, b);
       });
     }

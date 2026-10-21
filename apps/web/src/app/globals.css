@@ -775,6 +775,17 @@ a {
   color: var(--danger);
 }
 
+.status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 16px;
+}
+
+.status-row .status {
+  flex: 1 1 auto;
+}
+
 .status-back.link-button {
   padding: 0;
 }

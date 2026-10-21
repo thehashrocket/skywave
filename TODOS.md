@@ -18,15 +18,15 @@
 
 ### Decide what Preset.receiverHost / receiverPort become
 
-**What:** Replace or wire up the unused `receiverHost`/`receiverPort` columns on `Preset` when the receiver map lands.
+**What:** Wire up the unused `receiverHost`/`receiverPort` columns on `Preset` once there's a button to pin a preset to a receiver.
 
-**Why:** The schema implies presets can be pinned to a receiver, but the UI never sends these fields (`Presets.tsx`), even though the API accepts them (`presets.ts`). Kept as-is on 2026-10-20 to avoid a migration the Receiver table would redo.
+**Why:** The schema implies presets can be pinned to a receiver, but the UI never sends these fields (`Presets.tsx`), even though the API accepts them (`presets.ts`). Kept as-is on 2026-10-20; the receiver map design settled that `host:port` is a receiver's identity, so no `Receiver` table is coming.
 
-**Context:** `apps/web/prisma/schema.prisma:16-17`. The planned `Receiver` table (README "Next steps" 1) probably turns these into a foreign key. Decide then instead of building the free-text version now.
+**Context:** `apps/web/prisma/schema.prisma:16-17`. The columns already hold what a pin needs (host and port). Add the pin button, send them from `Presets.tsx`, and tune that receiver when the preset is chosen.
 
 **Effort:** S
 **Priority:** P3
-**Depends on:** Receiver map / `Receiver` table
+**Depends on:** A pin-to-receiver button (not planned yet)
 
 ### Drop the browser's float32 frame decoding
 
