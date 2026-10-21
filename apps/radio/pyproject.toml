@@ -16,11 +16,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.25", "httpx>=0.28", "matplotlib>=3.9", "trustme>=1.2"]
+dev = ["pytest>=8", "pytest-asyncio>=0.25", "pytest-timeout>=2.3", "httpx>=0.28", "matplotlib>=3.9", "trustme>=1.2"]
 
 [tool.setuptools]
 packages = ["skywave_radio"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# A broken deadline should fail a test, not hang the run.
+timeout = 60
 testpaths = ["tests"]

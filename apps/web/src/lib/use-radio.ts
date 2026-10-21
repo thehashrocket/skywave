@@ -70,6 +70,13 @@ const SPECTRUM_STEP_DB = 0.5;
 // Must match Spectrum's bins in apps/radio/skywave_radio/dsp.py. A row of any
 // other length is skipped: the waterfall sizes its canvas to the row.
 const SPECTRUM_BINS = 512;
+// The radio service takes Kiwi frames up to MAX_FRAME_BYTES (1 MiB) in
+// apps/radio/skywave_radio/kiwi.py, at most 2**18 samples each, and sends each
+// as one audio frame. Keep this at least that; bigger frames are skipped.
+const MAX_AUDIO_SAMPLES = 2 ** 18;
+// Real rows sit around -200 to +60 dB. A value past this (or NaN) would drag
+// the waterfall's running floor for minutes, so its row is skipped.
+const MAX_ABS_DB = 300;
 const DEFAULT_RATE = 12000;
 const SERVICE_URL = process.env.NEXT_PUBLIC_RADIO_WS_URL ?? "ws://localhost:8765/ws";
 
@@ -164,22 +171,21 @@ export function useRadio() {
     let audio: Float32Array | null = null;
     let row: Float32Array | null = null;
     // Typed arrays need their element alignment, so copy past the 1-byte tag.
-    // An empty payload, one that doesn't fit its tag's element size, a spectrum row
-    // that isn't SPECTRUM_BINS long, or a non-finite base is skipped below.
-    if (tag === AUDIO_TAG && size > 0 && size % 2 === 0) {
+    // A frame that doesn't fit its tag (empty, misaligned, audio over
+    // MAX_AUDIO_SAMPLES, a row that isn't SPECTRUM_BINS long) falls through.
+    if (tag === AUDIO_TAG && size > 0 && size % 2 === 0 && size / 2 <= MAX_AUDIO_SAMPLES) {
       // The usual int16 scale: the service sends at most 32767, so this stays in [-1, 1].
       audio = Float32Array.from(new Int16Array(buf.slice(1)), (v) => v / 32768);
     } else if (tag === SPECTRUM_TAG && size === 4 + SPECTRUM_BINS) {
       const base = new Float32Array(buf.slice(1, 5))[0]!;
-      // A NaN or infinite base would poison the waterfall's running floor.
-      if (Number.isFinite(base)) {
-        row = Float32Array.from(new Uint8Array(buf, 5), (v) => base + v * SPECTRUM_STEP_DB);
-      }
-    } else if (tag === AUDIO_F32_TAG && size > 0 && size % 4 === 0) {
+      row = Float32Array.from(new Uint8Array(buf, 5), (v) => base + v * SPECTRUM_STEP_DB);
+    } else if (tag === AUDIO_F32_TAG && size > 0 && size % 4 === 0 && size / 4 <= MAX_AUDIO_SAMPLES) {
       audio = new Float32Array(buf.slice(1));
     } else if (tag === SPECTRUM_F32_TAG && size === 4 * SPECTRUM_BINS) {
       row = new Float32Array(buf.slice(1));
     }
+    // A row with a value past MAX_ABS_DB is skipped too; NaN fails the check.
+    if (row && !row.every((v) => Math.abs(v) <= MAX_ABS_DB)) row = null;
     if (!audio && !row && !warnedFrameRef.current) {
       // Otherwise sound and waterfall just stop while the status says listening.
       warnedFrameRef.current = true;

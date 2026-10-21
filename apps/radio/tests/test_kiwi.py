@@ -102,6 +102,69 @@ async def test_stalled_stream_times_out():
         await client.close()
 
 
+# Value: protects=time the caller spends on a block (a stalled browser) isn't blamed on the receiver; fails_when=the deadline keeps running while the caller holds a block; why_new=a 10-15 s browser stall used to time out a healthy Kiwi; seam=none; no_claim=real WebSocket backpressure timing
+async def test_time_spent_by_the_caller_does_not_count_against_the_receiver():
+    async with FakeKiwi() as kiwi:
+        client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=0.5)
+        await client.tune(9535.0)
+        await client.connect()
+        seen = 0
+        async for _ in client.blocks():
+            seen += 1
+            if seen == 3:
+                await asyncio.sleep(1.0)  # twice timeout_s
+            if seen == 20:
+                break
+        await client.close()
+
+
+# Value: protects=a Kiwi that stops reading can't block a send forever (no deadline in blocks() runs while one waits); fails_when=_send awaits the socket without a timeout; why_new=sends had no bound; seam=KiwiClient._ws and _send (a stub socket whose send never completes); no_claim=real TCP buffer sizes (a send that never completes stands in for full buffers)
+async def test_send_to_a_kiwi_that_stopped_reading_times_out():
+    class StuckSocket:
+        async def send(self, msg):
+            await asyncio.Event().wait()
+
+    client = KiwiClient("kiwi.example", 8073, timeout_s=0.2)
+    client._ws = StuckSocket()
+    with pytest.raises(KiwiError) as e:
+        await client._send("SET keepalive")
+    assert e.value.code == "timeout"
+    assert "stopped reading" in str(e.value)
+
+
+# Value: protects=a receiver that sent real audio and then only empty blocks still times out; fails_when=the audio count isn't cleared when the deadline resets, so one good window keeps every later block resetting it; why_new=server tests' empty receivers never send real audio first; seam=none; no_claim=a real Kiwi's failure pattern (FakeKiwi stands in)
+async def test_receiver_that_goes_quiet_after_real_audio_times_out():
+    async with FakeKiwi(empty_after=20) as kiwi:
+        client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=0.5)
+        await client.tune(9535.0)
+        await client.connect()
+        sizes = []
+
+        async def drain():
+            async for b in client.blocks():
+                sizes.append(b.samples.size)
+
+        with pytest.raises(KiwiError) as e:
+            await asyncio.wait_for(drain(), timeout=5)
+        assert e.value.code == "timeout"
+        assert sizes[:20] == [512] * 20 and set(sizes[20:]) == {0}
+        await client.close()
+
+
+# Value: protects=a receiver well below real time but above the floor, with dropouts, keeps playing; fails_when=MIN_AUDIO_FRACTION is raised far enough to cut off a slow link; why_new=FakeKiwi streams at 4x, so only the too-lenient side of the floor was tested; seam=none; no_claim=a real congested Kiwi's pacing
+async def test_slow_receiver_with_dropouts_keeps_streaming():
+    # 128-sample frames at FakeKiwi's fixed pace, every second one empty: about 0.45x real time.
+    async with FakeKiwi(block_size=128, empty_every=2) as kiwi:
+        client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=0.5)
+        await client.tune(9535.0)
+        await client.connect()
+        started = asyncio.get_running_loop().time()
+        async for _ in client.blocks():
+            if asyncio.get_running_loop().time() - started > 2.0:  # 4 x timeout_s
+                break
+        await client.close()
+
+
 async def test_unreachable_kiwi_raises():
     client = KiwiClient("127.0.0.1", 9, timeout_s=2)
     with pytest.raises(KiwiError) as e:

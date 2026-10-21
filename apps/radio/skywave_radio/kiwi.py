@@ -57,6 +57,16 @@ REDIRECT_STATUSES = {300, 301, 302, 303, 307, 308}
 MIN_RATE_HZ = 6_000.0
 MAX_RATE_HZ = 48_000.0
 
+# blocks() times out unless this share of each timeout_s window is audio:
+# 1 s in 10 s. Catches a receiver trickling 1-sample blocks, and leaves room
+# for a slow link that recovers.
+MIN_AUDIO_FRACTION = 0.1
+
+# The largest frame we take from a Kiwi: 1 MiB, so at most 2**18 I/Q pairs,
+# each sent on as one audio sample. MAX_AUDIO_SAMPLES in the web app's
+# use-radio.ts must stay at least that, or it drops audio we sent.
+MAX_FRAME_BYTES = 2**20
+
 
 class KiwiError(Exception):
     """A Kiwi refused or dropped us. `code` is machine-readable."""
@@ -230,7 +240,7 @@ class KiwiClient:
                     # Never via a proxy from the environment: that would dial
                     # the name, not the address hostguard checked.
                     proxy=None,
-                    max_size=2**20,
+                    max_size=MAX_FRAME_BYTES,
                     compression=None,
                     open_timeout=self.timeout_s,
                     close_timeout=CLOSE_TIMEOUT_S,
@@ -341,17 +351,37 @@ class KiwiClient:
         await self._send(f"SET mod=iq low_cut={low} high_cut={high} freq={baseband:.3f}")
 
     async def blocks(self) -> AsyncIterator[IQBlock]:
+        """SND blocks as they arrive, empty ones included.
+
+        Raises a timeout unless MIN_AUDIO_FRACTION of each timeout_s window
+        is real audio. MSG frames and short or empty SND blocks don't count,
+        or a broken receiver could hold a listener slot while sending none.
+        The time the caller spends on a block doesn't count either, so a
+        stalled browser isn't blamed on the receiver.
+        """
         if self._ws is None:
             raise RuntimeError("connect() first")
+        assert self.info.sample_rate is not None
+        needed = self.info.sample_rate * self.timeout_s * MIN_AUDIO_FRACTION
+        got = 0
+        deadline = time.monotonic() + self.timeout_s
         while True:
             try:
-                frame = await asyncio.wait_for(self._recv(), timeout=self.timeout_s)
+                frame = await asyncio.wait_for(self._recv(), timeout=max(0.0, deadline - time.monotonic()))
             except asyncio.TimeoutError as e:
                 raise KiwiError("timeout", f"{self.host} stopped sending audio") from e
             tag = frame[:3]
             if tag == b"SND":
                 await self._keepalive()
-                yield parse_snd(frame[3:])
+                block = parse_snd(frame[3:])
+                got += block.samples.size
+                if got >= needed:
+                    got = 0
+                    deadline = time.monotonic() + self.timeout_s
+                yielded_at = time.monotonic()
+                yield block
+                # Push the deadline out by however long the caller sat on the block.
+                deadline += time.monotonic() - yielded_at
             elif tag == b"MSG":
                 await self._handle_msg(parse_msg(frame[4:]))
 
@@ -375,11 +405,24 @@ class KiwiClient:
         if msg != "SET keepalive":
             log.debug("-> %s: %s", self.host, msg)
         try:
-            await self._ws.send(msg)
+            # A Kiwi that stops reading would block this forever once the
+            # socket buffers fill, and no deadline in blocks() runs meanwhile.
+            await asyncio.wait_for(self._ws.send(msg), timeout=self.timeout_s)
+        except asyncio.TimeoutError as e:
+            raise KiwiError("timeout", f"{self.host} stopped reading") from e
         except websockets.ConnectionClosed as e:
             raise KiwiError("closed", f"{self.host} closed the connection") from e
 
     async def close(self) -> None:
         if self._ws is not None:
             ws, self._ws = self._ws, None
-            await ws.close()
+            # ws.close() first waits, with no timeout, for our send buffer to
+            # drain, so a Kiwi that stopped reading would hang it and keep the
+            # listener slot. Give up after CLOSE_TIMEOUT_S and drop the socket.
+            try:
+                await asyncio.wait_for(ws.close(), timeout=CLOSE_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                ws.transport.abort()
+            except asyncio.CancelledError:
+                ws.transport.abort()
+                raise

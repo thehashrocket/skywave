@@ -120,6 +120,9 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
             # which it sees once it reads again, instead of a silent "Listening".
             serving.cancel()
             gave_up.cancel()
+            # Let a tune that serve() was handling unwind first: closing the
+            # session underneath it would let it start a pump after we stopped.
+            await asyncio.wait({serving})
             await session.close()
 
     return app
