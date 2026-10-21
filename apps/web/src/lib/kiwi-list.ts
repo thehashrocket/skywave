@@ -115,6 +115,10 @@ function extractEntries(text: string): string[] {
 
 function toReceiver(e: RawEntry): Receiver | null {
   if (e.status !== "active" || e.offline === "yes") return null;
+  // ext_api is how many connections the owner allows from anything but the
+  // Kiwi's own web page. At 0, it plays to us for about 10 s, then sends
+  // too_busy=0 and hangs up (probed 2026-10-21). A missing field stays listed.
+  if (text(e.ext_api).trim() === "0") return null;
   const url = text(e.url);
   // parseReceiver passes text it can't parse through as the host; from the
   // list that's junk (a space in the name, an unbracketed IPv6 address).

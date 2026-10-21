@@ -278,6 +278,17 @@ describe("parseKiwiList", () => {
     ];`;
     expect(parseKiwiList(text).map((r) => r.host)).toEqual(["c.example"]);
   });
+
+  // Value: protects=receivers that refuse apps (ext_api=0) are never offered or picked; fails_when=the ext_api check is removed or matches the missing field; why_new=Pick best handed listeners a receiver that hangs up after 10 s; seam=none; no_claim=owners changing the setting between list refreshes
+  it("skips receivers that allow no app connections", () => {
+    const text = `var kiwisdr_com = [${[
+      entry({ url: "http://a.example:8073", ext_api: "0" }),
+      entry({ url: "http://b.example:8073", ext_api: 0 }),
+      entry({ url: "http://c.example:8073", ext_api: "1" }),
+      entry({ url: "http://d.example:8073" }),
+    ].join(",")}];`;
+    expect(parseKiwiList(text).map((r) => r.host)).toEqual(["c.example", "d.example"]);
+  });
 });
 
 function rx(host: string, over: Partial<Receiver> = {}): Receiver {
