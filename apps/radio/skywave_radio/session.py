@@ -257,7 +257,8 @@ class ListenSession:
             started = time.monotonic()
             limit_s = self.settings.max_session_minutes * 60
             last_meter = 0.0
-            last_samples = started
+            # blocks() raises when the receiver goes quiet, so this loop (and
+            # the limit check) comes round at least every timeout_s.
             async for block in client.blocks():
                 if time.monotonic() - started > limit_s:
                     await self._status(
@@ -267,14 +268,10 @@ class ListenSession:
                     )
                     return
                 # A short SND block has no samples: the demodulator's filter
-                # can't take an empty array, and there's nothing to send. Only
-                # empty blocks for the client's timeout counts as gone silent,
-                # or a broken receiver would hold the slot until the limit.
+                # can't take an empty array, and there's nothing to send.
+                # blocks() times out a receiver that only sends these.
                 if not block.samples.size:
-                    if time.monotonic() - last_samples > client.timeout_s:
-                        raise KiwiError("timeout", f"{host} stopped sending audio")
                     continue
-                last_samples = time.monotonic()
                 audio = self._demod.process(block.samples)
                 await self._send_bytes(AUDIO_TAG + encode_audio(audio))
                 for frame in self._spectrum.process(block.samples):
@@ -298,6 +295,9 @@ class ListenSession:
             await self._status("error", message="Something broke in the radio service. Check its logs.")
         finally:
             self._listening = False
+            # This pump is done with its receiver even while close() below
+            # waits, so a tune for it now must start over, not retune a dead client.
+            self._target = None
             if self._client is not None:
                 await self._client.close()
                 self._client = None
@@ -321,7 +321,12 @@ class ListenSession:
             try:
                 await self._pump
             except asyncio.CancelledError:
-                pass
+                # The pump's own cancel ends here, but a cancel aimed at our
+                # caller (the browser left mid-switch) must not be swallowed,
+                # or the switch would go on to dial a receiver for nobody.
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise
         self._pump = None
         self._target = None
         if self._client is not None:

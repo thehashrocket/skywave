@@ -32,6 +32,15 @@ class FakeKiwi:
     stall: bool = False
     # Send this many SND frames with no samples before the tone.
     empty_blocks: int = 0
+    # Also make every Nth SND frame empty, counting from the first (empty_blocks included).
+    empty_every: int | None = None
+    # Samples per SND frame of tone. Frames keep BLOCK's pace, so a small
+    # block_size is a receiver trickling audio.
+    block_size: int = BLOCK
+    # Handshake normally, then send only MSG frames, never audio.
+    msg_only: bool = False
+    # Send only empty SND frames after this many, as if the tone stopped.
+    empty_after: int | None = None
     # Close the connection after this many SND frames.
     drop_after: int | None = None
     # Serve wss:// with this context.
@@ -91,9 +100,18 @@ class FakeKiwi:
             if self.stall:
                 await ws.wait_closed()
                 return
+            if self.msg_only:
+                while True:
+                    await ws.send(b"MSG status=ok")
+                    await asyncio.sleep(0.01)
             seq, n = 0, 0
             while self.drop_after is None or seq < self.drop_after:
-                size = 0 if seq < self.empty_blocks else BLOCK
+                empty = (
+                    seq < self.empty_blocks
+                    or (self.empty_every is not None and seq % self.empty_every == 0)
+                    or (self.empty_after is not None and seq >= self.empty_after)
+                )
+                size = 0 if empty else self.block_size
                 t = (np.arange(size) + n) / RATE
                 iq = 0.2 * np.exp(2j * np.pi * self.tone_hz * t)
                 inter = np.empty(size * 2, dtype=">i2")

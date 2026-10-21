@@ -119,17 +119,114 @@ def test_empty_kiwi_blocks_send_no_audio_frame():
     assert audio and all(len(a) == BLOCK for a in audio)
 
 
-# Value: protects=a receiver sending only empty blocks ends with the usual timeout instead of holding a listener slot until the session limit; fails_when=empty blocks are skipped without a deadline; why_new=Codex found the empty-block skip let a broken Kiwi pin a slot; seam=none; no_claim=a real Kiwi's empty-block pattern
-def test_receiver_sending_only_empty_blocks_times_out():
+# Value: protects=a receiver sending no usable audio ends with the usual timeout instead of holding a listener slot; fails_when=MSG frames or short/empty blocks reset the deadline; why_new=only empty blocks were covered, and status-only or trickling receivers never timed out; seam=none; no_claim=a real broken Kiwi's frame pattern (FakeKiwi stands in)
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize(
+    "fake",
+    [
+        pytest.param(dict(empty_blocks=10**6), id="empty blocks"),
+        pytest.param(dict(block_size=1), id="1-sample blocks"),
+        pytest.param(dict(msg_only=True), id="status only"),
+    ],
+)
+def test_receiver_sending_no_usable_audio_times_out(fake):
+    def body(kiwi):
+        # A short session limit too: a broken deadline ends "stopped", not hung.
+        app = create_app(settings(max_session_minutes=0.05), client_factory=partial(KiwiClient, timeout_s=0.5))
+        with TestClient(app).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            return until_state(ws, "error", "stopped")
+
+    statuses = run_with_fake(body, **fake)
+    assert statuses[-1]["code"] == "timeout"
+    assert "stopped sending audio" in statuses[-1]["message"]
+
+
+# Value: protects=a healthy receiver with occasional empty blocks keeps playing past timeout_s; fails_when=the deadline never resets or counts empty blocks against a real stream; why_new=no test ran longer than timeout_s with empties mixed in; seam=none; no_claim=how often real Kiwis send empty blocks
+@pytest.mark.timeout(10)
+def test_deadline_resets_while_real_audio_arrives():
     def body(kiwi):
         app = create_app(settings(), client_factory=partial(KiwiClient, timeout_s=0.5))
         with TestClient(app).websocket_connect("/ws", headers=ORIGIN) as ws:
             ws.send_text(tune_msg(kiwi.port))
-            return until_state(ws, "error")
+            statuses, audio = [], 0
+            started = time.monotonic()
+            while time.monotonic() - started < 2.0:  # 4 x timeout_s
+                msg = ws.receive()
+                if msg.get("text"):
+                    statuses.append(json.loads(msg["text"]))
+                elif msg.get("bytes", b"")[:1] == AUDIO_TAG:
+                    audio += 1
+        return statuses, audio
 
-    statuses = run_with_fake(body, empty_blocks=10**6)
+    statuses, audio = run_with_fake(body, empty_every=3)
+    assert [s["state"] for s in statuses if s["type"] == "status"] == ["connecting", "listening"]
+    assert audio > 0
+
+
+class _HungWrites:
+    """A Kiwi socket whose buffers are full: reads work, sends and close never finish."""
+
+    def __init__(self, ws):
+        self._ws = ws
+        self.transport = ws.transport
+
+    async def recv(self):
+        return await self._ws.recv()
+
+    async def send(self, msg):
+        await asyncio.Event().wait()
+
+    async def close(self):
+        await asyncio.Event().wait()
+
+
+class _StopsReading(KiwiClient):
+    """Handshakes normally, then the Kiwi stops reading what we send."""
+
+    async def connect(self):
+        info = await super().connect()
+        self._ws = _HungWrites(self._ws)
+        return info
+
+
+def wait_for_free_slots(client, within_s=5.0):
+    started = time.monotonic()
+    while client.get("/healthz").json()["listeners"]:
+        assert time.monotonic() - started < within_s, "the listener slot was never freed"
+        time.sleep(0.05)
+
+
+# Value: protects=a Kiwi that stops reading ends the session with 'stopped reading' and frees the slot, even though closing its socket would block too; fails_when=close() waits on the full socket with no bound, or the send timeout doesn't end the session; why_new=only _send was tested, against a stub with no close(); seam=KiwiClient._ws (a socket whose sends and close never finish); no_claim=real TCP buffer sizes
+@pytest.mark.timeout(15)
+def test_kiwi_that_stops_reading_ends_the_session_and_frees_the_slot():
+    def body(kiwi):
+        client = TestClient(create_app(settings(max_sessions=1), client_factory=partial(_StopsReading, timeout_s=0.5)))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            statuses = until_state(ws, "error", "stopped")
+            wait_for_free_slots(client)
+        return statuses
+
+    statuses = run_with_fake(body)
     assert statuses[-1]["code"] == "timeout"
-    assert "stopped sending audio" in statuses[-1]["message"]
+    assert "stopped reading" in statuses[-1]["message"]
+
+
+# Value: protects=a tune for the same receiver while the ended session is still closing starts over and answers; fails_when=it takes the same-receiver retune path on the dead client and the browser hears nothing; why_new=red team found the closing window answered nothing; seam=KiwiClient._ws (a socket whose sends and close never finish); no_claim=real close timing
+@pytest.mark.timeout(15)
+def test_tune_while_the_ended_session_closes_starts_over():
+    def body(kiwi):
+        client = TestClient(create_app(settings(), client_factory=partial(_StopsReading, timeout_s=0.5)))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "error", "stopped")
+            # close() now waits up to CLOSE_TIMEOUT_S on the full socket.
+            ws.send_text(tune_msg(kiwi.port))
+            return until_state(ws, "listening", "error")
+
+    statuses = run_with_fake(body)
+    assert [s["state"] for s in statuses] == ["connecting", "listening"]
 
 
 def test_listen_end_to_end():
@@ -463,6 +560,55 @@ async def test_retune_as_the_kiwi_drops_is_not_a_crash():
     await session.close()
     # The failed retune neither raised nor sent its own error; the pump owns that.
     assert [s["state"] for s in sent] == ["connecting", "listening"]
+
+
+# Value: protects=a browser leaving while a receiver switch waits for the old pump starts no new pump and frees the slot; fails_when=stop() swallows the cancel aimed at its caller, so the switch goes on to dial the new receiver for nobody; why_new=red team found the shutdown race; seam=none; no_claim=real disconnect timing (the server's serving.cancel() is reproduced by hand)
+async def test_leaving_mid_switch_starts_no_new_pump():
+    from skywave_radio.kiwi import KiwiInfo
+    from skywave_radio.session import ListenSession, Slots
+
+    made = []
+
+    class SlowToClose:
+        """Listens until stopped; close() takes a while, as KiwiClient's bounded close can."""
+
+        def __init__(self, host, port, **kwargs):
+            self.info = KiwiInfo(sample_rate=12000.0)
+            made.append(port)
+
+        async def connect(self):
+            return self.info
+
+        async def tune(self, freq_khz):
+            pass
+
+        async def blocks(self):
+            await asyncio.Event().wait()
+            yield
+
+        async def close(self):
+            await asyncio.sleep(0.3)
+
+    async def resolve(host, port, **kwargs):
+        return "127.0.0.1"
+
+    async def send(_):
+        pass
+
+    slots = Slots(1)
+    session = ListenSession(settings(), send, send, slots=slots, resolver=resolve, client_factory=SlowToClose)
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    while not session._listening:
+        await asyncio.sleep(0.01)
+    # What server.py does: serve() handles a switch, the browser leaves, serve() is cancelled.
+    serving = asyncio.create_task(session.handle({"type": "tune", "host": "b.example", "port": 8074, "freqKhz": 7200, "mode": "usb"}))
+    await asyncio.sleep(0.05)  # the switch is now waiting for the old pump's close()
+    serving.cancel()
+    await asyncio.wait({serving})
+    await session.close()
+    await asyncio.sleep(0.05)
+    assert made == [8073]
+    assert slots.active == 0
 
 
 # Value: protects=receivers picked from the public list are never dialed on private addresses, even with ALLOW_PRIVATE_HOSTS on; fails_when=session ignores "source": "list"; why_new=list tunes relied on the operator's flag; seam=none; no_claim=the web client sending the tag (use-radio/page tests)
