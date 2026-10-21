@@ -16,65 +16,53 @@
 
 ## Web app
 
-### Decide what Preset.receiverHost / receiverPort become
+### Back: keep the right target through Stop, refusals and new dial flags
 
-**What:** Wire up the unused `receiverHost`/`receiverPort` columns on `Preset` once there's a button to pin a preset to a receiver.
+**What:** Rework the Back target in `apps/web/src/app/page.tsx` (`heard` history and `backTo`) so it handles three cases it gets wrong today.
 
-**Why:** The schema implies presets can be pinned to a receiver, but the UI never sends these fields (`Presets.tsx`), even though the API accepts them (`presets.ts`). Kept as-is on 2026-10-20; the receiver map design settled that `host:port` is a receiver's identity, so no `Receiver` table is coming.
+**Why:** Stop pressed while a switch is still connecting (or just failed) makes Back disappear or jump two receivers back, because the idle branch always returns `previous`. A receiver reached again later from the list or over https keeps the flags it was first dialed with, so Back can redial it the old way. And after a refused (`no_apps`) receiver is dropped from the history and then plays again, Back can offer the receiver just stopped.
 
-**Context:** `apps/web/prisma/schema.prisma:16-17`. The columns already hold what a pin needs (host and port). Add the pin button, send them from `Presets.tsx`, and tune that receiver when the preset is chosen.
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** A pin-to-receiver button (not planned yet)
-
-### Drop the browser's float32 frame decoding
-
-**What:** Remove the `0x01`/`0x02` branches from `handleBinary` (`apps/web/src/lib/use-radio.ts`) and their test.
-
-**Why:** They exist only so the web app could deploy before the radio service during the switch to compact frames. Once every running radio service sends `0x03`/`0x04`, they are dead code.
-
-**Context:** Added with the int16/uint8 frame change (feat/compact-stream). Safe to remove once no radio service from before that change is deployed anywhere this web app points.
+**Context:** Deferred from the receiver map PR 1 /ship review (Codex structured P2, Codex adversarial, Claude adversarial; 2026-10-21); fix at the start of PR 2, which adds Back to the map card and the map's "last" ring. Likely shape: treat the receiver in the fields as "shown" when idle (so Stop mid-switch keeps pointing at the one left), refresh `fromList`/`secure`/`label` when a receiver plays again, and never promote `previous` to `last` when they are the same receiver. Also decide whether Back should name a host-less failure (service drop) as a retry or fall back to `previous`, and whether the status line should name the receiver it is connecting to. Tests in `page.test.tsx` next to the existing Back tests.
 
 **Effort:** S
-**Priority:** P4
-**Depends on:** Every radio service deployment on the compact frames
-
-### Keep one audio frame from overrunning the player's buffer
-
-**What:** Make sure no single audio frame is bigger than the browser player's ring buffer: either split large blocks on the radio side, or size `MAX_AUDIO_SAMPLES` to the ring.
-
-**Why:** `MAX_AUDIO_SAMPLES` is 2**18 so the browser accepts anything the radio service can send (a 1 MiB Kiwi frame), but the worklet's ring is `sampleRate * 4` samples (`apps/web/public/worklets/radio-player.js`), 192,000 at 48 kHz. One maximum-size frame overwrites about 70k queued samples: an audible jump, not a held slot. Real frames are about 512 samples.
-
-**Context:** Raised by the Codex adversarial review of feat/stream-hardening. Before that branch there was no cap at all. Splitting on the radio side (`ListenSession._run`, `apps/radio/skywave_radio/session.py`) keeps the two caps in step; keep the comments on `MAX_FRAME_BYTES` and `MAX_AUDIO_SAMPLES` true.
-
-**Effort:** S
-**Priority:** P4
+**Priority:** P2
 **Depends on:** None
 
-### Let Pick best move past a receiver that refuses after audio starts
+### Don't stall on an error code this build doesn't know
 
-**What:** Keep Pick best's run open for a short while after "listening", so a `no_apps` refusal in that window moves on to the next receiver with its note.
+**What:** In `use-radio.ts`, decide whether an error ends a pending tune from the sanitized code (`KNOWN_CODES`), not the raw one.
 
-**Why:** Pick best finishes on "listening" (`apps/web/src/lib/use-pick-best.ts`), but a receiver whose owner allows no apps (`ext_api=0`) plays for about 10 s before it refuses (live probe 2026-10-21: 213 blocks, then `no_apps` at 10.8 s). The list hides these receivers, so Pick best only lands on one when an owner changed the setting since the list was fetched; the listener then sees the right error but has to pick again by hand.
+**Why:** A rejected tune names the old receiver. If a newer radio service sends a code this web build doesn't know, the status is shown as uncoded but the pending-tune check still treats it as coded, so the page stays on "Connecting…" with locked fields until Stop.
 
-**Context:** Found by the fix/ext-api-receivers /ship review. The window would need to cover about 15 s and must not resume a run the listener has since replaced (the `host`/`port` check on statuses). Test with a status sequence `listening` → `error no_apps` in `use-pick-best.test.ts`.
+**Context:** Deferred from the receiver map PR 1 /ship review (Claude adversarial + Codex structured P3, 2026-10-21); only reachable when the service ships a new code before the web app, which the README's deploy order rules out for codes so far. One-line fix at `const rejected = …` plus a test with an unknown code naming the old receiver.
 
 **Effort:** S
-**Priority:** P3
+**Priority:** P2
 **Depends on:** None
 
-### Write a DESIGN.md for the web app
+### Time out a radio-service connection that never opens
 
-**What:** Run `/design-consultation` to write `DESIGN.md` from the tokens and components in `apps/web/src/app/globals.css`, including the receiver map's `--map-*` tokens.
+**What:** Give `ensureSocket()` in `use-radio.ts` its own connect deadline (say 10 s) that fails the tune with the existing "Can't reach the radio service" error.
 
-**Why:** skywave's look (enamel teal, glass dial, brass, amber lamp, Barlow Condensed + Atkinson Hyperlegible) exists only as CSS variables, so each design review has to reverse-engineer it.
+**Why:** A tune now shows "Connecting…" and locks the fields from the click. If the radio service's address silently drops packets, the WebSocket stays in CONNECTING until the browser's own network timeout; Stop works, but nothing tells the listener the service is unreachable.
 
-**Context:** Raised by the receiver map design review (2026-10-20), which calibrated against `globals.css` because no DESIGN.md exists.
+**Context:** Deferred from the receiver map PR 1 /ship review (Codex adversarial, 2026-10-21). Close the half-open socket on timeout and keep the generation guard so a late open can't revive it. Test with a `FakeSocket` that never opens and fake timers.
 
 **Effort:** S
-**Priority:** P3
-**Depends on:** None (better after the receiver map adds its tokens)
+**Priority:** P2
+**Depends on:** None
+
+### Keep table rows still while the list refreshes
+
+**What:** Hold the receiver table's row order (and filtered set) steady when a background refetch delivers a new list, until the listener changes sort, filter or search, or presses a "List updated" control.
+
+**Why:** The list is now polled while the table is open. Default order and "Has a free slot" depend on listener counts, so a refresh can move rows just before a click and the click lands on a different receiver than the one aimed at.
+
+**Context:** Deferred from the receiver map PR 1 /ship review (Claude adversarial, 2026-10-21). The Night sort already freezes its order (`sortSun` in `ReceiverPicker.tsx`); extend that idea to the whole order. Fold in the polling follow-ups from the same review: each poll re-downloads the whole list (a small "has it changed?" query or an `unchanged` reply would make repeat polls cheap), and a viewer clock 15-16 minutes ahead of the server polls every 15 s (have the server send the copy's age instead of comparing two clocks).
+
+**Effort:** M
+**Priority:** P2
+**Depends on:** None
 
 ### Keep dial changes made while a first connection starts
 
@@ -110,6 +98,66 @@
 
 **Effort:** S
 **Priority:** P2
+**Depends on:** None
+
+### Decide what Preset.receiverHost / receiverPort become
+
+**What:** Wire up the unused `receiverHost`/`receiverPort` columns on `Preset` once there's a button to pin a preset to a receiver.
+
+**Why:** The schema implies presets can be pinned to a receiver, but the UI never sends these fields (`Presets.tsx`), even though the API accepts them (`presets.ts`). Kept as-is on 2026-10-20; the receiver map design settled that `host:port` is a receiver's identity, so no `Receiver` table is coming.
+
+**Context:** `apps/web/prisma/schema.prisma:16-17`. The columns already hold what a pin needs (host and port). Add the pin button, send them from `Presets.tsx`, and tune that receiver when the preset is chosen.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** A pin-to-receiver button (not planned yet)
+
+### Let Pick best move past a receiver that refuses after audio starts
+
+**What:** Keep Pick best's run open for a short while after "listening", so a `no_apps` refusal in that window moves on to the next receiver with its note.
+
+**Why:** Pick best finishes on "listening" (`apps/web/src/lib/use-pick-best.ts`), but a receiver whose owner allows no apps (`ext_api=0`) plays for about 10 s before it refuses (live probe 2026-10-21: 213 blocks, then `no_apps` at 10.8 s). The list hides these receivers, so Pick best only lands on one when an owner changed the setting since the list was fetched; the listener then sees the right error but has to pick again by hand.
+
+**Context:** Found by the fix/ext-api-receivers /ship review. The window would need to cover about 15 s and must not resume a run the listener has since replaced (the `host`/`port` check on statuses). Test with a status sequence `listening` → `error no_apps` in `use-pick-best.test.ts`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+### Write a DESIGN.md for the web app
+
+**What:** Run `/design-consultation` to write `DESIGN.md` from the tokens and components in `apps/web/src/app/globals.css`, including the receiver map's `--map-*` tokens.
+
+**Why:** skywave's look (enamel teal, glass dial, brass, amber lamp, Barlow Condensed + Atkinson Hyperlegible) exists only as CSS variables, so each design review has to reverse-engineer it.
+
+**Context:** Raised by the receiver map design review (2026-10-20), which calibrated against `globals.css` because no DESIGN.md exists.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None (better after the receiver map adds its tokens)
+
+### Drop the browser's float32 frame decoding
+
+**What:** Remove the `0x01`/`0x02` branches from `handleBinary` (`apps/web/src/lib/use-radio.ts`) and their test.
+
+**Why:** They exist only so the web app could deploy before the radio service during the switch to compact frames. Once every running radio service sends `0x03`/`0x04`, they are dead code.
+
+**Context:** Added with the int16/uint8 frame change (feat/compact-stream). Safe to remove once no radio service from before that change is deployed anywhere this web app points.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** Every radio service deployment on the compact frames
+
+### Keep one audio frame from overrunning the player's buffer
+
+**What:** Make sure no single audio frame is bigger than the browser player's ring buffer: either split large blocks on the radio side, or size `MAX_AUDIO_SAMPLES` to the ring.
+
+**Why:** `MAX_AUDIO_SAMPLES` is 2**18 so the browser accepts anything the radio service can send (a 1 MiB Kiwi frame), but the worklet's ring is `sampleRate * 4` samples (`apps/web/public/worklets/radio-player.js`), 192,000 at 48 kHz. One maximum-size frame overwrites about 70k queued samples: an audible jump, not a held slot. Real frames are about 512 samples.
+
+**Context:** Raised by the Codex adversarial review of feat/stream-hardening. Before that branch there was no cap at all. Splitting on the radio side (`ListenSession._run`, `apps/radio/skywave_radio/session.py`) keeps the two caps in step; keep the comments on `MAX_FRAME_BYTES` and `MAX_AUDIO_SAMPLES` true.
+
+**Effort:** S
+**Priority:** P4
 **Depends on:** None
 
 ## Completed
