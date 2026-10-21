@@ -425,9 +425,9 @@ a {
   font-size: 0.85rem;
 }
 
-/* A link inside the "List updated" sentence keeps the sentence's size. */
-.receivers-updated .link-button {
-  font-size: inherit;
+/* Holds its line when empty, so the notice appearing doesn't move the rows. */
+.receivers-updated {
+  min-height: 1lh;
 }
 
 .receivers-sort-note {

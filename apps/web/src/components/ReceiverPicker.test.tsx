@@ -341,7 +341,7 @@ describe("ReceiverPicker", () => {
   });
 
   // Value: protects=the folded table says what it holds, and the list refreshes just after the server's copy expires; fails_when=the summary text is dropped or the poll ignores fetchedAt; why_new=DT1 fold, R8 refetch, adversarial review (polls ran a full TTL late); seam=react-query observer options; no_claim=react-query's timer itself
-  it("folds the table under All receivers (N) and refetches every 15 minutes", async () => {
+  it("folds the table under All receivers (N) and polls just after the server's copy expires", async () => {
     // The server's clock is an hour off; only the age it reports matters.
     const { queryClient } = renderPicker(
       Promise.resolve({ receivers, fetchedAt: Date.now() + 60 * 60_000, ageMs: 10 * 60_000 }),
@@ -354,7 +354,7 @@ describe("ReceiverPicker", () => {
     expect(interval(query)).toBeLessThanOrEqual(5 * 60_000 + 5_000);
   });
 
-  // Value: protects=the list is polled just after the server's copy expires, then at the server's retry pace; fails_when=nextRefetchMs's age thresholds or the floor/ceiling drift; why_new=list polling (PR 1 review, skew-proof in PR 2a); seam=none; no_claim=react-query's timer itself
+  // Value: protects=the list is polled just after the server's copy expires, then at the server's retry pace, and soon after a failed first load; fails_when=nextRefetchMs's age thresholds or the floor/ceiling drift; why_new=list polling (PR 1 review, skew-proof in PR 2a); seam=none; no_claim=react-query's timer itself
   it.each([
     ["a copy 10 min old", 10 * 60_000, 5 * 60_000 + 5_000],
     ["a copy fetched just now", 0, 15 * 60_000],
@@ -364,7 +364,7 @@ describe("ReceiverPicker", () => {
     ["a copy still old after the server's retry (mirror down)", 16 * 60_000, 60_000],
     ["a stale copy from a long outage", 60 * 60_000, 60_000],
     ["no copy yet (the first load failed)", undefined, 15_000],
-  ])("polls again just after the server's copy expires: %s", (_case, age, wait) => {
+  ])("polls again at the right time: %s", (_case, age, wait) => {
     expect(nextRefetchMs(age)).toBe(wait);
   });
 });
@@ -489,17 +489,13 @@ describe("ReceiverTable when the list refreshes", () => {
   });
 
   // Value: protects=keyboard users keep their place after taking the new list (the button goes away); fails_when=focus is left on the removed button, falling back to the page; why_new=a11y review (PR 2a); seam=none; no_claim=screen reader announcement wording
-  it("moves focus to the first receiver after showing the new list", async () => {
+  it("moves focus to the table after showing the new list", async () => {
     const view = render(table(receivers));
     view.rerender(table(refreshed));
     const show = screen.getByRole("button", { name: "Show it" });
     show.focus();
     fireEvent.click(show);
-    await waitFor(() =>
-      expect(document.activeElement).toBe(
-        within(screen.getByRole("table")).getAllByRole("button", { name: /\.example:8073/ })[0],
-      ),
-    );
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("table", { name: "Public receivers" })));
   });
 
   // Value: protects=recovering from an over-filtered table shows the newest list; fails_when=Clear filters resets the filters but keeps the old list; why_new=coverage audit (PR 2a); seam=none; no_claim=none beyond protects
