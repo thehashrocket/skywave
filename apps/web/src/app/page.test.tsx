@@ -93,6 +93,26 @@ describe("ListenPage", () => {
     expect(JSON.parse(localStorage.getItem("skywave.receiver")!)).toEqual({ host: "f4kiy.ddns.net", port: "8074" });
   });
 
+  // Value: protects=a receiver that refuses apps after playing doesn't stay the saved default; fails_when=the no_apps check is dropped or forgets a receiver other than the saved one; why_new=Codex adversarial: the saved default kept refusing; seam=none; no_claim=what the fields show (they keep the host until the listener changes it)
+  it("forgets the saved receiver when it refuses apps, but not for another receiver or another error", () => {
+    const view = render(<ListenPage />);
+    fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "kiwi.example" } });
+    fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+    radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
+    view.rerender(<ListenPage />);
+    expect(JSON.parse(localStorage.getItem("skywave.receiver")!)).toEqual({ host: "kiwi.example", port: "8073" });
+
+    radio.status = { state: "error", code: "busy", message: "full", host: "kiwi.example", port: 8073 };
+    view.rerender(<ListenPage />);
+    radio.status = { state: "error", code: "no_apps", message: "own page", host: "other.example", port: 8073 };
+    view.rerender(<ListenPage />);
+    expect(localStorage.getItem("skywave.receiver")).not.toBeNull();
+
+    radio.status = { state: "error", code: "no_apps", message: "own page", host: "kiwi.example", port: 8073 };
+    view.rerender(<ListenPage />);
+    expect(localStorage.getItem("skywave.receiver")).toBeNull();
+  });
+
   // Value: protects=a pasted https:// receiver is dialed over wss:// and stays secure after the field is normalized and saved; fails_when=normalizing a bare host drops the flag or typing a new host keeps it; why_new=wss dialing; seam=none; no_claim=the service's TLS (radio tests)
   it("dials a pasted https receiver securely, remembers that, and forgets it when the host is retyped", () => {
     const view = render(<ListenPage />);

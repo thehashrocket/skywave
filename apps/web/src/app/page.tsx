@@ -48,6 +48,14 @@ function saveReceiver(r: Saved) {
   }
 }
 
+function forgetReceiver() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 function listSource(fromList: boolean) {
   return fromList ? { source: "list" as const } : {};
 }
@@ -231,6 +239,17 @@ export default function ListenPage() {
     lastSaved.current = saved;
     saveReceiver(JSON.parse(saved));
   }, [status, isTarget]);
+
+  // A receiver that only takes listeners on its own web page plays for about
+  // 10 s before it refuses, so by then it's saved. It will refuse every time;
+  // don't offer it as the default again.
+  useEffect(() => {
+    if (status.state !== "error" || status.code !== "no_apps" || !status.host) return;
+    const saved = loadReceiver();
+    if (saved.host !== status.host || Number(saved.port) !== (status.port ?? DEFAULT_KIWI_PORT)) return;
+    forgetReceiver();
+    lastSaved.current = null;
+  }, [status]);
 
   const onDial = useCallback(
     (khz: number) => {
