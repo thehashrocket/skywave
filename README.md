@@ -52,6 +52,7 @@ The list comes from [rx.linkfanel.net](http://rx.linkfanel.net/), which mirrors 
 ## Using it
 
 - **Receivers:** Pick best tunes the receiver with the highest self-reported HF signal-to-noise ratio that covers your frequency. If it's full, down or otherwise refuses, it tries the next one, up to 3 per click (refusals about the address itself, such as a dead hostname, take no channel on anyone's receiver and don't count, up to 6 receivers in all; a dead name can still take up to 10 seconds to give up on). If nothing works, or you press Stop picking, it goes back to whatever you were listening to. The list's listener counts can be 20 minutes old, so receivers it calls full are ranked last rather than hidden. If the mirror stops answering, the last copy stays in use and the picker says how old it is. If the list never loaded, the picker offers **Try again** and also asks again on its own every 15 seconds while the tab is visible. Browse the list to search by name, place or antenna, sort by column, and click a receiver to switch to it, even mid-listen. While it's open the list refreshes in the background, but the rows stay put until you sort, filter or search, or press **Show it** on the "List updated" line between the filters and the table, which also moves keyboard focus to the table. The Night column says whether the sun has set at each receiver right now (sort by it to put the night side first); it's a hint about propagation, not a ranking. After a switch, the **Back to …** button beside the status line names the receiver you heard before and returns to it; if a switch fails or you stop it, Back offers the receiver you were just hearing. A connection to the radio service that hasn't opened after 10 seconds is reported as unreachable, and so is a second tune that was waiting on that connection.
+- **Map:** the receiver map shows every listed receiver with a known position, shaded where it's night now (lighter for civil twilight) and redrawn each minute. Night dots are brighter, full receivers are rings, and receivers that can't tune the dial's frequency are faint; the one you're hearing is amber, and the one before it has a faint "last" ring. Night is a hint about propagation, not a ranking: Pick best still ranks by signal and load. Click or tap a dot to see the receiver (a crowded spot lists up to 10, with **Zoom into this area** for more), then press **Listen** to switch; a click alone never changes what's playing. The map follows the receiver you're hearing until you pan or zoom, then stays put until **Center**. Zoom with ⌘/Ctrl+scroll, two fingers on touch, or the +/− buttons. So the radio starts first, the map loads only after the first audio arrives, or after 5 seconds with nothing playing or connecting. Tiles come from [OpenFreeMap](https://openfreemap.org) (no key). Without WebGL, or if the style or tiles fail, it says why and offers **Retry map** and **Browse receivers**; the table and Pick best keep working.
 - **Dial:** drag to tune coarsely (snaps to 5 kHz). Focus it and use arrow keys for 1 kHz steps, Shift for 10, Page Up/Down for 100. Crossing into a ham band switches to the conventional sideband automatically.
 - **Readout:** click the big number and type an exact frequency.
 - **Waterfall:** shows the ±6 kHz the Kiwi is sending. Click a signal to tune to it. The shaded strip is your current mode's passband.
@@ -87,6 +88,12 @@ apps/web/
   src/lib/kiwi-list.ts               parses and ranks the public receiver list (with positions)
   src/lib/solar.ts                   where the sun is; which receivers are in darkness
   src/lib/use-solar-clock.ts         one minute clock for the page's Night column and map
+  src/components/MapPanel.tsx        the map's panel: heading, legend, states; loads the map lazily
+  src/components/ReceiverMap.tsx     MapLibre adapter (dots, greyline, card, camera)
+  src/lib/receiver-map-model.ts      the map's logic: dot states, click hits, follow
+  src/lib/receiver-map-style.ts      minimal map style on OpenFreeMap tiles, from --map-* tokens
+  src/lib/use-map-admission.ts       holds the map back until the radio is playing
+  src/app/vendor/maplibre/           serves MapLibre's worker, which the bundler doesn't copy
   src/lib/use-pick-best.ts           Pick best's try-the-next-one logic
   src/server/                        tRPC routers (presets, receivers) + Prisma client
   public/worklets/radio-player.js    jitter buffer + resampler
@@ -118,6 +125,5 @@ pnpm typecheck
 
 ## Next steps
 
-1. **Receiver map:** the public list is already loaded (`src/lib/kiwi-list.ts`) and includes GPS coordinates; plot it and pick receivers by clicking a map. In progress: the table already shows which receivers are in darkness (design in `docs/designs/receiver-map.md`). A receiver stays identified by `host:port`; there's no `Receiver` table.
-2. **Station lookup:** import the EiBi shortwave schedule CSV so tuning 9,535 kHz at 0300 UTC tells you who's probably on and pins the transmitter site.
-3. **Wider view:** the Kiwi's separate waterfall stream (`W/F`) covers the whole 0–30 MHz band; showing it on the dial would let you see activity before tuning.
+1. **Station lookup:** import the EiBi shortwave schedule CSV so tuning 9,535 kHz at 0300 UTC tells you who's probably on and pins the transmitter site. On the map, that would draw the path from the transmitter to each receiver.
+2. **Wider view:** the Kiwi's separate waterfall stream (`W/F`) covers the whole 0–30 MHz band; showing it on the dial would let you see activity before tuning.
