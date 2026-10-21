@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "apps/radio/skywave_radio/**": ["apps/radio/tests/**"],
+    "apps/radio/pyproject.toml": ["apps/radio/tests/**"]
+  }
+}
