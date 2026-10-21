@@ -348,7 +348,8 @@ describe("ReceiverMap", () => {
     vi.useFakeTimers();
     try {
       const hung = setup();
-      act(() => vi.advanceTimersByTime(15_000));
+      // One frame for the clock to start, then the full wait.
+      act(() => vi.advanceTimersByTime(15_100));
       expect(hung.props.onFail).toHaveBeenCalledWith("the map style didn't load");
       cleanup();
 
@@ -379,6 +380,23 @@ describe("ReceiverMap", () => {
       act(() => map().emit("style.load"));
       act(() => vi.advanceTimersByTime(60_000));
       expect(props.onFail).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=a map built in a background tab (Listen, then switch tabs) isn't failed for the time the tab was hidden; fails_when=the watchdog starts at construction instead of the first animation frame, which hidden tabs don't get; why_new=cycle-3 red team CRITICAL (PR 2b ship); seam=a queued requestAnimationFrame, fake timers; no_claim=browser throttling details
+  it("starts the style clock only once the tab draws a frame", () => {
+    vi.useFakeTimers();
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
+    try {
+      const { props } = setup();
+      act(() => vi.advanceTimersByTime(120_000));
+      expect(props.onFail).not.toHaveBeenCalled();
+      act(() => frames.splice(0).forEach((cb) => cb(0)));
+      act(() => vi.advanceTimersByTime(15_000));
+      expect(props.onFail).toHaveBeenCalledWith("the map style didn't load");
     } finally {
       vi.useRealTimers();
     }

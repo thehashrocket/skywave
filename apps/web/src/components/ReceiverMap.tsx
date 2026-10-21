@@ -117,6 +117,7 @@ export default memo(function ReceiverMap({
   // is also how Retry starts over.
   useEffect(() => {
     const container = containerRef.current!;
+    removed.current = false;
     let created: MapLibreMap;
     try {
       created = new MapLibreMap({
@@ -150,10 +151,18 @@ export default memo(function ReceiverMap({
       failed = true;
       callbacks.current.onFail(reason);
     };
-    // Only the style is timed: "load" also waits for every first tile and for
-    // animation frames, which a slow link or a background tab holds back.
-    const watchdog = setTimeout(() => fail("the map style didn't load"), LOAD_TIMEOUT_MS);
-    created.on("style.load", () => clearTimeout(watchdog));
+    // Only the style is timed ("load" also waits for every first tile), and
+    // only visible time: MapLibre needs an animation frame to apply the style,
+    // and a background tab gets none, so the clock starts at the first frame.
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    let styled = false;
+    const startFrame = requestAnimationFrame(() => {
+      if (!styled) watchdog = setTimeout(() => fail("the map style didn't load"), LOAD_TIMEOUT_MS);
+    });
+    created.on("style.load", () => {
+      styled = true;
+      clearTimeout(watchdog);
+    });
     created.on("load", () => {
       loaded = true;
       setMap(created);
@@ -212,6 +221,7 @@ export default memo(function ReceiverMap({
 
     return () => {
       clearTimeout(watchdog);
+      cancelAnimationFrame(startFrame);
       cancelAnimationFrame(hoverFrame);
       setMap(null);
       applied.current = null;
