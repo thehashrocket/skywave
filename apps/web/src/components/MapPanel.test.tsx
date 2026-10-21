@@ -2,16 +2,21 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Receiver } from "@/lib/kiwi-list";
-import { MapPanel, type MapList } from "./MapPanel";
+import { MapPanel, withTimeout, type MapList } from "./MapPanel";
 import type { ReceiverMapProps } from "./ReceiverMap";
 
 // The adapter needs WebGL; stand in for it and keep what it was given.
-const adapter = vi.hoisted(() => ({ props: [] as ReceiverMapProps[], mounts: 0, throwing: false }));
+const adapter = vi.hoisted(() => ({
+  props: [] as ReceiverMapProps[],
+  mounts: 0,
+  throwing: false,
+  message: "Loading chunk failed",
+}));
 vi.mock("./ReceiverMap", async () => {
   const { useEffect } = await import("react");
   return {
     default: function FakeReceiverMap(props: ReceiverMapProps) {
-      if (adapter.throwing) throw new Error("Loading chunk failed");
+      if (adapter.throwing) throw new Error(adapter.message);
       adapter.props.push(props);
       useEffect(() => {
         adapter.mounts++;
@@ -136,12 +141,41 @@ describe("MapPanel", () => {
   it("turns a map that fails to load into Map unavailable, and retries", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     adapter.throwing = true;
+    adapter.message = "Loading chunk failed";
     setup();
     expect(await screen.findByText("Map unavailable: its code didn't load.")).toBeTruthy();
     adapter.throwing = false;
     fireEvent.click(screen.getByRole("button", { name: "Retry map" }));
     expect(await screen.findByTestId("adapter")).toBeTruthy();
     vi.mocked(console.error).mockRestore();
+  });
+
+  // Value: protects=a map that breaks after loading is reported as such, not as a failed download; fails_when=every caught error says "its code didn't load"; why_new=Claude adversarial (PR 2b ship); seam=the mocked adapter throws a plain error; no_claim=which errors React surfaces
+  it("tells a broken map from code that didn't load", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    adapter.throwing = true;
+    adapter.message = "boom";
+    setup();
+    expect(await screen.findByText("Map unavailable: it stopped working.")).toBeTruthy();
+    adapter.throwing = false;
+    vi.mocked(console.error).mockRestore();
+  });
+
+  // Value: protects=a download of the map's code that stalls ends in Map unavailable with Retry, not a blank panel; fails_when=the lazy import has no time limit; why_new=Codex adversarial P1 (PR 2b ship); seam=fake timers on withTimeout; no_claim=the bundler's own chunk retries
+  it("gives up on a stalled download after the time limit", async () => {
+    vi.useFakeTimers();
+    try {
+      const stalled = withTimeout(new Promise(() => {}), 30_000);
+      const settled = vi.fn();
+      stalled.catch(settled);
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toHaveBeenCalledWith(expect.objectContaining({ message: "Loading the map timed out" }));
+      await expect(withTimeout(Promise.resolve(7), 30_000)).resolves.toBe(7);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Value: protects=Center is offered only when pressing it can move the map (listening, located, map up); fails_when=Center is enabled while connecting or before the map loads and looks like it does nothing; why_new=red team (PR 2b ship); seam=none; no_claim=the camera (adapter tests)

@@ -30,7 +30,9 @@ export function useMapAdmission({ heardAudio, busy }: Radio): boolean {
     let fallback: ReturnType<typeof setTimeout> | undefined;
     const admit = () => setAdmitted(true);
     const whenIdle = () => {
-      if (typeof window.requestIdleCallback === "function") idle = window.requestIdleCallback(admit);
+      // A busy page (meter, waterfall) may never look idle; don't wait past 2 s for it.
+      if (typeof window.requestIdleCallback === "function")
+        idle = window.requestIdleCallback(admit, { timeout: 2_000 });
       else fallback = setTimeout(admit, IDLE_FALLBACK_MS);
     };
     // Audio is playing: load at the next idle moment. Otherwise wait out the quiet period first.

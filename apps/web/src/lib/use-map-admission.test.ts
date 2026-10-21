@@ -45,11 +45,14 @@ describe("useMapAdmission", () => {
   // Value: protects=the map loads at an idle moment where the browser offers one; fails_when=requestIdleCallback is ignored or its handle leaks on cancel; why_new=R4; seam=a stubbed requestIdleCallback; no_claim=browser idle timing
   it("uses requestIdleCallback when the browser has it", () => {
     const callbacks: (() => void)[] = [];
-    vi.stubGlobal("requestIdleCallback", (cb: () => void) => callbacks.push(cb));
+    const idle = vi.fn((cb: () => void) => callbacks.push(cb));
+    vi.stubGlobal("requestIdleCallback", idle);
     vi.stubGlobal("cancelIdleCallback", vi.fn());
     const { result } = setup({ heardAudio: true, busy: true });
     expect(result.current).toBe(false);
     expect(callbacks).toHaveLength(1);
+    // A page that's always busy still gets the map within 2 s.
+    expect(idle).toHaveBeenCalledWith(expect.any(Function), { timeout: 2_000 });
     act(() => callbacks[0]!());
     expect(result.current).toBe(true);
   });

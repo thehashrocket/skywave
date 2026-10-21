@@ -125,10 +125,10 @@ export function useRadio() {
   // dial retune on the last receiver can still be answered after a switch),
   // and what it will send (dial moves while audio or the socket start land here).
   const pendingRef = useRef<Tuning | null>(null);
-  // Whether a dial move for the tune in progress already went to the service
-  // (the socket was open): then the service has the newer tuning, and the
-  // tune's own send would undo it.
-  const retunedRef = useRef(false);
+  // The socket a dial move for the tune in progress already went out on: on
+  // that socket the service has the newer tuning, and the tune's own send
+  // would undo it. (A fresh socket has had nothing, so the tune must go.)
+  const retunedRef = useRef<WebSocket | null>(null);
 
   const setTuningBoth = useCallback((v: boolean) => {
     tuningRef.current = v;
@@ -325,7 +325,7 @@ export function useRadio() {
     async (t: Tuning) => {
       const generation = ++generationRef.current;
       pendingRef.current = t;
-      retunedRef.current = false;
+      retunedRef.current = null;
       setTuningBoth(true);
       setHeardAudioBoth(false);
       try {
@@ -351,7 +351,7 @@ export function useRadio() {
       }
       if (generation !== generationRef.current) return;
       // A dial move while audio woke already went out for this receiver; sending now would undo it.
-      if (retunedRef.current) return;
+      if (retunedRef.current === ws) return;
       ws.send(JSON.stringify({ type: "tune", ...(pendingRef.current ?? t) }));
     },
     [ensureAudio, ensureSocket, setTuningBoth, setHeardAudioBoth],
@@ -368,7 +368,7 @@ export function useRadio() {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "tune", ...t }));
-      if (forPending) retunedRef.current = true;
+      if (forPending) retunedRef.current = ws;
     }
   }, []);
 

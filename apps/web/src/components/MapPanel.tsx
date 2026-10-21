@@ -15,12 +15,38 @@ class MapBoundary extends Component<{ onError: (reason: string) => void; childre
   static getDerivedStateFromError() {
     return { failed: true };
   }
-  componentDidCatch() {
-    this.props.onError("its code didn't load");
+  componentDidCatch(error: unknown) {
+    this.props.onError(isLoadFailure(error) ? "its code didn't load" : "it stopped working");
   }
   render() {
     return this.state.failed ? null : this.props.children;
   }
+}
+
+/** A download of the map's code that hasn't finished by now isn't going to. */
+export const CODE_TIMEOUT_MS = 30_000;
+
+/** Rejects if `promise` hasn't settled within `ms`, so a stalled download ends in Retry instead of a blank map. */
+export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Loading the map timed out")), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+/** A failed or stalled code download, as opposed to the map breaking once loaded. */
+function isLoadFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.name === "ChunkLoadError" || /chunk|dynamically imported module|timed out/i.test(error.message);
 }
 
 /** The list's age turns to a warning past this. */
@@ -62,7 +88,7 @@ export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen
   const [attempt, setAttempt] = useState(0);
   // A new lazy component per attempt: React.lazy keeps a failed import's
   // error, so Retry must ask for the code again.
-  const ReceiverMap = useMemo(() => lazy(() => import("./ReceiverMap")), [attempt]);
+  const ReceiverMap = useMemo(() => lazy(() => withTimeout(import("./ReceiverMap"), CODE_TIMEOUT_MS)), [attempt]);
   const onUserMove = useCallback(() => setFollow("stay"), []);
   const onFail = useCallback((reason: string) => setFailure(reason), []);
   const frameRef = useRef<HTMLDivElement>(null);

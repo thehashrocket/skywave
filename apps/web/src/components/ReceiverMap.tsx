@@ -143,7 +143,6 @@ export default memo(function ReceiverMap({
     canvas.setAttribute("aria-hidden", "true");
     canvas.tabIndex = -1;
 
-    let loaded = false;
     let failed = false;
     const tileErrors: number[] = [];
     const fail = (reason: string) => {
@@ -159,17 +158,18 @@ export default memo(function ReceiverMap({
     const startFrame = requestAnimationFrame(() => {
       if (!styled) watchdog = setTimeout(() => fail("the map style didn't load"), LOAD_TIMEOUT_MS);
     });
+    // Dots and the greyline go up as soon as the style (and with it their
+    // sources) is in; base tiles fill in behind them, however slowly.
     created.on("style.load", () => {
       styled = true;
       clearTimeout(watchdog);
-    });
-    created.on("load", () => {
-      loaded = true;
       setMap(created);
     });
     created.on("error", (e: ErrorEvent & { tile?: unknown }) => {
-      // Before load, anything but a tile failing is the style itself.
-      if (!loaded && !e.tile) return fail("the map style didn't load");
+      // Before the style is in, anything but a tile failing is the style itself.
+      if (!styled && !e.tile) return fail("the map style didn't load");
+      // After it, only tiles count toward giving up (a missing label glyph doesn't).
+      if (!e.tile) return;
       const now = Date.now();
       tileErrors.push(now);
       while (tileErrors[0]! < now - TILE_ERROR_WINDOW_MS) tileErrors.shift();
@@ -185,6 +185,8 @@ export default memo(function ReceiverMap({
     created.on("move", () => {
       if (openCard.current) setMoved((n) => n + 1);
     });
+    // The tooltip is placed for the camera it was drawn under.
+    created.on("movestart", () => setTooltip(null));
 
     const project = () =>
       drawnRef.current.map((r) => {
@@ -192,7 +194,11 @@ export default memo(function ReceiverMap({
         return { key: receiverKey(r), x: p.x, y: p.y };
       });
     created.on("click", (e) => {
-      const touch = (e.originalEvent as PointerEvent).pointerType === "touch";
+      // Some browsers deliver a tap's click without a pointerType; then go by the device.
+      const pointerType = (e.originalEvent as PointerEvent).pointerType;
+      const touch = pointerType
+        ? pointerType === "touch"
+        : typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
       const { keys, more } = hitGroup(project(), e.point, touch ? HIT_RADIUS.touch : HIT_RADIUS.mouse);
       setTooltip(null);
       setCard(keys.length ? { keys, more, lngLat: [e.lngLat.lng, e.lngLat.lat] } : null);

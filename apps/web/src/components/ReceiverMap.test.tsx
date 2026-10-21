@@ -402,6 +402,41 @@ describe("ReceiverMap", () => {
     }
   });
 
+  // Value: protects=dots and the greyline draw once the style is in, even while a base tile hangs; fails_when=data waits for MapLibre's full "load" (every first tile), so one stalled tile leaves an empty map with no error; why_new=Claude + Codex adversarial (PR 2b ship); seam=mocked events; no_claim=tile networking
+  it("draws dots as soon as the style is in, before the tiles", () => {
+    setup();
+    act(() => map().emit("style.load"));
+    expect(map().getSource("receivers")!.setData).toHaveBeenCalled();
+    expect(map().getSource("night")!.setData).toHaveBeenCalled();
+  });
+
+  // Value: protects=only failing tiles can make the map give up; a missing label glyph can't; fails_when=every post-load error counts toward the tile budget; why_new=Claude + Codex adversarial (PR 2b ship); seam=mocked error events; no_claim=which errors MapLibre emits
+  it("counts only tile errors toward giving up", () => {
+    const { props } = setup();
+    load();
+    for (let i = 0; i < 6; i++) act(() => map().emit("error", { error: { message: "glyphs" } }));
+    expect(props.onFail).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=a tap gets the finger-sized hit radius even where the click carries no pointerType (Safari); fails_when=only pointerType decides, so phones get the 10px mouse radius; why_new=Claude + Codex adversarial (PR 2b ship); seam=a stubbed matchMedia; no_claim=real devices
+  it("treats a tap without a pointerType as touch on a coarse-pointer device", () => {
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q === "(pointer: coarse)" }));
+    setup();
+    load();
+    act(() => map().emit("click", { point: { x: 115, y: 100 }, lngLat: { lng: 0, lat: 0 }, originalEvent: {} }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  // Value: protects=the hover tooltip never floats over the wrong place after the camera moves; fails_when=the tooltip keeps its old pixel position through a follow ease or zoom; why_new=Codex structured P3 (PR 2b ship); seam=mocked events; no_claim=hover timing
+  it("drops the tooltip when the camera starts moving", () => {
+    const { view } = setup();
+    load();
+    act(() => map().emit("mousemove", { point: { x: 100, y: 100 } }));
+    expect(view.container.querySelector(".map-tooltip")).toBeTruthy();
+    act(() => map().emit("movestart", {}));
+    expect(view.container.querySelector(".map-tooltip")).toBeNull();
+  });
+
   // Value: protects=only the user's own pan or zoom stops the camera following; fails_when=our own easeTo (no originalEvent) counts as a user move and follow switches itself off; why_new=design D8; seam=mocked events; no_claim=MapLibre's event payloads beyond originalEvent
   it("reports only user pans and zooms", () => {
     const { props } = setup();

@@ -12,19 +12,32 @@ import path from "node:path";
 const FILES = new Set(["maplibre-gl-worker.mjs", "maplibre-gl-shared.mjs"]);
 const DIST = path.join(process.cwd(), "node_modules/maplibre-gl/dist");
 
-async function installedVersion(): Promise<string> {
-  const pkg = JSON.parse(await readFile(path.join(DIST, "../package.json"), "utf8")) as { version: string };
-  return pkg.version;
+// Read once per server process; the installed package doesn't change under it.
+let installed: Promise<string> | undefined;
+function installedVersion(): Promise<string> {
+  installed ??= readFile(path.join(DIST, "../package.json"), "utf8").then(
+    (text) => (JSON.parse(text) as { version: string }).version,
+  );
+  return installed;
 }
+
+const notFound = () => new Response("Not found", { status: 404 });
 
 export async function GET(_req: Request, { params }: { params: Promise<{ version: string; file: string }> }) {
   const { version, file } = await params;
-  if (!FILES.has(file) || version !== (await installedVersion())) return new Response("Not found", { status: 404 });
-  const body = await readFile(path.join(DIST, file));
-  return new Response(body, {
-    headers: {
-      "content-type": "text/javascript; charset=utf-8",
-      "cache-control": "public, max-age=31536000, immutable",
-    },
-  });
+  if (!FILES.has(file)) return notFound();
+  try {
+    if (version !== (await installedVersion())) return notFound();
+    const body = await readFile(path.join(DIST, file));
+    return new Response(body, {
+      headers: {
+        "content-type": "text/javascript; charset=utf-8",
+        "cache-control": "public, max-age=31536000, immutable",
+      },
+    });
+  } catch {
+    // Files missing from a deploy: the map says it's unavailable; this isn't a server error.
+    installed = undefined;
+    return notFound();
+  }
 }
