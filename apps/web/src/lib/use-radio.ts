@@ -175,10 +175,13 @@ export function useRadio() {
         const host = typeof msg.host === "string" ? msg.host : undefined;
         const port = typeof msg.port === "number" ? msg.port : undefined;
         const pending = pendingRef.current;
-        // Errors always end it: the service names the old receiver on a tune it rejects outright.
+        // A tune the service rejects outright (an uncoded error) still names the
+        // old receiver, and does end it. A coded error naming the old receiver is
+        // that receiver dropping as we leave it; the new tune is still coming.
+        const rejected = state === "error" && typeof msg.code !== "string";
         const forAnother =
           pending !== null &&
-          state !== "error" &&
+          !rejected &&
           host !== undefined &&
           (host.toLowerCase() !== pending.host.toLowerCase() || (port !== undefined && port !== pending.port));
         if (!forAnother) {

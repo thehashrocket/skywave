@@ -244,10 +244,12 @@ export default function ListenPage() {
     [playingHost, playingPort, playingPhase],
   );
 
-  // The receiver that played before this one, for Back. It changes only when
-  // a different receiver starts playing, so retunes and errors keep it.
-  const [previous, setPrevious] = useState<Heard | null>(null);
-  const lastHeard = useRef<Heard | null>(null);
+  // The last two receivers that played, for Back. They change only when a
+  // different receiver starts playing, so retunes and errors keep them.
+  const [heard, setHeard] = useState<{ last: Heard | null; previous: Heard | null }>({
+    last: null,
+    previous: null,
+  });
 
   // Remember a receiver only once it actually plays, so a typo or a failed
   // Pick best run never becomes the saved default. Only the receiver the page
@@ -259,17 +261,15 @@ export default function ListenPage() {
       return;
     const t = tuning.current;
     const target = { host: t.host, port: Number(t.port) };
-    const heard: Heard = {
+    const playing: Heard = {
       ...target,
       fromList: t.fromList,
       secure: t.secure,
       label: names.current.get(receiverKey(target)) ?? t.host,
     };
-    const last = lastHeard.current;
-    if (!last || last.host !== heard.host || last.port !== heard.port) {
-      if (last) setPrevious(last);
-      lastHeard.current = heard;
-    }
+    setHeard((h) =>
+      h.last && receiverKey(h.last) === receiverKey(playing) ? h : { last: playing, previous: h.last ?? h.previous },
+    );
     const saved = JSON.stringify({
       host: t.host,
       port: t.port,
@@ -288,14 +288,27 @@ export default function ListenPage() {
   useEffect(() => {
     if (status.state !== "error" || status.code !== "no_apps" || !status.host) return;
     // Nor as the place Back goes.
-    const refused = { host: status.host, port: status.port ?? DEFAULT_KIWI_PORT };
-    if (lastHeard.current && receiverKey(lastHeard.current) === receiverKey(refused)) lastHeard.current = null;
-    setPrevious((p) => (p && receiverKey(p) === receiverKey(refused) ? null : p));
+    const refused = receiverKey({ host: status.host, port: status.port ?? DEFAULT_KIWI_PORT });
+    const keep = (r: Heard | null) => (r && receiverKey(r) === refused ? null : r);
+    setHeard((h) => ({ last: keep(h.last), previous: keep(h.previous) }));
     const saved = loadReceiver();
     if (saved.host !== status.host || Number(saved.port) !== (status.port ?? DEFAULT_KIWI_PORT)) return;
     forgetReceiver();
     lastSaved.current = null;
   }, [status]);
+
+  // Back goes to the last receiver that played, unless the page is showing
+  // that one (playing, connecting or just failed); then to the one before.
+  // So a switch that fails offers the receiver you were just hearing.
+  const backTo = useMemo(() => {
+    const { last, previous } = heard;
+    // After Stop, nothing is shown; Back keeps pointing where it did.
+    if (status.state === "idle" && !current) return previous;
+    const shown = current ?? (status.host ? { host: status.host, port: status.port ?? DEFAULT_KIWI_PORT } : null);
+    const isShown = (r: Heard | null) => !!r && !!shown && receiverKey(r) === receiverKey(shown);
+    if (last && !isShown(last)) return last;
+    return previous && !isShown(previous) ? previous : null;
+  }, [heard, current, status.state, status.host, status.port]);
 
   const onDial = useCallback(
     (khz: number) => {
@@ -403,14 +416,10 @@ export default function ListenPage() {
           {status.state === "listening" && status.host && <span className="status-detail">on {status.host}</span>}
           {status.message && !starting && <span className="status-message">{status.message}</span>}
         </div>
-        {/* Outside the live region, so a new previous receiver isn't announced. */}
-        {previous && !(current && receiverKey(current) === receiverKey(previous)) && (
-          <button
-            type="button"
-            className="link-button status-back"
-            onClick={() => switchTo(previous, previous.fromList)}
-          >
-            Back to {previous.label}
+        {/* Outside the live region, so a new Back target isn't announced. */}
+        {backTo && (
+          <button type="button" className="link-button status-back" onClick={() => switchTo(backTo, backTo.fromList)}>
+            Back to {backTo.label}
           </button>
         )}
       </div>

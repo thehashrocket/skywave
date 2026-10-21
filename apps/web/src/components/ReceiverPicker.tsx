@@ -18,6 +18,16 @@ import { useTRPC } from "@/lib/trpc";
 
 const PAGE = 50;
 
+/**
+ * Time until the server's copy of the list (fetched at `fetchedAt`) expires,
+ * plus a little slack, so the next poll gets a fresh one. Never sooner than a
+ * minute, so a stale copy from a mirror outage isn't polled in a loop.
+ */
+export function nextRefetchMs(fetchedAt: number | undefined, now: number): number {
+  if (fetchedAt === undefined) return LIST_MAX_AGE_MS;
+  return Math.max(60_000, fetchedAt + LIST_MAX_AGE_MS - now + 5_000);
+}
+
 export type Playing = { host: string; port: number; phase: "connecting" | "listening" };
 
 type Props = {
@@ -58,9 +68,9 @@ export function ReceiverPicker({
   const list = useQuery({
     ...trpc.receivers.list.queryOptions(),
     staleTime: 5 * 60_000,
-    // On the server cache's beat while the tab is visible, so listener counts
-    // and full receivers stay current.
-    refetchInterval: LIST_MAX_AGE_MS,
+    // Just after the server's copy expires, while the tab is visible, so
+    // listener counts and full receivers stay current.
+    refetchInterval: (query) => nextRefetchMs(query.state.data?.fetchedAt, Date.now()),
   });
   const receivers = list.data?.receivers;
   const fetchedAt = list.data?.fetchedAt;

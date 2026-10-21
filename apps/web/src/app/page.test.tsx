@@ -566,10 +566,11 @@ describe("ListenPage", () => {
       expect(back.closest('[role="status"]')).toBeNull();
       fireEvent.click(back);
       expect(radio.tune).toHaveBeenLastCalledWith({ host: "kiwi.example", port: 8073, freqKhz: 10_000, mode: "am" });
-      // While it connects, Back would point at itself; it hides.
+      // While it connects, Back offers the receiver just left, never itself.
       radio.status = { state: "connecting", host: "kiwi.example", port: 8073 };
       two.rerender(<ListenPage />);
-      expect(screen.queryByRole("button", { name: /^Back to/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Back to kiwi.example" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Back to K1VL" })).toBeTruthy();
 
       radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
       two.rerender(<ListenPage />);
@@ -605,6 +606,34 @@ describe("ListenPage", () => {
         mode: "am",
         secure: true,
       });
+    });
+
+    // Value: protects=a switch that fails offers Back to the receiver you were just hearing; fails_when=Back only learns a receiver once the next one plays; why_new=adversarial review (Claude + Codex, 3 sources); seam=none; no_claim=none beyond protects
+    it("offers Back to the receiver you were hearing when a switch fails", () => {
+      const view = render(<ListenPage />);
+      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "kiwi.example" } });
+      fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+      radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      expect(screen.queryByRole("button", { name: /^Back to/ })).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+      radio.status = { state: "error", code: "busy", message: "full", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(screen.getByRole("button", { name: "Back to kiwi.example" })).toBeTruthy();
+      cleanup();
+
+      // Two receivers in, a third fails: Back goes to the second.
+      const two = heardTwo();
+      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "third.example" } });
+      // The listed receiver is playing; stop it first so the fields unlock.
+      radio.status = { state: "idle" };
+      two.rerender(<ListenPage />);
+      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "third.example" } });
+      fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+      radio.status = { state: "error", code: "down", message: "down", host: "third.example", port: 8076 };
+      two.rerender(<ListenPage />);
+      expect(screen.getByRole("button", { name: "Back to K1VL" })).toBeTruthy();
     });
 
     // Value: protects=Back keeps pointing at the earlier receiver through retunes and errors on this one; fails_when=previous updates on any listening status, not only a new receiver; why_new=testing specialist gap; seam=none; no_claim=none beyond protects

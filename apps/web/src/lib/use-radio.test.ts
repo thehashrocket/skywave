@@ -535,8 +535,10 @@ describe("useRadio", () => {
       expect(result.current.tuning).toBe(true);
       expect(result.current.heardAudio).toBe(false);
 
-      // An error ends it whichever receiver it names: the service names the
-      // old one when it rejects a tune outright.
+      // The old receiver dropping as we leave it (a coded error) doesn't end it...
+      act(() => ws.status("error", { message: "gone", code: "down", host: "kiwi.example", port: 8073 }));
+      expect(result.current.tuning).toBe(true);
+      // ...but a rejected tune does, though the service names the old receiver on it.
       act(() => ws.status("error", { message: "bad", host: "kiwi.example", port: 8073 }));
       expect(result.current.tuning).toBe(false);
 

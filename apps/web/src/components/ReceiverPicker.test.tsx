@@ -8,7 +8,7 @@ import type { Receiver } from "@/lib/kiwi-list";
 import { sunPosition } from "@/lib/solar";
 import { TRPCProvider } from "@/lib/trpc";
 import type { AppRouter } from "@/server/root";
-import { ReceiverPicker, ReceiverTable } from "./ReceiverPicker";
+import { nextRefetchMs, ReceiverPicker, ReceiverTable } from "./ReceiverPicker";
 
 afterEach(cleanup);
 
@@ -340,12 +340,22 @@ describe("ReceiverPicker", () => {
     await waitFor(() => expect(button().disabled).toBe(false));
   });
 
-  // Value: protects=the folded table says what it holds, and the list refreshes on the server's 15-minute beat; fails_when=the summary text or refetchInterval is dropped; why_new=DT1 fold and R8 refetch; seam=react-query observer options; no_claim=react-query's timer itself
+  // Value: protects=the folded table says what it holds, and the list refreshes just after the server's copy expires; fails_when=the summary text is dropped or the poll ignores fetchedAt; why_new=DT1 fold, R8 refetch, adversarial review (polls ran a full TTL late); seam=react-query observer options; no_claim=react-query's timer itself
   it("folds the table under All receivers (N) and refetches every 15 minutes", async () => {
     const { queryClient } = renderPicker(Promise.resolve({ receivers, fetchedAt: 0 }));
     await screen.findByText("All receivers (4)");
     const [query] = queryClient.getQueryCache().getAll();
-    expect(query!.observers[0]!.options.refetchInterval).toBe(15 * 60_000);
+    const interval = query!.observers[0]!.options.refetchInterval as (q: typeof query) => number;
+    expect(interval(query)).toBe(nextRefetchMs(0, Date.now()));
+  });
+
+  it.each([
+    ["a copy fetched 10 min ago", 0, 10 * 60_000, 5 * 60_000 + 5_000],
+    ["a copy fetched just now", 0, 0, 15 * 60_000 + 5_000],
+    ["a stale copy past its age", 0, 60 * 60_000, 60_000],
+    ["no copy yet", undefined, 0, 15 * 60_000],
+  ])("polls again just after the server's copy expires: %s", (_case, fetchedAt, now, wait) => {
+    expect(nextRefetchMs(fetchedAt, now)).toBe(wait);
   });
 });
 
