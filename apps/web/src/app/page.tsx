@@ -63,6 +63,12 @@ function forgetReceiver() {
   }
 }
 
+/** A port the service can dial, as typed; anything else (0, 70000, empty) is the Kiwi default. */
+function validPort(raw: string | number): string {
+  const p = Number(raw);
+  return Number.isInteger(p) && p >= 1 && p <= 65_535 ? String(p) : String(DEFAULT_KIWI_PORT);
+}
+
 function listSource(fromList: boolean) {
   return fromList ? { source: "list" as const } : {};
 }
@@ -111,8 +117,8 @@ export default function ListenPage() {
   const starting = radio.tuning && !live;
   const busy = live || starting;
   const shownState = starting ? "connecting" : status.state;
-  const liveRef = useRef(live);
-  liveRef.current = live;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
 
   // Coalesce rapid dial drags into at most ~8 retunes a second.
   const pending = useRef<{ freqKhz: number; mode: Mode } | null>(null);
@@ -122,14 +128,15 @@ export default function ListenPage() {
 
   const sendRetune = useCallback(
     (next: { freqKhz: number; mode: Mode }) => {
-      if (!live) return;
+      // While a tune starts, retune updates what it will send.
+      if (!busy) return;
       pending.current = next;
       if (timer.current) return;
       timer.current = setTimeout(() => {
         timer.current = null;
         const p = pending.current;
         // The attempt may have failed while we waited; a retune now would dial it again.
-        if (!p || !liveRef.current) return;
+        if (!p || !busyRef.current) return;
         radio.retune({
           host: tuning.current.host.trim(),
           port: Number(tuning.current.port) || DEFAULT_KIWI_PORT,
@@ -139,7 +146,7 @@ export default function ListenPage() {
         });
       }, 120);
     },
-    [live, radio],
+    [busy, radio],
   );
 
   const changeFreq = useCallback(
@@ -162,7 +169,7 @@ export default function ListenPage() {
     const parsed = parseReceiver(host);
     const r = {
       host: parsed.host,
-      port: parsed.port ?? (port.trim() || String(DEFAULT_KIWI_PORT)),
+      port: validPort(parsed.port ?? port.trim()),
       // A bare hostname (including one we already took out of a URL) keeps the scheme it had.
       secure: parsed.secure ?? secure,
     };
@@ -208,10 +215,15 @@ export default function ListenPage() {
     const t = tuning.current;
     return t.host === h && Number(t.port) === p;
   }, []);
+  // The Back history, for Pick best returning to a receiver the page has moved on from.
+  const heardRef = useRef<{ last: Heard | null; previous: Heard | null }>({ last: null, previous: null });
   const provenance = useCallback(
     (h: string, p: number) => {
       const t = tuning.current;
-      return isTarget(h, p) ? { fromList: t.fromList, secure: t.secure } : { fromList: false, secure: false };
+      if (isTarget(h, p)) return { fromList: t.fromList, secure: t.secure };
+      const { last, previous } = heardRef.current;
+      const known = [last, previous].find((r) => r && r.host === h && r.port === p);
+      return known ? { fromList: known.fromList, secure: known.secure } : { fromList: false, secure: false };
     },
     [isTarget],
   );
@@ -250,6 +262,7 @@ export default function ListenPage() {
     last: null,
     previous: null,
   });
+  heardRef.current = heard;
 
   // Remember a receiver only once it actually plays, so a typo or a failed
   // Pick best run never becomes the saved default. Only the receiver the page
@@ -267,9 +280,18 @@ export default function ListenPage() {
       secure: t.secure,
       label: names.current.get(receiverKey(target)) ?? t.host,
     };
-    setHeard((h) =>
-      h.last && receiverKey(h.last) === receiverKey(playing) ? h : { last: playing, previous: h.last ?? h.previous },
-    );
+    setHeard((h) => {
+      const key = receiverKey(playing);
+      if (h.last && receiverKey(h.last) === key) {
+        // The same receiver again; keep how it was reached this time.
+        const same =
+          h.last.fromList === playing.fromList && h.last.secure === playing.secure && h.last.label === playing.label;
+        return same ? h : { ...h, last: playing };
+      }
+      // With no last (a refused one was dropped), the previous one moves up, unless it's this one.
+      const previous = h.last ?? (h.previous && receiverKey(h.previous) !== key ? h.previous : null);
+      return { last: playing, previous };
+    });
     const saved = JSON.stringify({
       host: t.host,
       port: t.port,
@@ -298,17 +320,22 @@ export default function ListenPage() {
   }, [status]);
 
   // Back goes to the last receiver that played, unless the page is showing
-  // that one (playing, connecting or just failed); then to the one before.
-  // So a switch that fails offers the receiver you were just hearing.
+  // that one; then to the one before. "Showing" is the receiver playing or
+  // connecting, else the one the status names (a failed switch), else the one
+  // in the fields (after Stop, or when the service drops). So a switch that
+  // fails or is stopped offers the receiver you were just hearing.
+  const fieldsHost = host.trim();
+  const fieldsPort = Number(validPort(port));
   const backTo = useMemo(() => {
     const { last, previous } = heard;
-    // After Stop, nothing is shown; Back keeps pointing where it did.
-    if (status.state === "idle" && !current) return previous;
-    const shown = current ?? (status.host ? { host: status.host, port: status.port ?? DEFAULT_KIWI_PORT } : null);
+    const shown =
+      current ??
+      (status.host ? { host: status.host, port: status.port ?? DEFAULT_KIWI_PORT } : null) ??
+      (fieldsHost ? { host: fieldsHost, port: fieldsPort } : null);
     const isShown = (r: Heard | null) => !!r && !!shown && receiverKey(r) === receiverKey(shown);
     if (last && !isShown(last)) return last;
     return previous && !isShown(previous) ? previous : null;
-  }, [heard, current, status.state, status.host, status.port]);
+  }, [heard, current, status.host, status.port, fieldsHost, fieldsPort]);
 
   const onDial = useCallback(
     (khz: number) => {
