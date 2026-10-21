@@ -1,12 +1,10 @@
 "use client";
 
-import { Component, lazy, Suspense, useCallback, useRef, useState, type ReactNode } from "react";
+import { Component, lazy, Suspense, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { receiverKey, type Receiver } from "@/lib/kiwi-list";
 import type { Follow, MapPlaying, Place } from "@/lib/receiver-map-model";
 import { formatHostPort } from "@/lib/receiver";
 import type { SolarClock } from "@/lib/use-solar-clock";
-
-const ReceiverMap = lazy(() => import("./ReceiverMap"));
 
 /** Stands in while there's no list, so the map's props don't change on every render. */
 const NO_RECEIVERS: readonly Receiver[] = [];
@@ -62,6 +60,9 @@ export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen
   const [failure, setFailure] = useState<string | null>(null);
   // Retry remounts the adapter, which removes the old map first.
   const [attempt, setAttempt] = useState(0);
+  // A new lazy component per attempt: React.lazy keeps a failed import's
+  // error, so Retry must ask for the code again.
+  const ReceiverMap = useMemo(() => lazy(() => import("./ReceiverMap")), [attempt]);
   const onUserMove = useCallback(() => setFollow("stay"), []);
   const onFail = useCallback((reason: string) => setFailure(reason), []);
   const frameRef = useRef<HTMLDivElement>(null);

@@ -95,6 +95,8 @@ export default memo(function ReceiverMap({
   const applied = useRef<Map<string, DotState> | null>(null);
   const callbacks = useRef({ onUserMove, onFail });
   callbacks.current = { onUserMove, onFail };
+  // Set just before the map is removed: cleanups that run after must leave it alone.
+  const removed = useRef(false);
   const openCard = useRef(false);
   openCard.current = card !== null;
 
@@ -148,12 +150,12 @@ export default memo(function ReceiverMap({
       failed = true;
       callbacks.current.onFail(reason);
     };
-    const watchdog = setTimeout(() => {
-      if (!loaded) fail("the map style didn't load");
-    }, LOAD_TIMEOUT_MS);
+    // Only the style is timed: "load" also waits for every first tile and for
+    // animation frames, which a slow link or a background tab holds back.
+    const watchdog = setTimeout(() => fail("the map style didn't load"), LOAD_TIMEOUT_MS);
+    created.on("style.load", () => clearTimeout(watchdog));
     created.on("load", () => {
       loaded = true;
-      clearTimeout(watchdog);
       setMap(created);
     });
     created.on("error", (e: ErrorEvent & { tile?: unknown }) => {
@@ -186,26 +188,34 @@ export default memo(function ReceiverMap({
       setTooltip(null);
       setCard(keys.length ? { keys, more, lngLat: [e.lngLat.lng, e.lngLat.lat] } : null);
     });
-    // Hover: one hit test per frame, and the tooltip sits on the dot, so it only changes between dots.
+    // Hover: one hit test per frame, at the pointer's latest position; the
+    // tooltip sits on the dot, so it only changes between dots.
     let hoverFrame = 0;
+    let hoverPoint = { x: 0, y: 0 };
     created.on("mousemove", (e: MapMouseEvent) => {
+      hoverPoint = e.point;
       if (hoverFrame) return;
       hoverFrame = requestAnimationFrame(() => {
         hoverFrame = 0;
         const dots = project();
-        const { keys } = hitGroup(dots, e.point, HIT_RADIUS.mouse);
+        const { keys } = hitGroup(dots, hoverPoint, HIT_RADIUS.mouse);
         canvas.style.cursor = keys.length ? "pointer" : "";
         const dot = keys.length ? dots.find((d) => d.key === keys[0]) : undefined;
         setTooltip((t) => (dot ? (t?.key === dot.key ? t : dot) : null));
       });
     });
-    created.on("mouseout", () => setTooltip(null));
+    created.on("mouseout", () => {
+      cancelAnimationFrame(hoverFrame);
+      hoverFrame = 0;
+      setTooltip(null);
+    });
 
     return () => {
       clearTimeout(watchdog);
       cancelAnimationFrame(hoverFrame);
       setMap(null);
       applied.current = null;
+      removed.current = true;
       created.remove();
     };
   }, []);
@@ -273,7 +283,8 @@ export default memo(function ReceiverMap({
     const timer = setTimeout(() => map.setFeatureState(id, { emphasis: false }), EMPHASIS_MS);
     return () => {
       clearTimeout(timer);
-      map.setFeatureState(id, { emphasis: false });
+      // On unmount the map is already gone (its cleanup runs first); touching it would throw.
+      if (!removed.current) map.setFeatureState(id, { emphasis: false });
     };
   }, [map, listeningKey]);
 

@@ -11,10 +11,16 @@ const fake = vi.hoisted(() => {
     static failNext = false;
     handlers = new Map<string, Handler[]>();
     sources = new Map<string, { setData: ReturnType<typeof vi.fn> }>();
-    setFeatureState = vi.fn();
+    removed = false;
+    // Like MapLibre: once removed, the map has no style and touching it throws.
+    setFeatureState = vi.fn(() => {
+      if (this.removed) throw new TypeError("Cannot read properties of undefined (reading 'setFeatureState')");
+    });
     easeTo = vi.fn();
     jumpTo = vi.fn();
-    remove = vi.fn();
+    remove = vi.fn(() => {
+      this.removed = true;
+    });
     addControl = vi.fn();
     touchZoomRotate = { disableRotation: vi.fn() };
     constructor(readonly options: Record<string, unknown>) {
@@ -115,7 +121,10 @@ function setup(over: Partial<ReceiverMapProps> = {}) {
 }
 
 function load() {
-  act(() => map().emit("load"));
+  act(() => {
+    map().emit("style.load");
+    map().emit("load");
+  });
 }
 
 beforeEach(() => {
@@ -349,6 +358,27 @@ describe("ReceiverMap", () => {
       expect(lost.props.onFail).not.toHaveBeenCalled();
       act(() => map().emit("webglcontextlost"));
       expect(lost.props.onFail).toHaveBeenCalledWith("the browser dropped its graphics context");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=a map that fails or unmounts while a receiver is listening tears down cleanly instead of throwing (which would crash the whole page past the map's error boundary); fails_when=an effect cleanup touches the map after remove(); why_new=cycle-2 review CRITICAL (PR 2b ship); seam=a fake whose setFeatureState throws after remove, like MapLibre; no_claim=MapLibre internals beyond that
+  it("unmounts cleanly while a receiver is listening", () => {
+    const { view, rerender } = setup();
+    load();
+    rerender({ playing: { host: "a.example", port: 8073, phase: "listening" } });
+    expect(() => view.unmount()).not.toThrow();
+  });
+
+  // Value: protects=a map that's only slow (big first tiles, a background tab) isn't torn down; only a style that never arrives is; fails_when=the watchdog waits for the full "load" (tiles + animation frames); why_new=cycle-2 red team (PR 2b ship); seam=fake timers, mocked events; no_claim=real network timing
+  it("times only the style, not the first tiles", () => {
+    vi.useFakeTimers();
+    try {
+      const { props } = setup();
+      act(() => map().emit("style.load"));
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(props.onFail).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
