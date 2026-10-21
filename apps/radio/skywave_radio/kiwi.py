@@ -366,24 +366,43 @@ class KiwiClient:
         got = 0
         deadline = time.monotonic() + self.timeout_s
         while True:
+            # Our own work (a keepalive send, parsing) can use up the window
+            # while the Kiwi's next frame is already queued. That frame still
+            # gets read, but past the deadline it is the receiver's last
+            # chance: unless it brings the window up to the floor, we time out.
+            # wait_for(..., 0) would raise without reading it at all.
+            remaining = deadline - time.monotonic()
+            overdue = remaining <= 0
             try:
-                frame = await asyncio.wait_for(self._recv(), timeout=max(0.0, deadline - time.monotonic()))
+                async with asyncio.timeout(max(0.0, remaining)):
+                    frame = await self._recv()
             except asyncio.TimeoutError as e:
-                raise KiwiError("timeout", f"{self.host} stopped sending audio") from e
+                raise self._stopped() from e
             tag = frame[:3]
             if tag == b"SND":
-                await self._keepalive()
                 block = parse_snd(frame[3:])
                 got += block.samples.size
+                if got < needed and overdue:
+                    raise self._stopped()
+                await self._keepalive()
                 if got >= needed:
+                    # After the keepalive, so our own send time isn't taken
+                    # out of the receiver's next window.
                     got = 0
                     deadline = time.monotonic() + self.timeout_s
                 yielded_at = time.monotonic()
                 yield block
                 # Push the deadline out by however long the caller sat on the block.
                 deadline += time.monotonic() - yielded_at
+            elif overdue:
+                # Not before handling it: an audio_rate MSG makes us send, and
+                # a Kiwi that stopped reading would hold the slot through that.
+                raise self._stopped()
             elif tag == b"MSG":
                 await self._handle_msg(parse_msg(frame[4:]))
+
+    def _stopped(self) -> KiwiError:
+        return KiwiError("timeout", f"{self.host} stopped sending audio")
 
     async def _recv(self) -> bytes:
         assert self._ws is not None
