@@ -31,7 +31,7 @@ type Options = { fetchImpl?: typeof fetch; now?: () => number };
  * wait on the mirror: an expired list is served while a refresh runs in the
  * background, and kept if that refresh fails.
  */
-export function receiverSource({ fetchImpl = (...args) => fetch(...args), now = Date.now }: Options = {}) {
+export function receiverSource({ fetchImpl = (...args) => fetch(...args), now = () => Date.now() }: Options = {}) {
   let cached: ReceiverList | null = null;
   let inflight: Promise<ReceiverList> | null = null;
   let lastFailure: { at: number; error: unknown } | null = null;
@@ -106,7 +106,10 @@ const getReceivers = receiverSource();
 export const receiversRouter = router({
   list: publicProcedure.query(async () => {
     try {
-      return await getReceivers();
+      const list = await getReceivers();
+      // The copy's age by this server's clock, so the browser can time its next
+      // poll without comparing two clocks.
+      return { ...list, ageMs: Math.max(0, Date.now() - list.fetchedAt) };
     } catch (cause) {
       console.error("receivers.list:", cause);
       throw new TRPCError({ code: "BAD_GATEWAY", message: "Couldn't load the public receiver list.", cause });

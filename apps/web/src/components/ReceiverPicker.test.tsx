@@ -342,7 +342,10 @@ describe("ReceiverPicker", () => {
 
   // Value: protects=the folded table says what it holds, and the list refreshes just after the server's copy expires; fails_when=the summary text is dropped or the poll ignores fetchedAt; why_new=DT1 fold, R8 refetch, adversarial review (polls ran a full TTL late); seam=react-query observer options; no_claim=react-query's timer itself
   it("folds the table under All receivers (N) and refetches every 15 minutes", async () => {
-    const { queryClient } = renderPicker(Promise.resolve({ receivers, fetchedAt: Date.now() - 10 * 60_000 }));
+    // The server's clock is an hour off; only the age it reports matters.
+    const { queryClient } = renderPicker(
+      Promise.resolve({ receivers, fetchedAt: Date.now() + 60 * 60_000, ageMs: 10 * 60_000 }),
+    );
     await screen.findByText("All receivers (4)");
     const [query] = queryClient.getQueryCache().getAll();
     const interval = query!.observers[0]!.options.refetchInterval as (q: typeof query) => number;
@@ -352,18 +355,16 @@ describe("ReceiverPicker", () => {
   });
 
   it.each([
-    ["a copy fetched 10 min ago", 0, 10 * 60_000, 5 * 60_000 + 5_000],
-    ["a copy fetched just now", 0, 0, 15 * 60_000],
-    ["a copy a moment from expiring", 0, 15 * 60_000 - 1, 5_001],
-    ["a copy that just expired (the server is refreshing it)", 0, 15 * 60_000, 15_000],
-    ["an expired copy within the server's retry window", 0, 16 * 60_000 - 1, 15_000],
-    ["a copy still old after the server's retry (mirror down)", 0, 16 * 60_000, 60_000],
-    ["a stale copy from a long outage", 0, 60 * 60_000, 60_000],
-    ["a server clock far ahead of the viewer's", 30 * 60_000, 0, 15 * 60_000],
-    ["a viewer clock far ahead of the server's", 0, 25 * 60 * 60_000, 60_000],
-    ["no copy yet", undefined, 0, 15 * 60_000],
-  ])("polls again just after the server's copy expires: %s", (_case, fetchedAt, now, wait) => {
-    expect(nextRefetchMs(fetchedAt, now)).toBe(wait);
+    ["a copy 10 min old", 10 * 60_000, 5 * 60_000 + 5_000],
+    ["a copy fetched just now", 0, 15 * 60_000],
+    ["a copy a moment from expiring", 15 * 60_000 - 1, 5_001],
+    ["a copy that just expired (the server is refreshing it)", 15 * 60_000, 15_000],
+    ["an expired copy within the server's retry window", 16 * 60_000 - 1, 15_000],
+    ["a copy still old after the server's retry (mirror down)", 16 * 60_000, 60_000],
+    ["a stale copy from a long outage", 60 * 60_000, 60_000],
+    ["no copy yet", undefined, 15 * 60_000],
+  ])("polls again just after the server's copy expires: %s", (_case, age, wait) => {
+    expect(nextRefetchMs(age)).toBe(wait);
   });
 });
 
@@ -442,8 +443,10 @@ describe("ReceiverTable Night column", () => {
     expect([night("Alpha"), night("Charlie")]).toEqual(["Night", "Day"]);
     expect(names()).toEqual(["Charlie", "Alpha", "Bravo"]);
 
-    // A fresh list is a fresh sort.
+    // A fresh list waits until it's taken, then sorts by the sun now.
     view.rerender(table([...placed], midnight));
+    expect(names()).toEqual(["Charlie", "Alpha", "Bravo"]);
+    fireEvent.click(screen.getByRole("button", { name: "List updated · Show" }));
     expect(names()).toEqual(["Alpha", "Charlie", "Bravo"]);
   });
 
@@ -453,5 +456,41 @@ describe("ReceiverTable Night column", () => {
     view.rerender(table(placed, midnight));
     fireEvent.click(screen.getByRole("button", { name: "Night" }));
     expect(names()).toEqual(["Alpha", "Charlie", "Bravo"]);
+  });
+});
+
+describe("ReceiverTable when the list refreshes", () => {
+  const table = (list: Receiver[]) => (
+    <ReceiverTable receivers={list} freqKhz={10_000} current={null} sun={null} onChoose={() => {}} />
+  );
+  const names = () =>
+    within(screen.getByRole("table"))
+      .queryAllByRole("button", { name: /\.example:8073/ })
+      .map((b) => b.querySelector(".receiver-name")!.textContent);
+  // Alpha now has the best signal, Charlie fills up: a new list would reorder the rows.
+  const refreshed = [
+    rx("Alpha", { snr: 45 }),
+    rx("Bravo", { snr: 40, users: 8 }),
+    rx("Charlie", { snr: 30, users: 8 }),
+    rx("Delta", { snr: 50, minKhz: 110_000, maxKhz: 142_000 }),
+  ];
+
+  // Value: protects=a background refresh never moves or removes rows under the reader's click; fails_when=the table renders each new list as it arrives; why_new=Claude adversarial (PR 1): a poll could reorder rows just before a click; seam=rerender with a new list; no_claim=react-query's structural sharing of unchanged lists
+  it("keeps the rows as shown and offers the new list", () => {
+    const view = render(table(receivers));
+    expect(names()).toEqual(["Charlie", "Alpha", "Bravo"]);
+    view.rerender(table(refreshed));
+    expect(names()).toEqual(["Charlie", "Alpha", "Bravo"]);
+    fireEvent.click(screen.getByRole("button", { name: "List updated · Show" }));
+    expect(names()).toEqual(["Alpha", "Bravo", "Charlie"]);
+    expect(screen.queryByRole("button", { name: "List updated · Show" })).toBeNull();
+  });
+
+  // Value: protects=the listener's own sort or filter shows the newest list; fails_when=adopt() isn't called from the table's controls, so the table stays on an old list until the link is found; why_new=steady rows; seam=none; no_claim=none beyond protects
+  it("takes the new list on the listener's next sort or filter", () => {
+    const view = render(table(receivers));
+    view.rerender(table(refreshed));
+    fireEvent.click(screen.getByLabelText("Has a free slot"));
+    expect(names()).toEqual(["Alpha"]);
   });
 });

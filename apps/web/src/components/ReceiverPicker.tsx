@@ -25,14 +25,13 @@ const EXPIRY_SLACK_MS = 5_000;
 const JUST_EXPIRED_POLL_MS = 15_000;
 
 /**
- * When to poll the list again: just after the server's copy (fetched at
- * `fetchedAt`, by the server's clock) expires. For one retry window after
- * that, ask again soon; later, the mirror is down (or the clocks disagree),
- * so follow the server's own retry pace. Never longer than one cache lifetime.
+ * When to poll the list again, given how old the server's copy is now: just
+ * after it expires. For one retry window after that, ask again soon; later,
+ * the mirror is down, so follow the server's own retry pace. Never longer
+ * than one cache lifetime.
  */
-export function nextRefetchMs(fetchedAt: number | undefined, now: number): number {
-  if (fetchedAt === undefined) return LIST_MAX_AGE_MS;
-  const age = now - fetchedAt;
+export function nextRefetchMs(age: number | undefined): number {
+  if (age === undefined) return LIST_MAX_AGE_MS;
   if (age >= LIST_MAX_AGE_MS + LIST_RETRY_MS) return LIST_RETRY_MS;
   if (age >= LIST_MAX_AGE_MS) return JUST_EXPIRED_POLL_MS;
   return Math.min(LIST_MAX_AGE_MS, LIST_MAX_AGE_MS - age + EXPIRY_SLACK_MS);
@@ -80,7 +79,12 @@ export function ReceiverPicker({
     staleTime: 5 * 60_000,
     // Just after the server's copy expires, while the tab is visible, so
     // listener counts and full receivers stay current.
-    refetchInterval: (query) => nextRefetchMs(query.state.data?.fetchedAt, Date.now()),
+    // The server says how old its copy was when it answered; adding the time
+    // since by this browser's clock keeps the two clocks from being compared.
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      return nextRefetchMs(data && (data.ageMs ?? 0) + (Date.now() - query.state.dataUpdatedAt));
+    },
   });
   const receivers = list.data?.receivers;
   const fetchedAt = list.data?.fetchedAt;
@@ -202,8 +206,8 @@ function ago(ms: number): string {
 }
 
 export const ReceiverTable = memo(function ReceiverTable({
-  receivers,
-  fetchedAt,
+  receivers: latest,
+  fetchedAt: latestFetchedAt,
   freqKhz,
   current,
   sun,
@@ -219,11 +223,17 @@ export const ReceiverTable = memo(function ReceiverTable({
   // changed), so rows don't reshuffle under the reader every minute. The
   // badges still follow the clock.
   const [sortSun, setSortSun] = useState(sun);
-  const [prevReceivers, setPrevReceivers] = useState(receivers);
-  if (prevReceivers !== receivers) {
-    setPrevReceivers(receivers);
+  // The list as shown. A refresh while the table is open waits behind "List
+  // updated", so rows never move or drop out under a click; the listener's
+  // next sort, filter or search takes the new list.
+  const [view, setView] = useState({ receivers: latest, fetchedAt: latestFetchedAt });
+  const { receivers, fetchedAt } = view;
+  const updated = receivers !== latest;
+  const adopt = () => {
+    if (!updated) return;
+    setView({ receivers: latest, fetchedAt: latestFetchedAt });
     setSortSun(sun);
-  }
+  };
 
   const searchText = useMemo(
     () => new Map(receivers.map((r) => [r, `${r.name} ${r.location} ${r.antenna} ${r.host}`.toLowerCase()])),
@@ -261,6 +271,7 @@ export const ReceiverTable = memo(function ReceiverTable({
   const freqText = freqKhz.toLocaleString("en-US", { maximumFractionDigits: 2 });
 
   const sortBy = (key: SortKey) => {
+    adopt();
     if (key === "night") setSortSun(sun);
     setSort((s) => (s?.key === key ? { key, dir: s.dir === 1 ? -1 : 1 } : { key, dir: FIRST_DIRECTION[key] }));
   };
@@ -274,26 +285,55 @@ export const ReceiverTable = memo(function ReceiverTable({
             id="receiver-search"
             type="search"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              adopt();
+              setQuery(e.target.value);
+            }}
             placeholder="name, place or antenna"
             autoComplete="off"
             spellCheck={false}
           />
         </div>
         <label className="check">
-          <input type="checkbox" checked={onlyCovering} onChange={(e) => setOnlyCovering(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={onlyCovering}
+            onChange={(e) => {
+              adopt();
+              setOnlyCovering(e.target.checked);
+            }}
+          />
           Covers {freqText} kHz
         </label>
         <label className="check">
-          <input type="checkbox" checked={onlyFree} onChange={(e) => setOnlyFree(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={onlyFree}
+            onChange={(e) => {
+              adopt();
+              setOnlyFree(e.target.checked);
+            }}
+          />
           Has a free slot
         </label>
         {sort ? (
-          <button type="button" className="link-button" onClick={() => setSort(null)}>
+          <button
+            type="button"
+            className="link-button"
+            onClick={() => {
+              adopt();
+              setSort(null);
+            }}
+          >
             Sort by best
           </button>
         ) : (
           <span className="receivers-sort-note">Best first</span>
+        )}
+        {updated && (
+          <button type="button" className="link-button" onClick={adopt}>
+            List updated · Show
+          </button>
         )}
       </div>
 
@@ -304,6 +344,7 @@ export const ReceiverTable = memo(function ReceiverTable({
             type="button"
             className="link-button"
             onClick={() => {
+              adopt();
               setQuery("");
               setOnlyFree(false);
               setOnlyCovering(false);
