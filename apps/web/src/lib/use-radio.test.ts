@@ -709,6 +709,32 @@ describe("useRadio", () => {
       expect(ws!.sent).toEqual([{ type: "tune", ...tuning, freqKhz: 7_100, mode: "lsb" }]);
     });
 
+    // Value: protects=a dial move made while a switch waits on audio, and already answered by the service, isn't undone by the switch's own late send; fails_when=tune() sends its click-time tuning after its tune was answered; why_new=Claude adversarial (PR 2a /ship), TODO "Don't let a late tune undo a dial move made mid-switch"; seam=a stalled AudioContext.resume; no_claim=how often browsers stall resume
+    it("doesn't undo a dial move the service already answered mid-switch", async () => {
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.status("listening", { host: tuning.host, port: tuning.port }));
+
+      let finishResume!: () => void;
+      vi.spyOn(FakeAudioContext.prototype, "resume").mockImplementationOnce(
+        () => new Promise<void>((resolve) => (finishResume = resolve)),
+      );
+      const other = { ...tuning, host: "other.example" };
+      let pending!: Promise<void>;
+      act(() => {
+        pending = result.current.tune(other);
+      });
+      // The dial moves while audio wakes; the socket is open, so it goes at once and is answered.
+      act(() => result.current.retune({ ...other, freqKhz: 7_100 }));
+      act(() => ws.status("listening", { host: "other.example", port: tuning.port }));
+      await act(async () => {
+        finishResume();
+        await pending;
+      });
+      expect(ws.sent.at(-1)).toEqual({ type: "tune", ...other, freqKhz: 7_100 });
+    });
+
     // Value: protects=first audio means sound from this receiver; fails_when=spectrum rows, junk frames or the last receiver's audio count; why_new=R7 first-audio gate; seam=none; no_claim=none beyond protects
     it("hears audio only after the service answers the latest tune", async () => {
       const { result } = renderHook(() => useRadio());
