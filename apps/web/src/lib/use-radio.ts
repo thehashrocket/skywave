@@ -258,6 +258,8 @@ export function useRadio() {
       return new Promise((resolve, reject) => {
         existing.addEventListener("open", () => resolve(existing), { once: true });
         existing.addEventListener("error", () => reject(new Error("socket")), { once: true });
+        // The connect timeout closes it; don't rely on the browser firing error first.
+        existing.addEventListener("close", () => reject(new Error("socket")), { once: true });
       });
     }
     return new Promise((resolve, reject) => {

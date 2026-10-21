@@ -625,6 +625,59 @@ describe("useRadio", () => {
       }
     });
 
+    // Value: protects=a second tune waiting on a socket that never opens also gives up; fails_when=a waiter on a CONNECTING socket listens only for open/error and the timeout's close() fires just "close"; why_new=Codex adversarial + structured review (PR 2a); seam=a socket double whose close() fires only "close", fake timers; no_claim=which events a given browser fires
+    it("gives up on every tune waiting for a radio service that never answers", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        class Silent extends FakeSocket {
+          #state = FakeSocket.CONNECTING;
+          #closeListeners: (() => void)[] = [];
+          constructor(url: string) {
+            super(url);
+            Object.defineProperty(this, "onopen", { get: () => null, set: () => {} });
+            Object.defineProperty(this, "readyState", {
+              get: () => this.#state,
+              set: (v: number) => {
+                if (v !== FakeSocket.OPEN) this.#state = v;
+              },
+            });
+          }
+          addEventListener(...[type, fn]: unknown[]) {
+            if (type === "close") this.#closeListeners.push(fn as () => void);
+          }
+          close() {
+            super.close();
+            for (const fn of this.#closeListeners) fn();
+          }
+        }
+        vi.stubGlobal("WebSocket", Silent);
+        const { result } = renderHook(() => useRadio());
+        let first!: Promise<void>;
+        let second!: Promise<void>;
+        // The first tune opens the socket; the second arrives while it's still connecting.
+        await act(async () => {
+          first = result.current.tune(tuning);
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        expect(FakeSocket.instances).toHaveLength(1);
+        await act(async () => {
+          second = result.current.tune({ ...tuning, host: "other.example" });
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        expect(FakeSocket.instances).toHaveLength(1);
+        let settled = false;
+        void second.finally(() => (settled = true));
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_000);
+          await first;
+        });
+        expect(settled).toBe(true);
+        expect(result.current.tuning).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     // Value: protects=a newer service's unknown error code still ends a tune it rejects; fails_when=the rejection check reads the raw code instead of the codes this build knows; why_new=Claude + Codex review (PR 1); seam=none; no_claim=which codes a future service sends
     it("treats a rejection with an unknown code as ending the tune", async () => {
       const { result } = renderHook(() => useRadio());
