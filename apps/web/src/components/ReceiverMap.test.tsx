@@ -349,17 +349,15 @@ describe("ReceiverMap", () => {
     vi.useFakeTimers();
     try {
       const hung = setup();
-      // One frame for the clock to start, then the full wait.
-      act(() => vi.advanceTimersByTime(15_100));
+      act(() => vi.advanceTimersByTime(30_000));
       expect(hung.props.onFail).toHaveBeenCalledWith("the map style didn't load");
       cleanup();
 
       const lost = setup();
       load();
-      act(() => vi.advanceTimersByTime(15_000));
+      act(() => vi.advanceTimersByTime(30_000));
       expect(lost.props.onFail).not.toHaveBeenCalled();
       act(() => map().emit("webglcontextlost"));
-      act(() => vi.advanceTimersByTime(5_000));
       expect(lost.props.onFail).toHaveBeenCalledWith("the browser dropped its graphics context");
     } finally {
       vi.useRealTimers();
@@ -390,19 +388,28 @@ describe("ReceiverMap", () => {
     }
   });
 
-  // Value: protects=a map built in a background tab (Listen, then switch tabs) isn't failed for the time the tab was hidden; fails_when=the watchdog starts at construction instead of the first animation frame, which hidden tabs don't get; why_new=cycle-3 red team CRITICAL (PR 2b ship); seam=a queued requestAnimationFrame, fake timers; no_claim=browser throttling details
-  it("starts the style clock only once the tab draws a frame", () => {
+  // Value: protects=a map loading while the tab is in the background (Listen, then switch tabs) isn't failed for the time it was hidden; fails_when=the watchdog counts hidden time (no frames, so nothing loads there); why_new=cycle-3 red team CRITICAL (PR 2b ship); seam=a queued requestAnimationFrame, fake timers; no_claim=browser throttling details
+  it("counts only the time the tab is visible", () => {
     vi.useFakeTimers();
-    const frames: FrameRequestCallback[] = [];
-    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
+    let hidden = true;
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
     try {
       const { props } = setup();
       act(() => vi.advanceTimersByTime(120_000));
       expect(props.onFail).not.toHaveBeenCalled();
-      act(() => frames.splice(0).forEach((cb) => cb(0)));
-      act(() => vi.advanceTimersByTime(15_000));
+      hidden = false;
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      act(() => vi.advanceTimersByTime(20_000));
+      hidden = true;
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      act(() => vi.advanceTimersByTime(120_000));
+      expect(props.onFail).not.toHaveBeenCalled();
+      hidden = false;
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      act(() => vi.advanceTimersByTime(10_000));
       expect(props.onFail).toHaveBeenCalledWith("the map style didn't load");
     } finally {
+      delete (document as unknown as { hidden?: boolean }).hidden;
       vi.useRealTimers();
     }
   });
@@ -448,7 +455,7 @@ describe("ReceiverMap", () => {
     try {
       const silent = setup();
       act(() => map().emit("style.load"));
-      act(() => vi.advanceTimersByTime(15_100));
+      act(() => vi.advanceTimersByTime(30_000));
       expect(silent.props.onFail).toHaveBeenCalledWith("it couldn't start drawing");
       cleanup();
 
@@ -461,22 +468,24 @@ describe("ReceiverMap", () => {
     }
   });
 
-  // Value: protects=a brief GPU reset doesn't tear the map down, and a blocked base map counts as tiles failing; fails_when=context loss fails at once, or an openmaptiles source error is ignored; why_new=final adversarial pass (PR 2b ship); seam=fake timers, mocked events; no_claim=MapLibre's restore internals
-  it("waits for a lost context to come back, and counts base-map source errors", () => {
-    vi.useFakeTimers();
-    try {
-      const { props } = setup();
-      load();
-      act(() => map().emit("webglcontextlost"));
-      act(() => vi.advanceTimersByTime(4_000));
-      act(() => map().emit("webglcontextrestored"));
-      act(() => vi.advanceTimersByTime(10_000));
-      expect(props.onFail).not.toHaveBeenCalled();
-      for (let i = 0; i < 5; i++) act(() => map().emit("error", { sourceId: "openmaptiles", error: { message: "x" } }));
-      expect(props.onFail).toHaveBeenCalledWith("map tiles aren't loading");
-    } finally {
-      vi.useRealTimers();
-    }
+  // Value: protects=a lost graphics context, a base map whose description won't load (blocked host), or receivers that can't draw each end in Map unavailable with a reason, never a stale or silent map; fails_when=any of those errors is ignored or waits for a budget it can't reach; why_new=final adversarial pass (PR 2b ship); seam=fake timers, mocked events; no_claim=MapLibre's restore internals
+  it("fails at once on a lost context, a base map that won't load, or a receivers error", () => {
+    const lost = setup();
+    load();
+    act(() => map().emit("webglcontextlost"));
+    expect(lost.props.onFail).toHaveBeenCalledWith("the browser dropped its graphics context");
+    cleanup();
+
+    const base = setup();
+    load();
+    act(() => map().emit("error", { sourceId: "openmaptiles", error: { message: "TileJSON" } }));
+    expect(base.props.onFail).toHaveBeenCalledWith("map tiles aren't loading");
+    cleanup();
+
+    const dots = setup();
+    load();
+    act(() => map().emit("error", { sourceId: "receivers", error: { message: "worker" } }));
+    expect(dots.props.onFail).toHaveBeenCalledWith("it couldn't start drawing");
   });
 
   // Value: protects=only the user's own pan or zoom stops the camera following; fails_when=our own easeTo (no originalEvent) counts as a user move and follow switches itself off; why_new=design D8; seam=mocked events; no_claim=MapLibre's event payloads beyond originalEvent

@@ -183,5 +183,7 @@ describe("markFeatures", () => {
     expect(shortName("Short")).toBe("Short");
     // An emoji at the cut is kept whole, never half a surrogate pair.
     expect(shortName(`${"x".repeat(26)}📻📻📻`)).toBe(`${"x".repeat(26)}📻…`);
+    // A flag is two code points but one character.
+    expect(shortName(`${"x".repeat(26)}🇩🇪🇩🇪🇩🇪`)).toBe(`${"x".repeat(26)}🇩🇪…`);
   });
 });

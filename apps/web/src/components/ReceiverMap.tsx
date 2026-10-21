@@ -43,10 +43,8 @@ const WORLD: [[number, number], [number, number]] = [
 /** This many tile errors within the window and the map gives up. */
 const TILE_ERROR_LIMIT = 5;
 const TILE_ERROR_WINDOW_MS = 30_000;
-/** A map that can't draw its receivers by now isn't going to (a hung request has no timeout of its own). */
-export const LOAD_TIMEOUT_MS = 15_000;
-/** A lost graphics context usually comes back (a GPU switch or reset); give it this long. */
-export const CONTEXT_RESTORE_MS = 5_000;
+/** Visible time for a map to draw its receivers; past it, it isn't going to (a hung request has no timeout of its own). */
+export const LOAD_TIMEOUT_MS = 30_000;
 /** How long the listening dot is emphasised when playback starts. */
 export const EMPHASIS_MS = 600;
 
@@ -65,7 +63,8 @@ export type ReceiverMapProps = {
   onFail: (reason: string) => void;
 };
 
-type Card = { keys: string[]; more: boolean; lngLat: [number, number] };
+/** An open card: the receivers it lists, nearest first. It sits by the first one still listed. */
+type Card = { keys: string[]; more: boolean };
 
 const reducedMotion = () =>
   typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -154,15 +153,28 @@ export default memo(function ReceiverMap({
     };
     // The clock runs until the receivers source has loaded: that needs the
     // style and MapLibre's worker, but not the base tiles. Only visible time
-    // counts: MapLibre applies the style on an animation frame, which a
-    // background tab doesn't get, so the clock starts at the first frame.
+    // counts (a background tab doesn't draw, so nothing loads there), and a
+    // slow link gets 30 s of it.
     let watchdog: ReturnType<typeof setTimeout> | undefined;
+    let remaining = LOAD_TIMEOUT_MS;
+    let armedAt = 0;
     let styled = false;
     let ready = false;
     const notReady = () => (styled ? "it couldn't start drawing" : "the map style didn't load");
-    const startFrame = requestAnimationFrame(() => {
-      if (!ready) watchdog = setTimeout(() => fail(notReady()), LOAD_TIMEOUT_MS);
-    });
+    const arm = () => {
+      if (ready || failed || watchdog || document.hidden) return;
+      armedAt = Date.now();
+      watchdog = setTimeout(() => fail(notReady()), remaining);
+    };
+    const pause = () => {
+      if (!watchdog) return;
+      clearTimeout(watchdog);
+      watchdog = undefined;
+      remaining -= Date.now() - armedAt;
+    };
+    const onVisibility = () => (document.hidden ? pause() : arm());
+    document.addEventListener("visibilitychange", onVisibility);
+    arm();
     // Dots and the greyline go up as soon as the style (and with it their
     // sources) is in; base tiles fill in behind them, however slowly.
     created.on("style.load", () => {
@@ -172,27 +184,23 @@ export default memo(function ReceiverMap({
     created.on("sourcedata", (e: { sourceId?: string; isSourceLoaded?: boolean }) => {
       if (e.sourceId !== SOURCES.receivers || !e.isSourceLoaded) return;
       ready = true;
-      clearTimeout(watchdog);
+      pause();
     });
     created.on("error", (e: ErrorEvent & { tile?: unknown; sourceId?: string }) => {
-      // Until the receivers can draw, any other failure (the style, the
-      // worker) means they won't.
-      if (!ready && !e.tile) return fail(notReady());
-      // After that, only the base map counts toward giving up (a missing label glyph doesn't).
-      if (!e.tile && e.sourceId !== "openmaptiles") return;
+      // The base map's description (TileJSON) didn't load: no tiles will follow.
+      if (e.sourceId === "openmaptiles" && !e.tile) return fail("map tiles aren't loading");
+      // The receivers can't be drawn, or (before they first are) the style or worker failed.
+      if (e.sourceId === SOURCES.receivers || (!ready && !e.tile)) return fail(notReady());
+      // After that, only base tiles count toward giving up (a missing label glyph doesn't).
+      if (!e.tile) return;
       const now = Date.now();
       tileErrors.push(now);
       while (tileErrors[0]! < now - TILE_ERROR_WINDOW_MS) tileErrors.shift();
       if (tileErrors.length >= TILE_ERROR_LIMIT) fail("map tiles aren't loading");
     });
-    let contextTimer: ReturnType<typeof setTimeout> | undefined;
-    created.on("webglcontextlost", () => {
-      contextTimer = setTimeout(() => fail("the browser dropped its graphics context"), CONTEXT_RESTORE_MS);
-    });
-    created.on("webglcontextrestored", () => clearTimeout(contextTimer));
-    // Back online: MapLibre reloads tiles; errors from the outage don't count.
-    const online = () => (tileErrors.length = 0);
-    window.addEventListener("online", online);
+    // MapLibre can rebuild after a lost context, but its dot states don't
+    // survive that; Retry starts clean instead.
+    created.on("webglcontextlost", () => fail("the browser dropped its graphics context"));
     // Only the user's own pans and zooms stop the camera following; ours carry no originalEvent.
     for (const type of ["dragstart", "zoomstart"] as const) {
       created.on(type, (e: { originalEvent?: unknown }) => {
@@ -218,9 +226,7 @@ export default memo(function ReceiverMap({
         : typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
       const { keys, more } = hitGroup(project(), e.point, touch ? HIT_RADIUS.touch : HIT_RADIUS.mouse);
       setTooltip(null);
-      // Anchored on the nearest receiver, not the tap, so it stays with the dot.
-      const first = keys.length ? drawnRef.current.find((r) => receiverKey(r) === keys[0]) : undefined;
-      setCard(first ? { keys, more, lngLat: [first.lon!, first.lat!] } : null);
+      setCard(keys.length ? { keys, more } : null);
     });
     // Hover: one hit test per frame, at the pointer's latest position; the
     // tooltip sits on the dot, so it only changes between dots.
@@ -246,9 +252,7 @@ export default memo(function ReceiverMap({
 
     return () => {
       clearTimeout(watchdog);
-      clearTimeout(contextTimer);
-      window.removeEventListener("online", online);
-      cancelAnimationFrame(startFrame);
+      document.removeEventListener("visibilitychange", onVisibility);
       cancelAnimationFrame(hoverFrame);
       setMap(null);
       applied.current = null;
@@ -269,15 +273,10 @@ export default memo(function ReceiverMap({
     if (!map) return;
     const frame = requestAnimationFrame(() => {
       const next = dotStates(drawn, { sun, freqKhz, playing, last });
-      try {
-        for (const [key, s] of changedStates(applied.current, next)) {
-          map.setFeatureState({ source: SOURCES.receivers, id: key }, { ...s, phase: s.phase ?? "none" });
-        }
-        applied.current = next;
-      } catch {
-        // The map is mid-reset (a lost graphics context); apply everything once it's back.
-        applied.current = null;
+      for (const [key, s] of changedStates(applied.current, next)) {
+        map.setFeatureState({ source: SOURCES.receivers, id: key }, { ...s, phase: s.phase ?? "none" });
       }
+      applied.current = next;
     });
     return () => cancelAnimationFrame(frame);
   }, [map, drawn, sun, freqKhz, playing, last]);
@@ -354,9 +353,13 @@ export default memo(function ReceiverMap({
   // A list refresh can take away every receiver an open card shows; then it closes.
   const emptyCard = card !== null && cardReceivers.length === 0;
   useEffect(() => {
-    if (emptyCard) setCard(null);
+    if (emptyCard) closeCard();
+    // closeCard only reads refs and sets state.
   }, [emptyCard]);
-  const at = card && map ? map.project(card.lngLat) : null;
+  // Anchored on a receiver still listed, not the tap point, so it stays with its dot.
+  const anchor = cardReceivers[0];
+  const anchorLngLat: [number, number] | null = anchor ? [anchor.lon!, anchor.lat!] : null;
+  const at = anchorLngLat && map ? map.project(anchorLngLat) : null;
 
   return (
     <>
@@ -415,7 +418,8 @@ export default memo(function ReceiverMap({
               type="button"
               className="link-button"
               onClick={() => {
-                map?.easeTo({ center: card.lngLat, zoom: map.getZoom() + 3, duration: reducedMotion() ? 0 : 600 });
+                if (anchorLngLat)
+                  map?.easeTo({ center: anchorLngLat, zoom: map.getZoom() + 3, duration: reducedMotion() ? 0 : 600 });
                 closeCard();
               }}
             >

@@ -58,8 +58,11 @@ export function markFeatures(receivers: readonly Receiver[], playing: MapPlaying
 export const NAME_LIMIT = 28;
 
 export function shortName(name: string): string {
-  // By character, not UTF-16 unit, so an emoji is never cut in half.
-  const chars = Array.from(name);
+  // By user-visible character (a flag or an emoji with a skin tone is one), never part of one.
+  const chars =
+    typeof Intl.Segmenter === "function"
+      ? Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(name), (s) => s.segment)
+      : Array.from(name);
   return chars.length > NAME_LIMIT
     ? `${chars
         .slice(0, NAME_LIMIT - 1)
