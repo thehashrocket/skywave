@@ -424,19 +424,49 @@ describe("useRadio", () => {
       expect(warn).toHaveBeenCalledTimes(1);
     });
 
-    // Value: protects=spectrum rows of the wrong length or with a NaN/Infinity base never reach the waterfall; fails_when=the 512-bin or finite-base checks are dropped (a huge row sizes the canvas to it; a NaN base poisons its floor); why_new=only short and empty rows were tested; seam=none; no_claim=what a broken service would send
-    it("skips spectrum rows of the wrong length or with a non-finite base", async () => {
+    // Value: protects=spectrum rows of the wrong length, or with a value that is NaN, infinite or far outside real dB, never reach the waterfall, in either format; fails_when=the 512-bin or value checks are dropped, or only the base is checked (a huge finite base stays finite, and drags the waterfall's floor for minutes); why_new=huge finite bases and legacy rows went unchecked; seam=none; no_claim=what a broken service would send
+    it("skips spectrum rows of the wrong length or with an out-of-range value", async () => {
       vi.spyOn(console, "warn").mockImplementation(() => {});
       const { ws, rows } = await listening();
       act(() => ws.frame(4, new Uint8Array(4 + 511)));
       act(() => ws.frame(4, new Uint8Array(4 + 100_000)));
-      for (const bad of [NaN, Infinity, -Infinity]) {
+      for (const bad of [NaN, Infinity, -Infinity, 3.4e38, -301]) {
         const payload = new Uint8Array(4 + 512);
         new DataView(payload.buffer).setFloat32(0, bad, true);
         act(() => ws.frame(4, payload));
       }
       act(() => ws.frame(2, new Float32Array(511)));
+      for (const bad of [NaN, 3.4e38]) {
+        const legacy = new Float32Array(512).fill(-120);
+        legacy[7] = bad;
+        act(() => ws.frame(2, legacy));
+      }
       expect(rows).toHaveLength(0);
+    });
+
+    // Value: protects=rows at the edge of the dB range still reach the waterfall, in both formats; fails_when=MAX_ABS_DB is tightened below what real rows can hold (weak bands sit near -200 dB); why_new=only rejected values were tested; seam=none; no_claim=none beyond protects
+    it("keeps spectrum rows at the edge of the dB range", async () => {
+      const { ws, rows } = await listening();
+      const payload = new Uint8Array(4 + 512);
+      new DataView(payload.buffer).setFloat32(0, -300, true);
+      act(() => ws.frame(4, payload));
+      const legacy = new Float32Array(512).fill(-200);
+      legacy[0] = 300;
+      legacy[1] = -300;
+      act(() => ws.frame(2, legacy));
+      expect(rows).toHaveLength(2);
+    });
+
+    // Value: protects=audio frames up to the most the radio service can send (2**18 samples) play and bigger ones are skipped; fails_when=the cap is dropped or set below what kiwi.py's MAX_FRAME_BYTES allows; why_new=frame size had no bound; seam=none; no_claim=what a broken service would send
+    it("plays audio frames up to the service's largest and skips bigger ones", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { ws } = await listening();
+      act(() => ws.frame(3, new Int16Array(2 ** 18 + 1)));
+      act(() => ws.frame(1, new Float32Array(2 ** 18 + 1)));
+      act(() => ws.frame(3, new Int16Array(2 ** 18)));
+      // Extended: protects=the float32 cap allows exactly 2**18 too; fails_when=only that branch's bound is off by one; why_new=only int16 hit the boundary
+      act(() => ws.frame(1, new Float32Array(2 ** 18)));
+      expect(samples().map((s) => s.length)).toEqual([2 ** 18, 2 ** 18]);
     });
 
     // Value: protects=an empty frame's warning reads as an empty frame, not "type undefined, -1 bytes"; fails_when=the empty case loses its own wording; why_new=only the warning count was checked; seam=none; no_claim=none beyond protects
