@@ -12,8 +12,11 @@ Service -> browser:
                (an uncoded error may carry "retryAfterMs": the same receiver
                may work if tried again after that long)
     JSON text: {"type": "meter", "rssi": -73.1, "overflow": false}
-    Binary:    0x01 + float32 LE mono audio at `sampleRate`
-    Binary:    0x02 + float32 LE dBFS bins spanning -sampleRate/2..+sampleRate/2
+    Binary:    0x03 + int16 LE mono audio at `sampleRate` (full scale = 32767)
+    Binary:    0x04 + float32 LE base dB + uint8 bins spanning -sampleRate/2..+sampleRate/2,
+               each bin base + v * 0.5 dB
+    (0x01/0x02, the same with float32 samples and dB, are no longer sent; the
+    browser still reads them so the web app can deploy before this service.)
 """
 
 from __future__ import annotations
@@ -25,14 +28,14 @@ from collections.abc import Awaitable, Callable, Hashable
 from typing import Any
 
 from .config import Settings
-from .dsp import CW_PITCH_HZ, MODES, Demodulator, Spectrum
+from .dsp import CW_PITCH_HZ, MODES, Demodulator, Spectrum, encode_audio, encode_spectrum
 from .hostguard import HostRejected, is_public_address, resolve_receiver
 from .kiwi import DEFAULT_PORT, KiwiClient, KiwiError
 
 log = logging.getLogger(__name__)
 
-AUDIO_TAG = b"\x01"
-SPECTRUM_TAG = b"\x02"
+AUDIO_TAG = b"\x03"
+SPECTRUM_TAG = b"\x04"
 MAX_FREQ_KHZ = 32_000.0
 METER_INTERVAL_S = 0.25
 # A browser that stops reading (frozen tab, dead Wi-Fi) blocks our sends; past
@@ -254,6 +257,7 @@ class ListenSession:
             started = time.monotonic()
             limit_s = self.settings.max_session_minutes * 60
             last_meter = 0.0
+            last_samples = started
             async for block in client.blocks():
                 if time.monotonic() - started > limit_s:
                     await self._status(
@@ -262,10 +266,19 @@ class ListenSession:
                         "Reconnect if you're still listening.",
                     )
                     return
+                # A short SND block has no samples: the demodulator's filter
+                # can't take an empty array, and there's nothing to send. Only
+                # empty blocks for the client's timeout counts as gone silent,
+                # or a broken receiver would hold the slot until the limit.
+                if not block.samples.size:
+                    if time.monotonic() - last_samples > client.timeout_s:
+                        raise KiwiError("timeout", f"{host} stopped sending audio")
+                    continue
+                last_samples = time.monotonic()
                 audio = self._demod.process(block.samples)
-                await self._send_bytes(AUDIO_TAG + audio.astype("<f4").tobytes())
+                await self._send_bytes(AUDIO_TAG + encode_audio(audio))
                 for frame in self._spectrum.process(block.samples):
-                    await self._send_bytes(SPECTRUM_TAG + frame.db.astype("<f4").tobytes())
+                    await self._send_bytes(SPECTRUM_TAG + encode_spectrum(frame.db))
                 now = time.monotonic()
                 if now - last_meter >= METER_INTERVAL_S:
                     last_meter = now

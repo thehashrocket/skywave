@@ -2,6 +2,7 @@ import asyncio
 import json
 import threading
 import time
+from functools import partial
 
 import numpy as np
 import pytest
@@ -9,9 +10,12 @@ from fastapi import WebSocketDisconnect, status
 from fastapi.testclient import TestClient
 
 from skywave_radio.config import Settings, origin_allowed
+from skywave_radio.kiwi import KiwiClient
 from skywave_radio.server import create_app
+from skywave_radio.session import AUDIO_TAG, SPECTRUM_TAG
 
-from .fakekiwi import FakeKiwi
+from .fakekiwi import BLOCK, FakeKiwi
+from .frames import decode_spectrum
 
 ORIGIN = {"origin": "http://localhost:3000"}
 
@@ -38,8 +42,12 @@ def collect(ws, want_audio=3, want_spectrum=1, limit=500):
             statuses.append(json.loads(msg["text"]))
         elif msg.get("bytes"):
             b = msg["bytes"]
-            arr = np.frombuffer(b[1:], dtype="<f4")
-            (audio if b[0] == 1 else spectra).append(arr)
+            if b[:1] == AUDIO_TAG:
+                audio.append(np.frombuffer(b[1:], dtype="<i2"))
+            elif b[:1] == SPECTRUM_TAG:
+                spectra.append(decode_spectrum(b[1:]))
+            else:
+                raise AssertionError(f"unexpected frame tag {b[0]}")
         if len(audio) >= want_audio and len(spectra) >= want_spectrum:
             break
     return statuses, audio, spectra
@@ -98,6 +106,32 @@ def run_with_fake(fn, **fake_kw):
         t.join(5)
 
 
+# Value: protects=a Kiwi SND block with no samples is skipped: it used to crash the demodulator and end the session, and must not send a bare audio tag; fails_when=session.py passes an empty block to Demodulator.process or sends AUDIO_TAG for it; why_new=the fake always sent full blocks; seam=none; no_claim=how often real Kiwis send short blocks
+def test_empty_kiwi_blocks_send_no_audio_frame():
+    def body(kiwi):
+        client = TestClient(create_app(settings()))
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            _, audio, _ = collect(ws, want_audio=3, want_spectrum=0)
+        return audio
+
+    audio = run_with_fake(body, empty_blocks=3)
+    assert audio and all(len(a) == BLOCK for a in audio)
+
+
+# Value: protects=a receiver sending only empty blocks ends with the usual timeout instead of holding a listener slot until the session limit; fails_when=empty blocks are skipped without a deadline; why_new=Codex found the empty-block skip let a broken Kiwi pin a slot; seam=none; no_claim=a real Kiwi's empty-block pattern
+def test_receiver_sending_only_empty_blocks_times_out():
+    def body(kiwi):
+        app = create_app(settings(), client_factory=partial(KiwiClient, timeout_s=0.5))
+        with TestClient(app).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            return until_state(ws, "error")
+
+    statuses = run_with_fake(body, empty_blocks=10**6)
+    assert statuses[-1]["code"] == "timeout"
+    assert "stopped sending audio" in statuses[-1]["message"]
+
+
 def test_listen_end_to_end():
     def body(kiwi):
         client = TestClient(create_app(settings()))
@@ -117,7 +151,9 @@ def test_listen_end_to_end():
     listening = next(s for s in statuses if s.get("state") == "listening")
     assert listening["sampleRate"] == 12000.0
     assert any(s["type"] == "meter" for s in statuses)
-    assert all(a.dtype == np.float32 for a in audio)
+    # Value: protects=the session sends encode_audio's int16 under tag 3; fails_when=session.py sends float32 bytes (or rescales) under the int16 tag; why_new=the dtype check was true of any bytes read as <i2; seam=none; no_claim=what the browser plays
+    assert [len(a) for a in audio] == [BLOCK] * len(audio)
+    assert max(int(np.abs(a.astype(np.int32)).max()) for a in audio) > 1000
     assert len(spectra[0]) == 512
     assert "SET mod=iq low_cut=-5000 high_cut=5000 freq=7200.000" in kiwi.commands
 

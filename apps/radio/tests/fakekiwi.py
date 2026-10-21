@@ -30,6 +30,8 @@ class FakeKiwi:
     no_rate: bool = False
     # Handshake normally, then never send audio.
     stall: bool = False
+    # Send this many SND frames with no samples before the tone.
+    empty_blocks: int = 0
     # Close the connection after this many SND frames.
     drop_after: int | None = None
     # Serve wss:// with this context.
@@ -91,16 +93,17 @@ class FakeKiwi:
                 return
             seq, n = 0, 0
             while self.drop_after is None or seq < self.drop_after:
-                t = (np.arange(BLOCK) + n) / RATE
+                size = 0 if seq < self.empty_blocks else BLOCK
+                t = (np.arange(size) + n) / RATE
                 iq = 0.2 * np.exp(2j * np.pi * self.tone_hz * t)
-                inter = np.empty(BLOCK * 2, dtype=">i2")
+                inter = np.empty(size * 2, dtype=">i2")
                 inter[0::2] = (iq.real * 32767).astype(np.int16)
                 inter[1::2] = (iq.imag * 32767).astype(np.int16)
                 smeter = int((-73.0 + 127) * 10)
                 frame = b"SND" + struct.pack("<BI", 0x08, seq) + struct.pack(">H", smeter) + bytes(10) + inter.tobytes()
                 await ws.send(frame)
                 seq += 1
-                n += BLOCK
+                n += size
                 await asyncio.sleep(BLOCK / RATE / 4)  # faster than real time
         except Exception:
             pass

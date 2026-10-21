@@ -4,7 +4,13 @@ import { useEffect, useRef, type MouseEvent } from "react";
 import { PASSBANDS, type Mode } from "@/lib/radio-types";
 
 const ROWS = 220;
+// The waterfall shows FLOOR_OFFSET_DB below the noise floor up to RANGE_DB above
+// that. The radio service's uint8 rows (SPECTRUM_FLOOR_MARGIN_DB in
+// apps/radio/skywave_radio/dsp.py) must cover this window, so change both together.
 const RANGE_DB = 55;
+const FLOOR_OFFSET_DB = 3;
+// Must match SPECTRUM_FLOOR_PERCENTILE in apps/radio/skywave_radio/dsp.py.
+const FLOOR_PERCENTILE = 0.2;
 
 // Deep enamel to dial-glass celadon to lamp amber: same family as the panel.
 const STOPS: [number, [number, number, number]][] = [
@@ -56,11 +62,11 @@ export function Waterfall({ mode, sampleRate, active, subscribe, onClickOffset }
         ctx.fillStyle = "rgb(11,30,36)";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
-      // Auto-level: track the noise floor (20th percentile) slowly.
+      // Auto-level: track the noise floor (FLOOR_PERCENTILE of the row) slowly.
       const sorted = Float32Array.from(row).sort();
-      const p20 = sorted[Math.floor(sorted.length * 0.2)]!;
-      floorRef.current = floorRef.current === null ? p20 : floorRef.current * 0.95 + p20 * 0.05;
-      const floor = floorRef.current - 3;
+      const rowFloor = sorted[Math.floor(sorted.length * FLOOR_PERCENTILE)]!;
+      floorRef.current = floorRef.current === null ? rowFloor : floorRef.current * 0.95 + rowFloor * 0.05;
+      const floor = floorRef.current - FLOOR_OFFSET_DB;
 
       ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height - 1, 0, 1, canvas.width, canvas.height - 1);
       const img = ctx.createImageData(row.length, 1);

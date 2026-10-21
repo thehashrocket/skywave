@@ -1,7 +1,21 @@
+import struct
+
 import numpy as np
 import pytest
 
-from skywave_radio.dsp import AGC, Demodulator, Spectrum, complex_bandpass, int16_iq_to_complex
+from skywave_radio.dsp import (
+    AGC,
+    SPECTRUM_FLOOR_MARGIN_DB,
+    SPECTRUM_STEP_DB,
+    Demodulator,
+    Spectrum,
+    complex_bandpass,
+    encode_audio,
+    encode_spectrum,
+    int16_iq_to_complex,
+)
+
+from .frames import decode_spectrum
 
 FS = 12000.0
 
@@ -84,3 +98,77 @@ def test_int16_conversion():
     out = int16_iq_to_complex(np.array([16384, -16384, 0, 32767], dtype=np.int16))
     assert out[0] == pytest.approx(0.5 - 0.5j)
     assert out.dtype == np.complex64
+
+
+# Value: protects=full-scale audio stays full scale on the wire; fails_when=the encoder scales by 32768 and +1.0 wraps to -32768 (a click); why_new=no test covered frame encoding; seam=none; no_claim=playback in a browser
+def test_encode_audio_full_scale_does_not_wrap():
+    samples = np.frombuffer(encode_audio(np.array([1.0, -1.0, 0.0, 0.5, 1.5], dtype=np.float32)), dtype="<i2")
+    assert samples.tolist() == [32767, -32767, 0, 16384, 32767]
+
+
+# Value: protects=the waterfall's noise floor survives the uint8 row; fails_when=the base moves to the row max or the clamp is dropped; why_new=Codex reproduced a 47 dB floor shift with a max anchor; seam=none; no_claim=waterfall pixels
+def test_encode_spectrum_keeps_the_noise_floor_and_clamps():
+    rng = np.random.default_rng(0)
+    db = np.full(512, -200.0)  # exact zeros outside the Kiwi's passband
+    db[64:448] = rng.uniform(-140, -120, 384)  # noise floor
+    db[256] = -20.0  # a strong station, 180 dB above the zeros
+    payload = encode_spectrum(db.astype(np.float32))
+    assert len(payload) == 4 + 512
+    out = decode_spectrum(payload)
+    floor = np.percentile(db, 20)  # -200: a quarter of the row is zeros
+    assert np.percentile(out, 20) == pytest.approx(floor, abs=SPECTRUM_STEP_DB / 2)
+    noise = np.r_[64:256, 257:448]
+    assert np.abs(out[noise] - db[noise]).max() <= SPECTRUM_STEP_DB / 2 + 1e-4
+    assert out[0] == pytest.approx(-200.0, abs=SPECTRUM_STEP_DB / 2)
+    # The station clamps at the top of the window, still far past the 52 dB
+    # above the floor where the waterfall is already full white.
+    assert out[256] > floor + 100
+
+
+# Value: protects=a spike far above the floor clamps to 255 without wrapping or dragging its neighbours; fails_when=the clip is dropped so the uint8 cast wraps; why_new=the floor test only clamps a station in a row of zeros; seam=none; no_claim=waterfall pixels
+def test_encode_spectrum_clamps_far_above_the_floor():
+    db = np.full(512, -130.0)
+    db[0] = 0.0  # 130 dB above a floor the window only reaches 107.5 dB over
+    payload = encode_spectrum(db)
+    out = decode_spectrum(payload)
+    assert payload[4] == 255
+    assert out[1] == pytest.approx(-130.0, abs=SPECTRUM_STEP_DB / 2)
+
+
+# Value: protects=bins far under the noise floor (deep nulls, filter skirts) clamp to the base instead of wrapping to the top of the row; fails_when=the lower clip bound is dropped so negative steps wrap through the uint8 cast and draw nulls as strong signals; why_new=the existing tests never put a bin below the base; seam=none; no_claim=waterfall pixels
+def test_encode_spectrum_clamps_far_below_the_floor():
+    db = np.full(512, -130.0)
+    db[:40] = -300.0  # under 20% of the row, so the floor stays at -130
+    out = decode_spectrum(encode_spectrum(db))
+    base = -130.0 - SPECTRUM_FLOOR_MARGIN_DB
+    assert out[:40] == pytest.approx(np.full(40, base), abs=SPECTRUM_STEP_DB / 2)
+    assert out[40:] == pytest.approx(np.full(472, -130.0), abs=SPECTRUM_STEP_DB / 2)
+
+
+# Value: protects=the 0x04 bytes the browser decodes with its own hardcoded 0.5 dB step; fails_when=SPECTRUM_STEP_DB or SPECTRUM_FLOOR_MARGIN_DB changes on the Python side only; why_new=the other tests decode with the module's own constants; seam=none; no_claim=the browser side (use-radio.test.ts pins it)
+def test_encode_spectrum_wire_format_golden():
+    db = np.full(512, -130.0, dtype=np.float32)
+    db[0] = -110.0
+    payload = encode_spectrum(db)
+    assert payload[:4] == struct.pack("<f", -150.0)
+    assert payload[4] == 80
+    assert payload[5:] == bytes([40] * 511)
+
+
+# Value: protects=the base sits at the row's 20th percentile, the floor the waterfall's FLOOR_PERCENTILE levels on; fails_when=SPECTRUM_FLOOR_PERCENTILE moves (15 gives -220, 25 gives -150) without the waterfall; why_new=the golden row is flat, so any percentile gives the same base; seam=none; no_claim=the TypeScript side's constant
+def test_encode_spectrum_base_follows_the_20th_percentile():
+    db = np.full(512, -130.0, dtype=np.float32)
+    db[:92] = -200.0  # 18% of the row
+    db[92:113] = -170.0  # bins 18%-22%, where the 20th percentile falls
+    payload = encode_spectrum(db)
+    assert payload[:4] == struct.pack("<f", -190.0)
+    assert payload[4] == 0 and payload[4 + 100] == 40 and payload[4 + 200] == 120
+
+
+# Value: protects=the base uses the waterfall's order statistic (sorted[floor(n*0.2)]), so a jump at the 20% mark doesn't clip the floor bins; fails_when=encode_spectrum goes back to np.percentile's interpolation (base -198 here, lifting the -200 bins); why_new=Codex found the two definitions disagree on such rows; seam=none; no_claim=the TypeScript side
+def test_encode_spectrum_floor_matches_the_waterfalls_order_statistic():
+    db = np.full(512, -90.0, dtype=np.float32)
+    db[:103] = -200.0  # sorted[102] is -200, sorted[103] is -90
+    payload = encode_spectrum(db)
+    assert payload[:4] == struct.pack("<f", -220.0)
+    assert decode_spectrum(payload)[0] == pytest.approx(-200.0)
