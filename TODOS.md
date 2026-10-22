@@ -58,18 +58,6 @@
 **Priority:** P3
 **Depends on:** A pin-to-receiver button (not planned yet)
 
-### Write a DESIGN.md for the web app
-
-**What:** Run `/design-consultation` to write `DESIGN.md` from the tokens and components in `apps/web/src/app/globals.css`, including the receiver map's `--map-*` tokens.
-
-**Why:** skywave's look (enamel teal, glass dial, brass, amber lamp, Barlow Condensed + Atkinson Hyperlegible) exists only as CSS variables, so each design review has to reverse-engineer it.
-
-**Context:** Raised by the receiver map design review (2026-10-20), which calibrated against `globals.css` because no DESIGN.md exists.
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** None (better after the receiver map adds its tokens)
-
 ### Drop the browser's float32 frame decoding
 
 **What:** Remove the `0x01`/`0x02` branches from `handleBinary` (`apps/web/src/lib/use-radio.ts`) and their test.
@@ -95,6 +83,19 @@
 **Depends on:** None
 
 ## Completed
+
+### Write a DESIGN.md for the web app
+
+**What:** Run `/design-consultation` to write `DESIGN.md` from the tokens and components in `apps/web/src/app/globals.css`, including the receiver map's `--map-*` tokens.
+
+**Why:** skywave's look (enamel teal, glass dial, brass, amber lamp, Barlow Condensed + Atkinson Hyperlegible) exists only as CSS variables, so each design review has to reverse-engineer it.
+
+**Context:** Raised by the receiver map design review (2026-10-20), which calibrated against `globals.css` because no DESIGN.md exists.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None (better after the receiver map adds its tokens)
+**Completed:** docs/design-md (2026-10-21). DESIGN.md in the open DESIGN.md format (`gstack-design-md check` reports spec, tokens resolve with no errors): every `:root` color including the `--map-*` tokens, the two faces and the sizes in use, radii, the spacing values the CSS actually uses, key components, and Do's and Don'ts the code follows. It documents what exists; inconsistencies (stray hex colors, Barlow weights that aren't loaded, uneven brass-pill padding, phone controls without 44 px targets, drift from the map design record) are listed under Known gaps rather than resolved.
 
 ### Keep a dial move made mid-switch when the connection drops
 
