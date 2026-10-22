@@ -128,6 +128,8 @@ async def test_handshake_timeout_says_whether_the_kiwi_answered(fake, message):
             await client.connect()
         assert e.value.code == "timeout"
         assert message in str(e.value)
+        # The audio stream is closed either way: only a paired waterfall stays open.
+        assert client._ws is None or client._ws.state.name == "CLOSED"
 
 
 async def test_stalled_stream_times_out():

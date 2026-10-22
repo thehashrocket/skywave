@@ -84,6 +84,12 @@ describe("SignalList", () => {
     expect(onScanAgain).not.toHaveBeenCalled();
   });
 
+  // Value: protects=the waiting note states the page's real auto-scan delay; fails_when=the note hardcodes 10 seconds again; why_new=cycle-2 testing review (only 10_000 was tested); seam=none; no_claim=page wiring of AUTO_SCAN_MS (page.test)
+  it("says how long until the scan from the delay it's given", () => {
+    show(null, { autoScanMs: 5_000 });
+    expect(screen.getByRole("status").textContent).toContain("about 5 seconds");
+  });
+
   // Value: protects=the signal being listened to is marked like a current preset; fails_when=data-current is dropped; why_new=new component; seam=none; no_claim=styling
   it("marks the signal that's tuned", () => {
     show({

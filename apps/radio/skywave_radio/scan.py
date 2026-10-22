@@ -62,6 +62,9 @@ MIN_SNR_DB = 15.0
 # 10.5-60 dB above that shoulder; a digital broadcast or noise jammer is a
 # flat block about 10 kHz wide with nothing standing out.
 AM_MAX_WIDTH_KHZ = 3.0
+# The strongest peaks kept per frame. A crowded 470 kHz frame has at most
+# about 90 stations 5 kHz apart; the cap bounds sideband work on hostile frames.
+MAX_PEAKS_PER_FRAME = 128
 AM_MIN_OVER_SHOULDER_DB = 6.0
 # A peak this close to one at least SIDEBAND_DB stronger is that station's sideband.
 SIDEBAND_KHZ = 4.6
@@ -165,6 +168,8 @@ def find_peaks(frame: WaterfallFrame, plan: FramePlan, offset_khz: float = 0.0) 
                 band=plan.band.name,
             )
         )
+    if len(peaks) > MAX_PEAKS_PER_FRAME:
+        peaks = sorted(peaks, key=lambda p: -p.snr_db)[:MAX_PEAKS_PER_FRAME]
     return peaks
 
 

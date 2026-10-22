@@ -60,6 +60,12 @@ SEND_TIMEOUT_S = 15.0
 FEATURES = ["scan"]
 # How long a receiver's scan is reused before a new one is made.
 SCAN_CACHE_S = 600.0
+# A receiver that refused a scan isn't asked again for this long. Only refusals
+# are kept: a dropped connection or a timeout says nothing about the next try.
+SCAN_REFUSAL_CACHE_S = 60.0
+SCAN_REFUSALS = frozenset({"busy", "no_apps", "password", "down"})
+# Pause before draining a paired waterfall again after idling failed while it is still open.
+IDLE_RETRY_S = 1.0
 
 # A receiver as the session dials it: host, port, whether private addresses
 # may be dialed for it, and wss.
@@ -102,25 +108,26 @@ class Slots:
 class ScanCache:
     """Recent scans per receiver, shared by every session for SCAN_CACHE_S.
 
-    A failed scan is kept too, as its error message, so a receiver that can't
-    scan isn't dialed again for every listener and every reconnect.
+    A refusal is kept too, as its error message, for a shorter time, so a
+    receiver that turned a scan away isn't asked again by every listener.
     """
 
     def __init__(self, ttl_s: float = SCAN_CACHE_S):
         self.ttl_s = ttl_s
+        # key -> (expiry on the monotonic clock, result or refusal message)
         self._entries: dict[Hashable, tuple[float, ScanResult | str]] = {}
 
     def get(self, key: Hashable) -> ScanResult | str | None:
         entry = self._entries.get(key)
-        if entry is None or time.monotonic() - entry[0] > self.ttl_s:
+        if entry is None or time.monotonic() > entry[0]:
             return None
         return entry[1]
 
-    def put(self, key: Hashable, result: ScanResult | str) -> None:
+    def put(self, key: Hashable, result: ScanResult | str, ttl_s: float | None = None) -> None:
         now = time.monotonic()
         # Pruned here so a long-running service doesn't keep every receiver it ever scanned.
-        self._entries = {k: e for k, e in self._entries.items() if now - e[0] <= self.ttl_s}
-        self._entries[key] = (now, result)
+        self._entries = {k: e for k, e in self._entries.items() if now <= e[0]}
+        self._entries[key] = (now + (self.ttl_s if ttl_s is None else ttl_s), result)
 
 
 def kiwi_freq_khz(freq_khz: float, mode: str) -> float:
@@ -436,7 +443,10 @@ class ListenSession:
             else:
                 await self._drop_waterfall()
             message = f"Couldn't scan this receiver: {e}"
-            self._scan_cache.put(target, message)
+            # Only while still on this receiver: a scan cut short by the
+            # listener leaving (or the receiver dropping them) proves nothing.
+            if e.code in SCAN_REFUSALS and self._target == target:
+                self._scan_cache.put(target, message, SCAN_REFUSAL_CACHE_S)
             await self._finish(target, "error", message=message)
             return
         except Exception:
@@ -485,32 +495,41 @@ class ListenSession:
         )
         try:
             await waterfall.connect()
-        except KiwiError:
-            if waterfall.is_open:
-                # Paired but never set up: keep it, so the caller drains it
-                # rather than closing it and ending the audio.
-                self._waterfall = waterfall
-            raise
-        except BaseException:
+        except asyncio.CancelledError:
             # Cancelled mid-handshake (the audio is ending): close the half-open one.
             await waterfall.close()
+            raise
+        except Exception as e:
+            refused = isinstance(e, KiwiError) and e.code != "timeout"
+            if waterfall.is_open and not refused:
+                # Paired but not set up: keep it, so the caller drains it
+                # rather than closing it and ending the audio.
+                self._waterfall = waterfall
+            else:
+                # Refused (never paired) or never connected: safe to close.
+                await waterfall.close()
             raise
         self._waterfall = waterfall
         return waterfall
 
     async def _idle(self, waterfall: WaterfallClient) -> None:
-        try:
-            await waterfall.idle()
-        except KiwiError as e:
-            # The audio pump reports it if the Kiwi took the audio down too.
-            log.info("scan waterfall ended: %s", e)
-        except Exception:
-            log.exception("scan waterfall crashed while idling")
-        else:
-            return
+        while True:
+            try:
+                await waterfall.idle()
+            except KiwiError as e:
+                # The audio pump reports it if the Kiwi took the audio down too.
+                log.info("scan waterfall ended: %s", e)
+            except Exception:
+                log.exception("scan waterfall crashed while idling")
+            else:
+                return
+            if not waterfall.is_open:
+                break
+            # Still paired: closing it would end the audio. Keep draining; the
+            # audio's end closes it (_end_scan), so nothing is left behind.
+            await asyncio.sleep(IDLE_RETRY_S)
         if self._waterfall is waterfall:
             self._waterfall = None
-        # Closed too, so a send that timed out doesn't leave the socket behind.
         await waterfall.close()
 
     async def _drop_waterfall(self) -> None:

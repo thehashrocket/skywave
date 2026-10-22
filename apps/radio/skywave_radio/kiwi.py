@@ -69,6 +69,9 @@ MIN_AUDIO_FRACTION = 0.1
 # each sent on as one audio sample. MAX_AUDIO_SAMPLES in the web app's
 # use-radio.ts must stay at least that, or it drops audio we sent.
 MAX_FRAME_BYTES = 2**20
+# MSG values kept in KiwiInfo.extra; a hostile Kiwi could otherwise send
+# endless unique keys on a stream that stays open for the whole session.
+MAX_EXTRA_KEYS = 64
 
 
 class KiwiError(Exception):
@@ -161,9 +164,9 @@ class KiwiConnection:
     STREAM = ""
     # What the handshake is still waiting for when it times out after the Kiwi answered.
     HANDSHAKE_WANTS = "its setup"
-    # Whether a handshake that times out after the Kiwi answered closes the
-    # stream. A paired waterfall must not: closing it ends the listener's audio.
-    CLOSE_ON_LATE_HANDSHAKE = True
+    # Whether a handshake that times out closes the stream. A paired waterfall
+    # must not: once its socket is open, closing it ends the listener's audio.
+    CLOSE_ON_HANDSHAKE_TIMEOUT = True
     # The last generated URL timestamp, shared by every connection in the process.
     _last_timestamp = 0
 
@@ -191,7 +194,8 @@ class KiwiConnection:
         # In the URL; streams sharing it share a channel on the Kiwi. Unique
         # within the service: every listener reaches a Kiwi from our one
         # address, so two connections in the same second would otherwise pair
-        # one listener's scan with another listener's audio.
+        # one listener's scan with another listener's audio. (Per process: run
+        # one worker per egress address, as the Dockerfile does.)
         if timestamp is None:
             timestamp = max(int(time.time()), KiwiConnection._last_timestamp + 1)
             KiwiConnection._last_timestamp = timestamp
@@ -230,7 +234,7 @@ class KiwiConnection:
         try:
             await asyncio.wait_for(self._handshake(), timeout=self.timeout_s)
         except asyncio.TimeoutError as e:
-            if not self._answered or self.CLOSE_ON_LATE_HANDSHAKE:
+            if self.CLOSE_ON_HANDSHAKE_TIMEOUT:
                 await self.close()
             if not self._answered:
                 raise KiwiError("timeout", f"{self.host} connected but never answered") from e
@@ -431,7 +435,7 @@ class KiwiClient(KiwiConnection):
                 self.info.freq_offset_khz = float(value)
             elif name == "version_maj":
                 self.info.version = value
-            else:
+            elif len(self.info.extra) < MAX_EXTRA_KEYS:
                 self.info.extra[name] = value
 
     def _checked_rate(self, value: str) -> float:

@@ -27,7 +27,7 @@ from dataclasses import dataclass
 import numpy as np
 from websockets.protocol import State
 
-from .kiwi import KiwiConnection, parse_msg
+from .kiwi import MAX_EXTRA_KEYS, KiwiConnection, KiwiError, parse_msg
 
 WF_BINS = 1024
 MAX_ZOOM = 14
@@ -38,7 +38,9 @@ IDLE_SPEED = 1  # about 1 a second while held open after a sweep
 START_TOLERANCE = 0.02
 # How often idle() sends a keepalive when no frame arrives.
 KEEPALIVE_S = 1.0
-# The widest coverage a receiver may report; a larger value is ignored.
+# The coverage a receiver may report (real Kiwis report about 30 MHz); anything
+# outside is ignored. Too narrow would crowd every peak of a sweep into a few kHz.
+MIN_BANDWIDTH_KHZ = 1_000.0
 MAX_BANDWIDTH_KHZ = 64_000.0
 
 
@@ -85,12 +87,13 @@ class WaterfallClient(KiwiConnection):
     HANDSHAKE_WANTS = "its waterfall setup"
     # Paired with the audio, so closing it would end the listener's audio; the
     # session keeps it drained (idle) and closes it when the audio ends.
-    CLOSE_ON_LATE_HANDSHAKE = False
+    CLOSE_ON_HANDSHAKE_TIMEOUT = False
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.bandwidth_khz = 30_000.0
         self._setup = False
+        self._configured = False
 
     @property
     def is_open(self) -> bool:
@@ -103,11 +106,15 @@ class WaterfallClient(KiwiConnection):
             self._answered = True
             if frame[:3] == b"MSG":
                 self._handle_msg(parse_msg(frame[4:]))
+        await self._configure()
+
+    async def _configure(self) -> None:
         await self._send("SET maxdb=0 mindb=-200")  # needed, though uncompressed bins ignore it
         await self._send("SET wf_comp=0")
         await self._send(f"SET wf_speed={FAST_SPEED}")
         await self._send(f"SET ident_user={self.user}")
         await self._keepalive(force=True)
+        self._configured = True
 
     def _handle_msg(self, params: dict[str, str | None]) -> None:
         for name, value in params.items():
@@ -119,11 +126,11 @@ class WaterfallClient(KiwiConnection):
             elif name == "bandwidth" and value:
                 bandwidth = _number(value)
                 # A Kiwi samples at most about 32 MHz; anything else is junk.
-                if bandwidth is not None and 0 < bandwidth / 1000 <= MAX_BANDWIDTH_KHZ:
+                if bandwidth is not None and MIN_BANDWIDTH_KHZ <= bandwidth / 1000 <= MAX_BANDWIDTH_KHZ:
                     self.bandwidth_khz = bandwidth / 1000
             elif name == "wf_setup":
                 self._setup = True
-            else:
+            elif len(self.info.extra) < MAX_EXTRA_KEYS:
                 self.info.extra[name] = value
 
     async def frame(self, zoom: int, cf_khz: float) -> WaterfallFrame:
@@ -151,7 +158,17 @@ class WaterfallClient(KiwiConnection):
                 return wf
 
     async def fast(self) -> None:
-        """Back to sweep speed after idle()."""
+        """Back to sweep speed after idle().
+
+        A waterfall whose handshake timed out may have sent its setup since,
+        while idling; it gets the settings then. One that still hasn't can't
+        sweep, and raises KiwiError (it stays open: closing ends the audio).
+        """
+        if not self._configured:
+            if not self._setup:
+                raise KiwiError("timeout", f"{self.host} never sent {self.HANDSHAKE_WANTS}")
+            await self._configure()
+            return
         await self._send(f"SET wf_speed={FAST_SPEED}")
 
     async def idle(self) -> None:

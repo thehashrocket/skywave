@@ -166,13 +166,20 @@ class FakeKiwi:
         return {ts: ws for ts, ws in self._snd.items() if ws.state is State.OPEN}
 
     async def _handle_wf(self, ws: ServerConnection, ts: str) -> None:
+        # Counted once on every path, including a client that goes away
+        # mid-handshake (a send then raises before any other bookkeeping).
+        try:
+            await self._serve_wf(ws, ts)
+        finally:
+            self.wf_closed += 1
+
+    async def _serve_wf(self, ws: ServerConnection, ts: str) -> None:
         first = await ws.recv()
         self.wf_commands.append(first)
         reject = self.wf_reject or self.reject
         if reject is not None:
             await ws.send(reject)
             await asyncio.sleep(0.2)
-            self.wf_closed += 1
             return
         others = self._open_snd()
         if self.pairing and others and ts not in others:
@@ -181,8 +188,8 @@ class FakeKiwi:
             return
         await ws.send(f"MSG freq_offset={self.freq_offset_khz:.3f} bandwidth={self.bandwidth_khz * 1000:.0f}".encode())
         if self.wf_no_setup:
-            await ws.wait_closed()
-            self.wf_closed += 1
+            async for msg in ws:
+                self.wf_commands.append(msg)
             return
         await ws.send(b"MSG wf_setup")
 
@@ -221,7 +228,6 @@ class FakeKiwi:
         finally:
             rtask.cancel()
             await ws.close()
-            self.wf_closed += 1
             if self.pairing and ts in self._open_snd():
                 # A real Kiwi ends the paired audio with its waterfall.
                 await self._snd[ts].close()

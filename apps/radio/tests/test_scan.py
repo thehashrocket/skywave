@@ -200,3 +200,13 @@ def test_peak_width_walk_is_bounded():
     assert len(peaks) > 100
     kpb = 468.75 / 1024
     assert max(p.width_khz for p in peaks) <= 2 * (AM_MAX_WIDTH_KHZ + 2 * kpb) + kpb
+
+
+# Value: protects=a frame of hundreds of equal plateau peaks keeps only the strongest MAX_PEAKS_PER_FRAME, so the sideband check stays cheap even when a sweep's peaks crowd together (cycle-2 security); fails_when=the cap goes; why_new=security review (tiny bandwidth, quadratic drop_sidebands); seam=none; no_claim=wall-clock time
+def test_peaks_per_frame_are_capped():
+    from skywave_radio.scan import MAX_PEAKS_PER_FRAME
+
+    bins = np.full(1024, 140, dtype=np.uint8)
+    bins[::2] = 200  # 512 isolated peaks
+    frame = WaterfallFrame(zoom=6, start_khz=9_416.0, span_khz=468.75, bins=bins)
+    assert len(find_peaks(frame, plan())) == MAX_PEAKS_PER_FRAME

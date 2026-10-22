@@ -129,3 +129,56 @@ async def test_a_waterfall_that_never_sets_up_is_left_open():
         assert wf.is_open
         await wf.close()
         assert not wf.is_open
+
+
+# Value: protects=a paired waterfall whose socket opened but which never answered at all is left open too, since closing it would end the audio (cycle-2 red team); fails_when=connect closes a W/F that hasn't answered; why_new=red team (slow Kiwi accepts the upgrade, sends nothing); seam=a bare WebSocket server; no_claim=real slow-Kiwi timing
+async def test_a_waterfall_that_never_answers_is_left_open():
+    from websockets.asyncio.server import serve
+
+    async def silent(ws):
+        await ws.wait_closed()
+
+    async with serve(silent, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        wf = WaterfallClient("127.0.0.1", port, timeout_s=0.5)
+        with pytest.raises(KiwiError) as e:
+            await wf.connect()
+        assert "never answered" in str(e.value)
+        assert wf.is_open
+        await wf.close()
+
+
+# Value: protects=a waterfall that never set up can't sweep (fast() raises and leaves it open), and one whose setup arrived late gets its settings before sweeping (cycle-2 review); fails_when=fast() sweeps an unconfigured stream (compressed frames, "the scan broke") or closes it; why_new=concurrency review; seam=_handle_msg fed the late setup by hand; no_claim=firmware that sets up late
+async def test_a_late_setup_is_configured_before_a_sweep():
+    async with FakeKiwi(wf_no_setup=True) as kiwi:
+        wf = WaterfallClient("127.0.0.1", kiwi.port, timeout_s=0.5)
+        with pytest.raises(KiwiError):
+            await wf.connect()
+        with pytest.raises(KiwiError) as e:
+            await wf.fast()
+        assert e.value.code == "timeout" and wf.is_open
+        wf._handle_msg({"wf_setup": None})
+        await wf.fast()
+        await asyncio.sleep(0.05)
+        assert "SET wf_comp=0" in kiwi.wf_commands
+        await wf.close()
+
+
+# Value: protects=hostile MSG values are ignored: non-numbers, NaN, infinity, a coverage under 1 MHz or over 64 MHz, and unknown keys past the cap (cycle-2 security); fails_when=a guard goes, letting a hostile Kiwi crowd every peak into a few kHz or grow memory without bound; why_new=security review; seam=_handle_msg called directly; no_claim=what real firmware sends
+@pytest.mark.parametrize("value", ["abc", "nan", "inf", "-inf", "1", "999999", "1e12"])
+def test_hostile_coverage_values_are_ignored(value):
+    wf = WaterfallClient("kiwi.example", 8073)
+    wf._handle_msg({"bandwidth": value, "freq_offset": value})
+    assert wf.bandwidth_khz == 30_000.0
+    if value in ("1", "999999", "1e12"):
+        assert wf.info.freq_offset_khz == float(value)  # finite offsets are fine; plan_frames clips them
+    else:
+        assert wf.info.freq_offset_khz == 0.0
+
+
+def test_unknown_msg_keys_are_capped():
+    from skywave_radio.kiwi import MAX_EXTRA_KEYS
+
+    wf = WaterfallClient("kiwi.example", 8073)
+    wf._handle_msg({f"k{i}": "v" for i in range(10_000)})
+    assert len(wf.info.extra) == MAX_EXTRA_KEYS
