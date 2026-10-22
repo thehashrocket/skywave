@@ -5,6 +5,9 @@ Protocol notes, cross-checked against jks-prv/kiwiclient:
 * WebSocket at ws://host:port/kiwi/<timestamp>/SND (wss:// for Kiwis behind
   HTTPS). Current firmware accepts the bare /<timestamp>/SND upgrade but then
   never sends a frame; /kiwi/ works on old and new firmware alike.
+* The timestamp pairs streams: a waterfall (W/F, see waterfall.py) opened
+  with the audio's timestamp joins its channel, while one with another
+  timestamp from the same listener is refused with badp=5.
 * Text commands are "SET ..." strings; the Kiwi answers with binary frames
   whose first three bytes are a tag: "MSG" (key=value status) or "SND" (audio).
 * After "SET auth", wait for audio_rate (reply "SET AR OK") and sample_rate,
@@ -147,17 +150,17 @@ def hostport(host: str, port: int) -> str:
     return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
 
-class KiwiClient:
-    """One I/Q listening channel on one KiwiSDR.
+class KiwiConnection:
+    """One WebSocket stream to one KiwiSDR: dialing, refusals, keepalive, close.
 
-    Usage:
-        client = KiwiClient("kiwi.example.org")
-        await client.connect()
-        await client.tune(9535.0)
-        async for block in client.blocks():
-            ...
-        await client.close()
+    Subclasses name the stream and do its handshake. Dialing rules (the
+    address hostguard checked, no proxy, one same-host https upgrade) are
+    the same for every stream.
     """
+
+    STREAM = ""
+    # What the handshake is still waiting for when it times out after the Kiwi answered.
+    HANDSHAKE_WANTS = "its setup"
 
     def __init__(
         self,
@@ -167,9 +170,8 @@ class KiwiClient:
         connect_host: str | None = None,
         secure: bool = False,
         user: str = "skywave",
-        kiwi_agc: bool = True,
-        passband_hz: tuple[int, int] = (-5000, 5000),
         timeout_s: float = 10.0,
+        timestamp: int | None = None,
     ):
         self.host = host
         self.port = port
@@ -180,11 +182,10 @@ class KiwiClient:
         # validation and connect). The URL still carries the real hostname.
         self.connect_host = connect_host or host
         self.user = user
-        self.kiwi_agc = kiwi_agc
-        self.passband_hz = passband_hz
         self.timeout_s = timeout_s
+        # In the URL; streams sharing it share a channel on the Kiwi.
+        self.timestamp = int(time.time()) if timestamp is None else timestamp
         self.info = KiwiInfo()
-        self.freq_khz: float | None = None
         self._ws: ClientConnection | None = None
         self._last_keepalive = 0.0
         # Whether the Kiwi has sent anything since we sent auth.
@@ -197,7 +198,7 @@ class KiwiClient:
     @property
     def url(self) -> str:
         scheme = "wss" if self.secure else "ws"
-        return f"{scheme}://{self.hostport}/kiwi/{int(time.time())}/SND"
+        return f"{scheme}://{self.hostport}/kiwi/{self.timestamp}/{self.STREAM}"
 
     async def connect(self) -> KiwiInfo:
         try:
@@ -221,7 +222,7 @@ class KiwiClient:
             await self.close()
             if not self._answered:
                 raise KiwiError("timeout", f"{self.host} connected but never answered") from e
-            raise KiwiError("timeout", f"{self.host} never sent its sample rate") from e
+            raise KiwiError("timeout", f"{self.host} never sent {self.HANDSHAKE_WANTS}") from e
         return self.info
 
     async def _dial(self) -> None:
@@ -285,6 +286,105 @@ class KiwiClient:
         return KiwiError("unreachable", f"Couldn't connect to {self.hostport} ({reason})")
 
     async def _handshake(self) -> None:
+        raise NotImplementedError
+
+    def _check_refusal(self, name: str, value: str | None) -> None:
+        """Raise the KiwiError a refusal MSG means; any stream can get these."""
+        if name == "too_busy":
+            # The value is the receiver's channel count. 0 is how a Kiwi
+            # whose owner allows no connections but its own web page
+            # (ext_api=0 in the public list) turns us away, about 10 s in.
+            if value == "0":
+                raise KiwiError(
+                    "no_apps",
+                    f"{self.host} only lets listeners in through its own web page, "
+                    "not apps like this one. Try another receiver.",
+                )
+            most = f" ({value} listeners max)" if value else ""
+            raise KiwiError("busy", f"{self.host} is full{most}. Try another receiver.")
+        if name == "badp" and value == "5":
+            # A second stream from the same listener under another timestamp.
+            raise KiwiError("busy", f"{self.host} refused another connection from this listener.")
+        if name == "badp" and value not in (None, "0"):
+            raise KiwiError("password", f"{self.host} requires a password.")
+        if name == "down":
+            raise KiwiError("down", f"{self.host} is down right now.")
+        if name == "redirect":
+            raise KiwiError("redirect", f"{self.host} redirected to {value}; use that address instead.")
+
+    async def _recv(self) -> bytes:
+        assert self._ws is not None
+        try:
+            msg = await self._ws.recv()
+        except websockets.ConnectionClosed as e:
+            raise KiwiError("closed", f"{self.host} closed the connection") from e
+        return msg if isinstance(msg, bytes) else msg.encode()
+
+    async def _keepalive(self, force: bool = False) -> None:
+        now = time.monotonic()
+        if force or now - self._last_keepalive >= 1.0:
+            self._last_keepalive = now
+            await self._send("SET keepalive")
+
+    async def _send(self, msg: str) -> None:
+        if self._ws is None:
+            return
+        if msg != "SET keepalive":
+            log.debug("-> %s: %s", self.host, msg)
+        try:
+            # A Kiwi that stops reading would block this forever once the
+            # socket buffers fill, and no deadline in blocks() runs meanwhile.
+            await asyncio.wait_for(self._ws.send(msg), timeout=self.timeout_s)
+        except asyncio.TimeoutError as e:
+            raise KiwiError("timeout", f"{self.host} stopped reading") from e
+        except websockets.ConnectionClosed as e:
+            raise KiwiError("closed", f"{self.host} closed the connection") from e
+
+    async def close(self) -> None:
+        if self._ws is not None:
+            ws, self._ws = self._ws, None
+            # ws.close() first waits, with no timeout, for our send buffer to
+            # drain, so a Kiwi that stopped reading would hang it and keep the
+            # listener slot. Give up after CLOSE_TIMEOUT_S and drop the socket.
+            try:
+                await asyncio.wait_for(ws.close(), timeout=CLOSE_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                ws.transport.abort()
+            except asyncio.CancelledError:
+                ws.transport.abort()
+                raise
+
+
+class KiwiClient(KiwiConnection):
+    """One I/Q listening channel on one KiwiSDR.
+
+    Usage:
+        client = KiwiClient("kiwi.example.org")
+        await client.connect()
+        await client.tune(9535.0)
+        async for block in client.blocks():
+            ...
+        await client.close()
+    """
+
+    STREAM = "SND"
+    HANDSHAKE_WANTS = "its sample rate"
+
+    def __init__(
+        self,
+        host: str,
+        port: int = DEFAULT_PORT,
+        *,
+        kiwi_agc: bool = True,
+        passband_hz: tuple[int, int] = (-5000, 5000),
+        **kwargs,
+    ):
+        super().__init__(host, port, **kwargs)
+        self.kiwi_agc = kiwi_agc
+        self.passband_hz = passband_hz
+        self.freq_khz: float | None = None
+
+    async def _handshake(self) -> None:
         assert self._ws is not None
         while self.info.sample_rate is None:
             frame = await self._recv()
@@ -309,24 +409,7 @@ class KiwiClient:
 
     async def _handle_msg(self, params: dict[str, str | None]) -> None:
         for name, value in params.items():
-            if name == "too_busy":
-                # The value is the receiver's channel count. 0 is how a Kiwi
-                # whose owner allows no connections but its own web page
-                # (ext_api=0 in the public list) turns us away, about 10 s in.
-                if value == "0":
-                    raise KiwiError(
-                        "no_apps",
-                        f"{self.host} only lets listeners in through its own web page, "
-                        "not apps like this one. Try another receiver.",
-                    )
-                most = f" ({value} listeners max)" if value else ""
-                raise KiwiError("busy", f"{self.host} is full{most}. Try another receiver.")
-            if name == "badp" and value not in (None, "0"):
-                raise KiwiError("password", f"{self.host} requires a password.")
-            if name == "down":
-                raise KiwiError("down", f"{self.host} is down right now.")
-            if name == "redirect":
-                raise KiwiError("redirect", f"{self.host} redirected to {value}; use that address instead.")
+            self._check_refusal(name, value)
             if name == "audio_rate" and value:
                 self.info.audio_rate = int(self._checked_rate(value))
                 await self._send(f"SET AR OK in={self.info.audio_rate} out=44100")
@@ -414,44 +497,3 @@ class KiwiClient:
     def _stopped(self) -> KiwiError:
         return KiwiError("timeout", f"{self.host} stopped sending audio")
 
-    async def _recv(self) -> bytes:
-        assert self._ws is not None
-        try:
-            msg = await self._ws.recv()
-        except websockets.ConnectionClosed as e:
-            raise KiwiError("closed", f"{self.host} closed the connection") from e
-        return msg if isinstance(msg, bytes) else msg.encode()
-
-    async def _keepalive(self, force: bool = False) -> None:
-        now = time.monotonic()
-        if force or now - self._last_keepalive >= 1.0:
-            self._last_keepalive = now
-            await self._send("SET keepalive")
-
-    async def _send(self, msg: str) -> None:
-        if self._ws is None:
-            return
-        if msg != "SET keepalive":
-            log.debug("-> %s: %s", self.host, msg)
-        try:
-            # A Kiwi that stops reading would block this forever once the
-            # socket buffers fill, and no deadline in blocks() runs meanwhile.
-            await asyncio.wait_for(self._ws.send(msg), timeout=self.timeout_s)
-        except asyncio.TimeoutError as e:
-            raise KiwiError("timeout", f"{self.host} stopped reading") from e
-        except websockets.ConnectionClosed as e:
-            raise KiwiError("closed", f"{self.host} closed the connection") from e
-
-    async def close(self) -> None:
-        if self._ws is not None:
-            ws, self._ws = self._ws, None
-            # ws.close() first waits, with no timeout, for our send buffer to
-            # drain, so a Kiwi that stopped reading would hang it and keep the
-            # listener slot. Give up after CLOSE_TIMEOUT_S and drop the socket.
-            try:
-                await asyncio.wait_for(ws.close(), timeout=CLOSE_TIMEOUT_S)
-            except asyncio.TimeoutError:
-                ws.transport.abort()
-            except asyncio.CancelledError:
-                ws.transport.abort()
-                raise

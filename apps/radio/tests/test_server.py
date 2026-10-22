@@ -1015,3 +1015,179 @@ def test_stop_after_an_error_still_answers():
         stopped = until_state(ws, "stopped")
     assert stopped[-1]["message"] == "Stopped."
     assert client.get("/healthz").json()["listeners"] == 0
+
+
+# --- Band scan (eng review 2026-10-22: D4, D5, D13, D16, D19, D20) ---
+
+
+def carrier_bins(rf_khz):
+    """wf_bins: flat noise with one narrow carrier at rf_khz."""
+
+    def bins(start, span):
+        out = np.full(1024, 140, dtype=np.uint8)
+        i = int((rf_khz - start) / span * 1024)
+        if 0 <= i < 1024:
+            out[i] = 200
+        return out
+
+    return bins
+
+
+def scan_msg(scan_id=1, fresh=False):
+    return json.dumps({"type": "scan", "id": scan_id, "fresh": fresh})
+
+
+def until_scan(ws, *states, limit=20000):
+    """Messages up to and including the first scan reply in `states`; audio is skipped."""
+    seen = []
+    for _ in range(limit):
+        msg = ws.receive()
+        if msg.get("text"):
+            payload = json.loads(msg["text"])
+            seen.append(payload)
+            if payload.get("type") == "scan" and payload.get("state") in states:
+                return seen
+    raise AssertionError(f"no scan reply in {states}: {seen}")
+
+
+def audio_after(ws, n=5, limit=2000):
+    got = 0
+    for _ in range(limit):
+        if ws.receive().get("bytes", b"")[:1] == AUDIO_TAG:
+            got += 1
+            if got >= n:
+                return True
+    return False
+
+
+# Value: protects=a scan pairs a waterfall with the audio's timestamp, lists the carrier, leaves audio playing and uses no listener slot (D19, D20); fails_when=the W/F uses another timestamp, is closed after the sweep, or takes a slot; why_new=no scan existed; seam=none; no_claim=real Kiwi pairing (the fake models badp=5 and close-ends-audio)
+@pytest.mark.timeout(20)
+def test_scan_lists_signals_and_audio_keeps_playing():
+    def body(kiwi):
+        app = create_app(settings())
+        client = TestClient(app)
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            statuses = until_state(ws, "listening")
+            ws.send_text(scan_msg(7))
+            replies = until_scan(ws, "done")
+            listeners = client.get("/healthz").json()["listeners"]
+            playing = audio_after(ws)
+            paths = list(kiwi.paths)
+            # Read while still connected: leaving closes the W/F with the audio.
+            wf_closed = kiwi.wf_closed
+        return statuses, replies, listeners, playing, paths, wf_closed
+
+    statuses, replies, listeners, playing, paths, wf_closed = run_with_fake(body, wf_bins=carrier_bins(9_420.0))
+    assert statuses[-1]["features"] == ["scan"]
+    scan = [r for r in replies if r["type"] == "scan"]
+    assert [r["state"] for r in scan] == ["scanning", "done"]
+    done = scan[-1]
+    assert (done["id"], done["host"]) == (7, "127.0.0.1") and isinstance(done["port"], int)
+    assert done["signals"][0] == {"freqKhz": 9_420.0, "snrDb": 60, "band": "31m"}
+    assert (done["bandsDone"], done["bandsTotal"], done["partial"]) == (15, 15, False)
+    assert not [r for r in replies if r["type"] == "status" and r["state"] == "error"]
+    assert listeners == 1  # the paired waterfall shares the audio's channel and slot
+    assert playing and wf_closed == 0  # kept open, idling, until the audio ends
+    snd, wf = paths
+    assert snd.endswith("/SND") and wf.endswith("/W/F") and snd.split("/")[2] == wf.split("/")[2]
+
+
+# Value: protects=a second scan within 10 min reuses the result and Scan again re-sweeps on the same waterfall (D4); fails_when=the cache is missed or fresh is ignored, or each scan opens a new W/F; why_new=no cache; seam=none; no_claim=cache expiry (unit-tested below)
+@pytest.mark.timeout(20)
+def test_scan_is_cached_and_fresh_rescans_on_the_same_waterfall():
+    def body(kiwi):
+        with TestClient(create_app(settings())).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "listening")
+            ws.send_text(scan_msg(1))
+            first = until_scan(ws, "done")[-1]
+            ws.send_text(scan_msg(2))
+            cached = [r for r in until_scan(ws, "done") if r["type"] == "scan"]
+            ws.send_text(scan_msg(3, fresh=True))
+            fresh = [r for r in until_scan(ws, "done") if r["type"] == "scan"]
+            wf_paths = [p for p in kiwi.paths if p.endswith("/W/F")]
+        return first, cached, fresh, wf_paths
+
+    first, cached, fresh, wf_paths = run_with_fake(body, wf_bins=carrier_bins(9_420.0))
+    assert [r["state"] for r in cached] == ["done"] and cached[0]["id"] == 2
+    assert cached[0]["atMs"] == first["atMs"]
+    assert [r["state"] for r in fresh] == ["scanning", "done"] and fresh[-1]["atMs"] >= first["atMs"]
+    assert len(wf_paths) == 1
+
+
+# Value: protects=scan failures arrive as scan errors and never as a status error over working audio (D5); fails_when=a W/F refusal or a scan before listening goes through status; why_new=D5; seam=none; no_claim=which refusals real Kiwis send
+@pytest.mark.timeout(20)
+def test_scan_failures_stay_out_of_the_status():
+    def body(kiwi):
+        with TestClient(create_app(settings())).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(scan_msg(1))
+            early = until_scan(ws, "error")
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "listening")
+            ws.send_text(scan_msg(2))
+            refused = until_scan(ws, "error")
+            playing = audio_after(ws)
+        return early, refused, playing
+
+    early, refused, playing = run_with_fake(body, wf_reject=b"MSG too_busy=4")
+    assert early[-1]["id"] == 1 and "listening" in early[-1]["message"]
+    assert refused[-1]["id"] == 2 and "Couldn't scan" in refused[-1]["message"]
+    assert not [r for r in early + refused if r["type"] == "status" and r["state"] == "error"]
+    assert playing
+
+
+# Value: protects=stopping closes the scan's waterfall with the audio (D19); fails_when=the W/F outlives the session, holding the volunteer's channel; why_new=D19; seam=none; no_claim=close ordering on a real Kiwi
+@pytest.mark.timeout(20)
+def test_stop_closes_the_scans_waterfall():
+    def body(kiwi):
+        with TestClient(create_app(settings())).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "listening")
+            ws.send_text(scan_msg(1))
+            until_scan(ws, "done")
+            open_before = kiwi.wf_closed
+            ws.send_text(json.dumps({"type": "stop"}))
+            until_state(ws, "stopped")
+        for _ in range(100):
+            if kiwi.wf_closed:
+                break
+            time.sleep(0.02)
+        return open_before, kiwi.wf_closed
+
+    open_before, closed_after = run_with_fake(body, wf_bins=carrier_bins(9_420.0))
+    assert (open_before, closed_after) == (0, 1)
+
+
+def test_scan_cache_expires_and_prunes(monkeypatch):
+    from skywave_radio.scan import ScanResult
+    from skywave_radio.session import ScanCache
+
+    now = [1000.0]
+    monkeypatch.setattr("skywave_radio.session.time.monotonic", lambda: now[0])
+    cache = ScanCache(ttl_s=600)
+    cache.put("a", ScanResult())
+    assert cache.get("a") is not None and cache.get("b") is None
+    now[0] += 601
+    assert cache.get("a") is None
+    cache.put("b", ScanResult())
+    assert list(cache._entries) == ["b"]
+
+
+# Value: protects=Scan again during a sweep is answered by that sweep under the newest id, without cancelling it (a half-open paired W/F closed mid-handshake can end the audio); fails_when=the running scan is cancelled, answers with the old id, or a second reader hits the waterfall; why_new=found while building; seam=none; no_claim=real Kiwi timing
+@pytest.mark.timeout(20)
+def test_scan_again_mid_sweep_is_answered_by_the_running_scan():
+    def body(kiwi):
+        with TestClient(create_app(settings())).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "listening")
+            ws.send_text(scan_msg(1))
+            until_scan(ws, "scanning")
+            ws.send_text(scan_msg(2, fresh=True))
+            replies = [r for r in until_scan(ws, "done", "error") if r["type"] == "scan"]
+            playing = audio_after(ws)
+        return replies, playing
+
+    replies, playing = run_with_fake(body, wf_bins=carrier_bins(9_420.0), wf_interval=0.02)
+    assert [(r["state"], r["id"]) for r in replies] == [("scanning", 2), ("done", 2)]
+    assert playing
