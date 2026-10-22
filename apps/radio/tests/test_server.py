@@ -1805,3 +1805,27 @@ def test_the_scan_cache_is_capped():
         cache.put(("kiwi", i), ScanResult())
     assert len(cache._entries) == SCAN_CACHE_MAX
     assert cache.get(("kiwi", 0)) is None and cache.get(("kiwi", SCAN_CACHE_MAX + 4)) is not None
+
+
+# Value: protects=stopping a session while its own task is being cancelled (the browser left and Starlette or a shutdown cancels the endpoint) lets the canceller's own CancelledError through, so the cancel scope that sent it absorbs it; fails_when=_cancel re-raises the cancelled pump's message-less CancelledError (it lands in websockets' shielded close), which escapes the scope and fails the connection's task (the CI flake in test_receiver_sending_no_usable_audio_times_out); why_new=CI flake root-caused on PR 21; seam=a shielded future stands in for websockets' close; no_claim=uvicorn's own disconnect handling
+async def test_stopping_under_a_cancelled_scope_keeps_the_scopes_cancellation():
+    import anyio
+
+    from skywave_radio.session import ListenSession
+
+    loop = asyncio.get_running_loop()
+    for _ in range(20):
+        closed = loop.create_future()
+
+        async def closing():
+            await asyncio.shield(closed)  # how websockets waits for its close
+
+        task = asyncio.create_task(closing())
+        await asyncio.sleep(0)
+        loop.call_later(0.005, lambda f=closed: f.done() or f.set_result(None))
+        with anyio.CancelScope() as scope:
+            loop.call_soon(scope.cancel)
+            await ListenSession._cancel(task)
+            await anyio.sleep_forever()
+        assert scope.cancelled_caught and task.done()
+

@@ -582,13 +582,14 @@ class ListenSession:
         if task is None or task.done() or task is asyncio.current_task():
             return
         task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            # Ours ends here; a cancel aimed at our caller must not be swallowed.
-            current = asyncio.current_task()
-            if current is not None and current.cancelling():
-                raise
+        # Wait for it without taking on its CancelledError. A cancel aimed at
+        # our caller still raises here, as the caller's own: re-raising the
+        # task's instead (one that lands in a shielded websocket close carries
+        # no message) slips past the cancel scope that sent the caller's, as
+        # Starlette's TestClient and a server shutdown do.
+        await asyncio.wait({task})
+        if not task.cancelled() and task.exception() is not None:
+            raise task.exception()
 
     async def _scan_reply(self, scan_id: int | None, target: Target | None, state: str, **extra: Any) -> None:
         payload: dict[str, Any] = {"type": "scan", "id": scan_id, "state": state}
