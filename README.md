@@ -43,7 +43,11 @@ pnpm dev:radio                               # terminal 1: radio service on :876
 pnpm dev                                     # terminal 2: web app on :3000
 ```
 
-**Port 5432 already taken** (another project's Postgres)? Put `POSTGRES_PORT=5433` in a root `.env` (see `.env.example`) before `pnpm db:up`, and use the same port in `DATABASE_URL` in `apps/web/.env`. If 3000 is taken, Next.js moves the web app to the next free port; add that origin (e.g. `http://localhost:3001`) to `ALLOWED_ORIGINS` in `apps/radio/.env`. The service treats `localhost`, `127.0.0.1` and `[::1]` on the same port as one origin, and the dev server accepts `127.0.0.1`, so `http://127.0.0.1:3000` works too.
+**Port 5432 already taken** (another project's Postgres)? Put `POSTGRES_PORT=5433` in a root `.env` (see `.env.example`) before `pnpm db:up`, and use the same port in `DATABASE_URL` in `apps/web/.env`.
+
+**Port 3000 already taken** (often another project's Docker container)? Start the web app on another port with `PORT=3001 pnpm dev`, and add that origin (`http://localhost:3001`) to `ALLOWED_ORIGINS` in `apps/radio/.env`; if the radio service runs in Docker, recreate it so it reads the change (`docker compose --profile radio up -d radio`). Don't count on Next.js moving to a free port on its own: when a container holds `127.0.0.1:3000`, `next dev` binds `*:3000` beside it, so `localhost:3000` can reach either app, and the radio service refuses the one it doesn't allow. Docker runs only Postgres and, with the `radio` profile, the radio service; the web app always runs on your machine with `pnpm dev`.
+
+The radio service treats `localhost`, `127.0.0.1` and `[::1]` on the same port as one origin, and the dev server accepts `127.0.0.1`, so `http://127.0.0.1:3000` works too.
 
 Open http://localhost:3000 and hit **Pick best receiver**, or choose one from the list under it. WWV on 10,000 kHz AM is the easiest first signal: it's on 24/7 and you'll hear the time ticks.
 
