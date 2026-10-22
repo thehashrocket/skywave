@@ -23,15 +23,18 @@ vi.mock("@/components/Waterfall", () => ({ Waterfall: () => <output aria-label="
 vi.mock("@/components/MapPanel", () => ({
   MapPanel: ({
     admitted,
+    last,
     onListen,
     onBrowse,
   }: {
     admitted: boolean;
+    last: { host: string; port: number } | null;
     onListen: (r: Receiver) => void;
     onBrowse: () => void;
   }) => (
     <>
       <output aria-label="map admitted">{admitted ? "yes" : "no"}</output>
+      <output aria-label="map last">{last ? `${last.host}:${last.port}` : "none"}</output>
       <button type="button" onClick={() => onListen(listed)}>
         map listen
       </button>
@@ -511,6 +514,14 @@ describe("ListenPage", () => {
     expect((screen.getByLabelText("Port") as HTMLInputElement).value).toBe("8073");
   });
 
+  // Value: protects=a saved port that isn't plain digits is dialed as the default, not read as hex or an exponent; fails_when=validPort parses with Number(); why_new=PR 2a review; the field strips non-digits, so only a stored value can carry these (Codex, eng review 2026-10-21); seam=none; no_claim=none beyond protects
+  it.each(["0x1F90", "1e3"])("dials the default port for a saved port %s", (stored) => {
+    localStorage.setItem("skywave.receiver", JSON.stringify({ host: "kiwi.example", port: stored }));
+    render(<ListenPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+    expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "kiwi.example", port: 8073 }));
+  });
+
   // Value: protects=dial moves while a first connection starts reach the radio; fails_when=sendRetune only runs once the service says connecting; why_new=red team (PR 1); seam=fake timers; no_claim=use-radio's handling (use-radio.test)
   it("retunes from the dial while a tune is starting", () => {
     vi.useFakeTimers();
@@ -679,13 +690,15 @@ describe("ListenPage", () => {
       return view;
     }
 
-    // Value: protects=Back returns to the receiver exactly as it was dialed (list tag, scheme) and toggles; fails_when=Back reuses chooseReceiver's list-only path or forgets the previous on a switch; why_new=E1 Back path; seam=none; no_claim=the map's last ring (PR 2)
+    // Value: protects=Back returns to the receiver exactly as it was dialed (list tag, scheme) and toggles, and the map's "last" ring marks the same receiver Back names; fails_when=Back reuses chooseReceiver's list-only path, forgets the previous on a switch, or lastPlace isn't passed (or follows another receiver); why_new=E1 Back path; map wiring untested (PR 2b review); seam=MapPanel mocked; no_claim=the ring's drawing (adapter tests)
     it("offers the receiver that played before, dialed the way it was, and toggles", () => {
       const view = render(<ListenPage />);
       expect(screen.queryByRole("button", { name: /^Back to/ })).toBeNull();
+      expect(screen.getByLabelText("map last").textContent).toBe("none");
       cleanup();
 
       const two = heardTwo();
+      expect(screen.getByLabelText("map last").textContent).toBe("kiwi.example:8073");
       const back = screen.getByRole("button", { name: "Back to kiwi.example" });
       // A live region would announce every new Back target.
       expect(back.closest('[role="status"]')).toBeNull();
@@ -696,6 +709,7 @@ describe("ListenPage", () => {
       two.rerender(<ListenPage />);
       expect(screen.queryByRole("button", { name: "Back to kiwi.example" })).toBeNull();
       expect(screen.getByRole("button", { name: "Back to K1VL" })).toBeTruthy();
+      expect(screen.getByLabelText("map last").textContent).toBe("sdr.k1vl.com:8076");
 
       radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
       two.rerender(<ListenPage />);

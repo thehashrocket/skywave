@@ -10,13 +10,19 @@ import type { SolarClock } from "@/lib/use-solar-clock";
 const NO_RECEIVERS: readonly Receiver[] = [];
 
 /** The map's code failing to load (a new deploy, a dropped connection) mustn't take the radio down with it. */
-class MapBoundary extends Component<{ onError: (reason: string) => void; children: ReactNode }, { failed: boolean }> {
+class MapBoundary extends Component<
+  { onError: (reason: string, codeGone: boolean) => void; children: ReactNode },
+  { failed: boolean }
+> {
   state = { failed: false };
   static getDerivedStateFromError() {
     return { failed: true };
   }
   componentDidCatch(error: unknown) {
-    this.props.onError(isLoadFailure(error) ? "its code didn't load" : "it stopped working");
+    const load = loadFailure(error);
+    // Offline looks the same as a deploy; a reload then only trades the page for the browser's offline page.
+    const codeGone = load === "missing" && navigator.onLine !== false;
+    this.props.onError(load ? "its code didn't load" : "it stopped working", codeGone);
   }
   render() {
     return this.state.failed ? null : this.props.children;
@@ -43,10 +49,15 @@ export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-/** A failed or stalled code download, as opposed to the map breaking once loaded. */
-function isLoadFailure(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return error.name === "ChunkLoadError" || /chunk|dynamically imported module|timed out/i.test(error.message);
+/**
+ * A failed or stalled code download, as opposed to the map breaking once
+ * loaded. "missing": the file didn't come, which after a deploy no retry can
+ * fix (a dropped connection looks the same); "stalled": our own time limit.
+ */
+function loadFailure(error: unknown): "missing" | "stalled" | null {
+  if (!(error instanceof Error)) return null;
+  if (error.name === "ChunkLoadError" || /chunk|dynamically imported module/i.test(error.message)) return "missing";
+  return /timed out/i.test(error.message) ? "stalled" : null;
 }
 
 /** The list's age turns to a warning past this. */
@@ -83,14 +94,18 @@ type Props = {
 export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen, onBrowse }: Props) {
   const [follow, setFollow] = useState<Follow>("follow");
   const [centerRequest, setCenterRequest] = useState(0);
-  const [failure, setFailure] = useState<string | null>(null);
+  // Why the map can't show, and whether its code may be gone (a deploy
+  // replaced it), which a reload fixes and Retry can't.
+  const [failure, setFailure] = useState<{ reason: string; codeGone: boolean } | null>(null);
   // Retry remounts the adapter, which removes the old map first.
   const [attempt, setAttempt] = useState(0);
   // A new lazy component per attempt: React.lazy keeps a failed import's
   // error, so Retry must ask for the code again.
   const ReceiverMap = useMemo(() => lazy(() => withTimeout(import("./ReceiverMap"), CODE_TIMEOUT_MS)), [attempt]);
   const onUserMove = useCallback(() => setFollow("stay"), []);
-  const onFail = useCallback((reason: string) => setFailure(reason), []);
+  // gstack-shortcut(dec-3318f2fa): a stale MapLibre worker (404 after an upgrade deploy) fails here with Retry only, upgrade when maplibre-gl is bumped
+  const onFail = useCallback((reason: string) => setFailure({ reason, codeGone: false }), []);
+  const onBoundaryError = useCallback((reason: string, codeGone: boolean) => setFailure({ reason, codeGone }), []);
   const frameRef = useRef<HTMLDivElement>(null);
 
   const receivers = list.receivers;
@@ -125,7 +140,7 @@ export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen
       {/* Focus lands here after the card closes; the section is already the "Receiver map" region. */}
       <div className="map-frame" ref={frameRef} tabIndex={-1} data-map-region>
         {admitted && !failure ? (
-          <MapBoundary key={attempt} onError={onFail}>
+          <MapBoundary key={attempt} onError={onBoundaryError}>
             <Suspense fallback={null}>
               <ReceiverMap
                 receivers={receivers ?? NO_RECEIVERS}
@@ -147,7 +162,7 @@ export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen
 
         {failure ? (
           <div className="map-overlay">
-            <p>Map unavailable: {failure}.</p>
+            <p>Map unavailable: {failure.reason}.</p>
             <p>
               <button
                 type="button"
@@ -166,6 +181,15 @@ export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen
                 Browse receivers
               </button>
             </p>
+            {/* The costly way out, on its own line so it isn't hit by mistake. */}
+            {failure.codeGone && (
+              <p className="map-overlay-costly">
+                The map may have changed since this page loaded.{" "}
+                <button type="button" className="link-button inline" onClick={() => window.location.reload()}>
+                  Reload page (stops the radio)
+                </button>
+              </p>
+            )}
           </div>
         ) : admitted && list.failed ? (
           <div className="map-overlay">

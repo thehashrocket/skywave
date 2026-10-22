@@ -35,6 +35,14 @@ const WHY_SKIPPED: Record<RadioErrorCode, string> = {
 const ADDRESS_CODES = new Set<RadioErrorCode>(["dns", "blocked", "invalid"]);
 const MAX_TOTAL = 6; // README "Using it" quotes this number too.
 
+/**
+ * A receiver whose owner allows no apps (ext_api=0) plays for about 10 s
+ * before it refuses. The list hides those, but an owner can change the
+ * setting after the list was fetched, so a run keeps an eye on the receiver
+ * it settled on for this long after it starts playing.
+ */
+export const WATCH_MS = 15_000; // README "Using it" quotes this number too.
+
 /** Tunes a receiver; `fromList` says it came from the public list rather than being typed in. */
 type Tune = (r: Receiver, fromList: boolean) => void;
 
@@ -61,7 +69,17 @@ type Chain = {
   retried: boolean;
   /** That retry, still waiting to fire. */
   retryTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * The run looks finished (the receiver plays), but for WATCH_MS a refusal
+   * from that receiver picks it up again. Ends when this timer fires.
+   */
+  watchTimer?: ReturnType<typeof setTimeout>;
 };
+
+function clearTimers(c: Chain | null) {
+  clearTimeout(c?.retryTimer);
+  clearTimeout(c?.watchTimer);
+}
 
 /**
  * The receiver playing or connecting when the run started. How it was dialed
@@ -115,13 +133,13 @@ export function usePickBest(
 
   /** End the chain, optionally leaving a note about why. */
   const finish = useCallback((why: string | null = null) => {
-    clearTimeout(chain.current?.retryTimer);
+    clearTimers(chain.current);
     chain.current = null;
     setRunning(false);
     setNote(why);
   }, []);
 
-  useEffect(() => () => clearTimeout(chain.current?.retryTimer), []);
+  useEffect(() => () => clearTimers(chain.current), []);
 
   /**
    * Switching away already dropped what was playing; go back to it if we can.
@@ -146,7 +164,7 @@ export function usePickBest(
     (candidates: Receiver[]) => {
       const first = candidates[0];
       if (!first) return finish("No listed receiver covers this frequency.");
-      clearTimeout(chain.current?.retryTimer);
+      clearTimers(chain.current);
       const before = latestStatus.current;
       chain.current = {
         candidates,
@@ -169,10 +187,16 @@ export function usePickBest(
   /**
    * The user pressed Stop picking: stop, and don't leave them in silence.
    * Returns false when there was nothing to go back to, so the caller can stop
-   * the attempt still connecting.
+   * the attempt still connecting; true when nothing more is needed.
    */
   const stop = useCallback((): boolean => {
     const c = chain.current;
+    // While only watching, the receiver the run settled on is playing: end the
+    // watch and leave it playing.
+    if (c?.watchTimer) {
+      finish();
+      return true;
+    }
     if (c && goBack(c, "Stopped.")) return true;
     finish();
     return false;
@@ -192,10 +216,30 @@ export function usePickBest(
       return;
     }
     const current = c.tried[c.tried.length - 1]!;
+    if (c.watchTimer) {
+      // Dial and mode retunes of that receiver keep the watch; its refusal of
+      // apps picks the run up again, moving on as for any refusal. Anything
+      // else (another error, the radio stopping) ends the watch.
+      const about = status.host === current.host && status.port === current.port;
+      if (about && (status.state === "listening" || status.state === "connecting")) return;
+      if (!about || status.state !== "error" || status.code !== "no_apps") return finish();
+      clearTimeout(c.watchTimer);
+      c.watchTimer = undefined;
+      setRunning(true);
+    }
     // A status naming another receiver belongs to an earlier attempt.
     if (status.host !== undefined && (status.host !== current.host || status.port !== current.port)) return;
 
-    if (status.state === "listening") return finish();
+    if (status.state === "listening") {
+      // Done, as far as anyone can see; keep watching for a late refusal.
+      clearTimeout(c.retryTimer);
+      setRunning(false);
+      setNote(null);
+      c.watchTimer = setTimeout(() => {
+        if (chain.current === c) chain.current = null;
+      }, WATCH_MS);
+      return;
+    }
     if (status.state !== "error") return;
     // Every coded error is about that receiver, so try the next one. Uncoded
     // ones are about the service (a bad request, its listener limit, a dropped

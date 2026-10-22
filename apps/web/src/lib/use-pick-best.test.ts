@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Receiver } from "./kiwi-list";
-import { MAX_ATTEMPTS, usePickBest } from "./use-pick-best";
+import { MAX_ATTEMPTS, usePickBest, WATCH_MS } from "./use-pick-best";
 import { RADIO_ERROR_CODES, type RadioErrorCode, type RadioStatus } from "./use-radio";
 
 function rx(host: string): Receiver {
@@ -69,6 +69,110 @@ describe("usePickBest", () => {
     expect(hook.result.current.note).toBe("A only takes listeners on its own web page; trying B…");
   });
 
+  describe("after the receiver starts playing", () => {
+    type Harness = ReturnType<typeof setup>;
+    const listening = (host: string): RadioStatus => ({ state: "listening", host, port: 8073 });
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    // Value: protects=a receiver that refuses apps ~10 s into audio sends the run on to the next one, with its note; fails_when=the run ends for good on listening; why_new=live probe 2026-10-21 (no_apps at 10.8 s); seam=none; no_claim=live Kiwi timing (status sequence)
+    it("moves on when the receiver refuses apps within the watch, looking finished until then", () => {
+      const { hook, report, tuned } = setup();
+      act(() => hook.result.current.start(candidates));
+      report(listening("a"));
+      expect(hook.result.current.running).toBe(false);
+      expect(hook.result.current.note).toBeNull();
+      act(() => vi.advanceTimersByTime(WATCH_MS - 1));
+      report(fail("a", "no_apps"));
+      expect(tuned()).toEqual(["a", "b"]);
+      expect(hook.result.current.running).toBe(true);
+      expect(hook.result.current.note).toBe("A only takes listeners on its own web page; trying B…");
+    });
+
+    // Value: protects=the watch ends: a refusal after it, after another failure, or after the listener moved on starts nothing; fails_when=the watch timer or the cancel/other-status paths are missing, so a late refusal re-tunes behind the listener's back; why_new=hidden watch (eng review D4); another-receiver and service-drop rows from ship review (state-machines); seam=none; no_claim=live Kiwi timing
+    it.each<[string, (h: Harness) => void]>([
+      ["the watch ran out", () => act(() => vi.advanceTimersByTime(WATCH_MS))],
+      ["the listener chose another receiver", (h) => act(() => h.hook.result.current.cancel())],
+      ["the receiver hung up first", (h) => h.report(fail("a", "closed"))],
+      ["the radio stopped", (h) => h.report({ state: "stopped" })],
+      ["another receiver started playing", (h) => h.report(listening("z"))],
+      [
+        "the radio service dropped",
+        (h) => h.report({ state: "error", message: "Lost the connection to the radio service. Is it running?" }),
+      ],
+    ])("ignores a refusal once %s", (_case, end) => {
+      const h = setup();
+      act(() => h.hook.result.current.start(candidates));
+      h.report(listening("a"));
+      end(h);
+      h.report(fail("a", "no_apps"));
+      expect(h.tuned()).toEqual(["a"]);
+      expect(h.hook.result.current.running).toBe(false);
+    });
+
+    // Value: protects=moving the dial keeps the watch, and the run then moves on only to receivers covering the new frequency; fails_when=a retune of the same receiver ends the watch, or the resume ignores the dial; why_new=eng review D7; seam=none; no_claim=page wiring of retunes (page tests)
+    it("keeps watching through a dial move and moves on to a receiver that covers the new frequency", () => {
+      const tune = vi.fn();
+      let dialKhz = 10_000;
+      const lowOnly = { ...rx("b"), maxKhz: 12_000 };
+      const hook = renderHook(({ status }) => usePickBest(status, tune, (r) => dialKhz <= r.maxKhz), {
+        initialProps: { status: { state: "idle" } as RadioStatus },
+      });
+      act(() => hook.result.current.start([rx("a"), lowOnly, rx("c")]));
+      hook.rerender({ status: listening("a") });
+      dialKhz = 15_000;
+      hook.rerender({ status: { state: "connecting", host: "a", port: 8073 } });
+      hook.rerender({ status: listening("a") });
+      hook.rerender({ status: fail("a", "no_apps") });
+      expect(tune.mock.calls.map(([r]) => (r as Receiver).host)).toEqual(["a", "c"]);
+    });
+
+    // Value: protects=a late refusal with no receiver left to try still goes back to what played before the run, and says so; fails_when=the watch's resume ends the run on its own instead of taking the usual give-up path (silence, no note); why_new=ship coverage audit (feat/web-follow-ups): the resume was only tested with candidates left; seam=none; no_claim=live Kiwi timing
+    it("goes back to what played before the run when a late refusal leaves nothing to try", () => {
+      const { hook, report, tuned } = setup();
+      report(listening("home.example"));
+      act(() => hook.result.current.start([rx("a")]));
+      report(listening("a"));
+      act(() => vi.advanceTimersByTime(WATCH_MS - 1));
+      report(fail("a", "no_apps"));
+      expect(tuned()).toEqual(["a", "home.example"]);
+      expect(hook.result.current.running).toBe(false);
+      expect(hook.result.current.note).toBe("Tried 1 receiver and it didn't work. Going back to home.example…");
+      report(listening("home.example"));
+      expect(hook.result.current.note).toBe("Tried 1 receiver and it didn't work. Back on home.example.");
+    });
+
+    // Value: protects=Stop picking during the watch ends it without redialing what played before the run and without asking the page to stop the receiver that plays, and a later refusal starts nothing; fails_when=stop() goes back to the fallback, returns false (the page then stops the radio) or leaves the watch running; why_new=hidden watch; ship review (maintainability, plan audit partial); seam=none; no_claim=page Stop wiring
+    it("ends the watch on Stop and leaves the receiver playing", () => {
+      const tune = vi.fn();
+      const hook = renderHook(({ status }) => usePickBest(status, tune), {
+        initialProps: { status: listening("old") },
+      });
+      act(() => hook.result.current.start(candidates));
+      hook.rerender({ status: listening("a") });
+      let handled = false;
+      act(() => {
+        handled = hook.result.current.stop();
+      });
+      expect(handled).toBe(true);
+      hook.rerender({ status: fail("a", "no_apps") });
+      expect(tune.mock.calls.map(([r]) => (r as Receiver).host)).toEqual(["a"]);
+      expect(hook.result.current.running).toBe(false);
+    });
+
+    // Value: protects=a new Pick best run started during the watch runs on its own, and the old watch's timer can't end it; fails_when=start() leaves the old watch timer pending, so it nulls the new chain WATCH_MS later; why_new=ship review (state-machines: watching x start); seam=none; no_claim=none beyond protects
+    it("isn't ended by the old watch when a new run starts during it", () => {
+      const { hook, report, tuned } = setup();
+      act(() => hook.result.current.start(candidates));
+      report(listening("a"));
+      act(() => hook.result.current.start([rx("c"), rx("d")]));
+      expect(hook.result.current.running).toBe(true);
+      act(() => vi.advanceTimersByTime(WATCH_MS));
+      report(fail("c", "busy"));
+      expect(tuned()).toEqual(["a", "c", "d"]);
+    });
+  });
+
   it.each(RADIO_ERROR_CODES.filter((c) => c !== "busy"))("retries on %s", (code) => {
     const { hook, report, tuned } = setup();
     act(() => hook.result.current.start(candidates));
@@ -82,7 +186,13 @@ describe("usePickBest", () => {
     try {
       const { hook, report, tuned } = setup();
       act(() => hook.result.current.start(candidates));
-      const stuck: RadioStatus = { state: "error", host: "a", port: 8073, message: "Still waiting", retryAfterMs: 5000 };
+      const stuck: RadioStatus = {
+        state: "error",
+        host: "a",
+        port: 8073,
+        message: "Still waiting",
+        retryAfterMs: 5000,
+      };
       report(stuck);
       expect(tuned()).toEqual(["a"]);
       expect(hook.result.current.running).toBe(true);
@@ -353,10 +463,7 @@ describe("usePickBest", () => {
     act(() => {
       hook.result.current.stop();
     });
-    expect(tune.mock.calls.at(-1)).toEqual([
-      expect.objectContaining({ host: "b", name: "B", secure: true }),
-      false,
-    ]);
+    expect(tune.mock.calls.at(-1)).toEqual([expect.objectContaining({ host: "b", name: "B", secure: true }), false]);
   });
 
   it("reports whether a run is in progress", () => {
@@ -386,4 +493,3 @@ describe("usePickBest", () => {
     expect(hook.result.current.note).toBeNull();
   });
 });
-

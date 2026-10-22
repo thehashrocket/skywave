@@ -735,6 +735,32 @@ describe("useRadio", () => {
       expect(ws.sent.at(-1)).toEqual({ type: "tune", ...other, freqKhz: 7_100 });
     });
 
+    // Value: protects=the late-send skip applies only on the socket the dial move went out on; a switch whose socket dropped still tunes on the new one; fails_when=the skip checks "a dial move went out" rather than "on this socket", so the new socket never gets a tune; why_new=the skip's per-socket condition was untested (PR 2b review); seam=a stalled AudioContext.resume; no_claim=what the page shows for the dropped socket
+    it("still tunes on a new socket when the one a dial move went out on dropped", async () => {
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.status("listening", { host: tuning.host, port: tuning.port }));
+
+      let finishResume!: () => void;
+      vi.spyOn(FakeAudioContext.prototype, "resume").mockImplementationOnce(
+        () => new Promise<void>((resolve) => (finishResume = resolve)),
+      );
+      const other = { ...tuning, host: "other.example" };
+      let pending!: Promise<void>;
+      act(() => {
+        pending = result.current.tune(other);
+      });
+      act(() => result.current.retune({ ...other, freqKhz: 7_100 }));
+      act(() => ws.finishClose());
+      await act(async () => {
+        finishResume();
+        await pending;
+      });
+      const fresh = FakeSocket.instances[1]!;
+      expect(fresh.sent).toEqual([expect.objectContaining({ type: "tune", host: "other.example" })]);
+    });
+
     // Value: protects=going back to a receiver still sends that tune when a late answer for it (from earlier dial moves) arrives mid-switch; fails_when=the late-send skip treats any answer naming the receiver as this tune's answer, so "Back to A" leaves the service on B; why_new=red team (PR 2b ship); seam=a stalled AudioContext.resume; no_claim=service ordering
     it("still sends a switch back when a stale answer for that receiver arrives first", async () => {
       const { result } = renderHook(() => useRadio());

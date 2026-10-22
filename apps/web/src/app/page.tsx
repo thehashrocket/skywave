@@ -73,10 +73,14 @@ function forgetReceiver() {
   }
 }
 
-/** A port the service can dial, as typed; anything else (0, 70000, empty) is the Kiwi default. */
+/**
+ * A port the service can dial, as typed; anything else (0, 70000, empty) is the
+ * Kiwi default. Digits only: Number() would also read a stored "0x1F90" or "1e3".
+ */
 function validPort(raw: string | number): string {
-  const p = Number(raw);
-  return Number.isInteger(p) && p >= 1 && p <= 65_535 ? String(p) : String(DEFAULT_KIWI_PORT);
+  const text = String(raw).trim();
+  const p = /^\d+$/.test(text) ? Number(text) : NaN;
+  return p >= 1 && p <= 65_535 ? String(p) : String(DEFAULT_KIWI_PORT);
 }
 
 function listSource(fromList: boolean) {

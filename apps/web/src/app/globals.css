@@ -1094,6 +1094,11 @@ a {
   margin: 0;
 }
 
+/* The reload stops the radio: keep it well clear of Retry and Browse, which sit just above. */
+.map-overlay .map-overlay-costly {
+  margin-top: 16px;
+}
+
 .map-chip {
   position: absolute;
   top: 10px;
