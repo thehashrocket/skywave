@@ -59,6 +59,30 @@ export type RadioStatus = {
 
 export type Meter = { rssi: number; overflow: boolean };
 
+/** One strong broadcast signal from a band scan. */
+export type ScanSignal = { freqKhz: number; snrDb: number; band: string };
+
+/**
+ * The band scan of the receiver being listened to (apps/radio's session.py,
+ * "scan" messages). Only the newest request's reply for that receiver lands.
+ */
+export type ScanState =
+  | { state: "scanning"; host: string; port: number }
+  | {
+      state: "done";
+      host: string;
+      port: number;
+      signals: ScanSignal[];
+      /** Flat-topped signals (digital, jamming) left out of the list. */
+      hidden: number;
+      bandsDone: number;
+      bandsTotal: number;
+      /** Stopped at the service's time limit with only some bands scanned. */
+      partial: boolean;
+      atMs: number;
+    }
+  | { state: "error"; host: string; port: number; message: string };
+
 type SpectrumListener = (row: Float32Array, sampleRate: number) => void;
 
 // Frame tags: 3 is int16 audio, 4 is a float32 base dB then a uint8 per bin.
@@ -133,6 +157,19 @@ export function useRadio() {
   // that socket the service has the newer tuning, and the tune's own send
   // would undo it. (A fresh socket has had nothing, so the tune must go.)
   const retunedRef = useRef<WebSocket | null>(null);
+  // Band scan. canScan: the service said it can ("features" on its statuses);
+  // an older one would answer a scan request with an error status.
+  const [canScan, setCanScan] = useState(false);
+  const [scan, setScan] = useState<ScanState | null>(null);
+  // The receiver being listened to, for scan requests and replies.
+  const listeningRef = useRef<{ host: string; port: number } | null>(null);
+  // The newest scan request; replies for any other are late and ignored.
+  const scanRef = useRef<{ id: number; host: string; port: number } | null>(null);
+  const scanIdRef = useRef(0);
+  const clearScan = useCallback(() => {
+    scanRef.current = null;
+    setScan(null);
+  }, []);
 
   const setTuningBoth = useCallback((v: boolean) => {
     tuningRef.current = v;
@@ -205,6 +242,9 @@ export function useRadio() {
           setMeter(null);
           setHeardAudioBoth(false);
         }
+        setCanScan(Array.isArray(msg.features) && msg.features.includes("scan"));
+        listeningRef.current =
+          state === "listening" && host !== undefined && port !== undefined ? { host, port } : null;
         setStatus({
           state,
           message: typeof msg.message === "string" ? msg.message : undefined,
@@ -216,6 +256,32 @@ export function useRadio() {
         });
       } else if (msg.type === "meter") {
         setMeter({ rssi: Number(msg.rssi), overflow: Boolean(msg.overflow) });
+      } else if (msg.type === "scan") {
+        const asked = scanRef.current;
+        // A reply for an older request or another receiver arrives after a
+        // switch or Scan again; it must not fill the current list.
+        if (!asked || msg.id !== asked.id || msg.host !== asked.host || msg.port !== asked.port) return;
+        const { host, port } = asked;
+        if (msg.state === "scanning") setScan({ state: "scanning", host, port });
+        else if (msg.state === "done" && Array.isArray(msg.signals)) {
+          setScan({
+            state: "done",
+            host,
+            port,
+            signals: msg.signals.filter(
+              (s): s is ScanSignal =>
+                typeof s?.freqKhz === "number" && typeof s?.snrDb === "number" && typeof s?.band === "string",
+            ),
+            hidden: typeof msg.hidden === "number" ? msg.hidden : 0,
+            bandsDone: Number(msg.bandsDone) || 0,
+            bandsTotal: Number(msg.bandsTotal) || 0,
+            partial: msg.partial === true,
+            atMs: Number(msg.atMs) || Date.now(),
+          });
+        } else if (msg.state === "error") {
+          const message = typeof msg.message === "string" ? msg.message : "Couldn't scan this receiver.";
+          setScan({ state: "error", host, port, message });
+        }
       }
     },
     [setTuningBoth, setHeardAudioBoth],
@@ -304,6 +370,9 @@ export function useRadio() {
         if (wsRef.current !== ws) return;
         wsRef.current = null;
         nodeRef.current?.port.postMessage({ type: "reset" });
+        listeningRef.current = null;
+        setCanScan(false);
+        clearScan();
         setMeter(null);
         setTuningBoth(false);
         setHeardAudioBoth(false);
@@ -322,7 +391,7 @@ export function useRadio() {
         }
       };
     });
-  }, [handleBinary, handleText, setTuningBoth, setHeardAudioBoth]);
+  }, [handleBinary, handleText, setTuningBoth, setHeardAudioBoth, clearScan]);
 
   /** Start listening, or retune if already connected. Call from a click so audio can start. */
   const tune = useCallback(
@@ -331,6 +400,8 @@ export function useRadio() {
       pendingRef.current = t;
       latestRef.current = t;
       retunedRef.current = null;
+      const asked = scanRef.current;
+      if (asked && (asked.host !== t.host || asked.port !== t.port)) clearScan();
       setTuningBoth(true);
       setHeardAudioBoth(false);
       try {
@@ -359,7 +430,7 @@ export function useRadio() {
       if (retunedRef.current === ws) return;
       ws.send(JSON.stringify({ type: "tune", ...(latestRef.current ?? t) }));
     },
-    [ensureAudio, ensureSocket, setTuningBoth, setHeardAudioBoth],
+    [ensureAudio, ensureSocket, setTuningBoth, setHeardAudioBoth, clearScan],
   );
 
   /**
@@ -391,11 +462,32 @@ export function useRadio() {
       wsRef.current = null;
     }
     nodeRef.current?.port.postMessage({ type: "reset" });
+    listeningRef.current = null;
+    clearScan();
     setMeter(null);
     setTuningBoth(false);
     setHeardAudioBoth(false);
     setStatus({ state: "idle" });
-  }, [setTuningBoth, setHeardAudioBoth]);
+  }, [setTuningBoth, setHeardAudioBoth, clearScan]);
+
+  /**
+   * Scan the receiver being listened to for strong broadcast signals. `fresh`
+   * skips the service's 10-minute cache. Does nothing unless the service
+   * supports it and a receiver is playing; returns whether it asked.
+   */
+  const startScan = useCallback(
+    (fresh = false): boolean => {
+      const ws = wsRef.current;
+      const playing = listeningRef.current;
+      if (!canScan || !playing || !ws || ws.readyState !== WebSocket.OPEN) return false;
+      const id = ++scanIdRef.current;
+      scanRef.current = { id, ...playing };
+      setScan({ state: "scanning", ...playing });
+      ws.send(JSON.stringify({ type: "scan", id, fresh }));
+      return true;
+    },
+    [canScan],
+  );
 
   const setVolume = useCallback((v: number) => {
     volumeRef.current = v;
@@ -419,5 +511,18 @@ export function useRadio() {
     [],
   );
 
-  return { status, meter, tuning, heardAudio, tune, retune, stop, setVolume, onSpectrum };
+  return {
+    status,
+    meter,
+    tuning,
+    heardAudio,
+    canScan,
+    scan,
+    tune,
+    retune,
+    stop,
+    startScan,
+    setVolume,
+    onSpectrum,
+  };
 }

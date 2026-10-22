@@ -284,6 +284,7 @@ Other shadows:
   - Opacity is 1 when tuned, 0.2 out of range, 1 at night and 0.55 by day.
   - Coastlines and borders are 0.5px `--map-rule`.
 - **Waterfall** (`Waterfall.tsx`, `.waterfall`): a 240px canvas (180px at ≤520px) in a deep, rounded screen with `cursor: crosshair`. It has a glass-tinted passband strip, a dashed needle-red center line, centered muted empty text, and a Barlow kHz axis with an Atkinson unit caption.
+- **Strong signals now** (`SignalList.tsx`, `.presets.signals`): the band scan's list, built from the presets' classes (rows, tabular Barlow frequency, current row in lamp) with a wider band column and a muted "N dB above noise" note (`.signal-strength`). State text sits in a `role="status"` paragraph; Scan again is an inline `.link-button`. Hidden when the radio service can't scan.
 - **Presets** (`Presets.tsx`, `.presets`): an `h2` "Saved frequencies".
   - `.presets-list` is an auto-fill grid (min 300px) of rows with a `--rule` bottom border.
   - Each `.preset-tune` row shows the frequency (Barlow 1.2rem tabular, lamp when current), the mode (Barlow muted) and the name (glass and underlined on hover).

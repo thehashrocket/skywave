@@ -957,6 +957,21 @@ a {
   color: var(--muted);
 }
 
+/* Strong signals now: the presets' rows, with room for band names and a dB note. */
+
+.signals .preset-tune {
+  grid-template-columns: 6ch 4.2ch 1fr;
+}
+
+.signal-strength {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.signals .preset-tune:hover .signal-strength {
+  color: var(--glass);
+}
+
 .preset-delete {
   font: inherit;
   font-size: 1.2rem;
