@@ -1789,10 +1789,61 @@ async def test_fresh_scans_are_limited_per_listener():
     assert replies[1]["id"] == 2 and replies[1]["atMs"] == replies[0]["atMs"]
     at, target, state, extra = session._last_sweep
     session._last_sweep = (at - SCAN_MIN_INTERVAL_S - 1, target, state, extra)
+    starts = session._sweep_times._starts
+    for key in starts:
+        starts[key] -= SCAN_MIN_INTERVAL_S + 1
     await session.handle({"type": "scan", "id": 3, "fresh": True})
     await asyncio.wait_for(dones(3), 5)
     assert frames[0] > swept  # swept again once the interval passed
     await session.close()
+
+
+# Value: protects=a listener who comes back to a receiver on a new connection (a stop, a drop, or a new socket) gets a new sweep, but only once SCAN_MIN_INTERVAL_S has passed since their last one, so reconnecting can't keep a volunteer's Kiwi sweeping and the old connection's answer (an error from a scan the drop cut short, say) isn't replayed; fails_when=_end_scan keeps _last_sweep, or the interval lives only in the session; why_new=TODOS follow-up from the band scan /ship (D8 B) and its review; seam=stand-in waterfall, two sessions sharing SweepTimes as server.py's sockets do, a short interval; no_claim=listeners behind an untrusted proxy (limited per connection)
+async def test_a_new_connection_waits_out_the_interval_then_scans_again(monkeypatch):
+    from skywave_radio.session import SweepTimes
+    from skywave_radio.waterfall import WaterfallFrame
+
+    monkeypatch.setattr("skywave_radio.session.SCAN_MIN_INTERVAL_S", 0.3)
+    sent = []
+    starts = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    class Sweeps(_ScanWaterfall):
+        async def frame(self, zoom, cf):
+            starts.append(time.monotonic())
+            span = 30_000 / 2**zoom
+            return WaterfallFrame(zoom, cf - span / 2, span, np.full(1024, 140, dtype=np.uint8))
+
+    async def dones(n):
+        while sum(p["type"] == "scan" and p["state"] == "done" for p in sent) < n:
+            await asyncio.sleep(0.01)
+
+    times = SweepTimes()
+
+    def connect():
+        return listening_session(
+            send_text, waterfall_factory=lambda *a, **k: Sweeps(), sweep_times=times, client_ip="8.8.8.8"
+        )
+
+    first = connect()
+    await first.handle({"type": "scan", "id": 1})
+    await asyncio.wait_for(dones(1), 5)
+    swept_at = starts[0]
+    swept = len(starts)
+    await first.stop(None)
+    assert first._last_sweep is None
+
+    second = connect()
+    await second.handle({"type": "scan", "id": 2, "fresh": True})
+    await asyncio.wait_for(dones(2), 5)
+    assert len(starts) > swept  # a new sweep, not the old answer
+    assert starts[swept] - swept_at >= 0.25  # after the interval (less clock slack)
+    replies = [p for p in sent if p["type"] == "scan"]
+    assert [p["state"] for p in replies if p["id"] == 2] == ["scanning", "done"]
+    await first.close()
+    await second.close()
 
 
 # Value: protects=the shared scan cache keeps at most SCAN_CACHE_MAX receivers, dropping the soonest to expire, so it stays bounded over a long uptime (Step 11 D7); fails_when=put stops evicting; why_new=adversarial review (unbounded cache); seam=none; no_claim=memory use itself
