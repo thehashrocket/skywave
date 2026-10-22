@@ -35,7 +35,7 @@ describe("SignalList", () => {
     ],
     [
       "empty",
-      { state: "done", ...at, signals: [], hidden: 0, bandsDone: 15, bandsTotal: 15, partial: false, atMs: 1 },
+      { state: "done", ...at, signals: [], hidden: 0, bandsDone: 15, bandsTotal: 15, partial: false },
       "No strong broadcast signals right now.",
     ],
   ])("says so %s", (_, scan, text) => {
@@ -63,7 +63,6 @@ describe("SignalList", () => {
       bandsDone: 15,
       bandsTotal: 15,
       partial: false,
-      atMs: 1,
     });
     const rows = screen.getAllByRole("listitem");
     expect(rows.map((r) => r.hasAttribute("data-current"))).toEqual([true, false]);

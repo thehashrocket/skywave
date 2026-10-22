@@ -11,7 +11,7 @@ const radio = {
   heardAudio: false,
   canScan: false,
   scan: null as ScanState | null,
-  startScan: vi.fn(() => true),
+  startScan: vi.fn(),
   tune: vi.fn(async () => {}),
   retune: vi.fn(),
   stop: vi.fn(),
@@ -987,7 +987,6 @@ describe("ListenPage", () => {
         bandsDone: 9,
         bandsTotal: 15,
         partial: true,
-        atMs: 1,
       };
       const view = render(<ListenPage />);
       playing(view);

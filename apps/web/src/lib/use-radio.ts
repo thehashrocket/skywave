@@ -79,7 +79,6 @@ export type ScanState =
       bandsTotal: number;
       /** Stopped at the service's time limit with only some bands scanned. */
       partial: boolean;
-      atMs: number;
     }
   | { state: "error"; host: string; port: number; message: string };
 
@@ -245,6 +244,11 @@ export function useRadio() {
         setCanScan(Array.isArray(msg.features) && msg.features.includes("scan"));
         listeningRef.current =
           state === "listening" && host !== undefined && port !== undefined ? { host, port } : null;
+        // The service drops a scan when its receiver connection ends, without a
+        // reply. Clear ours too, or a reconnect to the same receiver would keep
+        // "Scanning…" (or an old list) and never scan again.
+        const asked = scanRef.current;
+        if (asked && (state !== "listening" || host !== asked.host || port !== asked.port)) clearScan();
         setStatus({
           state,
           message: typeof msg.message === "string" ? msg.message : undefined,
@@ -276,7 +280,6 @@ export function useRadio() {
             bandsDone: Number(msg.bandsDone) || 0,
             bandsTotal: Number(msg.bandsTotal) || 0,
             partial: msg.partial === true,
-            atMs: Number(msg.atMs) || Date.now(),
           });
         } else if (msg.state === "error") {
           const message = typeof msg.message === "string" ? msg.message : "Couldn't scan this receiver.";
@@ -284,7 +287,7 @@ export function useRadio() {
         }
       }
     },
-    [setTuningBoth, setHeardAudioBoth],
+    [setTuningBoth, setHeardAudioBoth, clearScan],
   );
 
   const handleBinary = useCallback(
@@ -473,18 +476,17 @@ export function useRadio() {
   /**
    * Scan the receiver being listened to for strong broadcast signals. `fresh`
    * skips the service's 10-minute cache. Does nothing unless the service
-   * supports it and a receiver is playing; returns whether it asked.
+   * supports it and a receiver is playing.
    */
   const startScan = useCallback(
-    (fresh = false): boolean => {
+    (fresh = false) => {
       const ws = wsRef.current;
       const playing = listeningRef.current;
-      if (!canScan || !playing || !ws || ws.readyState !== WebSocket.OPEN) return false;
+      if (!canScan || !playing || !ws || ws.readyState !== WebSocket.OPEN) return;
       const id = ++scanIdRef.current;
       scanRef.current = { id, ...playing };
       setScan({ state: "scanning", ...playing });
       ws.send(JSON.stringify({ type: "scan", id, fresh }));
-      return true;
     },
     [canScan],
   );

@@ -137,7 +137,7 @@ class _connect(ws_connect):
     """websockets.connect that follows no redirects on its own.
 
     It would follow a same-host one silently, and refuses a cross-origin one
-    (we always pass `host`) with a ValueError. KiwiClient.connect decides
+    (we always pass `host`) with a ValueError. KiwiConnection.connect decides
     instead, so the one-hop, same-host, https-only rule holds for all of them.
     """
 

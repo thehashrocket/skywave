@@ -14,6 +14,18 @@
 **Priority:** P4
 **Depends on:** A receiver that reproduces the failure
 
+### Scan the ham bands too
+
+**What:** Extend the band scan to the ham bands in `HAM_BANDS` (`apps/web/src/lib/radio-types.ts`), with results that suit hams: repeated sweeps instead of one snapshot, and a sideband guess for each signal.
+
+**Why:** The scan covers broadcast bands only. Ham voice signals come and go in seconds and sit off any channel grid, so a single snapshot ranks them badly and the list goes stale at once. Covering them would make the list useful on busy contest weekends.
+
+**Context:** Add the bands to `SCAN_BANDS` in `apps/radio/skywave_radio/scan.py` and reuse `find_peaks`; ham peaks need no AM-shape filter or channel snapping. Consider short repeated sweeps that keep only signals seen in most of them, and `guessMode` for the sideband. Keep the 15 s cap (`DEADLINE_S`); more sweeps mean the paired waterfall runs fast for longer.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** None
+
 ## Web app
 
 ### Receiver map follow-ups from PR 2b review
@@ -94,37 +106,17 @@
 **Priority:** P3
 **Depends on:** None
 
-## Band scan (planned)
-
-### Scan the ham bands too
-
-**What:** Extend the band scan (planned in the 2026-10-22 eng review) to the ham bands in `HAM_BANDS` (`apps/web/src/lib/radio-types.ts`), with results that suit hams: repeated sweeps instead of one snapshot, and a sideband guess for each signal.
-
-**Why:** The first version scans broadcast bands only (review decision D2). Ham voice signals come and go in seconds and sit off any channel grid, so a single snapshot ranks them badly and the list goes stale at once.
-
-**Pros:** Covers the rest of the dial; useful on busy contest weekends.
-**Cons:** Several sweeps per scan hold a volunteer's channel longer; LSB/USB guessing can be wrong.
-
-**Context:** Build on the scan's `SCAN_BANDS` and peak finder (`apps/radio/skywave_radio/scan.py` once it exists). Consider short repeated sweeps that keep only signals seen in most of them, and `guessMode` for the sideband. Keep the 15 s cap (D10) and listener priority (D12).
-
-**Effort:** M
-**Priority:** P3
-**Depends on:** The broadcast band scan shipping, after its feasibility spike (D11)
-
 ### Name the stations in the scan list
 
-**What:** Label scan results with the station on that frequency now: match the public EiBi broadcast schedule by frequency and UTC time, and fall back to the receiver's own DX labels.
+**What:** Label "Strong signals now" rows with the station on that frequency now: match the public EiBi broadcast schedule by frequency and UTC time, and fall back to the receiver's own DX labels.
 
-**Why:** The scan lists "9420 kHz, 31m, 30 dB above noise" but not who it is. Schedules also give language and often programme type, the closest the app can get to "voices, not just loud" (the scan's shape filter, D18, can't tell talk from music).
+**Why:** The list shows "9420 kHz, 31m, 30 dB above noise" but not who it is. Schedules also give language and often programme type, the closest the app can get to "voices, not just loud": the scan's shape filter can't tell talk from music.
 
-**Pros:** Turns a list of numbers into stations you can choose between.
-**Cons:** A schedule to fetch and refresh each season (A and B schedules), and matching rules for shared frequencies.
-
-**Context:** EiBi publishes a free CSV per season. Kiwis expose owner DX labels (MSG keys `load_dxcfg` and `request_dx_update` were seen on the waterfall connection in the review's probes). Start by matching only exact frequency plus current UTC hour; show "unknown" otherwise.
+**Context:** EiBi publishes a free CSV each season (A and B schedules), so it needs refreshing twice a year, and shared frequencies need a matching rule. Kiwis expose owner DX labels (MSG keys `load_dxcfg` and `request_dx_update` arrive on the waterfall connection, `apps/radio/skywave_radio/waterfall.py`). Start by matching exact frequency plus the current UTC hour, and show nothing extra otherwise. The web side is `apps/web/src/components/SignalList.tsx`.
 
 **Effort:** M
 **Priority:** P3
-**Depends on:** The broadcast band scan shipping
+**Depends on:** None
 
 ## Completed
 

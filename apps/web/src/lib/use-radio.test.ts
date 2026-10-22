@@ -866,16 +866,12 @@ describe("useRadio", () => {
     it("asks only a service that says it can scan", async () => {
       const old = await listening(null);
       expect(old.result.current.canScan).toBe(false);
-      act(() => {
-        expect(old.result.current.startScan()).toBe(false);
-      });
+      act(() => old.result.current.startScan());
       expect(old.ws.sent.filter((m) => m.type === "scan")).toEqual([]);
 
       const fresh = await listening();
       expect(fresh.result.current.canScan).toBe(true);
-      act(() => {
-        expect(fresh.result.current.startScan(true)).toBe(true);
-      });
+      act(() => fresh.result.current.startScan(true));
       expect(fresh.ws.sent.at(-1)).toEqual({ type: "scan", id: expect.any(Number), fresh: true });
       expect(fresh.result.current.scan).toEqual({ state: "scanning", ...at });
     });
@@ -883,9 +879,9 @@ describe("useRadio", () => {
     // Value: protects=the reply for the newest request and receiver fills the list; older or other-receiver replies are ignored (D16); fails_when=replies are applied without the id and host/port checks; why_new=Codex O6; seam=none; no_claim=network ordering
     it("applies only the newest request's reply for this receiver", async () => {
       const { result, ws } = await listening();
-      act(() => void result.current.startScan());
+      act(() => result.current.startScan());
       const first = ws.sent.at(-1)!.id as number;
-      act(() => void result.current.startScan(true));
+      act(() => result.current.startScan(true));
       const second = ws.sent.at(-1)!.id as number;
       act(() => scanReply(ws, done(first)));
       expect(result.current.scan?.state).toBe("scanning");
@@ -900,16 +896,31 @@ describe("useRadio", () => {
     // Value: protects=a scan error never touches the radio status (D5); fails_when=scan errors are routed into setStatus; why_new=D5; seam=none; no_claim=service behaviour
     it("keeps listening when a scan fails", async () => {
       const { result, ws } = await listening();
-      act(() => void result.current.startScan());
+      act(() => result.current.startScan());
       act(() => scanReply(ws, { id: ws.sent.at(-1)!.id, state: "error", message: "Couldn't scan" }));
       expect(result.current.status.state).toBe("listening");
       expect(result.current.scan?.state).toBe("error");
     });
 
+    // Value: protects=a scan the service dropped with its receiver connection doesn't linger: after an error or stop and a reconnect to the same receiver the list is clear, so a new scan can start; fails_when=only a switch to another receiver clears it, leaving "Scanning…" for good; why_new=bug review; seam=none; no_claim=service timing
+    it("clears a scan whose receiver stopped listening, even when the same receiver comes back", async () => {
+      const { result, ws } = await listening();
+      act(() => result.current.startScan());
+      act(() => ws.status("error", { ...at, code: "closed", features: ["scan"] }));
+      expect(result.current.scan).toBeNull();
+      act(() => ws.status("listening", { ...at, features: ["scan"] }));
+      expect(result.current.scan).toBeNull();
+      act(() => result.current.startScan());
+      const id = ws.sent.at(-1)!.id as number;
+      act(() => scanReply(ws, done(id)));
+      act(() => ws.status("stopped", { ...at, features: ["scan"] }));
+      expect(result.current.scan).toBeNull();
+    });
+
     // Value: protects=switching receivers, stopping or losing the service clears the list, and a late reply can't bring it back; fails_when=the list survives a switch, so its stations look like the new receiver's; why_new=D16; seam=none; no_claim=none beyond protects
     it("clears the list on a switch, a stop and a dropped connection", async () => {
       const { result, ws } = await listening();
-      act(() => void result.current.startScan());
+      act(() => result.current.startScan());
       const id = ws.sent.at(-1)!.id as number;
       act(() => scanReply(ws, done(id)));
       await act(() => result.current.tune({ ...tuning, freqKhz: 9_420 }));
@@ -920,13 +931,13 @@ describe("useRadio", () => {
       expect(result.current.scan).toBeNull();
 
       const again = await listening();
-      act(() => void again.result.current.startScan());
+      act(() => again.result.current.startScan());
       act(() => again.result.current.stop());
       expect(again.result.current.scan).toBeNull();
       expect(again.result.current.canScan).toBe(true);
 
       const third = await listening();
-      act(() => void third.result.current.startScan());
+      act(() => third.result.current.startScan());
       act(() => third.ws.finishClose());
       expect(third.result.current.scan).toBeNull();
       expect(third.result.current.canScan).toBe(false);

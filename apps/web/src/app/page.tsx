@@ -101,9 +101,9 @@ const STATE_TEXT = {
 } as const;
 
 /**
- * How long a receiver plays before its band scan starts (eng review D4): long
- * enough that a quick switch or a receiver refusing apps (about 10 s in)
- * doesn't scan for nothing. The radio service caches each receiver's scan.
+ * How long a receiver plays before its band scan starts: long enough that a
+ * quick switch or a receiver refusing apps (about 10 s in) doesn't scan for
+ * nothing. The radio service caches each receiver's scan.
  */
 const AUTO_SCAN_MS = 10_000;
 

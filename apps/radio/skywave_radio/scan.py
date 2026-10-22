@@ -1,16 +1,19 @@
 """Band scan: sweep a receiver's broadcast bands with its waterfall and rank the signals.
 
 Pure apart from sweep(), which takes the frame fetcher (WaterfallClient.frame)
-as an argument. Decisions from the 2026-10-22 eng review: broadcast bands only
-(MW plus the 14 shortwave bands), a list of AM-shaped carriers ranked by dB
-above the frame's noise floor, flat-topped signals (digital, noise jammers)
-counted rather than listed, shortwave snapped to 5 kHz and medium wave to
-whichever of the 9 and 10 kHz grids fits the scan's MW peaks better.
+as an argument. Only broadcast bands are swept (MW plus the 14 shortwave bands):
+broadcasters sit on a channel grid and stay on air for hours, so one snapshot
+ranks them well, while ham signals come and go in seconds. The list holds
+AM-shaped carriers ranked by dB above the frame's noise floor; flat-topped
+signals (digital broadcasts, noise jammers) are counted rather than listed.
+Shortwave snaps to 5 kHz; medium wave to whichever of the 9 and 10 kHz grids
+the scan's MW carriers fit better, since that differs by region.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
@@ -71,7 +74,6 @@ DEADLINE_S = 15.0
 @dataclass(frozen=True)
 class FramePlan:
     band: Band
-    zoom: int
     cf_khz: float  # baseband (RF minus the receiver's offset), as the Kiwi takes it
     lo_khz: float  # RF range of the band this frame looks at
     hi_khz: float
@@ -92,6 +94,7 @@ class ScanResult:
     hidden: int = 0
     bands_done: int = 0
     bands_total: int = 0
+    at_ms: int = 0  # when it was made, ms since the epoch
 
     @property
     def partial(self) -> bool:
@@ -117,7 +120,7 @@ def plan_frames(offset_khz: float = 0.0, bandwidth_khz: float = 30_000.0, bands=
             n = int((hi - lo) // span) + 1
             step = (hi - lo - span) / (n - 1)
             centres = [lo + span / 2 + i * step for i in range(n)]
-        plans += [FramePlan(band, band.zoom, c - offset_khz, lo, hi) for c in centres]
+        plans += [FramePlan(band, c - offset_khz, lo, hi) for c in centres]
     return plans
 
 
@@ -221,20 +224,21 @@ async def sweep(
     Stops at deadline_s and returns the bands finished so far, so a slow
     receiver still gives a (partial) list.
     """
-    plans = plan_frames(offset_khz, bandwidth_khz, bands)
-    names = list(dict.fromkeys(p.band.name for p in plans))
-    remaining = {name: sum(p.band.name == name for p in plans) for name in names}
-    peaks: dict[str, list[Peak]] = {name: [] for name in names}
-    done: list[str] = []
+    by_band: dict[str, list[FramePlan]] = defaultdict(list)
+    for plan in plan_frames(offset_khz, bandwidth_khz, bands):
+        by_band[plan.band.name].append(plan)
+    found: list[Peak] = []
+    done = 0
     try:
         async with asyncio.timeout(deadline_s):
-            for plan in plans:
-                frame = await fetch(plan.zoom, plan.cf_khz)
-                peaks[plan.band.name] += find_peaks(frame, plan, offset_khz)
-                remaining[plan.band.name] -= 1
-                if remaining[plan.band.name] == 0:
-                    done.append(plan.band.name)
+            for plans in by_band.values():
+                peaks = []
+                for plan in plans:
+                    frame = await fetch(plan.band.zoom, plan.cf_khz)
+                    peaks += find_peaks(frame, plan, offset_khz)
+                # A band counts only once all its frames are in.
+                found += peaks
+                done += 1
     except TimeoutError:
         pass
-    found = [p for name in done for p in peaks[name]]
-    return summarize(found, len(done), len(names))
+    return summarize(found, done, len(by_band))

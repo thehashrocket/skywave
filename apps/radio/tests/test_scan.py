@@ -46,7 +46,7 @@ def frame_for(start_khz: float, span_khz: float, signals=(), blocks=()) -> Water
 
 
 def plan(name="31m", lo=9400.0, hi=9900.0, zoom=6) -> FramePlan:
-    return FramePlan(Band(name, lo, hi, zoom), zoom, (lo + hi) / 2, lo, hi)
+    return FramePlan(Band(name, lo, hi, zoom), (lo + hi) / 2, lo, hi)
 
 
 # Value: protects=the scan's shortwave bands stay the dial's broadcast bands (D8 mirror); fails_when=either table changes alone; why_new=two copies across languages; seam=none; no_claim=MW, which only the scan has

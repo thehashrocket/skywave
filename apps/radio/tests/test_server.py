@@ -1191,3 +1191,136 @@ def test_scan_again_mid_sweep_is_answered_by_the_running_scan():
     replies, playing = run_with_fake(body, wf_bins=carrier_bins(9_420.0), wf_interval=0.02)
     assert [(r["state"], r["id"]) for r in replies] == [("scanning", 2), ("done", 2)]
     assert playing
+
+
+class _ScanWaterfall:
+    """A stand-in paired waterfall: frame() fails as told; idle() waits or fails."""
+
+    def __init__(self, *args, frame_error=None, idle_error=None, **kwargs):
+        from skywave_radio.kiwi import KiwiInfo
+
+        self.info = KiwiInfo()
+        self.bandwidth_khz = 30_000.0
+        self.frame_error = frame_error
+        self.idle_error = idle_error
+        self.closed = False
+        self.idling = asyncio.Event()
+
+    async def connect(self):
+        return self.info
+
+    async def fast(self):
+        pass
+
+    async def frame(self, zoom, cf):
+        raise self.frame_error
+
+    async def idle(self):
+        self.idling.set()
+        if self.idle_error:
+            raise self.idle_error
+        await asyncio.Event().wait()
+
+    async def close(self):
+        self.closed = True
+
+
+def listening_session(send_text, **kwargs):
+    """A ListenSession that believes it is listening to kiwi.test, without a real Kiwi."""
+    from types import SimpleNamespace
+
+    from skywave_radio.session import ListenSession
+
+    async def nothing(_):
+        pass
+
+    session = ListenSession(settings(), send_text, nothing, **kwargs)
+    session._listening = True
+    session._target = ("kiwi.test", 8073, True, False)
+    async def close():
+        pass
+
+    session._client = SimpleNamespace(
+        host="kiwi.test", port=8073, connect_host="127.0.0.1", secure=False, timestamp=1, close=close
+    )
+    return session
+
+
+# Value: protects=a scan request arriving while the last scan's final reply is being sent gets its own answer; fails_when=the finishing scan still counts as running, adopts the request and answers only the old id, leaving the page on Scanning… for good; why_new=bug review (adopt vs final send); seam=ListenSession internals set by hand (no Kiwi); no_claim=real socket timing
+async def test_a_request_during_the_final_reply_gets_its_own_answer():
+    from skywave_radio.scan import ScanResult
+    from skywave_radio.session import ScanCache
+
+    cache = ScanCache()
+    cache.put(("kiwi.test", 8073, True, False), ScanResult(at_ms=1))
+    sent = []
+    session = None
+
+    async def send_text(payload):
+        sent.append(payload)
+        if payload["type"] == "scan" and payload["state"] == "done" and payload["id"] == 1:
+            await session.handle({"type": "scan", "id": 2})  # lands mid-send
+
+    session = listening_session(send_text, scan_cache=cache)
+    await session.handle({"type": "scan", "id": 1})
+    for _ in range(50):
+        if any(p.get("id") == 2 and p["state"] == "done" for p in sent):
+            break
+        await asyncio.sleep(0.01)
+    assert [(p["id"], p["state"]) for p in sent] == [(1, "done"), (2, "done")]
+
+
+# Value: protects=a sweep that crashes leaves the paired waterfall drained and open, so the audio keeps playing; fails_when=the crash path leaves it unread (the Kiwi drops it and the audio with it) or closes it; why_new=bug review (undrained W/F); seam=stand-in waterfall; no_claim=which crashes happen live
+async def test_a_crashed_scan_keeps_the_waterfall_drained():
+    sent = []
+    made = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    def factory(*args, **kwargs):
+        made.append(_ScanWaterfall(frame_error=ValueError("bad frame")))
+        return made[-1]
+
+    session = listening_session(send_text, waterfall_factory=factory)
+    await session.handle({"type": "scan", "id": 1})
+    await asyncio.wait_for(made_and_idling(made), 2)
+    assert sent[-1]["state"] == "error" and "broke" in sent[-1]["message"]
+    assert not made[0].closed
+    await session.close()
+    assert made[0].closed
+
+
+async def made_and_idling(made):
+    while not made:
+        await asyncio.sleep(0.01)
+    await made[0].idling.wait()
+
+
+# Value: protects=a waterfall that fails while idling is closed, not just forgotten; fails_when=_idle only drops the reference, leaking a socket whose send timed out; why_new=bug review; seam=stand-in waterfall; no_claim=real close codes
+async def test_a_waterfall_that_fails_while_idling_is_closed():
+    from skywave_radio.kiwi import KiwiError
+
+    made = []
+
+    async def send_text(payload):
+        pass
+
+    class Sweeps(_ScanWaterfall):
+        async def frame(self, zoom, cf):
+            from skywave_radio.waterfall import WaterfallFrame
+
+            return WaterfallFrame(zoom, cf - 30_000 / 2**zoom / 2, 30_000 / 2**zoom, np.full(1024, 140, dtype=np.uint8))
+
+    def factory(*args, **kwargs):
+        made.append(Sweeps(idle_error=KiwiError("timeout", "stopped reading")))
+        return made[-1]
+
+    session = listening_session(send_text, waterfall_factory=factory)
+    await session.handle({"type": "scan", "id": 1})
+    await asyncio.wait_for(made_and_idling(made), 5)
+    for _ in range(50):
+        if made[0].closed:
+            break
+        await asyncio.sleep(0.01)
+    assert made[0].closed and session._waterfall is None

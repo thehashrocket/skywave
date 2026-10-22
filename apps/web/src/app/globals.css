@@ -957,7 +957,7 @@ a {
   color: var(--muted);
 }
 
-/* Strong signals now: the presets' rows, with room for band names and a dB note. */
+/* Strong signals now: the presets' rows, widened for 5-digit frequencies and band names, plus a dB note. */
 
 .signals .preset-tune {
   grid-template-columns: 6ch 4.2ch 1fr;
