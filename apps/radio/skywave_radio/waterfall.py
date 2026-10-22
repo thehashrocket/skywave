@@ -39,8 +39,9 @@ START_TOLERANCE = 0.02
 # How often idle() sends a keepalive when no frame arrives.
 KEEPALIVE_S = 1.0
 # The coverage a receiver may report (real Kiwis report about 30 MHz); anything
-# outside is ignored. Too narrow would crowd every peak of a sweep into a few kHz.
-MIN_BANDWIDTH_KHZ = 1_000.0
+# outside is ignored. Too narrow shrinks each bin, which multiplies the peak
+# finder's per-peak work on the loop that streams everyone's audio.
+MIN_BANDWIDTH_KHZ = 10_000.0
 MAX_BANDWIDTH_KHZ = 64_000.0
 
 

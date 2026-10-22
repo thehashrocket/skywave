@@ -500,13 +500,14 @@ class ListenSession:
             await waterfall.close()
             raise
         except Exception as e:
-            refused = isinstance(e, KiwiError) and e.code != "timeout"
-            if waterfall.is_open and not refused:
-                # Paired but not set up: keep it, so the caller drains it
-                # rather than closing it and ending the audio.
+            unpaired = isinstance(e, KiwiError) and e.code == "unpaired"
+            if waterfall.is_open and not unpaired:
+                # Not set up, or refused after the Kiwi may have paired it: keep
+                # it, so the caller drains it rather than closing it and ending
+                # the audio. A Kiwi that really refused it closes it itself.
                 self._waterfall = waterfall
             else:
-                # Refused (never paired) or never connected: safe to close.
+                # Never paired (badp=5) or already closed: safe to close.
                 await waterfall.close()
             raise
         self._waterfall = waterfall

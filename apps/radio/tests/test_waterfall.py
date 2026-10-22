@@ -74,7 +74,7 @@ async def test_an_unpaired_waterfall_is_refused_as_unpaired():
         await snd.close()
 
 
-# Value: protects=a W/F the Kiwi drops mid-sweep ends frame() with a coded error, never a hang; fails_when=a closed socket is retried or swallowed; why_new=no W/F client; seam=none; no_claim=real close codes
+# Value: protects=a W/F the Kiwi drops mid-sweep ends frame() with a coded error, never a hang, and then reads as not open; fails_when=a closed socket is retried or swallowed, or is_open stays true after the Kiwi closed it; why_new=no W/F client; is_open row: ship audit (the session idles any waterfall that is_open, so a dead one would be drained forever instead of dropped); seam=none; no_claim=real close codes
 async def test_a_dropped_waterfall_raises_closed():
     async with FakeKiwi(wf_drop_after=3) as kiwi:
         wf = WaterfallClient("127.0.0.1", kiwi.port, timeout_s=3)
@@ -83,6 +83,7 @@ async def test_a_dropped_waterfall_raises_closed():
             for cf in (9_650.0, 11_850.0, 15_450.0):
                 await wf.frame(zoom=6, cf_khz=cf)
         assert e.value.code == "closed"
+        assert not wf.is_open
         await wf.close()
 
 
@@ -164,13 +165,13 @@ async def test_a_late_setup_is_configured_before_a_sweep():
         await wf.close()
 
 
-# Value: protects=hostile MSG values are ignored: non-numbers, NaN, infinity, a coverage under 1 MHz or over 64 MHz, and unknown keys past the cap (cycle-2 security); fails_when=a guard goes, letting a hostile Kiwi crowd every peak into a few kHz or grow memory without bound; why_new=security review; seam=_handle_msg called directly; no_claim=what real firmware sends
-@pytest.mark.parametrize("value", ["abc", "nan", "inf", "-inf", "1", "999999", "1e12"])
+# Value: protects=hostile MSG values are ignored: non-numbers, NaN, infinity, a coverage under 10 MHz or over 64 MHz, and unknown keys past the cap (cycle-2 security); fails_when=a guard goes, letting a hostile Kiwi crowd every peak into a few kHz or grow memory without bound; why_new=security review; seam=_handle_msg called directly; no_claim=what real firmware sends
+@pytest.mark.parametrize("value", ["abc", "nan", "inf", "-inf", "1", "9900000", "1e12"])
 def test_hostile_coverage_values_are_ignored(value):
     wf = WaterfallClient("kiwi.example", 8073)
     wf._handle_msg({"bandwidth": value, "freq_offset": value})
     assert wf.bandwidth_khz == 30_000.0
-    if value in ("1", "999999", "1e12"):
+    if value in ("1", "9900000", "1e12"):
         assert wf.info.freq_offset_khz == float(value)  # finite offsets are fine; plan_frames clips them
     else:
         assert wf.info.freq_offset_khz == 0.0
