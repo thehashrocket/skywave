@@ -548,6 +548,7 @@ export default function ListenPage() {
         canScan={canScan}
         listening={status.state === "listening"}
         freqKhz={freqKhz}
+        autoScanMs={AUTO_SCAN_MS}
         onTune={(khz) => changeFreq(khz, "am")}
         onScanAgain={() => startScan(true)}
       />

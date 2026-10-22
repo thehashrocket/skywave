@@ -120,6 +120,7 @@ def test_medium_wave_snaps_to_the_grid_it_fits(mw, grid):
     assert mw_grid(mw) == grid
 
 
+# Value: protects=the summary snaps MW and shortwave carriers to their channels together (D7); fails_when=summarize stops snapping or uses one grid for both; why_new=mw_grid is tested alone above; seam=none; no_claim=real spectra (synthetic peaks)
 def test_snapping_in_the_summary():
     mw = frame_for(530.0, 937.5, signals=[(693.3, 30), (909.6, 25)])
     sw = frame_for(9_416.0, 468.75, signals=[(9_419.6, 30)])
@@ -155,6 +156,7 @@ async def test_sweep_stops_at_the_deadline_with_finished_bands():
     assert result.signals
 
 
+# Value: protects=a sweep that fetches every frame reports all 15 bands done and not partial; fails_when=band counting is off, so complete scans are shown (and not cached) as partial; why_new=only the deadline case was tested; seam=none; no_claim=real Kiwi timing
 async def test_full_sweep_is_not_partial():
     async def fetch(zoom, cf):
         span = 30_000 / 2**zoom
@@ -164,3 +166,37 @@ async def test_full_sweep_is_not_partial():
     assert not result.partial
     assert (result.bands_done, result.bands_total) == (15, 15)
     assert result.signals == [] and result.hidden == 0
+
+
+# Value: protects=carriers just outside a narrow band, inside the same frame, aren't listed under it; fails_when=the in-band check goes, so 75m lists its neighbours; why_new=every frame before sat inside its band; seam=none; no_claim=none beyond protects
+def test_peaks_outside_the_band_are_ignored():
+    frame = frame_for(3_716.0, 468.75, signals=[(3_800.0, 40), (3_950.0, 30)])
+    peaks = find_peaks(frame, plan("75m", 3_900, 4_000))
+    assert {round(p.freq_khz) for p in peaks if p.snr_db >= 30} == {3_950}
+
+
+# Value: protects=the windowed sideband check keeps stations 5 kHz apart and drops a much weaker peak 3 kHz from a station, across frames; fails_when=the bisect window is off by one or too narrow or wide; why_new=drop_sidebands now searches a sorted window (review D3); seam=none; no_claim=real sideband shapes
+def test_sideband_window_keeps_neighbours_and_drops_sidebands():
+    from skywave_radio.scan import Peak, drop_sidebands
+
+    def peak(freq, snr):
+        return Peak(freq_khz=freq, snr_db=snr, over_shoulder_db=20, width_khz=0.5, band="31m")
+
+    kept = drop_sidebands([peak(9_500.0, 40), peak(9_505.0, 38), peak(9_503.0, 25), peak(9_496.0, 29)])
+    assert sorted(p.freq_khz for p in kept) == [9_500.0, 9_505.0]
+
+
+# Value: protects=a frame full of local maxima stays cheap: every peak's width walk stops just past AM_MAX_WIDTH_KHZ, so a hostile or noisy frame can't make the peak finder scan the whole frame per peak (review D3); fails_when=the walk loses its bound; why_new=security review (event-loop stall); seam=none; no_claim=wall-clock time (asserted through widths, not timing)
+def test_peak_width_walk_is_bounded():
+    from skywave_radio.scan import AM_MAX_WIDTH_KHZ
+
+    # A rippled plateau 400 bins (about 180 kHz) wide on a quiet floor: about
+    # 200 local maxima, each of which would otherwise walk the whole plateau.
+    bins = np.full(1024, 140, dtype=np.uint8)
+    bins[300:700] = 200
+    bins[300:700:2] = 199
+    frame = WaterfallFrame(zoom=6, start_khz=9_416.0, span_khz=468.75, bins=bins)
+    peaks = find_peaks(frame, plan())
+    assert len(peaks) > 100
+    kpb = 468.75 / 1024
+    assert max(p.width_khz for p in peaks) <= 2 * (AM_MAX_WIDTH_KHZ + 2 * kpb) + kpb

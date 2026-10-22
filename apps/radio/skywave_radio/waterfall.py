@@ -20,10 +20,12 @@ Protocol notes, cross-checked against jks-prv/kiwiclient and live Kiwis
 from __future__ import annotations
 
 import asyncio
+import math
 import struct
 from dataclasses import dataclass
 
 import numpy as np
+from websockets.protocol import State
 
 from .kiwi import KiwiConnection, parse_msg
 
@@ -36,6 +38,8 @@ IDLE_SPEED = 1  # about 1 a second while held open after a sweep
 START_TOLERANCE = 0.02
 # How often idle() sends a keepalive when no frame arrives.
 KEEPALIVE_S = 1.0
+# The widest coverage a receiver may report; a larger value is ignored.
+MAX_BANDWIDTH_KHZ = 64_000.0
 
 
 @dataclass
@@ -55,6 +59,10 @@ def parse_wf(body: bytes, bandwidth_khz: float) -> WaterfallFrame:
     if zoom > MAX_ZOOM:
         raise ValueError(f"W/F zoom {zoom} out of range")
     bins = np.frombuffer(body[1 + HEADER_BYTES :], dtype=np.uint8)
+    # Real Kiwis always send WF_BINS. More would let a hostile receiver hand
+    # the peak finder a huge frame on the loop that streams everyone's audio.
+    if bins.size != WF_BINS:
+        raise ValueError(f"W/F frame has {bins.size} bins, expected {WF_BINS}")
     return WaterfallFrame(
         zoom=zoom,
         start_khz=x_bin * bandwidth_khz / (WF_BINS * 2**MAX_ZOOM),
@@ -75,11 +83,19 @@ class WaterfallClient(KiwiConnection):
 
     STREAM = "W/F"
     HANDSHAKE_WANTS = "its waterfall setup"
+    # Paired with the audio, so closing it would end the listener's audio; the
+    # session keeps it drained (idle) and closes it when the audio ends.
+    CLOSE_ON_LATE_HANDSHAKE = False
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.bandwidth_khz = 30_000.0
         self._setup = False
+
+    @property
+    def is_open(self) -> bool:
+        """Still connected: closing it now would end the paired audio."""
+        return self._ws is not None and self._ws.state is State.OPEN
 
     async def _handshake(self) -> None:
         while not self._setup:
@@ -97,11 +113,14 @@ class WaterfallClient(KiwiConnection):
         for name, value in params.items():
             self._check_refusal(name, value)
             if name == "freq_offset" and value:
-                self.info.freq_offset_khz = float(value)
+                offset = _number(value)
+                if offset is not None:
+                    self.info.freq_offset_khz = offset
             elif name == "bandwidth" and value:
-                bandwidth = float(value) / 1000
-                if bandwidth > 0:
-                    self.bandwidth_khz = bandwidth
+                bandwidth = _number(value)
+                # A Kiwi samples at most about 32 MHz; anything else is junk.
+                if bandwidth is not None and 0 < bandwidth / 1000 <= MAX_BANDWIDTH_KHZ:
+                    self.bandwidth_khz = bandwidth / 1000
             elif name == "wf_setup":
                 self._setup = True
             else:
@@ -158,3 +177,12 @@ class WaterfallClient(KiwiConnection):
         if data[:3] == b"MSG":
             self._handle_msg(parse_msg(data[4:]))
         return data
+
+
+def _number(value: str) -> float | None:
+    """A finite number from a MSG value, or None: a hostile Kiwi can send anything."""
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None

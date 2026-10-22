@@ -91,20 +91,41 @@ async def test_idle_slows_the_stream_and_keeps_it_alive():
     async with FakeKiwi(wf_interval=0.2) as kiwi:
         snd, wf = await paired(kiwi)
         task = asyncio.create_task(wf.idle())
-        await asyncio.sleep(1.3)
+        # Poll with a deadline rather than sleeping a fixed time: the second
+        # keepalive is due about 1 s after the handshake's.
+        async with asyncio.timeout(5):
+            while kiwi.wf_commands.count("SET keepalive") < 2:
+                await asyncio.sleep(0.05)
         assert not task.done()
         assert "SET wf_speed=1" in kiwi.wf_commands
-        assert kiwi.wf_commands.count("SET keepalive") >= 2
         task.cancel()
         await wf.close()
         await snd.close()
 
 
+# Value: protects=frames that are short, at an impossible zoom, or not exactly 1024 bins are refused before any peak finding; fails_when=parse_wf accepts them, so a hostile receiver can hand the loop a huge frame (review D3); why_new=security review; seam=none; no_claim=real firmware variants
 @pytest.mark.parametrize(
     "body",
-    [b"\x00" + bytes(11), b"\x00" + struct.pack("<III", 0, 15, 0)],
-    ids=["short", "zoom out of range"],
+    [
+        b"\x00" + bytes(11),
+        b"\x00" + struct.pack("<III", 0, 15, 0) + bytes(1024),
+        b"\x00" + struct.pack("<III", 0, 6, 0) + bytes(1023),
+        b"\x00" + struct.pack("<III", 0, 6, 0) + bytes(2**20),
+    ],
+    ids=["short", "zoom out of range", "too few bins", "a million bins"],
 )
 def test_malformed_frames_are_rejected(body):
     with pytest.raises(ValueError):
         parse_wf(body, 30_000.0)
+
+
+# Value: protects=a paired waterfall the Kiwi answers but never sets up is left open after the handshake times out, so the caller can drain it instead of closing it and ending the audio (review D9); fails_when=connect closes every stream on a late handshake timeout; why_new=red team (setup never finishes); seam=none; no_claim=firmware that behaves this way
+async def test_a_waterfall_that_never_sets_up_is_left_open():
+    async with FakeKiwi(wf_no_setup=True) as kiwi:
+        wf = WaterfallClient("127.0.0.1", kiwi.port, timeout_s=0.5)
+        with pytest.raises(KiwiError) as e:
+            await wf.connect()
+        assert e.value.code == "timeout" and "waterfall setup" in str(e.value)
+        assert wf.is_open
+        await wf.close()
+        assert not wf.is_open

@@ -520,3 +520,11 @@ async def test_a_second_redirect_is_not_followed(client_cls, tls, monkeypatch):
                 await client.connect()
     assert e.value.code == "unreachable"
     assert len(secure.paths) == 1
+
+
+# Value: protects=connections made in the same second get different URL timestamps, so one listener's scan waterfall can't pair with another listener's audio (review D7); fails_when=the timestamp is int(time.time()) again; why_new=red team (shared timestamp); seam=none; no_claim=how a Kiwi treats colliding timestamps
+def test_connections_get_unique_timestamps():
+    clients = [KiwiClient("kiwi.example", 8073) for _ in range(3)]
+    stamps = [c.timestamp for c in clients]
+    assert len(set(stamps)) == 3 and stamps == sorted(stamps)
+    assert WaterfallClient("kiwi.example", 8073, timestamp=stamps[0]).timestamp == stamps[0]

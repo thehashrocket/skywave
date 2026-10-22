@@ -77,7 +77,7 @@ export type ScanState =
       hidden: number;
       bandsDone: number;
       bandsTotal: number;
-      /** Stopped at the service's time limit with only some bands scanned. */
+      /** Only some bands were scanned (the receiver was slow or stalled); not cached by the service. */
       partial: boolean;
     }
   | { state: "error"; host: string; port: number; message: string };

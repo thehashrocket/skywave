@@ -951,6 +951,19 @@ describe("ListenPage", () => {
       expect(radio.startScan).toHaveBeenCalledTimes(1);
     });
 
+    // Value: protects=a quick switch restarts the 10 s wait, so the new receiver gets its own full wait; fails_when=the timer isn't reset when the playing receiver changes and fires a few seconds into the next one; why_new=only a single receiver was tested; seam=useRadio mocked; no_claim=service behaviour
+    it("restarts the wait when the receiver changes before it scans", () => {
+      radio.canScan = true;
+      const view = render(<ListenPage />);
+      playing(view);
+      act(() => vi.advanceTimersByTime(6_000));
+      playing(view, "other.example", 8073);
+      act(() => vi.advanceTimersByTime(9_999));
+      expect(radio.startScan).not.toHaveBeenCalled();
+      act(() => vi.advanceTimersByTime(1));
+      expect(radio.startScan).toHaveBeenCalledTimes(1);
+    });
+
     // Value: protects=no scan while Pick best might still drop the receiver (D14); fails_when=the trigger watches running instead of settled; why_new=Codex O4; seam=useRadio mocked; no_claim=real refusal timing
     it("waits for Pick best's watch to end before scanning", () => {
       radio.canScan = true;
@@ -990,7 +1003,7 @@ describe("ListenPage", () => {
       };
       const view = render(<ListenPage />);
       playing(view);
-      expect(screen.getByText("Scanned 9 of 15 bands before the time limit.", { exact: false })).toBeTruthy();
+      expect(screen.getByText("Scanned 9 of 15 bands.", { exact: false })).toBeTruthy();
       expect(screen.getByText("2 digital or noise signals aren't listed.", { exact: false })).toBeTruthy();
       act(() => fireEvent.click(screen.getByRole("button", { name: /9,420\s*31m/ })));
       act(() => vi.advanceTimersByTime(200));

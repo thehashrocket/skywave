@@ -64,6 +64,8 @@ class FakeKiwi:
     wf_drop_after: int | None = None
     # A MSG frame to answer a W/F connection with instead of its setup.
     wf_reject: bytes | None = None
+    # Answer a W/F connection but never send wf_setup.
+    wf_no_setup: bool = False
     # W/F connections opened (paths) and closed so far.
     wf_closed: int = 0
     # Like a real Kiwi: refuse a W/F whose timestamp differs from an open SND's
@@ -178,6 +180,10 @@ class FakeKiwi:
             await asyncio.sleep(0.2)
             return
         await ws.send(f"MSG freq_offset={self.freq_offset_khz:.3f} bandwidth={self.bandwidth_khz * 1000:.0f}".encode())
+        if self.wf_no_setup:
+            await ws.wait_closed()
+            self.wf_closed += 1
+            return
         await ws.send(b"MSG wf_setup")
 
         position = [0, 0.0]  # zoom, baseband start in kHz

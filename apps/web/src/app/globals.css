@@ -273,9 +273,15 @@ a {
   cursor: pointer;
 }
 
-.link-button:hover {
+.link-button:not(:disabled, [aria-disabled="true"]):hover {
   color: var(--text);
   text-decoration-thickness: 2px;
+}
+
+.link-button:disabled,
+.link-button[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .link-button.inline {
@@ -908,7 +914,8 @@ a {
   margin: 0 0 20px;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  /* min(): on a 320 px phone the column can't be wider than the page. */
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
   gap: 0 24px;
 }
 
@@ -961,6 +968,16 @@ a {
 
 .signals .preset-tune {
   grid-template-columns: 6ch 4.2ch 1fr;
+}
+
+/* One column, so strongest-first reads top to bottom at any width. */
+.signals-list {
+  grid-template-columns: 1fr;
+  max-width: 640px;
+}
+
+.signals-again {
+  margin-bottom: 12px;
 }
 
 .signal-strength {

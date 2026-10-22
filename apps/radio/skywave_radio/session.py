@@ -100,19 +100,23 @@ class Slots:
 
 
 class ScanCache:
-    """Recent scans per receiver, shared by every session for SCAN_CACHE_S."""
+    """Recent scans per receiver, shared by every session for SCAN_CACHE_S.
+
+    A failed scan is kept too, as its error message, so a receiver that can't
+    scan isn't dialed again for every listener and every reconnect.
+    """
 
     def __init__(self, ttl_s: float = SCAN_CACHE_S):
         self.ttl_s = ttl_s
-        self._entries: dict[Hashable, tuple[float, ScanResult]] = {}
+        self._entries: dict[Hashable, tuple[float, ScanResult | str]] = {}
 
-    def get(self, key: Hashable) -> ScanResult | None:
+    def get(self, key: Hashable) -> ScanResult | str | None:
         entry = self._entries.get(key)
         if entry is None or time.monotonic() - entry[0] > self.ttl_s:
             return None
         return entry[1]
 
-    def put(self, key: Hashable, result: ScanResult) -> None:
+    def put(self, key: Hashable, result: ScanResult | str) -> None:
         now = time.monotonic()
         # Pruned here so a long-running service doesn't keep every receiver it ever scanned.
         self._entries = {k: e for k, e in self._entries.items() if now - e[0] <= self.ttl_s}
@@ -413,6 +417,9 @@ class ListenSession:
 
     async def _run_scan(self, target: Target, client: KiwiClient, *, fresh: bool) -> None:
         cached = None if fresh else self._scan_cache.get(target)
+        if isinstance(cached, str):
+            await self._finish(target, "error", message=cached)
+            return
         if cached is not None:
             await self._finish(target, "done", **scan_payload(cached))
             return
@@ -421,8 +428,16 @@ class ListenSession:
             waterfall = await self._paired_waterfall(client)
             result = await sweep(waterfall.frame, waterfall.info.freq_offset_khz, waterfall.bandwidth_khz)
         except KiwiError as e:
-            await self._drop_waterfall()
-            await self._finish(target, "error", message=f"Couldn't scan this receiver: {e}")
+            if self._waterfall is not None and self._waterfall.is_open:
+                # Still paired with the audio: closing it would end the
+                # listener's audio over a scan problem. Keep it drained; idle
+                # closes it if it turns out to be dead.
+                self._idle_waterfall()
+            else:
+                await self._drop_waterfall()
+            message = f"Couldn't scan this receiver: {e}"
+            self._scan_cache.put(target, message)
+            await self._finish(target, "error", message=message)
             return
         except Exception:
             log.exception("scan crashed")
@@ -432,7 +447,10 @@ class ListenSession:
             return
         self._idle_waterfall()
         result = replace(result, at_ms=int(time.time() * 1000))
-        self._scan_cache.put(target, result)
+        # A partial sweep (a stalled or slow receiver) isn't kept: shared for
+        # 10 minutes it would stand in for a full scan for every listener.
+        if not result.partial:
+            self._scan_cache.put(target, result)
         await self._finish(target, "done", **scan_payload(result))
 
     async def _finish(self, target: Target, state: str, **extra: Any) -> None:
@@ -467,8 +485,14 @@ class ListenSession:
         )
         try:
             await waterfall.connect()
+        except KiwiError:
+            if waterfall.is_open:
+                # Paired but never set up: keep it, so the caller drains it
+                # rather than closing it and ending the audio.
+                self._waterfall = waterfall
+            raise
         except BaseException:
-            # Failed or cancelled (Scan again) mid-handshake: never reuse a half-open one.
+            # Cancelled mid-handshake (the audio is ending): close the half-open one.
             await waterfall.close()
             raise
         self._waterfall = waterfall
@@ -480,10 +504,14 @@ class ListenSession:
         except KiwiError as e:
             # The audio pump reports it if the Kiwi took the audio down too.
             log.info("scan waterfall ended: %s", e)
-            if self._waterfall is waterfall:
-                self._waterfall = None
-            # Closed too, so a send that timed out doesn't leave the socket behind.
-            await waterfall.close()
+        except Exception:
+            log.exception("scan waterfall crashed while idling")
+        else:
+            return
+        if self._waterfall is waterfall:
+            self._waterfall = None
+        # Closed too, so a send that timed out doesn't leave the socket behind.
+        await waterfall.close()
 
     async def _drop_waterfall(self) -> None:
         waterfall, self._waterfall = self._waterfall, None
@@ -518,6 +546,7 @@ class ListenSession:
         try:
             await self._send_text(payload)
         except Exception:
+            # The browser went away; nothing useful to do.
             pass
 
 

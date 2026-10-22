@@ -13,6 +13,8 @@ the scan's MW carriers fit better, since that differs by region.
 from __future__ import annotations
 
 import asyncio
+import bisect
+import math
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -125,32 +127,40 @@ def plan_frames(offset_khz: float = 0.0, bandwidth_khz: float = 30_000.0, bands=
 
 
 def find_peaks(frame: WaterfallFrame, plan: FramePlan, offset_khz: float = 0.0) -> list[Peak]:
-    """Local maxima at least MIN_SNR_DB above the frame's median, inside the band."""
-    bins = frame.bins.astype(np.int16)
-    if bins.size < 3:
+    """Local maxima at least MIN_SNR_DB above the frame's median, inside the band.
+
+    Each peak looks only a few kHz either side (its shoulders, and its width
+    up to just past AM_MAX_WIDTH_KHZ), so the work stays linear in the bins:
+    this runs on the loop that streams everyone's audio.
+    """
+    n = frame.bins.size
+    if n < 3:
         return []
-    khz_per_bin = frame.span_khz / bins.size
-    floor = float(np.median(bins))
+    bins = frame.bins.astype(np.int16).tolist()
+    khz_per_bin = frame.span_khz / n
+    floor = float(np.median(frame.bins))
+    near, far = math.ceil(2 / khz_per_bin), math.floor(5 / khz_per_bin)
+    max_walk = math.ceil(AM_MAX_WIDTH_KHZ / khz_per_bin) + 1
     peaks = []
-    for i in range(1, bins.size - 1):
-        if bins[i] < floor + MIN_SNR_DB or bins[i] < bins[i - 1] or bins[i] < bins[i + 1]:
+    for i in range(1, n - 1):
+        b = bins[i]
+        if b < floor + MIN_SNR_DB or b < bins[i - 1] or b < bins[i + 1]:
             continue
         freq = offset_khz + frame.start_khz + (i + 0.5) * khz_per_bin
         if not plan.lo_khz <= freq <= plan.hi_khz:
             continue
-        reach = np.abs(np.arange(bins.size) - i) * khz_per_bin
-        shoulder = bins[(reach >= 2) & (reach <= 5)]
+        shoulder = bins[max(0, i - far) : max(0, i - near + 1)] + bins[i + near : i + far + 1]
         width = 1
         for step in (-1, 1):
             j = i + step
-            while 0 <= j < bins.size and bins[j] >= bins[i] - 3:
+            while 0 <= j < n and bins[j] >= b - 3 and abs(j - i) <= max_walk:
                 width += 1
                 j += step
         peaks.append(
             Peak(
                 freq_khz=freq,
-                snr_db=float(bins[i]) - floor,
-                over_shoulder_db=float(bins[i]) - (float(np.median(shoulder)) if shoulder.size else floor),
+                snr_db=b - floor,
+                over_shoulder_db=b - (float(np.median(shoulder)) if shoulder else floor),
                 width_khz=width * khz_per_bin,
                 band=plan.band.name,
             )
@@ -164,9 +174,15 @@ def is_am_carrier(peak: Peak) -> bool:
 
 def drop_sidebands(peaks: list[Peak]) -> list[Peak]:
     kept: list[Peak] = []
+    # Kept peaks by frequency, so each check looks only within SIDEBAND_KHZ.
+    by_freq: list[tuple[float, float]] = []
     for p in sorted(peaks, key=lambda p: -p.snr_db):
-        if not any(abs(p.freq_khz - k.freq_khz) < SIDEBAND_KHZ and k.snr_db - p.snr_db >= SIDEBAND_DB for k in kept):
-            kept.append(p)
+        lo = bisect.bisect_right(by_freq, (p.freq_khz - SIDEBAND_KHZ, math.inf))
+        hi = bisect.bisect_left(by_freq, (p.freq_khz + SIDEBAND_KHZ, -math.inf))
+        if any(snr - p.snr_db >= SIDEBAND_DB for _, snr in by_freq[lo:hi]):
+            continue
+        kept.append(p)
+        bisect.insort(by_freq, (p.freq_khz, p.snr_db))
     return kept
 
 
@@ -221,8 +237,9 @@ async def sweep(
 ) -> ScanResult:
     """Fetch every planned frame and rank what they show.
 
-    Stops at deadline_s and returns the bands finished so far, so a slow
-    receiver still gives a (partial) list.
+    Stops at deadline_s, or when one frame times out (a stalled waterfall),
+    and returns the bands finished so far, so a slow receiver still gives a
+    (partial) list.
     """
     by_band: dict[str, list[FramePlan]] = defaultdict(list)
     for plan in plan_frames(offset_khz, bandwidth_khz, bands):

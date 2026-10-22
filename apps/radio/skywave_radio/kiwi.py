@@ -161,6 +161,11 @@ class KiwiConnection:
     STREAM = ""
     # What the handshake is still waiting for when it times out after the Kiwi answered.
     HANDSHAKE_WANTS = "its setup"
+    # Whether a handshake that times out after the Kiwi answered closes the
+    # stream. A paired waterfall must not: closing it ends the listener's audio.
+    CLOSE_ON_LATE_HANDSHAKE = True
+    # The last generated URL timestamp, shared by every connection in the process.
+    _last_timestamp = 0
 
     def __init__(
         self,
@@ -183,8 +188,14 @@ class KiwiConnection:
         self.connect_host = connect_host or host
         self.user = user
         self.timeout_s = timeout_s
-        # In the URL; streams sharing it share a channel on the Kiwi.
-        self.timestamp = int(time.time()) if timestamp is None else timestamp
+        # In the URL; streams sharing it share a channel on the Kiwi. Unique
+        # within the service: every listener reaches a Kiwi from our one
+        # address, so two connections in the same second would otherwise pair
+        # one listener's scan with another listener's audio.
+        if timestamp is None:
+            timestamp = max(int(time.time()), KiwiConnection._last_timestamp + 1)
+            KiwiConnection._last_timestamp = timestamp
+        self.timestamp = timestamp
         self.info = KiwiInfo()
         self._ws: ClientConnection | None = None
         self._last_keepalive = 0.0
@@ -219,7 +230,8 @@ class KiwiConnection:
         try:
             await asyncio.wait_for(self._handshake(), timeout=self.timeout_s)
         except asyncio.TimeoutError as e:
-            await self.close()
+            if not self._answered or self.CLOSE_ON_LATE_HANDSHAKE:
+                await self.close()
             if not self._answered:
                 raise KiwiError("timeout", f"{self.host} connected but never answered") from e
             raise KiwiError("timeout", f"{self.host} never sent {self.HANDSHAKE_WANTS}") from e

@@ -1159,6 +1159,7 @@ def test_stop_closes_the_scans_waterfall():
     assert (open_before, closed_after) == (0, 1)
 
 
+# Value: protects=a cached scan expires after its TTL and expired entries are pruned on the next put, so the shared cache can't grow without bound; fails_when=get ignores the TTL or put stops pruning; why_new=ScanCache is new; seam=monotonic clock patched; no_claim=memory use (the private dict stands in for it)
 def test_scan_cache_expires_and_prunes(monkeypatch):
     from skywave_radio.scan import ScanResult
     from skywave_radio.session import ScanCache
@@ -1223,6 +1224,11 @@ class _ScanWaterfall:
 
     async def close(self):
         self.closed = True
+
+    @property
+    def is_open(self):
+        # A Kiwi-side close is a dead socket; anything else is still paired with the audio.
+        return not self.closed and getattr(self.frame_error, "code", None) != "closed"
 
 
 def listening_session(send_text, **kwargs):
@@ -1324,3 +1330,228 @@ async def test_a_waterfall_that_fails_while_idling_is_closed():
             break
         await asyncio.sleep(0.01)
     assert made[0].closed and session._waterfall is None
+
+
+# Value: protects=a receiver error mid-sweep closes that waterfall and answers as a scan error, so the next scan dials a fresh paired one; fails_when=the KiwiError path keeps or idles the dead waterfall (the next scan reuses it and fails again) or reports through status; why_new=only a refusal during connect was tested, which never stores a waterfall; seam=stand-in waterfall; no_claim=whether a real Kiwi's audio survives the drop
+async def test_a_receiver_error_mid_sweep_drops_the_waterfall():
+    from skywave_radio.kiwi import KiwiError
+
+    sent = []
+    made = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    def factory(*args, **kwargs):
+        made.append(_ScanWaterfall(frame_error=KiwiError("closed", "kiwi.test closed the connection")))
+        return made[-1]
+
+    async def answered(n):
+        while sum(p["type"] == "scan" and p["state"] == "error" for p in sent) < n:
+            await asyncio.sleep(0.01)
+
+    session = listening_session(send_text, waterfall_factory=factory)
+    await session.handle({"type": "scan", "id": 1})
+    await asyncio.wait_for(answered(1), 2)
+    assert sent[-1]["id"] == 1 and "Couldn't scan this receiver" in sent[-1]["message"]
+    assert made[0].closed and session._waterfall is None
+    assert not [p for p in sent if p["type"] == "status"]
+    await session.handle({"type": "scan", "id": 2, "fresh": True})
+    await asyncio.wait_for(answered(2), 2)
+    assert len(made) == 2 and sent[-1]["id"] == 2
+    await session.close()
+
+
+class _BlockingWaterfall(_ScanWaterfall):
+    """A stand-in paired waterfall that blocks in connect() or frame() until cancelled."""
+
+    def __init__(self, *args, block_in="frame", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.block_in = block_in
+        self.blocked = asyncio.Event()
+
+    async def connect(self):
+        if self.block_in == "connect":
+            self.blocked.set()
+            await asyncio.Event().wait()
+        return self.info
+
+    async def frame(self, zoom, cf):
+        self.blocked.set()
+        await asyncio.Event().wait()
+
+
+# Value: protects=stopping or closing during a scan, whether the waterfall is still connecting or mid-sweep, closes it and leaves no scan task or reply behind; fails_when=_end_scan misses a running scan or a half-open waterfall, leaving a volunteer's channel open; why_new=only stop after a finished scan was tested (review D6); seam=stand-in waterfall; no_claim=real close timing
+@pytest.mark.parametrize("block_in", ["connect", "frame"])
+@pytest.mark.parametrize("end", ["stop", "close"])
+async def test_ending_mid_scan_closes_the_waterfall(block_in, end):
+    sent, made = [], []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    def factory(*args, **kwargs):
+        made.append(_BlockingWaterfall(block_in=block_in))
+        return made[-1]
+
+    session = listening_session(send_text, waterfall_factory=factory)
+    await session.handle({"type": "scan", "id": 1})
+    while not made:
+        await asyncio.sleep(0.01)
+    await asyncio.wait_for(made[0].blocked.wait(), 2)
+    if end == "stop":
+        await session.stop("Stopped.")
+    else:
+        await session.close()
+    assert made[0].closed
+    assert session._scan is None and session._waterfall is None and session._waterfall_idle is None
+    assert [p["state"] for p in sent if p["type"] == "scan"] == ["scanning"]
+
+
+# Value: protects=a partial sweep (a stalled frame) is answered as partial but not cached, so the next request sweeps again instead of serving the thin result for 10 minutes (review D4); fails_when=partial results are put in the shared cache; why_new=red team (cached partials); seam=stand-in waterfall; no_claim=real stall timing
+async def test_a_partial_scan_is_not_cached():
+    from skywave_radio.waterfall import WaterfallFrame
+
+    sent, made = [], []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    class StallsAfterTwo(_ScanWaterfall):
+        calls = 0
+
+        async def frame(self, zoom, cf):
+            StallsAfterTwo.calls += 1
+            if StallsAfterTwo.calls > 2:
+                raise TimeoutError  # what WaterfallClient.frame raises when frames stop
+            span = 30_000 / 2**zoom
+            return WaterfallFrame(zoom, cf - span / 2, span, np.full(1024, 140, dtype=np.uint8))
+
+    def factory(*args, **kwargs):
+        made.append(StallsAfterTwo())
+        return made[-1]
+
+    async def done_count():
+        return sum(p["state"] == "done" for p in sent if p["type"] == "scan")
+
+    session = listening_session(send_text, waterfall_factory=factory)
+    await session.handle({"type": "scan", "id": 1})
+    while await done_count() < 1:
+        await asyncio.sleep(0.01)
+    first = [p for p in sent if p["type"] == "scan"][-1]
+    assert first["partial"] is True and first["bandsDone"] < first["bandsTotal"]
+    await session.handle({"type": "scan", "id": 2})
+    while await done_count() < 2:
+        await asyncio.sleep(0.01)
+    assert [(p["id"], p["state"]) for p in sent if p["type"] == "scan"] == [
+        (1, "scanning"),
+        (1, "done"),
+        (2, "scanning"),
+        (2, "done"),
+    ]
+    await session.close()
+
+
+# Value: protects=a scan request with a missing, boolean, string or fractional id is answered with id null, so the page's strict id match ignores it rather than mistaking True for 1; fails_when=the int check (and its bool exclusion) goes; why_new=review D6; seam=ListenSession internals set by hand; no_claim=none beyond protects
+@pytest.mark.parametrize("bad", [True, "3", None, 1.5])
+async def test_a_scan_with_a_bad_id_is_answered_with_null(bad):
+    from skywave_radio.scan import ScanResult
+    from skywave_radio.session import ScanCache
+
+    cache = ScanCache()
+    cache.put(("kiwi.test", 8073, True, False), ScanResult())
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    session = listening_session(send_text, scan_cache=cache)
+    await session.handle({"type": "scan", "id": bad})
+    for _ in range(50):
+        if sent:
+            break
+        await asyncio.sleep(0.01)
+    assert sent[-1]["id"] is None and sent[-1]["state"] == "done"
+
+
+# Value: protects=switching to another receiver mid-scan closes the scan's waterfall and no result for the old receiver arrives afterwards; fails_when=the switch path skips _end_scan, leaving the old waterfall open or letting its reply land; why_new=review D6 (state matrix: scan-running x switch); seam=none; no_claim=real Kiwi close timing
+@pytest.mark.timeout(20)
+def test_switching_receivers_mid_scan_closes_the_waterfall():
+    def body(kiwi):
+        with TestClient(create_app(settings())).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "listening")
+            ws.send_text(scan_msg(1))
+            until_scan(ws, "scanning")
+            # Another port is another receiver to the session (nothing listens
+            # there, so the new one fails; what matters is the old scan's end).
+            ws.send_text(tune_msg(kiwi.port + 1))
+            after = until_state(ws, "error")
+        for _ in range(100):
+            if kiwi.wf_closed:
+                break
+            time.sleep(0.02)
+        return after, kiwi.wf_closed
+
+    after, closed = run_with_fake(body, wf_bins=carrier_bins(9_420.0), wf_interval=0.05)
+    assert closed >= 1
+    assert not [p for p in after if p["type"] == "scan" and p["state"] == "done"]
+
+
+# Value: protects=when the receiver drops after a scan, the idle paired waterfall is closed with it; fails_when=the pump's end skips _end_scan, so the waterfall outlives the receiver connection; why_new=review D6 (state matrix: waterfall-idle x pump-ends); seam=none; no_claim=real Kiwi drop behaviour
+@pytest.mark.timeout(20)
+def test_a_receiver_drop_closes_the_idle_waterfall():
+    def body(kiwi):
+        with TestClient(create_app(settings())).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "listening")
+            ws.send_text(scan_msg(1))
+            until_scan(ws, "done")
+            open_after_scan = kiwi.wf_closed
+            until_state(ws, "error")
+        for _ in range(100):
+            if kiwi.wf_closed:
+                break
+            time.sleep(0.02)
+        return open_after_scan, kiwi.wf_closed
+
+    open_after_scan, closed = run_with_fake(body, wf_bins=carrier_bins(9_420.0), drop_after=400)
+    assert (open_after_scan, closed) == (0, 1)
+
+
+# Value: protects=a scan error on a waterfall that is still open keeps it drained instead of closing it (which would end the audio), and the failure is remembered so the next request doesn't dial again; fails_when=the KiwiError path closes an open paired waterfall, or failures aren't cached (review D8, D9); why_new=reopened review findings; seam=stand-in waterfall; no_claim=which real errors leave the waterfall open
+@pytest.mark.parametrize("where", ["frame", "connect"])
+async def test_a_scan_error_keeps_an_open_waterfall_and_is_remembered(where):
+    from skywave_radio.kiwi import KiwiError
+
+    sent, made = [], []
+    error = KiwiError("timeout", "kiwi.test never sent its waterfall setup")
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    class Fails(_ScanWaterfall):
+        async def connect(self):
+            if where == "connect":
+                raise error
+            return self.info
+
+    def factory(*args, **kwargs):
+        made.append(Fails(frame_error=error))
+        return made[-1]
+
+    async def errors(n):
+        while sum(p["type"] == "scan" and p["state"] == "error" for p in sent) < n:
+            await asyncio.sleep(0.01)
+
+    session = listening_session(send_text, waterfall_factory=factory)
+    await session.handle({"type": "scan", "id": 1})
+    await asyncio.wait_for(errors(1), 2)
+    await asyncio.wait_for(made[0].idling.wait(), 2)
+    assert not made[0].closed and session._waterfall is made[0]
+    await session.handle({"type": "scan", "id": 2})
+    await asyncio.wait_for(errors(2), 2)
+    assert [(p["id"], p["state"]) for p in sent if p["type"] == "scan"] == [(1, "scanning"), (1, "error"), (2, "error")]
+    assert len(made) == 1
+    await session.close()
+    assert made[0].closed

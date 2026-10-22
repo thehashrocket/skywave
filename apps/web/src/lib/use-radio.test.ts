@@ -893,6 +893,31 @@ describe("useRadio", () => {
       expect(result.current.scan).toEqual({ state: "error", ...at, message: "nope" });
     });
 
+    // Value: protects=a done reply's malformed signal rows are dropped and missing counts default, and one with no signals list is ignored; fails_when=the row filter or defaults go, so the list renders undefined frequencies or NaN counts, or a bare done clears Scanning…; why_new=only well-formed replies were tested; seam=none; no_claim=what an older or buggy service actually sends
+    it("keeps only well-formed signals from a done reply", async () => {
+      const { result, ws } = await listening();
+      act(() => result.current.startScan());
+      const id = ws.sent.at(-1)!.id as number;
+      act(() => scanReply(ws, { id, state: "done" }));
+      expect(result.current.scan).toEqual({ state: "scanning", ...at });
+      act(() =>
+        scanReply(ws, {
+          id,
+          state: "done",
+          signals: [{ freqKhz: 9_420, snrDb: 30, band: "31m" }, { freqKhz: "9425", snrDb: 20, band: "31m" }, null],
+        }),
+      );
+      expect(result.current.scan).toEqual({
+        state: "done",
+        ...at,
+        signals: [{ freqKhz: 9_420, snrDb: 30, band: "31m" }],
+        hidden: 0,
+        bandsDone: 0,
+        bandsTotal: 0,
+        partial: false,
+      });
+    });
+
     // Value: protects=a scan error never touches the radio status (D5); fails_when=scan errors are routed into setStatus; why_new=D5; seam=none; no_claim=service behaviour
     it("keeps listening when a scan fails", async () => {
       const { result, ws } = await listening();
