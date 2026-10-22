@@ -45,6 +45,8 @@ const TILE_ERROR_LIMIT = 5;
 const TILE_ERROR_WINDOW_MS = 30_000;
 /** Visible time for a map to draw its receivers; past it, it isn't going to (a hung request has no timeout of its own). */
 export const LOAD_TIMEOUT_MS = 30_000;
+/** At or below this width the attribution starts folded (MapLibre's own compact threshold). */
+const NARROW_MAP_PX = 640;
 /** How long the listening dot is emphasised when playback starts. */
 export const EMPHASIS_MS = 600;
 
@@ -181,6 +183,21 @@ export default memo(function ReceiverMap({
       styled = true;
       setMap(created);
     });
+    // On a phone-sized map the compact attribution opens over the map's lower
+    // half and stays until the first drag. Fold it the first time it opens,
+    // as that drag would; the "i" button still opens it. MapLibre's own
+    // handler for these events runs first (its control was added earlier).
+    // Decided once, when it first opens, so wide maps don't measure on every event.
+    let attributionDecided = false;
+    const foldAttribution = () => {
+      if (attributionDecided) return;
+      const open = container.querySelector(".maplibregl-ctrl-attrib.maplibregl-compact-show");
+      if (!open) return;
+      attributionDecided = true;
+      if (container.offsetWidth <= NARROW_MAP_PX) open.classList.remove("maplibregl-compact-show");
+    };
+    created.on("styledata", foldAttribution);
+    created.on("sourcedata", foldAttribution);
     created.on("sourcedata", (e: { sourceId?: string; isSourceLoaded?: boolean }) => {
       if (e.sourceId !== SOURCES.receivers || !e.isSourceLoaded) return;
       ready = true;
