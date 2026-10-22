@@ -1095,6 +1095,7 @@ def test_scan_lists_signals_and_audio_keeps_playing():
 
 # Value: protects=a second scan within 10 min reuses the result and Scan again re-sweeps on the same waterfall (D4); fails_when=the cache is missed or fresh is ignored, or each scan opens a new W/F; why_new=no cache; seam=none; no_claim=cache expiry (unit-tested below)
 @pytest.mark.timeout(20)
+@pytest.mark.usefixtures("no_scan_interval")
 def test_scan_is_cached_and_fresh_rescans_on_the_same_waterfall():
     def body(kiwi):
         with TestClient(create_app(settings())).websocket_connect("/ws", headers=ORIGIN) as ws:
@@ -1192,6 +1193,12 @@ def test_scan_again_mid_sweep_is_answered_by_the_running_scan():
     replies, playing = run_with_fake(body, wf_bins=carrier_bins(9_420.0), wf_interval=0.02)
     assert [(r["state"], r["id"]) for r in replies] == [("scanning", 2), ("done", 2)]
     assert playing
+
+
+@pytest.fixture
+def no_scan_interval(monkeypatch):
+    """For tests of back-to-back rescans themselves: no wait between sweeps."""
+    monkeypatch.setattr("skywave_radio.session.SCAN_MIN_INTERVAL_S", 0.0)
 
 
 class _ScanWaterfall:
@@ -1383,6 +1390,7 @@ async def test_only_an_unpaired_waterfall_is_closed_on_refusal(code, kept):
 
 
 # Value: protects=a receiver error mid-sweep closes that waterfall and answers as a scan error, so the next scan dials a fresh paired one; fails_when=the KiwiError path keeps or idles the dead waterfall (the next scan reuses it and fails again) or reports through status; why_new=only a refusal during connect was tested, which never stores a waterfall; seam=stand-in waterfall; no_claim=whether a real Kiwi's audio survives the drop
+@pytest.mark.usefixtures("no_scan_interval")
 async def test_a_receiver_error_mid_sweep_drops_the_waterfall():
     from skywave_radio.kiwi import KiwiError
 
@@ -1459,6 +1467,7 @@ async def test_ending_mid_scan_closes_the_waterfall(block_in, end):
 
 
 # Value: protects=a partial sweep (a stalled frame) is answered as partial but not cached, so the next request sweeps again instead of serving the thin result for 10 minutes (review D4); fails_when=partial results are put in the shared cache; why_new=red team (cached partials); seam=stand-in waterfall; no_claim=real stall timing
+@pytest.mark.usefixtures("no_scan_interval")
 async def test_a_partial_scan_is_not_cached():
     from skywave_radio.waterfall import WaterfallFrame
 
@@ -1490,6 +1499,7 @@ async def test_a_partial_scan_is_not_cached():
         await asyncio.sleep(0.01)
     first = [p for p in sent if p["type"] == "scan"][-1]
     assert first["partial"] is True and first["bandsDone"] < first["bandsTotal"]
+    StallsAfterTwo.calls = 0  # the rescan gets its two frames too
     await session.handle({"type": "scan", "id": 2})
     while await done_count() < 2:
         await asyncio.sleep(0.01)
@@ -1684,3 +1694,114 @@ def test_a_scan_is_shared_with_the_next_listener():
     assert [r["state"] for r in second] == ["done"]
     assert second[-1]["atMs"] == first[-1]["atMs"]
     assert len(wf_paths) == 1
+
+
+# Value: protects=a refused waterfall kept open repeats the receiver's real refusal on later scans instead of a misleading "never sent its waterfall setup" (Step 11 D4); fails_when=_paired_waterfall reuses a refused waterfall through fast(); why_new=adversarial review (refusal lost after D3); seam=stand-in waterfall; no_claim=how long a real Kiwi keeps a refused socket open
+@pytest.mark.usefixtures("no_scan_interval")
+async def test_a_kept_refusal_is_repeated_on_later_scans():
+    from skywave_radio.kiwi import KiwiError
+
+    sent, made = [], []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    class Refuses(_ScanWaterfall):
+        async def connect(self):
+            raise KiwiError("busy", "kiwi.test is full (4 listeners max). Try another receiver.")
+
+        async def fast(self):
+            raise KiwiError("timeout", "kiwi.test never sent its waterfall setup")
+
+    def factory(*args, **kwargs):
+        made.append(Refuses())
+        return made[-1]
+
+    async def errors(n):
+        while sum(p["type"] == "scan" and p["state"] == "error" for p in sent) < n:
+            await asyncio.sleep(0.01)
+
+    session = listening_session(send_text, waterfall_factory=factory)
+    await session.handle({"type": "scan", "id": 1})
+    await asyncio.wait_for(errors(1), 2)
+    await session.handle({"type": "scan", "id": 2, "fresh": True})
+    await asyncio.wait_for(errors(2), 2)
+    messages = [p["message"] for p in sent if p["type"] == "scan" and p["state"] == "error"]
+    assert all("is full" in m for m in messages) and len(made) == 1 and not made[0].closed
+    await session.close()
+
+
+# Value: protects=a sweep that got no frame at all answers as an error, not an empty "done" that reads as quiet bands (Step 11 D5); fails_when=bands_done == 0 falls through to a done reply; why_new=adversarial review; seam=stand-in waterfall; no_claim=why a real Kiwi sends no frames
+async def test_a_sweep_with_no_frames_is_an_error():
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    class Silent(_ScanWaterfall):
+        async def frame(self, zoom, cf):
+            raise TimeoutError  # what WaterfallClient.frame raises when frames stop
+
+    session = listening_session(send_text, waterfall_factory=lambda *a, **k: Silent())
+    await session.handle({"type": "scan", "id": 1})
+    for _ in range(200):
+        if any(p["type"] == "scan" and p["state"] != "scanning" for p in sent):
+            break
+        await asyncio.sleep(0.01)
+    final = [p for p in sent if p["type"] == "scan"][-1]
+    assert final["state"] == "error" and "didn't send its waterfall" in final["message"]
+    await session.close()
+
+
+# Value: protects=a listener's next sweep waits SCAN_MIN_INTERVAL_S after the last; a fresh request sooner gets the last answer without touching the waterfall, so a scripted Scan again loop can't keep a volunteer's Kiwi sweeping (Step 11 D6); fails_when=fresh always sweeps; why_new=adversarial review (no server-side limit); seam=stand-in waterfall, last sweep time aged by hand; no_claim=the web page's own button state
+async def test_fresh_scans_are_limited_per_listener():
+    from skywave_radio.session import SCAN_MIN_INTERVAL_S
+    from skywave_radio.waterfall import WaterfallFrame
+
+    sent, made = [], []
+    frames = [0]
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    class Sweeps(_ScanWaterfall):
+        async def frame(self, zoom, cf):
+            frames[0] += 1
+            span = 30_000 / 2**zoom
+            return WaterfallFrame(zoom, cf - span / 2, span, np.full(1024, 140, dtype=np.uint8))
+
+    def factory(*args, **kwargs):
+        made.append(Sweeps())
+        return made[-1]
+
+    async def dones(n):
+        while sum(p["type"] == "scan" and p["state"] == "done" for p in sent) < n:
+            await asyncio.sleep(0.01)
+
+    session = listening_session(send_text, waterfall_factory=factory)
+    await session.handle({"type": "scan", "id": 1})
+    await asyncio.wait_for(dones(1), 5)
+    swept = frames[0]
+    await session.handle({"type": "scan", "id": 2, "fresh": True})
+    await asyncio.wait_for(dones(2), 5)
+    assert frames[0] == swept  # answered from the last sweep
+    replies = [p for p in sent if p["type"] == "scan" and p["state"] == "done"]
+    assert replies[1]["id"] == 2 and replies[1]["atMs"] == replies[0]["atMs"]
+    at, target, state, extra = session._last_sweep
+    session._last_sweep = (at - SCAN_MIN_INTERVAL_S - 1, target, state, extra)
+    await session.handle({"type": "scan", "id": 3, "fresh": True})
+    await asyncio.wait_for(dones(3), 5)
+    assert frames[0] > swept  # swept again once the interval passed
+    await session.close()
+
+
+# Value: protects=the shared scan cache keeps at most SCAN_CACHE_MAX receivers, dropping the soonest to expire, so it stays bounded over a long uptime (Step 11 D7); fails_when=put stops evicting; why_new=adversarial review (unbounded cache); seam=none; no_claim=memory use itself
+def test_the_scan_cache_is_capped():
+    from skywave_radio.scan import ScanResult
+    from skywave_radio.session import SCAN_CACHE_MAX, ScanCache
+
+    cache = ScanCache()
+    for i in range(SCAN_CACHE_MAX + 5):
+        cache.put(("kiwi", i), ScanResult())
+    assert len(cache._entries) == SCAN_CACHE_MAX
+    assert cache.get(("kiwi", 0)) is None and cache.get(("kiwi", SCAN_CACHE_MAX + 4)) is not None

@@ -95,6 +95,9 @@ class WaterfallClient(KiwiConnection):
         self.bandwidth_khz = 30_000.0
         self._setup = False
         self._configured = False
+        # Why the Kiwi refused this stream while it was kept open (the session
+        # keeps it, as closing it may end the audio); later scans repeat it.
+        self.refusal: KiwiError | None = None
 
     @property
     def is_open(self) -> bool:

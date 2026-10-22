@@ -64,6 +64,11 @@ SCAN_CACHE_S = 600.0
 # are kept: a dropped connection or a timeout says nothing about the next try.
 SCAN_REFUSAL_CACHE_S = 60.0
 SCAN_REFUSALS = frozenset({"busy", "no_apps", "password", "down"})
+# Receivers the shared cache remembers at most; the soonest to expire goes first.
+SCAN_CACHE_MAX = 500
+# A listener's next sweep waits this long after the last; a request sooner
+# (Scan again in a loop) gets the last answer, sparing the volunteer's Kiwi.
+SCAN_MIN_INTERVAL_S = 30.0
 # Pause before draining a paired waterfall again after idling failed while it is still open.
 IDLE_RETRY_S = 1.0
 
@@ -127,6 +132,9 @@ class ScanCache:
         now = time.monotonic()
         # Pruned here so a long-running service doesn't keep every receiver it ever scanned.
         self._entries = {k: e for k, e in self._entries.items() if now <= e[0]}
+        self._entries.pop(key, None)
+        while len(self._entries) >= SCAN_CACHE_MAX:
+            del self._entries[min(self._entries, key=lambda k: self._entries[k][0])]
         self._entries[key] = (now + (self.ttl_s if ttl_s is None else ttl_s), result)
 
 
@@ -193,6 +201,9 @@ class ListenSession:
         self._scan: asyncio.Task[None] | None = None
         # The newest scan request's id; a running scan answers under it.
         self._scan_id: int | None = None
+        # The last sweep's answer, (monotonic time, target, state, payload),
+        # repeated to requests within SCAN_MIN_INTERVAL_S.
+        self._last_sweep: tuple[float, Target, str, dict[str, Any]] | None = None
 
     @property
     def lookup_owner(self) -> Hashable:
@@ -430,6 +441,10 @@ class ListenSession:
         if cached is not None:
             await self._finish(target, "done", **scan_payload(cached))
             return
+        last = self._last_sweep
+        if last is not None and last[1] == target and time.monotonic() - last[0] < SCAN_MIN_INTERVAL_S:
+            await self._finish(target, last[2], **last[3])
+            return
         await self._scan_reply(self._scan_id, target, "scanning")
         try:
             waterfall = await self._paired_waterfall(client)
@@ -447,21 +462,31 @@ class ListenSession:
             # listener leaving (or the receiver dropping them) proves nothing.
             if e.code in SCAN_REFUSALS and self._target == target:
                 self._scan_cache.put(target, message, SCAN_REFUSAL_CACHE_S)
-            await self._finish(target, "error", message=message)
+            await self._swept(target, "error", message=message)
             return
         except Exception:
             log.exception("scan crashed")
             # Keep any waterfall drained: a dropped one takes the audio with it.
             self._idle_waterfall()
-            await self._finish(target, "error", message="The scan broke. Check the radio service's logs.")
+            await self._swept(target, "error", message="The scan broke. Check the radio service's logs.")
             return
         self._idle_waterfall()
+        if result.bands_done == 0 and result.bands_total > 0:
+            # Not one frame came back: "no strong signals" would be a claim
+            # the scan can't make.
+            await self._swept(target, "error", message="Couldn't scan this receiver: it didn't send its waterfall.")
+            return
         result = replace(result, at_ms=int(time.time() * 1000))
         # A partial sweep (a stalled or slow receiver) isn't kept: shared for
         # 10 minutes it would stand in for a full scan for every listener.
         if not result.partial:
             self._scan_cache.put(target, result)
-        await self._finish(target, "done", **scan_payload(result))
+        await self._swept(target, "done", **scan_payload(result))
+
+    async def _swept(self, target: Target, state: str, **extra: Any) -> None:
+        """Answer a sweep that ran, remembering the answer for SCAN_MIN_INTERVAL_S."""
+        self._last_sweep = (time.monotonic(), target, state, extra)
+        await self._finish(target, state, **extra)
 
     async def _finish(self, target: Target, state: str, **extra: Any) -> None:
         """The scan's last reply, under the newest request's id.
@@ -482,6 +507,11 @@ class ListenSession:
         await self._cancel(self._waterfall_idle)
         self._waterfall_idle = None
         if self._waterfall is not None:
+            refusal = getattr(self._waterfall, "refusal", None)
+            if refusal is not None:
+                # Refused but kept open (it may carry the audio): it can't
+                # sweep, and the receiver's reason still stands.
+                raise refusal
             await self._waterfall.fast()
             return self._waterfall
         waterfall = self._waterfall_factory(
@@ -506,6 +536,8 @@ class ListenSession:
                 # it, so the caller drains it rather than closing it and ending
                 # the audio. A Kiwi that really refused it closes it itself.
                 self._waterfall = waterfall
+                if isinstance(e, KiwiError) and e.code != "timeout":
+                    waterfall.refusal = e
             else:
                 # Never paired (badp=5) or already closed: safe to close.
                 await waterfall.close()
