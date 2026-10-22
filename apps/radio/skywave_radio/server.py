@@ -13,7 +13,7 @@ import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 
 from .config import Settings, is_local_origin, origin_allowed
-from .session import ClientGone, ListenSession, ScanCache, Slots
+from .session import ClientGone, ListenSession, ScanCache, Slots, SweepTimes
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("skywave_radio")
@@ -43,6 +43,8 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
     slots = app.state.slots = Slots(settings.max_sessions)
     # Shared, so a receiver scanned for one listener isn't rescanned for the next.
     scan_cache = app.state.scan_cache = ScanCache()
+    # Shared, so reconnecting doesn't get a listener a sooner sweep.
+    sweep_times = app.state.sweep_times = SweepTimes()
 
     @app.get("/healthz")
     async def healthz() -> dict:
@@ -83,6 +85,7 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
             send_bytes,
             slots=slots,
             scan_cache=scan_cache,
+            sweep_times=sweep_times,
             # Behind a reverse proxy this is only the user's address if
             # FORWARDED_ALLOW_IPS trusts that proxy; the session copes if not.
             client_ip=ws.client.host if ws.client else None,

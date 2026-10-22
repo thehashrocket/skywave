@@ -138,6 +138,32 @@ class ScanCache:
         self._entries[key] = (now + (self.ttl_s if ttl_s is None else ttl_s), result)
 
 
+class SweepTimes:
+    """When each listener last started a sweep of each receiver, shared by every session.
+
+    Shared so a new connection doesn't start a listener's SCAN_MIN_INTERVAL_S
+    over. A listener is a public IP, or one session behind a proxy the
+    service doesn't trust (see ListenSession.lookup_owner).
+    """
+
+    def __init__(self) -> None:
+        # (listener, receiver) -> start time on the monotonic clock
+        self._starts: dict[Hashable, float] = {}
+
+    def wait_s(self, key: Hashable) -> float:
+        """Seconds until this listener may start another sweep of this receiver."""
+        start = self._starts.get(key)
+        return 0.0 if start is None else max(0.0, start + SCAN_MIN_INTERVAL_S - time.monotonic())
+
+    def start(self, key: Hashable) -> None:
+        now = time.monotonic()
+        self._starts = {k: t for k, t in self._starts.items() if now < t + SCAN_MIN_INTERVAL_S}
+        self._starts.pop(key, None)
+        while len(self._starts) >= SCAN_CACHE_MAX:
+            del self._starts[min(self._starts, key=self._starts.__getitem__)]
+        self._starts[key] = now
+
+
 def kiwi_freq_khz(freq_khz: float, mode: str) -> float:
     """Frequency to ask the Kiwi for. CW is offset so the signal lands at an audible pitch."""
     return freq_khz - CW_PITCH_HZ / 1000 if mode == "cw" else freq_khz
@@ -164,6 +190,7 @@ class ListenSession:
         *,
         slots: Slots | None = None,
         scan_cache: ScanCache | None = None,
+        sweep_times: SweepTimes | None = None,
         resolver: Callable[..., Awaitable[str]] = resolve_receiver,
         client_factory: Callable[..., KiwiClient] = KiwiClient,
         waterfall_factory: Callable[..., WaterfallClient] = WaterfallClient,
@@ -175,6 +202,7 @@ class ListenSession:
         self._raw_send_bytes = send_bytes
         self._slots = slots or Slots(settings.max_sessions)
         self._scan_cache = scan_cache or ScanCache()
+        self._sweep_times = sweep_times or SweepTimes()
         self._resolver = resolver
         self._client_factory = client_factory
         self._waterfall_factory = waterfall_factory
@@ -203,7 +231,8 @@ class ListenSession:
         self._scan_id: int | None = None
         # The last sweep's answer, (monotonic time, target, state, payload),
         # repeated to requests within SCAN_MIN_INTERVAL_S while this receiver
-        # connection lasts.
+        # connection lasts. A new connection waits out the interval instead
+        # (SweepTimes) and sweeps again.
         self._last_sweep: tuple[float, Target, str, dict[str, Any]] | None = None
 
     @property
@@ -447,6 +476,12 @@ class ListenSession:
             await self._finish(target, last[2], **last[3])
             return
         await self._scan_reply(self._scan_id, target, "scanning")
+        # No await between the last check and start(), so listeners sharing
+        # an IP queue up one sweep at a time.
+        key = (self.lookup_owner, target)
+        while (wait := self._sweep_times.wait_s(key)) > 0:
+            await asyncio.sleep(wait)
+        self._sweep_times.start(key)
         try:
             waterfall = await self._paired_waterfall(client)
             result = await sweep(waterfall.frame, waterfall.info.freq_offset_khz, waterfall.bandwidth_khz)
