@@ -24,6 +24,7 @@
 - **Tile-loading colour:** before tiles arrive the frame is land colour (the design says sea); OpenMapTiles has no land layer, so this needs a land polygon source or a sea background with land drawn from tiles.
 - **"Zoom into this area"** doesn't switch follow to stay, so the next listening change pulls the camera away; decide whether it counts as a user move.
 - **Stale worker after a MapLibre upgrade:** the worker URL carries the maplibre-gl version and the route 404s any other version. A page open across a deploy that upgrades maplibre-gl, with its map code already loaded, never starts the worker; the map fails through `onFail`, which offers Retry only, and Retry asks for the same 404. Have the route answer 410 for an old version and let ReceiverMap report that as code gone, so the overlay offers Reload page (`gstack-shortcut(dec-3318f2fa)` in `MapPanel.tsx`). Found by the feat/web-follow-ups /ship red team.
+- **Attribution covers the map on phones:** with `attributionControl: { compact: true }` (`ReceiverMap.tsx:129`) MapLibre starts with the attribution open and only collapses it after the first interaction; at 320 px wide it covers a good part of the map's lower half. Start it collapsed on narrow frames (the attribution must stay reachable through its "i" button). Seen in a local phone-width check after feat/web-follow-ups (2026-10-21).
 - **Slow links:** the worker's shared chunk (~150 KB gzipped) is a second download inside the 30 s budget, alongside live audio; check it's served compressed.
 
 **Why:** Found by the PR 2b /ship review rounds (2026-10-21) and left for after merge; none blocks using the map.
@@ -31,6 +32,18 @@
 **Context:** `apps/web/src/components/ReceiverMap.tsx`, `MapPanel.tsx`, `apps/web/src/lib/use-map-admission.ts`, `apps/web/src/app/vendor/maplibre/`.
 
 **Effort:** M
+**Priority:** P3
+**Depends on:** None
+
+### Give inline buttons a usable tap target on phones
+
+**What:** On phones, make the inline text buttons (`.link-button.inline`) easy to tap without breaking the sentences they sit in.
+
+**Why:** The mobile breakpoint gives buttons `min-height: 44px` (`apps/web/src/app/globals.css:1297`), but `.link-button.inline` resets it to `0` (`globals.css:1303-1304`), so inline buttons are 24 px tall. That includes the map overlay's Retry map, Browse receivers and "Reload page (stops the radio)", and the picker's Try again. Measured at 320 and 390 px wide in a local check after feat/web-follow-ups (2026-10-21).
+
+**Context:** Raising the height on inline text would push line spacing apart. Options: extra padding with a matching negative margin so the hit area grows but the text doesn't move, or making the map overlay's actions block-level buttons (they aren't running prose). The overlay is a fixed 220 px tall on phones (`.map-overlay`, `--map-height`); check it still fits.
+
+**Effort:** S
 **Priority:** P3
 **Depends on:** None
 
