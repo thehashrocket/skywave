@@ -89,7 +89,24 @@ describe("usePickBest", () => {
       expect(hook.result.current.note).toBe("A only takes listeners on its own web page; trying B…");
     });
 
-    // Value: protects=the watch ends: a refusal after it, after another failure, or after the listener moved on starts nothing; fails_when=the watch timer or the cancel/other-status paths are missing, so a late refusal re-tunes behind the listener's back; why_new=hidden watch (eng review D4); another-receiver and service-drop rows from ship review (state-machines); seam=none; no_claim=live Kiwi timing
+    // Value: protects=settled stays false through the whole watch (a late refusal can still switch receivers) and turns true, re-rendering, when the watch runs out; fails_when=settled follows running, or the watch's expiry changes only a ref; why_new=band scan waits for it (eng review D14, Codex O4); seam=none; no_claim=live Kiwi timing
+    it("is settled only once the watch ends, not when the receiver starts playing", () => {
+      const { hook, report } = setup();
+      expect(hook.result.current.settled).toBe(true);
+      act(() => hook.result.current.start(candidates));
+      expect(hook.result.current.settled).toBe(false);
+      report(listening("a"));
+      expect(hook.result.current.running).toBe(false);
+      expect(hook.result.current.settled).toBe(false);
+      act(() => vi.advanceTimersByTime(WATCH_MS - 1));
+      report(fail("a", "no_apps"));
+      expect(hook.result.current.settled).toBe(false);
+      report(listening("b"));
+      act(() => vi.advanceTimersByTime(WATCH_MS));
+      expect(hook.result.current.settled).toBe(true);
+    });
+
+    // Value: protects=the watch ends: a refusal after it, after another failure, or after the listener moved on starts nothing, and the run reads settled; fails_when=the watch timer or the cancel/other-status paths are missing, so a late refusal re-tunes behind the listener's back, or finish() stops setting settled so the band scan never starts; why_new=hidden watch (eng review D4); another-receiver and service-drop rows from ship review (state-machines); seam=none; no_claim=live Kiwi timing
     it.each<[string, (h: Harness) => void]>([
       ["the watch ran out", () => act(() => vi.advanceTimersByTime(WATCH_MS))],
       ["the listener chose another receiver", (h) => act(() => h.hook.result.current.cancel())],
@@ -105,6 +122,8 @@ describe("usePickBest", () => {
       act(() => h.hook.result.current.start(candidates));
       h.report(listening("a"));
       end(h);
+      // However the watch ends, the run is settled, so the page's band scan can start.
+      expect(h.hook.result.current.settled).toBe(true);
       h.report(fail("a", "no_apps"));
       expect(h.tuned()).toEqual(["a"]);
       expect(h.hook.result.current.running).toBe(false);

@@ -11,6 +11,7 @@ from websockets.asyncio.server import serve
 
 from skywave_radio import kiwi as kiwi_module
 from skywave_radio.kiwi import KiwiClient, KiwiError, parse_msg
+from skywave_radio.waterfall import WaterfallClient
 
 from .fakekiwi import FakeKiwi
 
@@ -53,6 +54,8 @@ async def test_handshake_and_iq_stream():
     "reject,code",
     [
         (b"MSG badp=1", "password"),
+        # A second stream under another timestamp: refused, not a password problem.
+        (b"MSG badp=5", "busy"),
         (b"MSG down", "down"),
         (b"MSG redirect=http%3A%2F%2Fother.example%3A8073", "redirect"),
     ],
@@ -125,6 +128,8 @@ async def test_handshake_timeout_says_whether_the_kiwi_answered(fake, message):
             await client.connect()
         assert e.value.code == "timeout"
         assert message in str(e.value)
+        # The audio stream is closed either way: only a paired waterfall stays open.
+        assert client._ws is None or client._ws.state.name == "CLOSED"
 
 
 async def test_stalled_stream_times_out():
@@ -361,21 +366,28 @@ async def test_slow_receiver_with_dropouts_keeps_streaming():
         await client.close()
 
 
-async def test_unreachable_kiwi_raises():
-    client = KiwiClient("127.0.0.1", 9, timeout_s=2)
+# The dialing rules (hostguard's address, no proxy, one same-host https
+# upgrade) are shared by both streams, so these run against each (D9).
+@pytest.fixture(params=[KiwiClient, WaterfallClient], ids=["SND", "W/F"])
+def client_cls(request):
+    return request.param
+
+
+async def test_unreachable_kiwi_raises(client_cls):
+    client = client_cls("127.0.0.1", 9, timeout_s=2)
     with pytest.raises(KiwiError) as e:
         await client.connect()
     assert e.value.code == "unreachable"
 
 
-async def test_silent_port_gives_a_reason():
+async def test_silent_port_gives_a_reason(client_cls):
     # Accepts TCP but never answers the WebSocket upgrade, like a wrong port.
     held = []
     server = await asyncio.start_server(lambda r, w: held.append(w), "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     try:
         with pytest.raises(KiwiError) as e:
-            await KiwiClient("127.0.0.1", port, timeout_s=0.5).connect()
+            await client_cls("127.0.0.1", port, timeout_s=0.5).connect()
         assert e.value.code == "unreachable"
         assert "()" not in str(e.value)
         assert "check the port" in str(e.value)
@@ -385,47 +397,47 @@ async def test_silent_port_gives_a_reason():
         server.close()
 
 
-def test_ipv6_hosts_are_bracketed_in_the_url():
-    client = KiwiClient("2001:db8::1", 8073)
+def test_ipv6_hosts_are_bracketed_in_the_url(client_cls):
+    client = client_cls("2001:db8::1", 8073)
     assert client.url.startswith("ws://[2001:db8::1]:8073/")
-    assert KiwiClient("kiwi.example", 8073).url.startswith("ws://kiwi.example:8073/")
+    assert client_cls("kiwi.example", 8073).url.startswith("ws://kiwi.example:8073/")
 
 
-async def test_an_undialable_url_is_a_coded_error(monkeypatch):
+async def test_an_undialable_url_is_a_coded_error(client_cls, monkeypatch):
     # A bad URL used to escape as a bare ValueError: "Something broke" and no code.
     def bad_url(self):
         return "ws://2001:db8::1:8073/1/SND"  # what an unbracketed IPv6 host used to produce
 
-    monkeypatch.setattr(KiwiClient, "url", property(bad_url))
+    monkeypatch.setattr(client_cls, "url", property(bad_url))
     with pytest.raises(KiwiError) as e:
-        await KiwiClient("kiwi.example", 8073, timeout_s=0.5).connect()
+        await client_cls("kiwi.example", 8073, timeout_s=0.5).connect()
     assert e.value.code == "invalid"
 
 
-def test_secure_clients_dial_wss():
-    assert KiwiClient("kiwi.example", 443, secure=True).url.startswith("wss://kiwi.example:443/")
+def test_secure_clients_dial_wss(client_cls):
+    assert client_cls("kiwi.example", 443, secure=True).url.startswith("wss://kiwi.example:443/")
 
 
 # Value: protects=a copied address in an error message pastes back as a working host:port; fails_when=messages format host:port without brackets; why_new=only the URL was bracketed; seam=none; no_claim=web-side display
-async def test_ipv6_addresses_are_bracketed_in_messages():
+async def test_ipv6_addresses_are_bracketed_in_messages(client_cls):
     with pytest.raises(KiwiError) as e:
-        await KiwiClient("::1", 9, timeout_s=2).connect()
+        await client_cls("::1", 9, timeout_s=2).connect()
     assert e.value.code == "unreachable"
     assert "[::1]:9" in str(e.value)
 
 
 # Value: protects=only a URL we can't build is "invalid" (which Pick best treats as a free skip); fails_when=connect maps any ValueError to invalid again; why_new=TODOS small edges; seam=none; no_claim=which ValueErrors websockets raises
-async def test_a_value_error_while_dialing_is_not_an_address_problem(monkeypatch):
+async def test_a_value_error_while_dialing_is_not_an_address_problem(client_cls, monkeypatch):
     def broken(*args, **kwargs):
         raise ValueError("something inside the handshake")
 
     monkeypatch.setattr(kiwi_module, "_connect", broken)
     with pytest.raises(ValueError):
-        await KiwiClient("kiwi.example", 8073, timeout_s=0.5).connect()
+        await client_cls("kiwi.example", 8073, timeout_s=0.5).connect()
 
 
 # Value: protects=the service dials the address hostguard checked even with HTTPS_PROXY set; fails_when=proxy=None is dropped and websockets picks a proxy from the environment; why_new=no test pinned it; seam=none; no_claim=real proxies
-async def test_never_dials_through_an_environment_proxy(monkeypatch):
+async def test_never_dials_through_an_environment_proxy(client_cls, monkeypatch):
     seen = {}
 
     def capture(url, **kwargs):
@@ -434,7 +446,7 @@ async def test_never_dials_through_an_environment_proxy(monkeypatch):
 
     monkeypatch.setattr(kiwi_module, "_connect", capture)
     with pytest.raises(KiwiError):
-        await KiwiClient("kiwi.example", 8073, connect_host="203.0.113.7", timeout_s=0.5).connect()
+        await client_cls("kiwi.example", 8073, connect_host="203.0.113.7", timeout_s=0.5).connect()
     assert seen["proxy"] is None
     assert seen["host"] == "203.0.113.7"
 
@@ -457,15 +469,16 @@ def tls(monkeypatch):
 
 
 # Value: protects=wss checks the certificate against the receiver's name while dialing the checked IP; fails_when=server_hostname follows connect_host or TLS is skipped; why_new=no TLS path existed; seam=websockets default-context factory (test CA); no_claim=public CA trust
-async def test_wss_verifies_the_hostname_while_dialing_the_checked_address(tls):
+async def test_wss_verifies_the_hostname_while_dialing_the_checked_address(client_cls, tls):
     async with FakeKiwi(ssl=tls("kiwi.test")) as kiwi:
-        client = KiwiClient("kiwi.test", kiwi.port, connect_host="127.0.0.1", secure=True, timeout_s=3)
+        client = client_cls("kiwi.test", kiwi.port, connect_host="127.0.0.1", secure=True, timeout_s=3)
         info = await client.connect()
-        assert info.sample_rate == 12000.0
+        if client_cls is KiwiClient:
+            assert info.sample_rate == 12000.0
         await client.close()
 
     async with FakeKiwi(ssl=tls("someone-else.test")) as kiwi:
-        client = KiwiClient("kiwi.test", kiwi.port, connect_host="127.0.0.1", secure=True, timeout_s=3)
+        client = client_cls("kiwi.test", kiwi.port, connect_host="127.0.0.1", secure=True, timeout_s=3)
         with pytest.raises(KiwiError) as e:
             await client.connect()
         assert e.value.code == "unreachable"
@@ -483,11 +496,11 @@ async def test_wss_verifies_the_hostname_while_dialing_the_checked_address(tls):
         ("ftp://kiwi.test/", False),
     ],
 )
-async def test_only_same_host_https_upgrades_are_followed(tls, monkeypatch, location, followed):
+async def test_only_same_host_https_upgrades_are_followed(client_cls, tls, monkeypatch, location, followed):
     async with FakeKiwi(ssl=tls("kiwi.test")) as secure:
         monkeypatch.setattr(kiwi_module, "HTTPS_PORT", secure.port)
         async with FakeKiwi(redirect_to=location) as plain:
-            client = KiwiClient("kiwi.test", plain.port, connect_host="127.0.0.1", timeout_s=3)
+            client = client_cls("kiwi.test", plain.port, connect_host="127.0.0.1", timeout_s=3)
             if followed:
                 await client.connect()
                 assert (client.secure, client.port) == (True, secure.port)
@@ -500,12 +513,20 @@ async def test_only_same_host_https_upgrades_are_followed(tls, monkeypatch, loca
                 assert secure.paths == []
 
 
-async def test_a_second_redirect_is_not_followed(tls, monkeypatch):
+async def test_a_second_redirect_is_not_followed(client_cls, tls, monkeypatch):
     async with FakeKiwi(ssl=tls("kiwi.test"), redirect_to="https://kiwi.test/again") as secure:
         monkeypatch.setattr(kiwi_module, "HTTPS_PORT", secure.port)
         async with FakeKiwi(redirect_to="https://kiwi.test/") as plain:
-            client = KiwiClient("kiwi.test", plain.port, connect_host="127.0.0.1", timeout_s=3)
+            client = client_cls("kiwi.test", plain.port, connect_host="127.0.0.1", timeout_s=3)
             with pytest.raises(KiwiError) as e:
                 await client.connect()
     assert e.value.code == "unreachable"
     assert len(secure.paths) == 1
+
+
+# Value: protects=connections made in the same second get different URL timestamps, so one listener's scan waterfall can't pair with another listener's audio (review D7); fails_when=the timestamp is int(time.time()) again; why_new=red team (shared timestamp); seam=none; no_claim=how a Kiwi treats colliding timestamps
+def test_connections_get_unique_timestamps():
+    clients = [KiwiClient("kiwi.example", 8073) for _ in range(3)]
+    stamps = [c.timestamp for c in clients]
+    assert len(set(stamps)) == 3 and stamps == sorted(stamps)
+    assert WaterfallClient("kiwi.example", 8073, timestamp=stamps[0]).timestamp == stamps[0]

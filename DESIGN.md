@@ -140,7 +140,7 @@ skywave plays public KiwiSDR receivers in the browser. You tune shortwave broadc
 
 The page is drawn as a radio console. The page is enamel teal (`--enamel`), and the "one loud thing on the page" (globals.css comment) is a celadon glass dial (`--glass` → `--glass-shade`) with a red needle (`--needle`). Primary controls are brass (`--brass`). Live state, links, focus and the tuned frequency light up amber like a pilot lamp (`--lamp`). Instrument text (wordmark, readouts, headings, dial numerals) uses a condensed face, Barlow Condensed. Running text uses Atkinson Hyperlegible. `color-scheme: dark` is set, and there is no light theme.
 
-Page order (`page.tsx`): header (wordmark, receiver form, Listen/Stop) → dial → controls (readout, modes, S-meter, volume) → status row (with Back) → Receivers section (help sentence, Pick best bar, map, folded table) → waterfall → presets.
+Page order (`page.tsx`): header (wordmark, receiver form, Listen/Stop) → dial → controls (readout, modes, S-meter, volume) → status row (with Back) → Receivers section (help sentence, Pick best bar, map, folded table) → waterfall → strong signals now → presets.
 
 ## Colors
 
@@ -262,7 +262,7 @@ Other shadows:
 - **Back button** (`.link-button.status-back`): sits in `.status-row` outside the live region. It's left-aligned with `overflow-wrap: anywhere`, because receiver names run long and "a wrapped button label would center".
 - **Power** (`.power` / `.power-on`): Listen is a filled brass pill with ink text, weight 700, min-width 7em. Stop is the brass outline version.
 - **Pick best** (`.pick-best`): a brass outline pill (7px 16px, weight 700) with a brass 12% hover. Disabled is opacity 0.45. While a run is going, the same class becomes "Stop picking". Its note (`.receivers-note`) is 1rem muted.
-- **Link button** (`.link-button`): text styled as a lamp link, 0.92rem, underlined with `text-underline-offset: 3px`. Hover changes it to `--text` with a 2px underline. `.inline` drops the padding and inherits the font size for use inside sentences.
+- **Link button** (`.link-button`): text styled as a lamp link, 0.92rem, underlined with `text-underline-offset: 3px`. Hover changes it to `--text` with a 2px underline. `.inline` drops the padding and inherits the font size for use inside sentences. Disabled or `aria-disabled="true"` drops to opacity 0.45 with `cursor: default` and no hover change.
 - **Receiver table** (`ReceiverPicker.tsx`, inside `details.receivers-browse`): the summary is a Barlow 1.15rem glass heading. The wrap is an `--enamel-raised` panel.
   - Sticky header buttons are 0.85rem muted, with ↕/▲/▼ glyphs shown through `content: … / ""` so screen readers stay on `aria-sort`.
   - Rows have a 50% `--rule` divider and a glass 8% hover, and the name underlines on hover.
@@ -284,8 +284,9 @@ Other shadows:
   - Opacity is 1 when tuned, 0.2 out of range, 1 at night and 0.55 by day.
   - Coastlines and borders are 0.5px `--map-rule`.
 - **Waterfall** (`Waterfall.tsx`, `.waterfall`): a 240px canvas (180px at ≤520px) in a deep, rounded screen with `cursor: crosshair`. It has a glass-tinted passband strip, a dashed needle-red center line, centered muted empty text, and a Barlow kHz axis with an Atkinson unit caption.
+- **Strong signals now** (`SignalList.tsx`, `.presets.signals`): the band scan's list, built from the presets' classes (rows, tabular Barlow frequency, current row in lamp) with wider frequency and band columns (6ch, 4.2ch) and a muted "N dB above noise" note (`.signal-strength`). State text sits in `.presets-note` paragraphs inside a `role="status"` div. Scan again is a standalone `.link-button` (`.signals-again`, 12px bottom margin, not `.inline`) outside that live region, so only the text is announced; it's `aria-disabled` while a scan runs or nothing is playing, so it keeps keyboard focus. Hidden when the radio service can't scan, and when nothing is playing and there's no scan to show.
 - **Presets** (`Presets.tsx`, `.presets`): an `h2` "Saved frequencies".
-  - `.presets-list` is an auto-fill grid (min 300px) of rows with a `--rule` bottom border.
+  - `.presets-list` is an auto-fill grid (min 300px, or the full width when narrower) of rows with a `--rule` bottom border.
   - Each `.preset-tune` row shows the frequency (Barlow 1.2rem tabular, lamp when current), the mode (Barlow muted) and the name (glass and underlined on hover).
   - `.preset-delete` is a round 32px × that turns `--danger` on hover.
   - `.presets-save` is a field plus a brass outline pill Save button (disabled at opacity 0.45).
@@ -308,7 +309,7 @@ Rules the code follows:
 - **Do** reserve space for content that arrives late: `.map-frame` min-height, `.map-header` at 44px, `.receivers-updated` at `min-height: 1lh`, `.status` at `min-height: 1.5em`.
 - **Do** keep an inline link at the line's height while giving it a 44px tap target on phones (padding plus a matching negative margin).
 - **Do** put a costly action on its own line, away from cheap ones. The map overlay's "Reload page (stops the radio)" sits in `.map-overlay-costly` with `margin-top: 16px`, below Retry and Browse.
-- **Do** dim disabled buttons with `opacity: 0.45` and `cursor: default` (`.pick-best`, presets Save, `.map-center`).
+- **Do** dim disabled buttons with `opacity: 0.45` and `cursor: default` (`.pick-best`, presets Save, `.map-center`, `.link-button`).
 - **Do** use tabular numerals for frequencies and counts that update in place.
 - **Don't** style the map from hard-coded colors. Colors come from the `--map-*` tokens (plus `--needle` and `--lamp`) through `resolveTokens`, with `FALLBACK_TOKENS` kept equal to `:root`.
 - **Don't** add drop shadows to panels. Depth comes from the enamel tones. The only outer shadows are the dial bezel ring and the status lamp glow.

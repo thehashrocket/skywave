@@ -124,6 +124,9 @@ export function usePickBest(
   const chain = useRef<Chain | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  // No run and no watch: whatever is playing stays. `running` goes false as
+  // soon as a receiver plays, while the watch below can still move on.
+  const [settled, setSettled] = useState(true);
   const latestStatus = useRef(status);
   latestStatus.current = status;
   const acceptsRef = useRef(accepts);
@@ -136,6 +139,7 @@ export function usePickBest(
     clearTimers(chain.current);
     chain.current = null;
     setRunning(false);
+    setSettled(true);
     setNote(why);
   }, []);
 
@@ -175,6 +179,7 @@ export function usePickBest(
         retried: false,
       };
       setRunning(true);
+      setSettled(false);
       setNote(null);
       tune(first, true);
     },
@@ -236,7 +241,9 @@ export function usePickBest(
       setRunning(false);
       setNote(null);
       c.watchTimer = setTimeout(() => {
-        if (chain.current === c) chain.current = null;
+        if (chain.current !== c) return;
+        chain.current = null;
+        setSettled(true);
       }, WATCH_MS);
       return;
     }
@@ -273,5 +280,5 @@ export function usePickBest(
     tune(next, true);
   }, [status, tune, finish, goBack]);
 
-  return { start, cancel, stop, note, running };
+  return { start, cancel, stop, note, running, settled };
 }

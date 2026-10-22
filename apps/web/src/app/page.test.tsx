@@ -2,13 +2,16 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Receiver } from "@/lib/kiwi-list";
-import type { RadioStatus } from "@/lib/use-radio";
+import type { RadioStatus, ScanState } from "@/lib/use-radio";
 
 const radio = {
   status: { state: "idle" } as RadioStatus,
   meter: null,
   tuning: false,
   heardAudio: false,
+  canScan: false,
+  scan: null as ScanState | null,
+  startScan: vi.fn(),
   tune: vi.fn(async () => {}),
   retune: vi.fn(),
   stop: vi.fn(),
@@ -107,6 +110,9 @@ beforeEach(() => {
   radio.status = { state: "idle" };
   radio.tuning = false;
   radio.heardAudio = false;
+  radio.canScan = false;
+  radio.scan = null;
+  radio.startScan.mockClear();
   radio.tune.mockClear();
   radio.stop.mockClear();
 });
@@ -918,5 +924,92 @@ describe("ListenPage", () => {
     for (let i = 1; i < order.length; i++) {
       expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
+  });
+
+  describe("band scan", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    function playing(view: ReturnType<typeof render>, host = listed.host, port = listed.port) {
+      radio.status = { state: "listening", host, port };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+    }
+
+    // Value: protects=a receiver's scan starts on its own 10 s after it plays, once (eng review D4); fails_when=the trigger fires at once, never, or repeatedly; why_new=no scan; seam=useRadio mocked; no_claim=service behaviour
+    it("scans a receiver 10 s after it starts playing, once", () => {
+      radio.canScan = true;
+      const view = render(<ListenPage />);
+      playing(view);
+      act(() => vi.advanceTimersByTime(9_999));
+      expect(radio.startScan).not.toHaveBeenCalled();
+      act(() => vi.advanceTimersByTime(1));
+      expect(radio.startScan).toHaveBeenCalledTimes(1);
+      radio.scan = { state: "scanning", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(radio.startScan).toHaveBeenCalledTimes(1);
+    });
+
+    // Value: protects=a quick switch restarts the 10 s wait, so the new receiver gets its own full wait; fails_when=the timer isn't reset when the playing receiver changes and fires a few seconds into the next one; why_new=only a single receiver was tested; seam=useRadio mocked; no_claim=service behaviour
+    it("restarts the wait when the receiver changes before it scans", () => {
+      radio.canScan = true;
+      const view = render(<ListenPage />);
+      playing(view);
+      act(() => vi.advanceTimersByTime(6_000));
+      playing(view, "other.example", 8073);
+      act(() => vi.advanceTimersByTime(9_999));
+      expect(radio.startScan).not.toHaveBeenCalled();
+      act(() => vi.advanceTimersByTime(1));
+      expect(radio.startScan).toHaveBeenCalledTimes(1);
+    });
+
+    // Value: protects=no scan while Pick best might still drop the receiver (D14); fails_when=the trigger watches running instead of settled; why_new=Codex O4; seam=useRadio mocked; no_claim=real refusal timing
+    it("waits for Pick best's watch to end before scanning", () => {
+      radio.canScan = true;
+      const view = render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      playing(view);
+      act(() => vi.advanceTimersByTime(14_999));
+      expect(radio.startScan).not.toHaveBeenCalled();
+      act(() => vi.advanceTimersByTime(1)); // the watch ends: settled
+      act(() => vi.advanceTimersByTime(9_999));
+      expect(radio.startScan).not.toHaveBeenCalled();
+      act(() => vi.advanceTimersByTime(1));
+      expect(radio.startScan).toHaveBeenCalledTimes(1);
+    });
+
+    // Value: protects=an older radio service is never asked to scan, and the list stays hidden (D13); fails_when=the page ignores canScan; why_new=Codex O3; seam=useRadio mocked; no_claim=none beyond protects
+    it("leaves an older radio service alone", () => {
+      const view = render(<ListenPage />);
+      playing(view);
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(radio.startScan).not.toHaveBeenCalled();
+      expect(screen.queryByRole("heading", { name: "Strong signals now" })).toBeNull();
+    });
+
+    // Value: protects=a listed signal tunes in AM and Scan again asks for a fresh scan; fails_when=clicks keep the current mode or Scan again reuses the cache; why_new=no list; seam=useRadio mocked; no_claim=real retune timing
+    it("tunes a listed signal in AM, and Scan again asks for a fresh scan", () => {
+      radio.canScan = true;
+      radio.scan = {
+        state: "done",
+        host: listed.host,
+        port: listed.port,
+        signals: [{ freqKhz: 9_420, snrDb: 31, band: "31m" }],
+        hidden: 2,
+        bandsDone: 9,
+        bandsTotal: 15,
+        partial: true,
+      };
+      const view = render(<ListenPage />);
+      playing(view);
+      expect(screen.getByText("Scanned 9 of 15 bands.", { exact: false })).toBeTruthy();
+      expect(screen.getByText("2 digital or noise signals aren't listed.", { exact: false })).toBeTruthy();
+      act(() => fireEvent.click(screen.getByRole("button", { name: /9,420\s*31m/ })));
+      act(() => vi.advanceTimersByTime(200));
+      expect(radio.retune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 9_420, mode: "am" }));
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Scan again" })));
+      expect(radio.startScan).toHaveBeenLastCalledWith(true);
+    });
   });
 });

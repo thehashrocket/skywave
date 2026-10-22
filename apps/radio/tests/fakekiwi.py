@@ -1,14 +1,16 @@
-"""A tiny fake KiwiSDR for tests: speaks just enough of the SND protocol."""
+"""A tiny fake KiwiSDR for tests: speaks just enough of the SND and W/F protocols."""
 
 from __future__ import annotations
 
 import asyncio
 import ssl
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
 from websockets.asyncio.server import ServerConnection, serve
+from websockets.protocol import State
 from websockets.http11 import Request, Response
 
 RATE = 12000.0
@@ -49,9 +51,33 @@ class FakeKiwi:
     ssl: ssl.SSLContext | None = None
     # Answer the upgrade with a 301 to this Location instead of a WebSocket.
     redirect_to: str | None = None
+    # W/F: what the receiver reports, and the bins for a frame given its
+    # baseband start and span in kHz (default: flat noise at 140).
+    freq_offset_khz: float = 0.0
+    bandwidth_khz: float = 30_000.0
+    wf_bins: Callable[[float, float], np.ndarray] | None = None
+    # W/F frames still showing the previous position after each SET zoom.
+    wf_stale_frames: int = 2
+    # Send a malformed (short) W/F frame before every good one.
+    wf_bad_frames: bool = False
+    # Seconds between W/F frames (a real Kiwi: about 0.04 fast, 1 idle).
+    wf_interval: float = 0.005
+    # Close a W/F connection after this many frames.
+    wf_drop_after: int | None = None
+    # A MSG frame to answer a W/F connection with instead of its setup.
+    wf_reject: bytes | None = None
+    # Answer a W/F connection but never send wf_setup.
+    wf_no_setup: bool = False
+    # W/F connections opened (paths) and closed so far.
+    wf_closed: int = 0
+    # Like a real Kiwi: refuse a W/F whose timestamp differs from an open SND's
+    # (badp=5), and end the SND when its paired W/F closes.
+    pairing: bool = True
     commands: list[str] = field(default_factory=list)
+    wf_commands: list[str] = field(default_factory=list)
     paths: list[str] = field(default_factory=list)
     port: int = 0
+    _snd: dict[str, ServerConnection] = field(default_factory=dict)
 
     async def __aenter__(self) -> "FakeKiwi":
         self._server = await serve(self._handle, "127.0.0.1", 0, ssl=self.ssl, process_request=self._redirect)
@@ -71,6 +97,11 @@ class FakeKiwi:
         await self._server.wait_closed()
 
     async def _handle(self, ws: ServerConnection) -> None:
+        path = ws.request.path if ws.request else ""
+        if path.endswith("/W/F"):
+            await self._handle_wf(ws, path.split("/")[-3])
+            return
+        self._snd[path.split("/")[-2]] = ws
         first = await ws.recv()
         self.commands.append(first)
         if self.reject is not None:
@@ -132,3 +163,75 @@ class FakeKiwi:
             pass
         finally:
             rtask.cancel()
+
+    def _open_snd(self) -> dict[str, ServerConnection]:
+        return {ts: ws for ts, ws in self._snd.items() if ws.state is State.OPEN}
+
+    async def _handle_wf(self, ws: ServerConnection, ts: str) -> None:
+        # Counted once on every path, including a client that goes away
+        # mid-handshake (a send then raises before any other bookkeeping).
+        try:
+            await self._serve_wf(ws, ts)
+        finally:
+            self.wf_closed += 1
+
+    async def _serve_wf(self, ws: ServerConnection, ts: str) -> None:
+        first = await ws.recv()
+        self.wf_commands.append(first)
+        reject = self.wf_reject or self.reject
+        if reject is not None:
+            await ws.send(reject)
+            await asyncio.sleep(0.2)
+            return
+        others = self._open_snd()
+        if self.pairing and others and ts not in others:
+            await ws.send(b"MSG badp=5")
+            await asyncio.sleep(0.2)
+            return
+        await ws.send(f"MSG freq_offset={self.freq_offset_khz:.3f} bandwidth={self.bandwidth_khz * 1000:.0f}".encode())
+        if self.wf_no_setup:
+            async for msg in ws:
+                self.wf_commands.append(msg)
+            return
+        await ws.send(b"MSG wf_setup")
+
+        position = [0, 0.0]  # zoom, baseband start in kHz
+        stale = [0]
+
+        async def reader() -> None:
+            async for msg in ws:
+                self.wf_commands.append(msg)
+                if isinstance(msg, str) and msg.startswith("SET zoom="):
+                    parts = dict(p.split("=", 1) for p in msg[4:].split(" "))
+                    zoom = int(parts["zoom"])
+                    span = self.bandwidth_khz / 2**zoom
+                    stale[0] = self.wf_stale_frames
+                    position[:] = [zoom, float(parts["cf"]) - span / 2]
+
+        rtask = asyncio.create_task(reader())
+        sent = 0
+        old = [0, 0.0]
+        try:
+            while self.wf_drop_after is None or sent < self.wf_drop_after:
+                zoom, start = old if stale[0] > 0 else position
+                if stale[0] > 0:
+                    stale[0] -= 1
+                else:
+                    old = list(position)
+                span = self.bandwidth_khz / 2**zoom
+                bins = self.wf_bins(start, span) if self.wf_bins else np.full(1024, 140, dtype=np.uint8)
+                x_bin = round(start / self.bandwidth_khz * 1024 * 2**14)
+                header = struct.pack("<III", max(0, x_bin), zoom, sent)
+                if self.wf_bad_frames:
+                    await ws.send(b"W/F" + b"\x00" + header + bytes(100))
+                await ws.send(b"W/F" + b"\x00" + header + np.asarray(bins, dtype=np.uint8).tobytes())
+                sent += 1
+                await asyncio.sleep(self.wf_interval)
+        except Exception:
+            pass
+        finally:
+            rtask.cancel()
+            await ws.close()
+            if self.pairing and ts in self._open_snd():
+                # A real Kiwi ends the paired audio with its waterfall.
+                await self._snd[ts].close()

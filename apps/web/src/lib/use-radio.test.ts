@@ -836,4 +836,136 @@ describe("useRadio", () => {
       expect(result.current.heardAudio).toBe(false);
     });
   });
+
+  describe("band scan", () => {
+    const at = { host: tuning.host, port: tuning.port };
+    const scanReply = (ws: FakeSocket, payload: Record<string, unknown>) =>
+      ws.onmessage?.({ data: JSON.stringify({ type: "scan", ...at, ...payload }) });
+    const done = (id: number, extra: Record<string, unknown> = {}) => ({
+      id,
+      state: "done",
+      signals: [{ freqKhz: 9_420, snrDb: 30, band: "31m" }],
+      hidden: 1,
+      bandsDone: 15,
+      bandsTotal: 15,
+      partial: false,
+      atMs: 1,
+      ...extra,
+    });
+
+    // null: a service from before the scan, whose statuses have no features field.
+    async function listening(features: string[] | null = ["scan"]) {
+      const hook = renderHook(() => useRadio());
+      await act(() => hook.result.current.tune(tuning));
+      const ws = FakeSocket.instances.at(-1)!;
+      act(() => ws.status("listening", { ...at, ...(features && { features }) }));
+      return { ...hook, ws };
+    }
+
+    // Value: protects=a service that doesn't list "scan" is never sent one (it would answer with a status error and stop the page listening); fails_when=startScan ignores features; why_new=mixed-version deploys (eng review D13, Codex O3); seam=none; no_claim=deploy timing
+    it("asks only a service that says it can scan", async () => {
+      const old = await listening(null);
+      expect(old.result.current.canScan).toBe(false);
+      act(() => old.result.current.startScan());
+      expect(old.ws.sent.filter((m) => m.type === "scan")).toEqual([]);
+
+      const fresh = await listening();
+      expect(fresh.result.current.canScan).toBe(true);
+      act(() => fresh.result.current.startScan(true));
+      expect(fresh.ws.sent.at(-1)).toEqual({ type: "scan", id: expect.any(Number), fresh: true });
+      expect(fresh.result.current.scan).toEqual({ state: "scanning", ...at });
+    });
+
+    // Value: protects=the reply for the newest request and receiver fills the list; older or other-receiver replies are ignored (D16); fails_when=replies are applied without the id and host/port checks; why_new=Codex O6; seam=none; no_claim=network ordering
+    it("applies only the newest request's reply for this receiver", async () => {
+      const { result, ws } = await listening();
+      act(() => result.current.startScan());
+      const first = ws.sent.at(-1)!.id as number;
+      act(() => result.current.startScan(true));
+      const second = ws.sent.at(-1)!.id as number;
+      act(() => scanReply(ws, done(first)));
+      expect(result.current.scan?.state).toBe("scanning");
+      act(() => scanReply(ws, { ...done(second), host: "other.example" }));
+      expect(result.current.scan?.state).toBe("scanning");
+      act(() => scanReply(ws, done(second)));
+      expect(result.current.scan).toMatchObject({ state: "done", hidden: 1, signals: [{ freqKhz: 9_420 }] });
+      act(() => scanReply(ws, { id: second, state: "error", message: "nope" }));
+      expect(result.current.scan).toEqual({ state: "error", ...at, message: "nope" });
+    });
+
+    // Value: protects=a done reply's malformed signal rows are dropped and missing counts default, and one with no signals list is ignored; fails_when=the row filter or defaults go, so the list renders undefined frequencies or NaN counts, or a bare done clears Scanning…; why_new=only well-formed replies were tested; seam=none; no_claim=what an older or buggy service actually sends
+    it("keeps only well-formed signals from a done reply", async () => {
+      const { result, ws } = await listening();
+      act(() => result.current.startScan());
+      const id = ws.sent.at(-1)!.id as number;
+      act(() => scanReply(ws, { id, state: "done" }));
+      expect(result.current.scan).toEqual({ state: "scanning", ...at });
+      act(() =>
+        scanReply(ws, {
+          id,
+          state: "done",
+          signals: [{ freqKhz: 9_420, snrDb: 30, band: "31m" }, { freqKhz: "9425", snrDb: 20, band: "31m" }, null],
+        }),
+      );
+      expect(result.current.scan).toEqual({
+        state: "done",
+        ...at,
+        signals: [{ freqKhz: 9_420, snrDb: 30, band: "31m" }],
+        hidden: 0,
+        bandsDone: 0,
+        bandsTotal: 0,
+        partial: false,
+      });
+    });
+
+    // Value: protects=a scan error never touches the radio status (D5); fails_when=scan errors are routed into setStatus; why_new=D5; seam=none; no_claim=service behaviour
+    it("keeps listening when a scan fails", async () => {
+      const { result, ws } = await listening();
+      act(() => result.current.startScan());
+      act(() => scanReply(ws, { id: ws.sent.at(-1)!.id, state: "error", message: "Couldn't scan" }));
+      expect(result.current.status.state).toBe("listening");
+      expect(result.current.scan?.state).toBe("error");
+    });
+
+    // Value: protects=a scan the service dropped with its receiver connection doesn't linger: after an error or stop and a reconnect to the same receiver the list is clear, so a new scan can start; fails_when=only a switch to another receiver clears it, leaving "Scanning…" for good; why_new=bug review; seam=none; no_claim=service timing
+    it("clears a scan whose receiver stopped listening, even when the same receiver comes back", async () => {
+      const { result, ws } = await listening();
+      act(() => result.current.startScan());
+      act(() => ws.status("error", { ...at, code: "closed", features: ["scan"] }));
+      expect(result.current.scan).toBeNull();
+      act(() => ws.status("listening", { ...at, features: ["scan"] }));
+      expect(result.current.scan).toBeNull();
+      act(() => result.current.startScan());
+      const id = ws.sent.at(-1)!.id as number;
+      act(() => scanReply(ws, done(id)));
+      act(() => ws.status("stopped", { ...at, features: ["scan"] }));
+      expect(result.current.scan).toBeNull();
+    });
+
+    // Value: protects=switching receivers, stopping or losing the service clears the list, and a late reply can't bring it back; fails_when=the list survives a switch, so its stations look like the new receiver's; why_new=D16; seam=none; no_claim=none beyond protects
+    it("clears the list on a switch, a stop and a dropped connection", async () => {
+      const { result, ws } = await listening();
+      act(() => result.current.startScan());
+      const id = ws.sent.at(-1)!.id as number;
+      act(() => scanReply(ws, done(id)));
+      await act(() => result.current.tune({ ...tuning, freqKhz: 9_420 }));
+      expect(result.current.scan?.state).toBe("done"); // a retune of the same receiver keeps it
+      await act(() => result.current.tune({ ...tuning, host: "other.example" }));
+      expect(result.current.scan).toBeNull();
+      act(() => scanReply(ws, done(id)));
+      expect(result.current.scan).toBeNull();
+
+      const again = await listening();
+      act(() => again.result.current.startScan());
+      act(() => again.result.current.stop());
+      expect(again.result.current.scan).toBeNull();
+      expect(again.result.current.canScan).toBe(true);
+
+      const third = await listening();
+      act(() => third.result.current.startScan());
+      act(() => third.ws.finishClose());
+      expect(third.result.current.scan).toBeNull();
+      expect(third.result.current.canScan).toBe(false);
+    });
+  });
 });

@@ -2,6 +2,18 @@
 
 ## Radio service
 
+### Forget the last scan answer when the receiver connection ends
+
+**What:** Clear `ListenSession._last_sweep` in `_end_scan` (or whenever the receiver connection ends), with a test that a reconnect within 30 s scans again.
+
+**Why:** The 30-second sweep limit replays the listener's last answer. That answer survives a stop or a dropped connection, so a listener who reconnects to the same receiver within 30 s gets the old answer, including an error from the scan the drop cut short, instead of a new scan. Audio is unaffected, and the answer expires after 30 s.
+
+**Context:** Found in /ship of the band scan (Step 9 re-review and Codex adversarial review, 2026-10-22). The owner chose to open the PR and fix this in a small follow-up (D8 B). `_last_sweep` and `SCAN_MIN_INTERVAL_S` are in `apps/radio/skywave_radio/session.py`; `test_fresh_scans_are_limited_per_listener` in `apps/radio/tests/test_server.py` shows how to drive it with a stand-in waterfall.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** The band scan PR
+
 ### Retry the old Kiwi path only for a Kiwi that needs it
 
 **What:** Add a single retry on `/<ts>/SND` when `/kiwi/<ts>/SND` gets no reply, but only after a receiver proves it needs one.
@@ -13,6 +25,18 @@
 **Effort:** S
 **Priority:** P4
 **Depends on:** A receiver that reproduces the failure
+
+### Scan the ham bands too
+
+**What:** Extend the band scan to the ham bands in `HAM_BANDS` (`apps/web/src/lib/radio-types.ts`), with results that suit hams: repeated sweeps instead of one snapshot, and a sideband guess for each signal.
+
+**Why:** The scan covers broadcast bands only. Ham voice signals come and go in seconds and sit off any channel grid, so a single snapshot ranks them badly and the list goes stale at once. Covering them would make the list useful on busy contest weekends.
+
+**Context:** Add the bands to `SCAN_BANDS` in `apps/radio/skywave_radio/scan.py` and reuse `find_peaks`; ham peaks need no AM-shape filter or channel snapping. Consider short repeated sweeps that keep only signals seen in most of them, and `guessMode` for the sideband. Keep the 15 s cap (`DEADLINE_S`); more sweeps mean the paired waterfall runs fast for longer.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** None
 
 ## Web app
 
@@ -91,6 +115,18 @@
 **Context:** Mode segments sit in one row, so taller padding must not wrap the group at 320 px. The preset delete ✕ is round, so grow its hit area (padding or a pseudo-element) rather than the visible circle. `.receiver-choose` fills a table cell, so its extra height adds to every row's height. Check at 320 and 390 px, then remove the item from DESIGN.md's Known gaps.
 
 **Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+### Name the stations in the scan list
+
+**What:** Label "Strong signals now" rows with the station on that frequency now: match the public EiBi broadcast schedule by frequency and UTC time, and fall back to the receiver's own DX labels.
+
+**Why:** The list shows "9420 kHz, 31m, 30 dB above noise" but not who it is. Schedules also give language and often programme type, the closest the app can get to "voices, not just loud": the scan's shape filter can't tell talk from music.
+
+**Context:** EiBi publishes a free CSV each season (A and B schedules), so it needs refreshing twice a year, and shared frequencies need a matching rule. Kiwis expose owner DX labels (MSG keys `load_dxcfg` and `request_dx_update` arrive on the waterfall connection, `apps/radio/skywave_radio/waterfall.py`). Start by matching exact frequency plus the current UTC hour, and show nothing extra otherwise. The web side is `apps/web/src/components/SignalList.tsx`.
+
+**Effort:** M
 **Priority:** P3
 **Depends on:** None
 

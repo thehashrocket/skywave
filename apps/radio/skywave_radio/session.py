@@ -6,11 +6,21 @@ Browser -> service (JSON text frames):
     rather than one a person typed; those are only ever dialed on public
     addresses, even with ALLOW_PRIVATE_HOSTS on. "secure": true dials wss://.)
     {"type": "stop"}
+    {"type": "scan", "id": 3, "fresh": false}
+    (scan the receiver being listened to for strong broadcast signals; "fresh"
+    skips the 10-minute cache. Send it only to a service whose status lists
+    "scan" in "features": an older one answers it with a status error.)
 
 Service -> browser:
-    JSON text: {"type": "status", "state": "connecting|listening|stopped|error", ...}
+    JSON text: {"type": "status", "state": "connecting|listening|stopped|error", "features": ["scan"], ...}
                (an uncoded error may carry "retryAfterMs": the same receiver
                may work if tried again after that long)
+    JSON text: {"type": "scan", "id": 3, "host": "...", "port": 8073, "state": "scanning|done|error", ...}
+               (done: "signals" [{"freqKhz", "snrDb", "band"}] strongest first,
+               "hidden" flat-topped signals left out, "bandsDone", "bandsTotal",
+               "partial", "atMs"; error: "message". Scan failures never come as
+               a status: listening goes on. id, host and port echo the request,
+               so a late reply for another receiver or request can be ignored.)
     JSON text: {"type": "meter", "rssi": -73.1, "overflow": false}
     Binary:    0x03 + int16 LE mono audio at `sampleRate` (full scale = 32767)
     Binary:    0x04 + float32 LE base dB + uint8 bins spanning -sampleRate/2..+sampleRate/2,
@@ -25,12 +35,15 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable, Hashable
+from dataclasses import replace
 from typing import Any
 
 from .config import Settings
 from .dsp import CW_PITCH_HZ, MODES, Demodulator, Spectrum, encode_audio, encode_spectrum
 from .hostguard import HostRejected, is_public_address, resolve_receiver
 from .kiwi import DEFAULT_PORT, KiwiClient, KiwiError
+from .scan import ScanResult, sweep
+from .waterfall import WaterfallClient
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +55,26 @@ METER_INTERVAL_S = 0.25
 # this we give up on it so it stops holding a slot and a volunteer's channel.
 # Long enough to ride out a Wi-Fi roam or a laptop waking up.
 SEND_TIMEOUT_S = 15.0
+
+# Statuses list what this service can do, so a newer web app knows whether to ask.
+FEATURES = ["scan"]
+# How long a receiver's scan is reused before a new one is made.
+SCAN_CACHE_S = 600.0
+# A receiver that refused a scan isn't asked again for this long. Only refusals
+# are kept: a dropped connection or a timeout says nothing about the next try.
+SCAN_REFUSAL_CACHE_S = 60.0
+SCAN_REFUSALS = frozenset({"busy", "no_apps", "password", "down"})
+# Receivers the shared cache remembers at most; the soonest to expire goes first.
+SCAN_CACHE_MAX = 500
+# A listener's next sweep waits this long after the last; a request sooner
+# (Scan again in a loop) gets the last answer, sparing the volunteer's Kiwi.
+SCAN_MIN_INTERVAL_S = 30.0
+# Pause before draining a paired waterfall again after idling failed while it is still open.
+IDLE_RETRY_S = 1.0
+
+# A receiver as the session dials it: host, port, whether private addresses
+# may be dialed for it, and wss.
+Target = tuple[str, int, bool, bool]
 
 SendText = Callable[[dict[str, Any]], Awaitable[None]]
 SendBytes = Callable[[bytes], Awaitable[None]]
@@ -77,6 +110,34 @@ class Slots:
         self.active -= 1
 
 
+class ScanCache:
+    """Recent scans per receiver, shared by every session for SCAN_CACHE_S.
+
+    A refusal is kept too, as its error message, for a shorter time, so a
+    receiver that turned a scan away isn't asked again by every listener.
+    """
+
+    def __init__(self, ttl_s: float = SCAN_CACHE_S):
+        self.ttl_s = ttl_s
+        # key -> (expiry on the monotonic clock, result or refusal message)
+        self._entries: dict[Hashable, tuple[float, ScanResult | str]] = {}
+
+    def get(self, key: Hashable) -> ScanResult | str | None:
+        entry = self._entries.get(key)
+        if entry is None or time.monotonic() > entry[0]:
+            return None
+        return entry[1]
+
+    def put(self, key: Hashable, result: ScanResult | str, ttl_s: float | None = None) -> None:
+        now = time.monotonic()
+        # Pruned here so a long-running service doesn't keep every receiver it ever scanned.
+        self._entries = {k: e for k, e in self._entries.items() if now <= e[0]}
+        self._entries.pop(key, None)
+        while len(self._entries) >= SCAN_CACHE_MAX:
+            del self._entries[min(self._entries, key=lambda k: self._entries[k][0])]
+        self._entries[key] = (now + (self.ttl_s if ttl_s is None else ttl_s), result)
+
+
 def kiwi_freq_khz(freq_khz: float, mode: str) -> float:
     """Frequency to ask the Kiwi for. CW is offset so the signal lands at an audible pitch."""
     return freq_khz - CW_PITCH_HZ / 1000 if mode == "cw" else freq_khz
@@ -102,8 +163,10 @@ class ListenSession:
         send_bytes: SendBytes,
         *,
         slots: Slots | None = None,
+        scan_cache: ScanCache | None = None,
         resolver: Callable[..., Awaitable[str]] = resolve_receiver,
         client_factory: Callable[..., KiwiClient] = KiwiClient,
+        waterfall_factory: Callable[..., WaterfallClient] = WaterfallClient,
         client_ip: str | None = None,
         on_stalled: Callable[[], None] | None = None,
     ):
@@ -111,8 +174,10 @@ class ListenSession:
         self._raw_send_text = send_text
         self._raw_send_bytes = send_bytes
         self._slots = slots or Slots(settings.max_sessions)
+        self._scan_cache = scan_cache or ScanCache()
         self._resolver = resolver
         self._client_factory = client_factory
+        self._waterfall_factory = waterfall_factory
         self._client_ip = client_ip
         self._on_stalled = on_stalled
         self._client: KiwiClient | None = None
@@ -126,8 +191,19 @@ class ListenSession:
         self._mode = "am"
         self._freq_khz = 0.0
         # host, port, whether private addresses may be dialed for it, and wss.
-        self._target: tuple[str, int, bool, bool] | None = None
+        self._target: Target | None = None
         self._listening = False
+        # The band scan's waterfall, paired with self._client. It shares that
+        # channel and closing it ends the audio, so once opened it idles until
+        # the receiver connection ends (_end_scan), and uses no slot.
+        self._waterfall: WaterfallClient | None = None
+        self._waterfall_idle: asyncio.Task[None] | None = None
+        self._scan: asyncio.Task[None] | None = None
+        # The newest scan request's id; a running scan answers under it.
+        self._scan_id: int | None = None
+        # The last sweep's answer, (monotonic time, target, state, payload),
+        # repeated to requests within SCAN_MIN_INTERVAL_S.
+        self._last_sweep: tuple[float, Target, str, dict[str, Any]] | None = None
 
     @property
     def lookup_owner(self) -> Hashable:
@@ -164,6 +240,8 @@ class ListenSession:
                 await self._tune(msg)
             elif kind == "stop":
                 await self.stop("Stopped.")
+            elif kind == "scan":
+                await self._start_scan(msg)
             else:
                 raise BadRequest(f"Unknown message type {kind!r}.")
         except BadRequest as e:
@@ -301,9 +379,16 @@ class ListenSession:
             if self._client is not None:
                 await self._client.close()
                 self._client = None
+            await self._end_scan()
 
     async def _status(self, state: str, **extra: Any) -> None:
-        payload: dict[str, Any] = {"type": "status", "state": state, "mode": self._mode, "freqKhz": self._freq_khz}
+        payload: dict[str, Any] = {
+            "type": "status",
+            "state": state,
+            "mode": self._mode,
+            "freqKhz": self._freq_khz,
+            "features": FEATURES,
+        }
         if self._target:
             payload["host"], payload["port"], _, _ = self._target
         if self._client is not None and self._client.info.sample_rate:
@@ -316,24 +401,214 @@ class ListenSession:
             pass
 
     async def stop(self, message: str | None) -> None:
-        if self._pump is not None and not self._pump.done():
-            self._pump.cancel()
-            try:
-                await self._pump
-            except asyncio.CancelledError:
-                # The pump's own cancel ends here, but a cancel aimed at our
-                # caller (the browser left mid-switch) must not be swallowed,
-                # or the switch would go on to dial a receiver for nobody.
-                task = asyncio.current_task()
-                if task is not None and task.cancelling():
-                    raise
+        # A cancel aimed at our caller (the browser left mid-switch) still
+        # propagates, or the switch would go on to dial a receiver for nobody.
+        await self._cancel(self._pump)
         self._pump = None
         self._target = None
         if self._client is not None:
             await self._client.close()
             self._client = None
+        await self._end_scan()
         if message:
             await self._status("stopped", message=message)
 
     async def close(self) -> None:
         await self.stop(None)
+
+    async def _start_scan(self, msg: dict[str, Any]) -> None:
+        scan_id = msg.get("id")
+        if not isinstance(scan_id, int) or isinstance(scan_id, bool):
+            scan_id = None
+        target, client = self._target, self._client
+        if not self._listening or target is None or client is None:
+            await self._scan_reply(scan_id, target, "error", message="Start listening to a receiver first.")
+            return
+        self._scan_id = scan_id
+        if self._scan is not None and not self._scan.done():
+            # Already sweeping this receiver: that sweep answers this request.
+            # Cancelling it could close a half-open paired waterfall, which
+            # takes the audio down with it.
+            await self._scan_reply(scan_id, target, "scanning")
+            return
+        self._scan = asyncio.create_task(self._run_scan(target, client, fresh=msg.get("fresh") is True))
+
+    async def _run_scan(self, target: Target, client: KiwiClient, *, fresh: bool) -> None:
+        cached = None if fresh else self._scan_cache.get(target)
+        if isinstance(cached, str):
+            await self._finish(target, "error", message=cached)
+            return
+        if cached is not None:
+            await self._finish(target, "done", **scan_payload(cached))
+            return
+        last = self._last_sweep
+        if last is not None and last[1] == target and time.monotonic() - last[0] < SCAN_MIN_INTERVAL_S:
+            await self._finish(target, last[2], **last[3])
+            return
+        await self._scan_reply(self._scan_id, target, "scanning")
+        try:
+            waterfall = await self._paired_waterfall(client)
+            result = await sweep(waterfall.frame, waterfall.info.freq_offset_khz, waterfall.bandwidth_khz)
+        except KiwiError as e:
+            if self._waterfall is not None and self._waterfall.is_open:
+                # Still paired with the audio: closing it would end the
+                # listener's audio over a scan problem. Keep it drained; idle
+                # closes it if it turns out to be dead.
+                self._idle_waterfall()
+            else:
+                await self._drop_waterfall()
+            message = f"Couldn't scan this receiver: {e}"
+            # Only while still on this receiver: a scan cut short by the
+            # listener leaving (or the receiver dropping them) proves nothing.
+            if e.code in SCAN_REFUSALS and self._target == target:
+                self._scan_cache.put(target, message, SCAN_REFUSAL_CACHE_S)
+            await self._swept(target, "error", message=message)
+            return
+        except Exception:
+            log.exception("scan crashed")
+            # Keep any waterfall drained: a dropped one takes the audio with it.
+            self._idle_waterfall()
+            await self._swept(target, "error", message="The scan broke. Check the radio service's logs.")
+            return
+        self._idle_waterfall()
+        if result.bands_done == 0 and result.bands_total > 0:
+            # Not one frame came back: "no strong signals" would be a claim
+            # the scan can't make.
+            await self._swept(target, "error", message="Couldn't scan this receiver: it didn't send its waterfall.")
+            return
+        result = replace(result, at_ms=int(time.time() * 1000))
+        # A partial sweep (a stalled or slow receiver) isn't kept: shared for
+        # 10 minutes it would stand in for a full scan for every listener.
+        if not result.partial:
+            self._scan_cache.put(target, result)
+        await self._swept(target, "done", **scan_payload(result))
+
+    async def _swept(self, target: Target, state: str, **extra: Any) -> None:
+        """Answer a sweep that ran, remembering the answer for SCAN_MIN_INTERVAL_S."""
+        self._last_sweep = (time.monotonic(), target, state, extra)
+        await self._finish(target, state, **extra)
+
+    async def _finish(self, target: Target, state: str, **extra: Any) -> None:
+        """The scan's last reply, under the newest request's id.
+
+        The scan stops counting as running first, so a request arriving while
+        this reply is sent starts a new scan instead of waiting on this one.
+        """
+        if self._scan is asyncio.current_task():
+            self._scan = None
+        await self._scan_reply(self._scan_id, target, state, **extra)
+
+    def _idle_waterfall(self) -> None:
+        if self._waterfall is not None and (self._waterfall_idle is None or self._waterfall_idle.done()):
+            self._waterfall_idle = asyncio.create_task(self._idle(self._waterfall))
+
+    async def _paired_waterfall(self, client: KiwiClient) -> WaterfallClient:
+        # Wait for the idle reader to finish: its recv would collide with the sweep's.
+        await self._cancel(self._waterfall_idle)
+        self._waterfall_idle = None
+        if self._waterfall is not None:
+            refusal = getattr(self._waterfall, "refusal", None)
+            if refusal is not None:
+                # Refused but kept open (it may carry the audio): it can't
+                # sweep, and the receiver's reason still stands.
+                raise refusal
+            await self._waterfall.fast()
+            return self._waterfall
+        waterfall = self._waterfall_factory(
+            client.host,
+            client.port,
+            connect_host=client.connect_host,
+            secure=client.secure,
+            user=self.settings.ident,
+            # Same timestamp: joins the audio's channel instead of being refused.
+            timestamp=client.timestamp,
+        )
+        try:
+            await waterfall.connect()
+        except asyncio.CancelledError:
+            # Cancelled mid-handshake (the audio is ending): close the half-open one.
+            await waterfall.close()
+            raise
+        except Exception as e:
+            unpaired = isinstance(e, KiwiError) and e.code == "unpaired"
+            if waterfall.is_open and not unpaired:
+                # Not set up, or refused after the Kiwi may have paired it: keep
+                # it, so the caller drains it rather than closing it and ending
+                # the audio. A Kiwi that really refused it closes it itself.
+                self._waterfall = waterfall
+                if isinstance(e, KiwiError) and e.code != "timeout":
+                    waterfall.refusal = e
+            else:
+                # Never paired (badp=5) or already closed: safe to close.
+                await waterfall.close()
+            raise
+        self._waterfall = waterfall
+        return waterfall
+
+    async def _idle(self, waterfall: WaterfallClient) -> None:
+        while True:
+            try:
+                await waterfall.idle()
+            except KiwiError as e:
+                # The audio pump reports it if the Kiwi took the audio down too.
+                log.info("scan waterfall ended: %s", e)
+            except Exception:
+                log.exception("scan waterfall crashed while idling")
+            else:
+                return
+            if not waterfall.is_open:
+                break
+            # Still paired: closing it would end the audio. Keep draining; the
+            # audio's end closes it (_end_scan), so nothing is left behind.
+            await asyncio.sleep(IDLE_RETRY_S)
+        if self._waterfall is waterfall:
+            self._waterfall = None
+        await waterfall.close()
+
+    async def _drop_waterfall(self) -> None:
+        waterfall, self._waterfall = self._waterfall, None
+        if waterfall is not None:
+            await waterfall.close()
+
+    async def _end_scan(self) -> None:
+        """Stop any scan and close its waterfall; the receiver connection has ended."""
+        await self._cancel(self._scan)
+        await self._cancel(self._waterfall_idle)
+        self._scan = self._waterfall_idle = None
+        await self._drop_waterfall()
+
+    @staticmethod
+    async def _cancel(task: asyncio.Task[None] | None) -> None:
+        if task is None or task.done() or task is asyncio.current_task():
+            return
+        task.cancel()
+        # Wait for it without taking on its CancelledError. A cancel aimed at
+        # our caller still raises here, as the caller's own: re-raising the
+        # task's instead (one that lands in a shielded websocket close carries
+        # no message) slips past the cancel scope that sent the caller's, as
+        # Starlette's TestClient and a server shutdown do.
+        await asyncio.wait({task})
+        if not task.cancelled() and task.exception() is not None:
+            raise task.exception()
+
+    async def _scan_reply(self, scan_id: int | None, target: Target | None, state: str, **extra: Any) -> None:
+        payload: dict[str, Any] = {"type": "scan", "id": scan_id, "state": state}
+        if target is not None:
+            payload["host"], payload["port"], _, _ = target
+        payload.update(extra)
+        try:
+            await self._send_text(payload)
+        except Exception:
+            # The browser went away; nothing useful to do.
+            pass
+
+
+def scan_payload(result: ScanResult) -> dict[str, Any]:
+    return {
+        "signals": result.signals,
+        "hidden": result.hidden,
+        "bandsDone": result.bands_done,
+        "bandsTotal": result.bands_total,
+        "partial": result.partial,
+        "atMs": result.at_ms,
+    }

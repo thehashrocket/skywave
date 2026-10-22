@@ -13,7 +13,7 @@ import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 
 from .config import Settings, is_local_origin, origin_allowed
-from .session import ClientGone, ListenSession, Slots
+from .session import ClientGone, ListenSession, ScanCache, Slots
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("skywave_radio")
@@ -41,6 +41,8 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
     # Caps live Kiwi connections, not browser sockets: a tab sitting on
     # "Stopped" or "Problem" holds no slot.
     slots = app.state.slots = Slots(settings.max_sessions)
+    # Shared, so a receiver scanned for one listener isn't rescanned for the next.
+    scan_cache = app.state.scan_cache = ScanCache()
 
     @app.get("/healthz")
     async def healthz() -> dict:
@@ -80,6 +82,7 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
             send_text,
             send_bytes,
             slots=slots,
+            scan_cache=scan_cache,
             # Behind a reverse proxy this is only the user's address if
             # FORWARDED_ALLOW_IPS trusts that proxy; the session copes if not.
             client_ip=ws.client.host if ws.client else None,

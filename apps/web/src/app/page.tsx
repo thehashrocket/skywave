@@ -6,6 +6,7 @@ import { FrequencyReadout } from "@/components/FrequencyReadout";
 import { MapPanel } from "@/components/MapPanel";
 import { Presets } from "@/components/Presets";
 import { ReceiverPicker, type Playing } from "@/components/ReceiverPicker";
+import { SignalList } from "@/components/SignalList";
 import { SMeter } from "@/components/SMeter";
 import { Waterfall } from "@/components/Waterfall";
 import { covers, receiverKey, type Receiver } from "@/lib/kiwi-list";
@@ -98,6 +99,13 @@ const STATE_TEXT = {
   stopped: "Stopped",
   error: "Problem",
 } as const;
+
+/**
+ * How long a receiver plays before its band scan starts: long enough that a
+ * quick switch or a receiver refusing apps (about 10 s in) doesn't scan for
+ * nothing. The radio service caches each receiver's scan.
+ */
+const AUTO_SCAN_MS = 10_000;
 
 export default function ListenPage() {
   const radio = useRadio();
@@ -343,6 +351,20 @@ export default function ListenPage() {
     return otherThan(heard, shown ? receiverKey(shown) : undefined);
   }, [heard, current, status.host, status.port, fieldsHost, fieldsPort]);
 
+  // Scan each receiver once it has played for AUTO_SCAN_MS and Pick best is
+  // done with it: not during its attempts, nor its watch for a late refusal.
+  const { canScan, scan, startScan } = radio;
+  const playingKey =
+    status.state === "listening" && status.host
+      ? receiverKey({ host: status.host, port: status.port ?? DEFAULT_KIWI_PORT })
+      : null;
+  const scannedKey = scan ? receiverKey(scan) : null;
+  useEffect(() => {
+    if (!playingKey || !radio.heardAudio || !pickBest.settled || !canScan || scannedKey === playingKey) return;
+    const timer = setTimeout(() => startScan(), AUTO_SCAN_MS);
+    return () => clearTimeout(timer);
+  }, [playingKey, scannedKey, radio.heardAudio, pickBest.settled, canScan, startScan]);
+
   // The map waits for the radio: the session's first audio, or 5 s with nothing to wait for.
   const mapAdmitted = useMapAdmission({ heardAudio: radio.heardAudio, busy });
   const lastPlace = useMemo(() => backTo && { host: backTo.host, port: backTo.port }, [backTo]);
@@ -519,6 +541,16 @@ export default function ListenPage() {
         active={status.state === "listening"}
         subscribe={radio.onSpectrum}
         onClickOffset={onWaterfallClick}
+      />
+
+      <SignalList
+        scan={scan}
+        canScan={canScan}
+        listening={status.state === "listening"}
+        freqKhz={freqKhz}
+        autoScanMs={AUTO_SCAN_MS}
+        onTune={(khz) => changeFreq(khz, "am")}
+        onScanAgain={() => startScan(true)}
       />
 
       <Presets freqKhz={freqKhz} mode={mode} onSelect={(p) => changeFreq(p.freqKhz, p.mode)} />
