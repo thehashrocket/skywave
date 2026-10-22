@@ -202,7 +202,8 @@ class ListenSession:
         # The newest scan request's id; a running scan answers under it.
         self._scan_id: int | None = None
         # The last sweep's answer, (monotonic time, target, state, payload),
-        # repeated to requests within SCAN_MIN_INTERVAL_S.
+        # repeated to requests within SCAN_MIN_INTERVAL_S while this receiver
+        # connection lasts.
         self._last_sweep: tuple[float, Target, str, dict[str, Any]] | None = None
 
     @property
@@ -575,6 +576,9 @@ class ListenSession:
         await self._cancel(self._scan)
         await self._cancel(self._waterfall_idle)
         self._scan = self._waterfall_idle = None
+        # A new connection gets a new sweep: the last answer may be an error
+        # from a scan this ending cut short.
+        self._last_sweep = None
         await self._drop_waterfall()
 
     @staticmethod

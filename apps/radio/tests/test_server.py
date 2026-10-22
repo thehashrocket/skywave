@@ -1795,6 +1795,41 @@ async def test_fresh_scans_are_limited_per_listener():
     await session.close()
 
 
+# Value: protects=a listener who stops (or loses the receiver) and comes back to it within SCAN_MIN_INTERVAL_S gets a new sweep, not the last connection's answer (an error from a scan the drop cut short, say); fails_when=_end_scan keeps _last_sweep; why_new=TODOS follow-up from the band scan /ship (D8 B); seam=stand-in waterfall, listening state set by hand again after stop; no_claim=the web page's reconnect
+async def test_a_reconnect_scans_again():
+    from skywave_radio.waterfall import WaterfallFrame
+
+    sent = []
+    frames = [0]
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    class Sweeps(_ScanWaterfall):
+        async def frame(self, zoom, cf):
+            frames[0] += 1
+            span = 30_000 / 2**zoom
+            return WaterfallFrame(zoom, cf - span / 2, span, np.full(1024, 140, dtype=np.uint8))
+
+    async def dones(n):
+        while sum(p["type"] == "scan" and p["state"] == "done" for p in sent) < n:
+            await asyncio.sleep(0.01)
+
+    session = listening_session(send_text, waterfall_factory=lambda *a, **k: Sweeps())
+    client = session._client
+    await session.handle({"type": "scan", "id": 1})
+    await asyncio.wait_for(dones(1), 5)
+    swept = frames[0]
+    await session.stop(None)
+    assert session._last_sweep is None
+    # Back on the same receiver, well inside the interval.
+    session._listening, session._target, session._client = True, ("kiwi.test", 8073, True, False), client
+    await session.handle({"type": "scan", "id": 2, "fresh": True})
+    await asyncio.wait_for(dones(2), 5)
+    assert frames[0] > swept
+    await session.close()
+
+
 # Value: protects=the shared scan cache keeps at most SCAN_CACHE_MAX receivers, dropping the soonest to expire, so it stays bounded over a long uptime (Step 11 D7); fails_when=put stops evicting; why_new=adversarial review (unbounded cache); seam=none; no_claim=memory use itself
 def test_the_scan_cache_is_capped():
     from skywave_radio.scan import ScanResult
