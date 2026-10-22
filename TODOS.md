@@ -82,6 +82,18 @@
 **Priority:** P4
 **Depends on:** None
 
+### Give the remaining phone controls a 44 px tap target
+
+**What:** On phones, give these controls at least a 44 px tap target, as feat/phone-polish did for inline links: the Listen/Stop button (`.power`, `.power-on`), the mode segments (`.mode span`), the presets Save button (`.presets-save button`), the preset delete ✕ (`.preset-delete`, 32 px) and the receiver table's choose buttons (`.receiver-choose`, 6 px vertical padding).
+
+**Why:** The ≤520px block (`apps/web/src/app/globals.css:1276`) and the coarse-pointer block (`globals.css:1332`) set `min-height: 44px` only on `.pick-best`, `.link-button`, table header buttons and the map card controls. The five above get no such rule, so on a phone the main controls are smaller than the links around them. Found while writing DESIGN.md (listed there under Layout › Known gaps); feat/phone-polish being marked complete does not cover them.
+
+**Context:** Mode segments sit in one row, so taller padding must not wrap the group at 320 px. The preset delete ✕ is round, so grow its hit area (padding or a pseudo-element) rather than the visible circle. `.receiver-choose` fills a table cell, so its extra height adds to every row's height. Check at 320 and 390 px, then remove the item from DESIGN.md's Known gaps.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
 ## Completed
 
 ### Write a DESIGN.md for the web app
