@@ -34,18 +34,6 @@
 **Priority:** P3
 **Depends on:** None
 
-### Keep a dial move made mid-switch when the connection drops
-
-**What:** When the radio service connection drops while a switch waits on audio, the switch reconnects and tunes the frequency from the click, losing a dial move made in between. Keep the newest tuning through the drop.
-
-**Why:** `tune(B@f1)` stalls in `ensureAudio()`, the dial sends `retune(B@f2)`, then the socket closes. `onclose` calls `setTuningBoth(false)`, which clears `pendingRef`. When audio resumes, `tune()` opens a new socket and sends `pendingRef.current ?? t`, which is B@f1. The dial shows f2 while the radio plays f1. "Lost the connection" shows only until the new socket's answer replaces it. The next dial move corrects it. It's the same kind of desync as "Don't let a late tune undo a dial move made mid-switch" (P2, done), but it needs a dropped connection during a stalled audio resume, so it's rarer.
-
-**Context:** Found while adding the per-socket retune test in feat/web-follow-ups (2026-10-21). That test (`use-radio.test.ts`, "still tunes on a new socket when the one a dial move went out on dropped") checks only that a tune goes out on the new socket, not its frequency. `pendingRef` is both the "awaiting an answer" marker and the tune's payload. Keep the newest tuning in its own ref that only `tune`/`stop` reset, then extend that test to expect `freqKhz: 7_100`.
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** None
-
 ### Make repeat list polls cheap
 
 **What:** Let the receiver table's background polls skip the full list when nothing changed: a small `receivers.version` query (fetchedAt/stale only), or `receivers.list` accepting the client's `fetchedAt` and answering `{ unchanged: true }`.
@@ -107,6 +95,19 @@
 **Depends on:** None
 
 ## Completed
+
+### Keep a dial move made mid-switch when the connection drops
+
+**What:** When the radio service connection drops while a switch waits on audio, the switch reconnects and tunes the frequency from the click, losing a dial move made in between. Keep the newest tuning through the drop.
+
+**Why:** `tune(B@f1)` stalls in `ensureAudio()`, the dial sends `retune(B@f2)`, then the socket closes. `onclose` calls `setTuningBoth(false)`, which clears `pendingRef`. When audio resumes, `tune()` opens a new socket and sends `pendingRef.current ?? t`, which is B@f1. The dial shows f2 while the radio plays f1. "Lost the connection" shows only until the new socket's answer replaces it. The next dial move corrects it. It's the same kind of desync as "Don't let a late tune undo a dial move made mid-switch" (P2, done), but it needs a dropped connection during a stalled audio resume, so it's rarer.
+
+**Context:** Found while adding the per-socket retune test in feat/web-follow-ups (2026-10-21). That test (`use-radio.test.ts`, "still tunes on a new socket when the one a dial move went out on dropped") checks only that a tune goes out on the new socket, not its frequency. `pendingRef` is both the "awaiting an answer" marker and the tune's payload. Keep the newest tuning in its own ref that only `tune`/`stop` reset, then extend that test to expect `freqKhz: 7_100`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+**Completed:** fix/dial-move-on-drop (2026-10-21). `use-radio` keeps the tune's payload in its own `latestRef`, set by `tune`, updated by a same-receiver `retune`, and cleared only by `tune` and `stop`; `pendingRef` stays the "awaiting an answer" marker that a dropped socket clears. The per-socket test now expects the new socket to get `freqKhz: 7_100`; it got 10000 before the fix.
 
 ### Give inline buttons a usable tap target on phones
 

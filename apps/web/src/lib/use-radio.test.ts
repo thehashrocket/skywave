@@ -735,8 +735,8 @@ describe("useRadio", () => {
       expect(ws.sent.at(-1)).toEqual({ type: "tune", ...other, freqKhz: 7_100 });
     });
 
-    // Value: protects=the late-send skip applies only on the socket the dial move went out on; a switch whose socket dropped still tunes on the new one; fails_when=the skip checks "a dial move went out" rather than "on this socket", so the new socket never gets a tune; why_new=the skip's per-socket condition was untested (PR 2b review); seam=a stalled AudioContext.resume; no_claim=what the page shows for the dropped socket
-    it("still tunes on a new socket when the one a dial move went out on dropped", async () => {
+    // Value: protects=a switch whose socket dropped still tunes on the new one, at the dial's newest frequency; fails_when=the skip checks "a dial move went out" rather than "on this socket", or the dropped socket's cleanup loses the dial move so the click-time frequency goes out; why_new=the skip's per-socket condition was untested (PR 2b review); frequency from TODO "Keep a dial move made mid-switch when the connection drops"; seam=a stalled AudioContext.resume; no_claim=what the page shows for the dropped socket
+    it("still tunes on a new socket, at the newest frequency, when the one a dial move went out on dropped", async () => {
       const { result } = renderHook(() => useRadio());
       await act(() => result.current.tune(tuning));
       const ws = FakeSocket.instances[0]!;
@@ -758,7 +758,7 @@ describe("useRadio", () => {
         await pending;
       });
       const fresh = FakeSocket.instances[1]!;
-      expect(fresh.sent).toEqual([expect.objectContaining({ type: "tune", host: "other.example" })]);
+      expect(fresh.sent).toEqual([{ type: "tune", ...other, freqKhz: 7_100 }]);
     });
 
     // Value: protects=going back to a receiver still sends that tune when a late answer for it (from earlier dial moves) arrives mid-switch; fails_when=the late-send skip treats any answer naming the receiver as this tune's answer, so "Back to A" leaves the service on B; why_new=red team (PR 2b ship); seam=a stalled AudioContext.resume; no_claim=service ordering

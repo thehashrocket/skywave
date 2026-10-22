@@ -122,9 +122,13 @@ export function useRadio() {
   const tuningRef = useRef(false);
   const heardAudioRef = useRef(false);
   // The tune in progress: which receiver an answer must name to end it (a
-  // dial retune on the last receiver can still be answered after a switch),
-  // and what it will send (dial moves while audio or the socket start land here).
+  // dial retune on the last receiver can still be answered after a switch).
   const pendingRef = useRef<Tuning | null>(null);
+  // What the tune in progress will send: its own tuning, then any dial move
+  // for the same receiver made while audio or the socket start. Unlike
+  // pendingRef, a dropped socket doesn't clear it (the tune still goes out on
+  // a new socket and must carry the newest dial); only tune and stop do.
+  const latestRef = useRef<Tuning | null>(null);
   // The socket a dial move for the tune in progress already went out on: on
   // that socket the service has the newer tuning, and the tune's own send
   // would undo it. (A fresh socket has had nothing, so the tune must go.)
@@ -325,6 +329,7 @@ export function useRadio() {
     async (t: Tuning) => {
       const generation = ++generationRef.current;
       pendingRef.current = t;
+      latestRef.current = t;
       retunedRef.current = null;
       setTuningBoth(true);
       setHeardAudioBoth(false);
@@ -352,7 +357,7 @@ export function useRadio() {
       if (generation !== generationRef.current) return;
       // A dial move while audio woke already went out for this receiver; sending now would undo it.
       if (retunedRef.current === ws) return;
-      ws.send(JSON.stringify({ type: "tune", ...(pendingRef.current ?? t) }));
+      ws.send(JSON.stringify({ type: "tune", ...(latestRef.current ?? t) }));
     },
     [ensureAudio, ensureSocket, setTuningBoth, setHeardAudioBoth],
   );
@@ -364,7 +369,10 @@ export function useRadio() {
   const retune = useCallback((t: Tuning) => {
     const pending = pendingRef.current;
     const forPending = !!pending && pending.host === t.host && pending.port === t.port;
-    if (forPending) pendingRef.current = t;
+    if (forPending) {
+      pendingRef.current = t;
+      latestRef.current = t;
+    }
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "tune", ...t }));
@@ -375,6 +383,7 @@ export function useRadio() {
   const stop = useCallback(() => {
     generationRef.current++;
     stoppingRef.current = true;
+    latestRef.current = null;
     const ws = wsRef.current;
     if (ws) {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "stop" }));
