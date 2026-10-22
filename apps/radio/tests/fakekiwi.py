@@ -58,6 +58,8 @@ class FakeKiwi:
     wf_bins: Callable[[float, float], np.ndarray] | None = None
     # W/F frames still showing the previous position after each SET zoom.
     wf_stale_frames: int = 2
+    # Send a malformed (short) W/F frame before every good one.
+    wf_bad_frames: bool = False
     # Seconds between W/F frames (a real Kiwi: about 0.04 fast, 1 idle).
     wf_interval: float = 0.005
     # Close a W/F connection after this many frames.
@@ -220,6 +222,8 @@ class FakeKiwi:
                 bins = self.wf_bins(start, span) if self.wf_bins else np.full(1024, 140, dtype=np.uint8)
                 x_bin = round(start / self.bandwidth_khz * 1024 * 2**14)
                 header = struct.pack("<III", max(0, x_bin), zoom, sent)
+                if self.wf_bad_frames:
+                    await ws.send(b"W/F" + b"\x00" + header + bytes(100))
                 await ws.send(b"W/F" + b"\x00" + header + np.asarray(bins, dtype=np.uint8).tobytes())
                 sent += 1
                 await asyncio.sleep(self.wf_interval)

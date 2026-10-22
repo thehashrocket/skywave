@@ -1607,7 +1607,9 @@ async def test_a_scan_error_keeps_an_open_waterfall_and_is_remembered():
 
 
 # Value: protects=only refusals are remembered, for 60 s; a timeout or a dropped connection isn't, so one blip can't hide scans from every listener of a receiver (D10, red team); fails_when=every KiwiError is cached, or refusals keep the 10-minute life; why_new=cycle-2 red team (receiver drop poisoned the cache for 10 minutes); seam=stand-in waterfall, expiry read from the cache; no_claim=which real errors a Kiwi sends
-@pytest.mark.parametrize("code,cached", [("busy", True), ("no_apps", True), ("timeout", False), ("closed", False)])
+@pytest.mark.parametrize(
+    "code,cached", [("busy", True), ("no_apps", True), ("timeout", False), ("closed", False), ("unpaired", False)]
+)
 async def test_only_refusals_are_remembered_briefly(code, cached):
     from skywave_radio.kiwi import KiwiError
     from skywave_radio.session import SCAN_REFUSAL_CACHE_S, ScanCache

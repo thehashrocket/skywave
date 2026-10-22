@@ -87,6 +87,19 @@ def test_frames_follow_the_receivers_offset_and_coverage():
     assert plan_frames(offset_khz=100_000.0, bandwidth_khz=30_000.0) == []
 
 
+# Value: protects=every frame lies inside the receiver's coverage, including a band clipped at either edge into a single frame, so a Kiwi can show exactly what was asked (adversarial P1, Codex + Claude); fails_when=the single-frame centre is the clipped band's midpoint, which hangs off the edge, never matches and stalls the scan 10 s; why_new=Step 11 structured review; seam=none; no_claim=how a real Kiwi clamps
+@pytest.mark.parametrize("offset,bandwidth", [(5_000.0, 10_000.0), (2_400.0, 30_000.0), (0.0, 9_620.0), (0.0, 30_000.0)])
+def test_every_frame_fits_the_receivers_coverage(offset, bandwidth):
+    plans = plan_frames(offset_khz=offset, bandwidth_khz=bandwidth)
+    for p in plans:
+        span = bandwidth / 2**p.band.zoom
+        assert p.cf_khz - span / 2 >= -1e-9, p
+        assert p.cf_khz + span / 2 <= bandwidth + 1e-9, p
+        if sum(q.band is p.band for q in plans) == 1:
+            # A one-frame band's covered part is still all inside the frame.
+            assert p.cf_khz + offset - span / 2 <= p.lo_khz + 1e-9 and p.hi_khz <= p.cf_khz + offset + span / 2 + 1e-9
+
+
 # Value: protects=carriers are found at their frequency, measured above the median noise; fails_when=floor or bin-to-kHz mapping is wrong; why_new=no peak code; seam=none; no_claim=real waterfall dB scale
 def test_finds_carriers_above_the_noise():
     frame = frame_for(9_416.0, 468.75, signals=[(9_420.0, 30), (9_670.0, 45)])

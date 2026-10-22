@@ -59,8 +59,8 @@ async def test_frame_skips_frames_from_the_previous_position():
         await snd.close()
 
 
-# Value: protects=a W/F under another timestamp than our open SND is refused as busy, not reported as a password problem; fails_when=badp=5 maps to "password" again; why_new=found by the T1 spike; seam=none; no_claim=other badp codes
-async def test_an_unpaired_waterfall_is_refused_as_busy():
+# Value: protects=a W/F under another timestamp than our open SND is refused as unpaired: not a password problem, and not "busy", which scans remember for every listener (adversarial review); fails_when=badp=5 maps to "password" or "busy" for the waterfall; why_new=found by the T1 spike, recoded in Step 11; seam=none; no_claim=other badp codes
+async def test_an_unpaired_waterfall_is_refused_as_unpaired():
     async with FakeKiwi() as kiwi:
         snd = KiwiClient("127.0.0.1", kiwi.port, timeout_s=3)
         await snd.tune(9650.0)
@@ -68,7 +68,7 @@ async def test_an_unpaired_waterfall_is_refused_as_busy():
         wf = WaterfallClient("127.0.0.1", kiwi.port, timeout_s=3, timestamp=snd.timestamp + 1)
         with pytest.raises(KiwiError) as e:
             await wf.connect()
-        assert e.value.code == "busy"
+        assert e.value.code == "unpaired"
         assert "password" not in str(e.value)
         await wf.close()
         await snd.close()
@@ -182,3 +182,13 @@ def test_unknown_msg_keys_are_capped():
     wf = WaterfallClient("kiwi.example", 8073)
     wf._handle_msg({f"k{i}": "v" for i in range(10_000)})
     assert len(wf.info.extra) == MAX_EXTRA_KEYS
+
+
+# Value: protects=a malformed frame mid-sweep is skipped and the next good frame used, so one bad frame from a hostile Kiwi doesn't throw away the whole scan (adversarial review); fails_when=frame() lets parse_wf's ValueError escape; why_new=Step 11 Claude adversarial; seam=fake sends a short frame before each good one; no_claim=real firmware sending bad frames
+async def test_a_malformed_frame_is_skipped():
+    async with FakeKiwi(wf_bins=carrier_at(9_420.0), wf_bad_frames=True) as kiwi:
+        snd, wf = await paired(kiwi)
+        frame = await wf.frame(zoom=6, cf_khz=9_650.0)
+        assert frame.bins.size == 1024
+        await wf.close()
+        await snd.close()

@@ -116,6 +116,13 @@ class WaterfallClient(KiwiConnection):
         await self._keepalive(force=True)
         self._configured = True
 
+    def _check_refusal(self, name: str, value: str | None) -> None:
+        if name == "badp" and value == "5":
+            # Not paired with this listener's audio: about this one stream, not
+            # the receiver, so it gets its own code (scans don't remember it).
+            raise KiwiError("unpaired", f"{self.host} wouldn't pair the scan with this listener's audio.")
+        super()._check_refusal(name, value)
+
     def _handle_msg(self, params: dict[str, str | None]) -> None:
         for name, value in params.items():
             self._check_refusal(name, value)
@@ -150,7 +157,10 @@ class WaterfallClient(KiwiConnection):
                 data = await self._next()
             if data[:3] != b"W/F":
                 continue
-            wf = parse_wf(data[3:], self.bandwidth_khz)
+            try:
+                wf = parse_wf(data[3:], self.bandwidth_khz)
+            except ValueError:
+                continue  # one bad frame (a hostile Kiwi) is skipped, not the whole scan
             if wf.zoom != zoom or abs(wf.start_khz - start) > span * START_TOLERANCE:
                 continue
             matched += 1

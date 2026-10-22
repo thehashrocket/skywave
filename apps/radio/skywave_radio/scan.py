@@ -120,7 +120,10 @@ def plan_frames(offset_khz: float = 0.0, bandwidth_khz: float = 30_000.0, bands=
             continue
         span = bandwidth_khz / 2**band.zoom
         if hi - lo <= span:
-            centres = [(lo + hi) / 2]
+            # Kept inside the receiver's coverage: a Kiwi shows the nearest
+            # slice it can, so a frame hanging off an edge would never match.
+            centre = (lo + hi) / 2
+            centres = [min(max(centre, offset_khz + span / 2), offset_khz + bandwidth_khz - span / 2)]
         else:
             n = int((hi - lo) // span) + 1
             step = (hi - lo - span) / (n - 1)
