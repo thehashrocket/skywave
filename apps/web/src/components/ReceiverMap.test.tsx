@@ -573,4 +573,42 @@ describe("ReceiverMap", () => {
     view.unmount();
     expect(map().remove).toHaveBeenCalledTimes(1);
   });
+
+  describe("attribution on a narrow map", () => {
+    /** What MapLibre's compact attribution looks like once its text arrives: expanded. */
+    function addAttribution(width: number) {
+      const container = map().options.container as HTMLElement;
+      Object.defineProperty(container, "offsetWidth", { configurable: true, value: width });
+      const attrib = document.createElement("details");
+      attrib.className = "maplibregl-ctrl maplibregl-ctrl-attrib maplibregl-compact maplibregl-compact-show";
+      container.appendChild(attrib);
+      return attrib;
+    }
+
+    // Value: protects=on a phone-sized map the attribution starts folded instead of covering the map's lower half until the first drag; fails_when=nothing folds it, or it folds before MapLibre has expanded it (so it stays open); why_new=phone-width check after PR 14 (320 px); seam=a stand-in for MapLibre's attribution element; no_claim=MapLibre's own markup beyond these classes
+    it("folds the attribution once it first opens on a narrow map", () => {
+      setup();
+      act(() => map().emit("styledata"));
+      const attrib = addAttribution(320);
+      act(() => map().emit("sourcedata", { sourceId: "openmaptiles" }));
+      expect(attrib.classList.contains("maplibregl-compact-show")).toBe(false);
+      expect(attrib.classList.contains("maplibregl-compact")).toBe(true);
+    });
+
+    // Value: protects=the "i" button still opens the attribution after the fold, and wide maps keep it open; fails_when=the fold runs on every data event (re-closing what the listener opened) or ignores the width; why_new=phone-width check after PR 14; seam=a stand-in for MapLibre's attribution element; no_claim=MapLibre's toggle itself
+    it("leaves an attribution the listener opened, and a wide map's, alone", () => {
+      setup();
+      const attrib = addAttribution(320);
+      act(() => map().emit("sourcedata", { sourceId: "openmaptiles" }));
+      attrib.classList.add("maplibregl-compact-show"); // the listener pressed "i"
+      act(() => map().emit("sourcedata", { sourceId: "openmaptiles" }));
+      expect(attrib.classList.contains("maplibregl-compact-show")).toBe(true);
+      cleanup();
+
+      setup();
+      const wide = addAttribution(900);
+      act(() => map().emit("sourcedata", { sourceId: "openmaptiles" }));
+      expect(wide.classList.contains("maplibregl-compact-show")).toBe(true);
+    });
+  });
 });

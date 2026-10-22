@@ -1299,9 +1299,13 @@ a {
   .receivers-browse summary {
     padding-block: 10px;
   }
-  /* Inside a sentence, a link keeps the line's height. */
+  /* Inside a sentence, a link keeps the line's height, but its tap target
+     still reaches 44px: the padding grows the hit area and the matching
+     negative margin keeps the line box where it was. */
   .link-button.inline {
     min-height: 0;
+    padding-block: 10px;
+    margin-block: -10px;
   }
   .receivers-table-wrap {
     padding: 12px;
