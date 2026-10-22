@@ -2,6 +2,18 @@
 
 ## Radio service
 
+### Forget the last scan answer when the receiver connection ends
+
+**What:** Clear `ListenSession._last_sweep` in `_end_scan` (or whenever the receiver connection ends), with a test that a reconnect within 30 s scans again.
+
+**Why:** The 30-second sweep limit replays the listener's last answer. That answer survives a stop or a dropped connection, so a listener who reconnects to the same receiver within 30 s gets the old answer, including an error from the scan the drop cut short, instead of a new scan. Audio is unaffected, and the answer expires after 30 s.
+
+**Context:** Found in /ship of the band scan (Step 9 re-review and Codex adversarial review, 2026-10-22). The owner chose to open the PR and fix this in a small follow-up (D8 B). `_last_sweep` and `SCAN_MIN_INTERVAL_S` are in `apps/radio/skywave_radio/session.py`; `test_fresh_scans_are_limited_per_listener` in `apps/radio/tests/test_server.py` shows how to drive it with a stand-in waterfall.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** The band scan PR
+
 ### Retry the old Kiwi path only for a Kiwi that needs it
 
 **What:** Add a single retry on `/<ts>/SND` when `/kiwi/<ts>/SND` gets no reply, but only after a receiver proves it needs one.
