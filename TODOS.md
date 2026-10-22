@@ -19,13 +19,12 @@
 ### Receiver map follow-ups from PR 2b review
 
 **What:**
-- **Retry after a redeploy:** when the map's code chunk is gone (a deploy replaced it), "Retry map" asks for the same missing file; offer "Reload page" for a ChunkLoadError.
 - **Audio that never arrives:** admission waits for first audio while the radio is busy; a service that holds "listening" with no frames keeps the map waiting. Consider a hard cap (say 20 s), which changes the agreed radio-first rule.
 - **Worker cache key:** the worker URL is keyed on the maplibre-gl version; a patched or rebuilt package of the same version would pair a cached worker with new page code. Key on a content hash if packages are ever patched.
 - **Tile-loading colour:** before tiles arrive the frame is land colour (the design says sea); OpenMapTiles has no land layer, so this needs a land polygon source or a sea background with land drawn from tiles.
 - **"Zoom into this area"** doesn't switch follow to stay, so the next listening change pulls the camera away; decide whether it counts as a user move.
+- **Stale worker after a MapLibre upgrade:** the worker URL carries the maplibre-gl version and the route 404s any other version. A page open across a deploy that upgrades maplibre-gl, with its map code already loaded, never starts the worker; the map fails through `onFail`, which offers Retry only, and Retry asks for the same 404. Have the route answer 410 for an old version and let ReceiverMap report that as code gone, so the overlay offers Reload page (`gstack-shortcut(dec-3318f2fa)` in `MapPanel.tsx`). Found by the feat/web-follow-ups /ship red team.
 - **Slow links:** the worker's shared chunk (~150 KB gzipped) is a second download inside the 30 s budget, alongside live audio; check it's served compressed.
-- **Tests:** the page's `lastPlace` → map `last` wiring, the per-attempt lazy retry, and use-radio's per-socket retune check have no tests.
 
 **Why:** Found by the PR 2b /ship review rounds (2026-10-21) and left for after merge; none blocks using the map.
 
@@ -35,25 +34,13 @@
 **Priority:** P3
 **Depends on:** None
 
-### Show progress when Try again is pressed
+### Keep a dial move made mid-switch when the connection drops
 
-**What:** While a user-started list retry runs with no list yet, show it next to the still-mounted Try again button (label or `aria-busy`), not on background polls.
+**What:** When the radio service connection drops while a switch waits on audio, the switch reconnects and tunes the frequency from the click, losing a dial move made in between. Keep the newest tuning through the drop.
 
-**Why:** With `retry: false`, pressing Try again changes nothing on screen until the fetch settles, and an identical failure isn't re-announced. A "Trying again…" note that replaced the button (tried in PR 2a) dropped keyboard focus and re-announced every 15 s poll.
+**Why:** `tune(B@f1)` stalls in `ensureAudio()`, the dial sends `retune(B@f2)`, then the socket closes. `onclose` calls `setTuningBoth(false)`, which clears `pendingRef`. When audio resumes, `tune()` opens a new socket and sends `pendingRef.current ?? t`, which is B@f1. The dial shows f2 while the radio plays f1. "Lost the connection" shows only until the new socket's answer replaces it. The next dial move corrects it. It's the same kind of desync as "Don't let a late tune undo a dial move made mid-switch" (P2, done), but it needs a dropped connection during a stalled audio resume, so it's rarer.
 
-**Context:** PR 2a /ship final review (2026-10-21). Track a local "manual retry" flag rather than `list.isFetching`.
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** None
-
-### Small receiver-table follow-ups from PR 2a review
-
-**What:** (1) "Show all N" should `adopt()` the new list like the other row-shaping controls. (2) The held table's "fetched N ago" freezes when a poll returns identical rows (react-query keeps the `receivers` reference); refresh `view.fetchedAt` silently. (3) The credit's age still subtracts the server's `fetchedAt` from the browser clock; use `ageMs` like the poller. (4) `validPort` accepts `0x1F90` and `1e3`; require digits.
-
-**Why:** Each is a small inconsistency left after the steady-rows work; none breaks listening.
-
-**Context:** Codex structured + Claude adversarial passes, PR 2a /ship (2026-10-21). Also noted there and judged fine: Pick best ranks the newest list while the table is held (it should use the freshest data).
+**Context:** Found while adding the per-socket retune test in feat/web-follow-ups (2026-10-21). That test (`use-radio.test.ts`, "still tunes on a new socket when the one a dial move went out on dropped") checks only that a tune goes out on the new socket, not its frequency. `pendingRef` is both the "awaiting an answer" marker and the tune's payload. Keep the newest tuning in its own ref that only `tune`/`stop` reset, then extend that test to expect `freqKhz: 7_100`.
 
 **Effort:** S
 **Priority:** P3
@@ -83,18 +70,6 @@
 **Priority:** P3
 **Depends on:** A pin-to-receiver button (not planned yet)
 
-### Let Pick best move past a receiver that refuses after audio starts
-
-**What:** Keep Pick best's run open for a short while after "listening", so a `no_apps` refusal in that window moves on to the next receiver with its note.
-
-**Why:** Pick best finishes on "listening" (`apps/web/src/lib/use-pick-best.ts`), but a receiver whose owner allows no apps (`ext_api=0`) plays for about 10 s before it refuses (live probe 2026-10-21: 213 blocks, then `no_apps` at 10.8 s). The list hides these receivers, so Pick best only lands on one when an owner changed the setting since the list was fetched; the listener then sees the right error but has to pick again by hand.
-
-**Context:** Found by the fix/ext-api-receivers /ship review. The window would need to cover about 15 s and must not resume a run the listener has since replaced (the `host`/`port` check on statuses). Test with a status sequence `listening` → `error no_apps` in `use-pick-best.test.ts`.
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** None
-
 ### Write a DESIGN.md for the web app
 
 **What:** Run `/design-consultation` to write `DESIGN.md` from the tokens and components in `apps/web/src/app/globals.css`, including the receiver map's `--map-*` tokens.
@@ -123,7 +98,7 @@
 
 **What:** Make sure no single audio frame is bigger than the browser player's ring buffer: either split large blocks on the radio side, or size `MAX_AUDIO_SAMPLES` to the ring.
 
-**Why:** `MAX_AUDIO_SAMPLES` is 2**18 so the browser accepts anything the radio service can send (a 1 MiB Kiwi frame), but the worklet's ring is `sampleRate * 4` samples (`apps/web/public/worklets/radio-player.js`), 192,000 at 48 kHz. One maximum-size frame overwrites about 70k queued samples: an audible jump, not a held slot. Real frames are about 512 samples.
+**Why:** `MAX_AUDIO_SAMPLES` is 2**18 so the browser accepts anything the radio service can send (a 1 MiB Kiwi frame), but the worklet's ring is 4 s at the Kiwi's own input rate (`rate * CAPACITY_SECONDS` in `apps/web/public/worklets/radio-player.js`), about 48,000 samples at 12 kHz. One maximum-size frame is about 5 times the ring, so it overwrites everything queued several times over: an audible jump, not a held slot. Real frames are about 512 samples.
 
 **Context:** Raised by the Codex adversarial review of feat/stream-hardening. Before that branch there was no cap at all. Splitting on the radio side (`ListenSession._run`, `apps/radio/skywave_radio/session.py`) keeps the two caps in step; keep the comments on `MAX_FRAME_BYTES` and `MAX_AUDIO_SAMPLES` true.
 
@@ -132,6 +107,45 @@
 **Depends on:** None
 
 ## Completed
+
+### Small receiver-table follow-ups from PR 2a review
+
+**What:** (1) "Show all N" should `adopt()` the new list like the other row-shaping controls. (2) The held table's "fetched N ago" freezes when a poll returns identical rows (react-query keeps the `receivers` reference); refresh `view.fetchedAt` silently. (3) The credit's age still subtracts the server's `fetchedAt` from the browser clock; use `ageMs` like the poller. (4) `validPort` accepts `0x1F90` and `1e3`; require digits.
+
+**Why:** Each is a small inconsistency left after the steady-rows work; none breaks listening.
+
+**Context:** Codex structured + Claude adversarial passes, PR 2a /ship (2026-10-21). Also noted there and judged fine: Pick best ranks the newest list while the table is held (it should use the freshest data).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+**Completed:** feat/web-follow-ups (2026-10-21). All four, plus two found on the way: the "list isn't answering" note had the same clock mix-up as the credit, and a held table now keeps the age of the last poll that confirmed its rows instead of the age it was first shown with. Every list age is now the server's `ageMs` plus this browser's time since the answer.
+
+### Let Pick best move past a receiver that refuses after audio starts
+
+**What:** Keep Pick best's run open for a short while after "listening", so a `no_apps` refusal in that window moves on to the next receiver with its note.
+
+**Why:** Pick best finishes on "listening" (`apps/web/src/lib/use-pick-best.ts`), but a receiver whose owner allows no apps (`ext_api=0`) plays for about 10 s before it refuses (live probe 2026-10-21: 213 blocks, then `no_apps` at 10.8 s). The list hides these receivers, so Pick best only lands on one when an owner changed the setting since the list was fetched; the listener then sees the right error but has to pick again by hand.
+
+**Context:** Found by the fix/ext-api-receivers /ship review. The window would need to cover about 15 s and must not resume a run the listener has since replaced (the `host`/`port` check on statuses). Test with a status sequence `listening` → `error no_apps` in `use-pick-best.test.ts`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+**Completed:** feat/web-follow-ups (2026-10-21). On "listening" the run looks finished but keeps a 15 s watch (`WATCH_MS`) on that receiver; a `no_apps` from it moves on to the next candidate that covers the dial, with its note. Dial and mode retunes of that receiver keep the watch (the refusal is about the receiver); any other status, choosing another receiver, a new run or the timer ends it.
+
+### Show progress when Try again is pressed
+
+**What:** While a user-started list retry runs with no list yet, show it next to the still-mounted Try again button (label or `aria-busy`), not on background polls.
+
+**Why:** With `retry: false`, pressing Try again changes nothing on screen until the fetch settles, and an identical failure isn't re-announced. A "Trying again…" note that replaced the button (tried in PR 2a) dropped keyboard focus and re-announced every 15 s poll.
+
+**Context:** PR 2a /ship final review (2026-10-21). Track a local "manual retry" flag rather than `list.isFetching`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+**Completed:** feat/web-follow-ups (2026-10-21). The failure line keeps the same Try again button through every retry and poll (react-query puts a query with no data back to pending on each refetch, so the failure now keys on `errorUpdatedAt`). A retry you start swaps the sentence for "Trying again…" and sets `aria-busy`; the sentence coming back announces a repeat failure. Polls never show it.
 
 ### Don't let a late tune undo a dial move made mid-switch
 
@@ -243,7 +257,7 @@
 
 **Why:** In a 2026-10-21 probe, receivers with free slots sent `too_busy=0` about 10 s after connect, with audio flowing and with or without keepalives, and listeners got "is full (0 channels in use)".
 
-**Completed:** fix/ext-api-receivers (2026-10-21). It's the owner's `ext_api` setting: how many connections may come from anything but the Kiwi's own web page. At 0 the Kiwi plays for about 10 s, sends `too_busy=0` and closes, even if we ignore the message (6 of 6 receivers matched; same owner, g8ure:8076 with `ext_api=4` kept us, g8ure:8071 with 0 kicked us). That was 143 of 873 online receivers. The list now drops `ext_api=0` entries (a missing field stays listed), and `too_busy=0` says the receiver only allows its own web page. Other values now read "N listeners max", which is what the number means in the Kiwi's own client, not channels in use. It gets its own error code, `no_apps`; deploy the web app before the radio service for it, so the list stops offering these receivers first. Pick best's note for it only shows when the refusal comes before audio, which no probed receiver did (see "Let Pick best move past a receiver that refuses after audio starts").
+**Completed:** fix/ext-api-receivers (2026-10-21). It's the owner's `ext_api` setting: how many connections may come from anything but the Kiwi's own web page. At 0 the Kiwi plays for about 10 s, sends `too_busy=0` and closes, even if we ignore the message (6 of 6 receivers matched; same owner, g8ure:8076 with `ext_api=4` kept us, g8ure:8071 with 0 kicked us). That was 143 of 873 online receivers. The list now drops `ext_api=0` entries (a missing field stays listed), and `too_busy=0` says the receiver only allows its own web page. Other values now read "N listeners max", which is what the number means in the Kiwi's own client, not channels in use. It gets its own error code, `no_apps`; deploy the web app before the radio service for it, so the list stops offering these receivers first. Pick best moves past such a receiver even after audio starts (see "Let Pick best move past a receiver that refuses after audio starts", completed).
 
 ### Send Kiwi keepalives from their own task
 
