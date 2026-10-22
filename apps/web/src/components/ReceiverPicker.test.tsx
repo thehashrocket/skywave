@@ -2,7 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createTRPCClient, TRPCClientError, type TRPCLink } from "@trpc/client";
 import { observable } from "@trpc/server/observable";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Receiver } from "@/lib/kiwi-list";
 import { sunPosition } from "@/lib/solar";
@@ -167,7 +167,7 @@ describe("ReceiverTable", () => {
     expect(onChoose).toHaveBeenCalledTimes(2);
   });
 
-  // Value: protects=the footer tells listeners how old the list (and its listener counts) is; fails_when=ago() thresholds or units change, or a missing fetchedAt prints "NaN"; why_new=no test rendered fetchedAt (TODOS.md gap); seam=none; no_claim=server clock skew
+  // Value: protects=the footer tells listeners how old the list (and its listener counts) is; fails_when=ago() thresholds or units change, or a missing age prints "NaN"; why_new=no test rendered the age (TODOS.md gap); seam=none; no_claim=server clock skew (its own test)
   it.each([
     [20_000, "List fetched just now from"],
     [5 * 60_000, "List fetched 5 min ago from"],
@@ -177,7 +177,8 @@ describe("ReceiverTable", () => {
     render(
       <ReceiverTable
         receivers={receivers}
-        fetchedAt={age === undefined ? undefined : Date.now() - age}
+        serverAgeMs={age}
+        receivedAt={age === undefined ? undefined : Date.now()}
         freqKhz={10_000}
         current={{ host: "", port: 8073, phase: "listening" }}
         sun={null}
@@ -204,6 +205,48 @@ describe("ReceiverTable", () => {
   });
 });
 
+describe("ReceiverTable list age", () => {
+  const table = (list: Receiver[], serverAgeMs: number, receivedAt: number) => (
+    <ReceiverTable
+      receivers={list}
+      serverAgeMs={serverAgeMs}
+      receivedAt={receivedAt}
+      freqKhz={10_000}
+      current={null}
+      sun={null}
+      onChoose={() => {}}
+    />
+  );
+  const credit = () => document.querySelector(".receivers-credit")!.textContent;
+
+  // Value: protects=a poll that brings the same rows still updates "fetched N ago"; fails_when=the shown age only changes with a new receivers array (react-query keeps the old one for identical rows); why_new=PR 2a review: the credit froze; seam=rerender with the same array; no_claim=react-query's structural sharing itself
+  it("takes a newer age for the same rows at once", () => {
+    const view = render(table(receivers, 40 * 60_000, Date.now()));
+    expect(credit()).toMatch(/^List fetched 40 min ago/);
+    view.rerender(table(receivers, 2 * 60_000, Date.now()));
+    expect(credit()).toMatch(/^List fetched 2 min ago/);
+    expect(screen.queryByRole("button", { name: "Show it" })).toBeNull();
+  });
+
+  // Value: protects=while a changed list waits behind "List updated", the credit describes the rows on show, then the new ones once taken; fails_when=the credit reads the latest copy's age while showing the held rows; why_new=Codex outside review (eng review 2026-10-21); seam=rerender with a new list; no_claim=none beyond protects
+  it("keeps the held rows' age until the new list is shown", () => {
+    const view = render(table(receivers, 40 * 60_000, Date.now()));
+    view.rerender(table([...receivers].reverse(), 1 * 60_000, Date.now()));
+    expect(credit()).toMatch(/^List fetched 40 min ago/);
+    fireEvent.click(screen.getByRole("button", { name: "Show it" }));
+    expect(credit()).toMatch(/^List fetched 1 min ago/);
+  });
+
+  // Value: protects=a held list reports the age of the freshest poll that confirmed the rows on show; fails_when=an identical-rows poll updates the shown age but not the held copy, so a later change makes the credit jump back; why_new=feature review (2026-10-21); seam=rerender with the same array, then a new one; no_claim=none beyond protects
+  it("doesn't go back to an older age when a changed list is held after an identical poll", () => {
+    const view = render(table(receivers, 40 * 60_000, Date.now()));
+    view.rerender(table(receivers, 2 * 60_000, Date.now() + 1));
+    view.rerender(table([...receivers].reverse(), 0, Date.now() + 2));
+    expect(screen.getByRole("button", { name: "Show it" })).toBeTruthy();
+    expect(credit()).toMatch(/^List fetched 2 min ago/);
+  });
+});
+
 // Stands in for the network: answers receivers.list with whatever `load` settles to.
 function renderPicker(
   load: Promise<unknown> | (() => Promise<unknown>),
@@ -211,6 +254,7 @@ function renderPicker(
   onStopPicking: (() => void) | null = null,
   children: React.ReactNode = null,
   map?: (list: MapList) => React.ReactNode,
+  open = false,
 ) {
   const link: TRPCLink<AppRouter> = () => () =>
     observable((obs) => {
@@ -232,7 +276,7 @@ function renderPicker(
           freqKhz={10_000}
           current={{ host: "", port: 8073, phase: "listening" }}
           sun={null}
-          open={false}
+          open={open}
           onOpenChange={() => {}}
           onChoose={() => {}}
           onPickBest={onPickBest}
@@ -361,8 +405,93 @@ describe("ReceiverPicker", () => {
 
   // Value: protects=an old list served through a mirror outage says how old it is; fails_when=the stale flag isn't shown; why_new=D7 serves stale lists; seam=none; no_claim=server staleness rule (receivers.test)
   it("says when the list is an old copy", async () => {
-    renderPicker(Promise.resolve({ receivers, fetchedAt: Date.now() - 3 * 60 * 60_000, stale: true }));
+    renderPicker(
+      Promise.resolve({ receivers, fetchedAt: Date.now() - 3 * 60 * 60_000, ageMs: 3 * 60 * 60_000, stale: true }),
+    );
     await screen.findByText(/isn't answering, so this is the copy from 3 h ago/);
+  });
+
+  // Value: protects=list ages come from the server's own age, so a browser clock that's off doesn't change them; fails_when=the stale note or the credit subtracts the server's fetchedAt from Date.now(); why_new=earlier tests had the two clocks agree; seam=none; no_claim=network latency
+  it("tells the list's age by the server's clock, not this browser's", async () => {
+    // This browser runs an hour ahead of the server.
+    const serverNow = Date.now() - 60 * 60_000;
+    renderPicker(
+      Promise.resolve({ receivers, fetchedAt: serverNow - 2 * 60 * 60_000, ageMs: 2 * 60 * 60_000, stale: true }),
+      null,
+      null,
+      null,
+      undefined,
+      true,
+    );
+    await screen.findByText(/isn't answering, so this is the copy from 2 h ago/);
+    expect(document.querySelector(".receivers-credit")!.textContent).toMatch(/^List fetched 2 h ago from /);
+  });
+
+  // Value: protects=Try again shows it's working and stays the same focused button, and a repeat failure is said again; fails_when=the button unmounts while the query is pending (react-query resets a no-data query to pending), or the sentence doesn't change back; why_new=the retry test only checks the refetch happens; seam=none; no_claim=screen reader announcement timing
+  it("says it's trying again and keeps the button through a manual retry", async () => {
+    let calls = 0;
+    let failSecond!: (e: Error) => void;
+    renderPicker(() =>
+      ++calls === 1 ? Promise.reject(new Error("BAD_GATEWAY")) : new Promise((_, reject) => (failSecond = reject)),
+    );
+    await screen.findByText(/Couldn't load the public receiver list/);
+    const tryAgain = screen.getByRole("button", { name: "Try again" });
+    tryAgain.focus();
+    fireEvent.click(tryAgain);
+
+    await screen.findByText(/Trying again…/);
+    expect(screen.getByRole("button", { name: "Try again" })).toBe(tryAgain);
+    expect(tryAgain.getAttribute("aria-busy")).toBe("true");
+    expect(document.activeElement).toBe(tryAgain);
+
+    failSecond(new Error("BAD_GATEWAY"));
+    await screen.findByText(/Couldn't load the public receiver list/);
+    expect(screen.getByRole("button", { name: "Try again" })).toBe(tryAgain);
+    expect(tryAgain.hasAttribute("aria-busy")).toBe(false);
+    expect(document.activeElement).toBe(tryAgain);
+  });
+
+  // Value: protects=a retry started from the map's "Retry receiver list" is a retry the listener asked for, so the picker says "Trying again…" too; fails_when=the map slot gets a plain refetch again; why_new=ship review (maintainability); seam=none; no_claim=MapPanel's own overlay (its tests)
+  it("says it's trying again when the map asks for the list again", async () => {
+    let calls = 0;
+    const seen: MapList[] = [];
+    renderPicker(
+      () => (++calls === 1 ? Promise.reject(new Error("BAD_GATEWAY")) : new Promise(() => {})),
+      null,
+      null,
+      null,
+      (list) => {
+        seen.push(list);
+        return null;
+      },
+    );
+    await waitFor(() => expect(seen.at(-1)!.failed).toBe(true));
+    act(() => seen.at(-1)!.retry());
+    expect(await screen.findByText(/^Trying again…/)).toBeTruthy();
+  });
+
+  // Value: protects=a background poll after a failure neither removes the focused Try again nor claims a retry the listener didn't ask for, and the map keeps its "Receiver list unavailable" overlay through it; fails_when=the failure branch (note or the map's failed) keys on isPending, or polls drive "Trying again…"; why_new=Codex outside review (eng review 2026-10-21); map slot added by ship coverage audit (feat/web-follow-ups); seam=queryClient.refetchQueries stands in for the interval; no_claim=react-query's timer itself
+  it("keeps Try again in place, without a progress note, through a background poll", async () => {
+    let calls = 0;
+    const seen: MapList[] = [];
+    const { queryClient } = renderPicker(
+      () => (++calls === 1 ? Promise.reject(new Error("BAD_GATEWAY")) : new Promise(() => {})),
+      null,
+      null,
+      null,
+      (list) => {
+        seen.push(list);
+        return null;
+      },
+    );
+    await screen.findByText(/Couldn't load the public receiver list/);
+    const tryAgain = screen.getByRole("button", { name: "Try again" });
+    void queryClient.refetchQueries();
+    await waitFor(() => expect(calls).toBe(2));
+    expect(screen.getByRole("button", { name: "Try again" })).toBe(tryAgain);
+    expect(screen.getByRole("status").textContent).toMatch(/^Couldn't load the public receiver list/);
+    expect(tryAgain.hasAttribute("aria-busy")).toBe(false);
+    expect(seen.at(-1)!.failed).toBe(true);
   });
 
   // Value: protects=the page's help text shows inside the receivers section, under its heading and above Pick best; fails_when=ReceiverPicker stops rendering children (the page test mocks the picker, so it can't see this); why_new=DT1 children slot; seam=none; no_claim=the help text's wording (page test)
@@ -556,6 +685,17 @@ describe("ReceiverTable when the list refreshes", () => {
     view.rerender(table(refreshed));
     fireEvent.click(screen.getByRole("button", { name: "SNR" }));
     expect(names()).toEqual(["Alpha", "Bravo", "Charlie"]);
+    expect(screen.queryByRole("button", { name: "Show it" })).toBeNull();
+  });
+
+  // Value: protects=Show all reveals the newest list like every other control that reshapes the rows; fails_when=Show all only sets showAll, extending the old list; why_new=PR 2a review: the one control without adopt(); seam=rerender with a new list; no_claim=none beyond protects
+  it("takes the new list on Show all", () => {
+    const many = Array.from({ length: 60 }, (_, i) => rx(`R${String(i).padStart(2, "0")}`));
+    const view = render(table(many));
+    view.rerender(table([...many, rx("Newcomer", { snr: 99 })]));
+    fireEvent.click(screen.getByRole("button", { name: "Show all 60" }));
+    expect(names()).toHaveLength(61);
+    expect(names()[0]).toBe("Newcomer");
     expect(screen.queryByRole("button", { name: "Show it" })).toBeNull();
   });
 

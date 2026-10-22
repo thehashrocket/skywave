@@ -39,6 +39,14 @@ export function nextRefetchMs(age: number | undefined): number {
   return Math.min(LIST_MAX_AGE_MS, LIST_MAX_AGE_MS - age + EXPIRY_SLACK_MS);
 }
 
+/**
+ * How old a copy of the list is now: the server's age for it when it answered,
+ * plus the time since by this browser's clock. The two clocks are never compared.
+ */
+function ageNow(serverAgeMs: number, receivedAt: number): number {
+  return serverAgeMs + (Date.now() - receivedAt);
+}
+
 export type Playing = { host: string; port: number; phase: "connecting" | "listening" };
 
 type Props = {
@@ -88,13 +96,26 @@ export function ReceiverPicker({
     // since by this browser's clock keeps the two clocks from being compared.
     refetchInterval: (query) => {
       const data = query.state.data;
-      return nextRefetchMs(data && (data.ageMs ?? 0) + (Date.now() - query.state.dataUpdatedAt));
+      return nextRefetchMs(data && ageNow(data.ageMs ?? 0, query.state.dataUpdatedAt));
     },
     // The poll above is the retry policy; extra retries would only repeat the server's cached failure.
     retry: false,
   });
   const receivers = list.data?.receivers;
-  const fetchedAt = list.data?.fetchedAt;
+  const serverAgeMs = list.data && (list.data.ageMs ?? 0);
+  const receivedAt = list.data && list.dataUpdatedAt;
+  const ageMs = list.data && ageNow(serverAgeMs!, receivedAt!);
+  // Refetching a query with no data puts it back to pending, so "loading" means
+  // no failure yet: after one, the failure (and its Try again) stays through
+  // every retry and poll.
+  const failed = !receivers && list.errorUpdatedAt > 0;
+  // A retry the listener asked for, not a background poll.
+  const [retrying, setRetrying] = useState(false);
+  // With no list yet, a second click joins the fetch already running, so both settle together.
+  const retry = () => {
+    setRetrying(true);
+    void list.refetch().finally(() => setRetrying(false));
+  };
 
   return (
     <section className="receivers" aria-labelledby="receivers-heading">
@@ -130,31 +151,28 @@ export function ReceiverPicker({
         )}
         <span className="receivers-note" role="status">
           {note ??
-            (list.isPending ? (
-              "Loading the public receiver list…"
-            ) : !receivers ? (
+            (failed ? (
               <>
-                Couldn't load the public receiver list.{" "}
-                <button type="button" className="link-button inline" onClick={() => void list.refetch()}>
+                {/* The button stays put (keeping focus) while the sentence changes, so
+                    a retry that fails again is announced again. */}
+                {retrying ? "Trying again…" : "Couldn't load the public receiver list."}{" "}
+                <button type="button" className="link-button inline" aria-busy={retrying || undefined} onClick={retry}>
                   Try again
                 </button>{" "}
                 or paste an address above.
               </>
-            ) : list.data?.stale && fetchedAt ? (
+            ) : !receivers ? (
+              "Loading the public receiver list…"
+            ) : list.data?.stale ? (
               // A failed refetch keeps the old data; it's still usable, so say how old.
-              `The public list isn't answering, so this is the copy from ${ago(Date.now() - fetchedAt)}.`
+              `The public list isn't answering, so this is the copy from ${ago(ageMs!)}.`
             ) : (
               "Highest signal-to-noise receiver that covers this frequency."
             ))}
         </span>
       </div>
 
-      {map?.({
-        receivers,
-        ageMs: list.data && (list.data.ageMs ?? 0) + (Date.now() - list.dataUpdatedAt),
-        failed: !list.isPending && !receivers,
-        retry: () => void list.refetch(),
-      })}
+      {map?.({ receivers, ageMs, failed, retry })}
 
       {receivers && (
         <details className="receivers-browse" open={open} onToggle={(e) => onOpenChange(e.currentTarget.open)}>
@@ -163,7 +181,8 @@ export function ReceiverPicker({
           {open && (
             <ReceiverTable
               receivers={receivers}
-              fetchedAt={fetchedAt}
+              serverAgeMs={serverAgeMs}
+              receivedAt={receivedAt}
               freqKhz={freqKhz}
               current={current}
               sun={sun}
@@ -208,8 +227,10 @@ type TableProps = {
   current: Playing | null;
   sun: SunPosition | null;
   onChoose: (r: Receiver) => void;
-  /** When the server fetched the list (ms since epoch). */
-  fetchedAt?: number;
+  /** How old the server said this copy was when it answered. */
+  serverAgeMs?: number;
+  /** When this browser got that answer (ms since epoch, its own clock). */
+  receivedAt?: number;
 };
 
 function ago(ms: number): string {
@@ -221,7 +242,8 @@ function ago(ms: number): string {
 
 export const ReceiverTable = memo(function ReceiverTable({
   receivers: latest,
-  fetchedAt: latestFetchedAt,
+  serverAgeMs: latestServerAgeMs,
+  receivedAt: latestReceivedAt,
   freqKhz,
   current,
   sun,
@@ -240,12 +262,17 @@ export const ReceiverTable = memo(function ReceiverTable({
   // The list as shown. A refresh while the table is open waits behind "List
   // updated", so rows never move or drop out under a click; the listener's
   // next sort, filter or search takes the new list.
-  const [view, setView] = useState({ receivers: latest, fetchedAt: latestFetchedAt });
-  const { receivers, fetchedAt } = view;
-  const updated = receivers !== latest;
+  const latestCopy = { receivers: latest, serverAgeMs: latestServerAgeMs, receivedAt: latestReceivedAt };
+  const [view, setView] = useState(latestCopy);
+  const updated = view.receivers !== latest;
+  // A poll that brings the same rows (react-query keeps the array) is the copy
+  // on show, only newer: its age applies at once, and is kept, so a list held
+  // later still says how fresh the rows on screen are.
+  if (!updated && view.receivedAt !== latestReceivedAt) setView(latestCopy);
+  const { receivers, serverAgeMs, receivedAt } = updated ? view : latestCopy;
   const adopt = () => {
     if (!updated) return;
-    setView({ receivers: latest, fetchedAt: latestFetchedAt });
+    setView(latestCopy);
     setSortSun(sun);
   };
   // Every control that reshapes the rows takes the new list first.
@@ -399,12 +426,19 @@ export const ReceiverTable = memo(function ReceiverTable({
       )}
 
       {rows.length > shown.length && (
-        <button type="button" className="link-button" onClick={() => setShowAll(true)}>
+        <button
+          type="button"
+          className="link-button"
+          onClick={() => {
+            adopt();
+            setShowAll(true);
+          }}
+        >
           Show all {rows.length.toLocaleString("en-US")}
         </button>
       )}
       <p className="receivers-credit">
-        List {fetchedAt ? `fetched ${ago(Date.now() - fetchedAt)}` : "fetched"} from{" "}
+        List {receivedAt === undefined ? "fetched" : `fetched ${ago(ageNow(serverAgeMs ?? 0, receivedAt))}`} from{" "}
         <a href="http://rx.linkfanel.net/" target="_blank" rel="noreferrer">
           rx.linkfanel.net
         </a>
