@@ -93,7 +93,8 @@ class Slots:
 
     Each one occupies a channel on a volunteer's receiver, so that's what we
     count. No lock: acquire and release never await, and everything runs on
-    one event loop.
+    one event loop. release() refuses to go below zero, which catches a double
+    release only once nothing else is held; it can't tell whose slot it is.
     """
 
     def __init__(self, limit: int):
@@ -107,6 +108,12 @@ class Slots:
         return True
 
     def release(self) -> None:
+        # Below zero the cap would admit extra listeners. Never end anyone's
+        # audio over the bookkeeping; say so loudly instead.
+        if self.active <= 0:
+            log.error("listener slot released with none held (active=%d)", self.active)
+            self.active = 0
+            return
         self.active -= 1
 
 
@@ -321,13 +328,18 @@ class ListenSession:
             return
 
         # Keep the slot the old pump holds: its done callback then releases nothing.
-        handing_over = self._slot_holder is not None
+        old_holder = self._slot_holder
+        handing_over = old_holder is not None
         self._slot_holder = None
         try:
             await self.stop(None)
         except BaseException:
-            if handing_over:
-                self._slots.release()
+            # Cancelled mid-switch, the old pump may still be closing its Kiwi.
+            # Free the slot when it ends, not now, or another listener could
+            # take it while that channel is still open. For a pump that has
+            # already ended, asyncio runs the callback on the next loop pass.
+            if old_holder is not None:
+                old_holder.add_done_callback(lambda _: self._slots.release())
             raise
         if not handing_over and not self._slots.try_acquire():
             raise BadRequest("The radio service is at its listener limit. Try again in a bit.")
@@ -406,10 +418,15 @@ class ListenSession:
             # This pump is done with its receiver even while close() below
             # waits, so a tune for it now must start over, not retune a dead client.
             self._target = None
-            if self._client is not None:
-                await self._client.close()
-                self._client = None
-            await self._end_scan()
+            # The scan's waterfall shares this Kiwi channel, and the slot frees
+            # when this pump ends, so close it even if the close below is
+            # cancelled a second time (the session closing mid-switch) or fails.
+            try:
+                if self._client is not None:
+                    await self._client.close()
+                    self._client = None
+            finally:
+                await self._end_scan()
 
     async def _status(self, state: str, **extra: Any) -> None:
         payload: dict[str, Any] = {
@@ -608,13 +625,17 @@ class ListenSession:
 
     async def _end_scan(self) -> None:
         """Stop any scan and close its waterfall; the receiver connection has ended."""
-        await self._cancel(self._scan)
-        await self._cancel(self._waterfall_idle)
-        self._scan = self._waterfall_idle = None
-        # A new connection gets a new sweep: the last answer may be an error
-        # from a scan this ending cut short.
-        self._last_sweep = None
-        await self._drop_waterfall()
+        try:
+            await self._cancel(self._scan)
+            await self._cancel(self._waterfall_idle)
+            self._scan = self._waterfall_idle = None
+            # A new connection gets a new sweep: the last answer may be an error
+            # from a scan this ending cut short.
+            self._last_sweep = None
+        finally:
+            # Even when cancelled waiting on the scan: the waterfall shares the
+            # Kiwi channel, and the pump that called us frees the slot next.
+            await self._drop_waterfall()
 
     @staticmethod
     async def _cancel(task: asyncio.Task[None] | None) -> None:

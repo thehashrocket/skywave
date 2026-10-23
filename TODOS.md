@@ -2,15 +2,15 @@
 
 ## Radio service
 
-### Don't free a slot while a cancelled switch's old Kiwi is still closing
+### End sessions cleanly when cleanup itself goes wrong
 
-**What:** When a receiver switch is cancelled while it waits for the old pump to stop, release the listener slot only once the old pump has finished, not in `_tune`'s `except BaseException` branch.
+**What:** Make every session end (switch, Stop, time limit, connect timeout) survive a cleanup error and leave no Kiwi socket open behind a freed slot: (1) a switch that fails with an unexpected error sends an error status and keeps the browser socket instead of dropping it; (2) `KiwiConnection.close` logs and swallows non-cancel errors after it aborts (it re-raises them today); (3) a band scan cancelled mid-handshake keeps its half-open waterfall where `_end_scan` can close it, so the slot can't free while that waterfall is still closing; (4) reword `_tune`'s except-branch comment to cover cancellation, a failed close and unexpected errors.
 
-**Why:** In `ListenSession._tune` with `handing_over`, `stop(None)` waits on the old pump, which may be in its `finally` awaiting `client.close()` (up to `CLOSE_TIMEOUT_S`). If the caller is cancelled there (the browser leaves, or `server.py` gives up on a stalled browser), the slot is released at once while the old Kiwi connection is still open. Until the handler's `session.close()` aborts it, another listener can take the slot, putting a volunteer's Kiwi one connection over the limit.
+**Why:** Each is a rare way for a listener to be dropped with no message, see a misleading "Something broke", or for a volunteer's Kiwi to carry one connection over the limit for up to `CLOSE_TIMEOUT_S`.
 
-**Context:** Found by the fix/slot-freed-flake /ship adversarial review (2026-10-23); not reproduced yet. One shape: hand the release to the old pump's done callback instead of releasing in the except branch. Tests: extend `test_slot_stays_held_until_the_kiwi_connection_closes` (held `close()`, assert `slots.active == 1` until it finishes) from the time-limit path to Stop, a `KiwiError` and a cancelled switch; `test_leaving_mid_switch_starts_no_new_pump` shows how to cancel mid-switch.
+**Context:** Deferred from the fix/slot-accounting /ship review (2026-10-23) to round 2, which reworks session-end order. (1) `handle()` catches only `BadRequest`, so the error escapes `serve()`. (2) `apps/radio/skywave_radio/kiwi.py` `close()`; update `test_a_close_that_fails_still_drops_the_socket`. (3) `_paired_waterfall` holds the connecting waterfall in a local; test by holding `waterfall.connect()` and cancelling the session mid-switch. Also bound the wait for a cancelled scan (`_end_scan`'s `_cancel(self._scan)` has no timeout).
 
-**Effort:** S
+**Effort:** M
 **Priority:** P2
 **Depends on:** None
 
@@ -33,18 +33,6 @@
 **Why:** `_run` sends "stopped" and then closes the Kiwi (up to `CLOSE_TIMEOUT_S`, 2 s) before the slot frees. On a full service, a reload or second tab in that gap gets "at its listener limit". Same-socket retunes are fine: they take the slot over.
 
 **Context:** Both reviewers in the fix/slot-freed-flake /ship (2026-10-23). Sending the status later delays "Stopped" by up to 2 s after the audio has already ended, so decide which the listener should see first. `apps/radio/skywave_radio/session.py` (`_run`, `_pump_done`).
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** None
-
-### Make a double slot release loud
-
-**What:** Guard `Slots.release()` so `active` can't go below zero (assert, or clamp and log).
-
-**Why:** No path double-releases today, but if one ever did, `active` would go negative, the service would admit more listeners than `MAX_SESSIONS` (more volunteer channels than the limit) and `/healthz` would report a negative count, all silently.
-
-**Context:** fix/slot-freed-flake /ship adversarial review (2026-10-23). `apps/radio/skywave_radio/session.py` (`Slots`). An assert could end a live session if it fires; a clamp plus `log.error` keeps listening but hides the over-admission until someone reads the log.
 
 **Effort:** S
 **Priority:** P3
@@ -199,6 +187,34 @@
 **Depends on:** None
 
 ## Completed
+
+### Don't free a slot while a cancelled switch's old Kiwi is still closing
+
+**What:** When a receiver switch is cancelled while it waits for the old pump to stop, release the listener slot only once the old pump has finished, not in `_tune`'s `except BaseException` branch.
+
+**Why:** In `ListenSession._tune` with `handing_over`, `stop(None)` waits on the old pump, which may be in its `finally` awaiting `client.close()` (up to `CLOSE_TIMEOUT_S`). If the caller is cancelled there (the browser leaves, or `server.py` gives up on a stalled browser), the slot is released at once while the old Kiwi connection is still open. Until the handler's `session.close()` aborts it, another listener can take the slot, putting a volunteer's Kiwi one connection over the limit.
+
+**Context:** Found by the fix/slot-freed-flake /ship adversarial review (2026-10-23); reproduced by `test_cancelled_switch_keeps_the_slot_until_the_old_kiwi_closes`. One shape: hand the release to the old pump's done callback instead of releasing in the except branch. Tests: extend `test_slot_stays_held_until_the_kiwi_connection_closes` (held `close()`, assert `slots.active == 1` until it finishes) from the time-limit path to Stop, a `KiwiError` and a cancelled switch; `test_leaving_mid_switch_starts_no_new_pump` shows how to cancel mid-switch.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+
+**Completed:** fix/slot-accounting (2026-10-23). A switch cancelled while the old pump closes now hands the slot's release to that pump's own end (`add_done_callback`, which also fires for a pump that already finished), so the slot frees once, after the old Kiwi connection has ended. Tests: `test_cancelled_switch_keeps_the_slot_until_the_old_kiwi_closes` (fails on the old code: the slot was free while the old channel was still open), and the slot-order test now covers the time limit, Stop and a Kiwi error.
+
+### Make a double slot release loud
+
+**What:** Guard `Slots.release()` so `active` can't go below zero (assert, or clamp and log).
+
+**Why:** No path double-releases today, but if one ever did, `active` would go negative, the service would admit more listeners than `MAX_SESSIONS` (more volunteer channels than the limit) and `/healthz` would report a negative count, all silently.
+
+**Context:** fix/slot-freed-flake /ship adversarial review (2026-10-23). `apps/radio/skywave_radio/session.py` (`Slots`). An assert could end a live session if it fires; a clamp plus `log.error` keeps listening but hides the over-admission until someone reads the log.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+**Completed:** fix/slot-accounting (2026-10-23). Clamp plus `log.error`, chosen over an assert so a bookkeeping bug never ends a listener's audio. `test_releasing_a_free_slot_never_goes_below_zero`.
 
 ### Fix the flaky slot-freed-at-time-limit test
 

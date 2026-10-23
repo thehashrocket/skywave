@@ -366,7 +366,9 @@ class KiwiConnection:
                 await asyncio.wait_for(ws.close(), timeout=CLOSE_TIMEOUT_S)
             except asyncio.TimeoutError:
                 ws.transport.abort()
-            except asyncio.CancelledError:
+            except BaseException:
+                # Cancelled, or the close itself failed: drop the socket either
+                # way, or the listener slot can free while the channel stays open.
                 ws.transport.abort()
                 raise
 

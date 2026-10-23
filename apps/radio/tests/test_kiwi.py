@@ -318,6 +318,47 @@ async def test_a_queued_non_audio_frame_past_the_deadline_ends_the_stream(filler
     assert ws.sent == ["SET keepalive"]
 
 
+# Value: protects=a Kiwi close that fails with an unexpected error still drops the socket, so the listener slot never frees while the channel stays open; fails_when=close() aborts only on timeout or cancel; why_new=only the timeout and cancel paths aborted; seam=KiwiClient._ws (a stub socket whose close raises); no_claim=which errors websockets' close can raise
+async def test_a_close_that_fails_still_drops_the_socket():
+    aborted = []
+
+    class BrokenClose:
+        transport = type("Transport", (), {"abort": lambda self: aborted.append(True)})()
+
+        async def close(self):
+            raise OSError("close broke")
+
+    client = KiwiClient("kiwi.example")
+    client._ws = BrokenClose()
+    with pytest.raises(OSError, match="close broke"):
+        await client.close()
+    assert aborted == [True]
+    assert client._ws is None
+
+
+# Value: protects=a Kiwi close cancelled partway (the session closing mid-switch) still drops the socket and passes the cancel on; fails_when=the abort branch is narrowed to Exception, which CancelledError skips; why_new=only the timeout and failure paths were tested; seam=KiwiClient._ws (a stub socket whose close hangs); no_claim=real websockets close timing
+async def test_a_cancelled_close_still_drops_the_socket():
+    aborted = []
+    entered = asyncio.Event()
+
+    class HangingClose:
+        transport = type("Transport", (), {"abort": lambda self: aborted.append(True)})()
+
+        async def close(self):
+            entered.set()
+            await asyncio.Event().wait()
+
+    client = KiwiClient("kiwi.example")
+    client._ws = HangingClose()
+    closing = asyncio.create_task(client.close())
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert aborted == [True]
+    assert client._ws is None
+
+
 # Value: protects=keepalives keep going out while audio streams; fails_when=the keepalive call is lost from blocks() (it moved in this change); why_new=no test streamed past the 1 s keepalive interval and looked at commands; seam=none; no_claim=how long a real Kiwi waits before dropping a silent client
 async def test_keepalives_are_sent_while_streaming():
     async with FakeKiwi() as kiwi:

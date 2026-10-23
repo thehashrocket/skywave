@@ -426,19 +426,21 @@ def test_slot_freed_when_session_hits_time_limit():
     assert second[-1]["state"] == "listening"
 
 
-# Value: protects=a session at its time limit keeps its listener slot until the Kiwi connection has closed; fails_when=the slot is released before close() finishes, so the service can go one connection over its limit on volunteers' Kiwis; why_new=the slot-freed test only checks the slot frees eventually; seam=none; no_claim=real close timing (close() is held open by hand)
-async def test_slot_stays_held_until_the_kiwi_connection_closes():
-    from skywave_radio.kiwi import KiwiInfo
-    from skywave_radio.session import ListenSession, Slots
+def _held_close_client(end: str, closing: asyncio.Event, closed: asyncio.Event):
+    """A fake Kiwi whose close() waits until the test sets `closed`.
 
-    closing = asyncio.Event()
-    closed = asyncio.Event()
+    `end` picks how the session ends: "limit" sends empty blocks until a
+    zero-minute limit stops it, "error" fails mid-stream, "stop" streams nothing
+    until the listener stops.
+    """
+    from types import SimpleNamespace
+
+    from skywave_radio.kiwi import KiwiError, KiwiInfo
 
     class HeldClose:
-        """Yields one block, then close() waits until the test lets it finish."""
-
         def __init__(self, host, port, **kwargs):
             self.info = KiwiInfo(sample_rate=12000.0)
+            self._open = True
 
         async def connect(self):
             return self.info
@@ -447,37 +449,346 @@ async def test_slot_stays_held_until_the_kiwi_connection_closes():
             pass
 
         async def blocks(self):
-            yield None  # never read: the zero-minute limit ends the loop first
+            if end == "error":
+                raise KiwiError("timeout", "a.example stopped sending audio")
+            if end == "stop":
+                await asyncio.Event().wait()
+            while True:
+                yield SimpleNamespace(samples=np.empty(0))
+                await asyncio.sleep(0)
 
         async def close(self):
+            # Like KiwiClient: only the first close has a socket to wait on.
+            if not self._open:
+                return
+            self._open = False
             closing.set()
             await closed.wait()
 
-    async def resolve(host, port, **kwargs):
-        return "127.0.0.1"
+    return HeldClose
 
-    sent = []
 
-    async def send_text(payload):
-        sent.append(payload)
+async def _resolve_any(host, port, **kwargs):
+    return "127.0.0.1"
 
-    async def send_bytes(_):
-        pass
 
+async def _ignore(_):
+    pass
+
+
+# Value: protects=a session keeps its listener slot until the Kiwi connection has closed, whether it hit its time limit, was stopped or failed; fails_when=any end path releases the slot before close() finishes, so the service can go one connection over its limit on volunteers' Kiwis; why_new=the slot-freed test only checks the slot frees eventually; seam=none; no_claim=real close timing (close() is held open by hand)
+@pytest.mark.parametrize("end", ["limit", "stop", "error"])
+async def test_slot_stays_held_until_the_kiwi_connection_closes(end):
+    from skywave_radio.session import ListenSession, Slots
+
+    closing, closed = asyncio.Event(), asyncio.Event()
     slots = Slots(1)
     session = ListenSession(
-        settings(max_session_minutes=0), send_text, send_bytes, slots=slots, resolver=resolve, client_factory=HeldClose
+        settings(max_session_minutes=0 if end == "limit" else 60),
+        _ignore,
+        _ignore,
+        slots=slots,
+        resolver=_resolve_any,
+        client_factory=_held_close_client(end, closing, closed),
     )
     await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    stopping = None
+    if end == "stop":
+        while not session._listening:
+            await asyncio.sleep(0.01)
+        stopping = asyncio.create_task(session.handle({"type": "stop"}))
     await asyncio.wait_for(closing.wait(), timeout=5)
-    assert sent[-1]["state"] == "stopped"
-    # "Stopped" has gone out, but the volunteer's channel is still closing.
+    # The session has ended, but the volunteer's channel is still closing.
     assert slots.active == 1
     closed.set()
     async with asyncio.timeout(5):
         while slots.active:
             await asyncio.sleep(0.01)
+    if stopping is not None:
+        await stopping
     await session.close()
+
+
+# Value: protects=a receiver switch cancelled while the old Kiwi closes keeps the slot until that connection has ended, and frees it exactly once; fails_when=the cancelled switch releases at once (another listener takes the slot over a still-open channel) or twice; why_new=the cancel-mid-switch test checked only the final count; seam=none; no_claim=real close timing (close() is held open by hand)
+@pytest.mark.parametrize("old_close", ["cancelled", "finishes"])
+async def test_cancelled_switch_keeps_the_slot_until_the_old_kiwi_closes(old_close, caplog):
+    from skywave_radio.session import ListenSession, Slots
+
+    closing, closed = asyncio.Event(), asyncio.Event()
+    slots = Slots(1)
+    session = ListenSession(
+        settings(),
+        _ignore,
+        _ignore,
+        slots=slots,
+        resolver=_resolve_any,
+        client_factory=_held_close_client("stop", closing, closed),
+    )
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    while not session._listening:
+        await asyncio.sleep(0.01)
+    # What server.py does: serve() handles a switch, the browser leaves, serve() is cancelled.
+    serving = asyncio.create_task(
+        session.handle({"type": "tune", "host": "b.example", "port": 8074, "freqKhz": 7200, "mode": "usb"})
+    )
+    await asyncio.wait_for(closing.wait(), timeout=5)  # the switch waits on a.example's close()
+    serving.cancel()
+    await asyncio.wait({serving})
+    # Another listener must not get the slot while a.example's channel is open.
+    assert slots.active == 1
+    assert not slots.try_acquire()
+    if old_close == "finishes":
+        closed.set()  # the old close completes on its own first
+    # The handler's finally: closing the session cancels a still-closing pump.
+    await session.close()
+    async with asyncio.timeout(5):
+        while slots.active:
+            await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    assert slots.active == 0
+    assert "released with none held" not in caplog.text
+
+
+# Value: protects=a switch whose old Kiwi close() fails frees the slot exactly once, so capacity isn't lost; fails_when=the except branch skips releasing for an already-ended pump or releases twice; why_new=the cancelled-switch test only covers a pump still closing; seam=none; no_claim=what real close failures look like (close() raises by hand)
+async def test_switch_whose_old_close_fails_frees_the_slot_once(caplog):
+    from skywave_radio.kiwi import KiwiInfo
+    from skywave_radio.session import ListenSession, Slots
+
+    made = []
+
+    class BrokenClose:
+        def __init__(self, host, port, **kwargs):
+            self.info = KiwiInfo(sample_rate=12000.0)
+            made.append(port)
+
+        async def connect(self):
+            return self.info
+
+        async def tune(self, freq_khz):
+            pass
+
+        async def blocks(self):
+            await asyncio.Event().wait()
+            yield
+
+        async def close(self):
+            raise RuntimeError("close broke")
+
+    slots = Slots(1)
+    session = ListenSession(
+        settings(), _ignore, _ignore, slots=slots, resolver=_resolve_any, client_factory=BrokenClose
+    )
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    while not session._listening:
+        await asyncio.sleep(0.01)
+    waterfall = _RecordingWaterfall(slots)
+    session._waterfall = waterfall  # a scan's paired waterfall on the same channel
+    # The old pump ends with close()'s error, so stop() re-raises it with the pump already done.
+    with pytest.raises(RuntimeError, match="close broke"):
+        await session.handle({"type": "tune", "host": "b.example", "port": 8074, "freqKhz": 7200, "mode": "usb"})
+    async with asyncio.timeout(5):
+        while slots.active:
+            await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    assert slots.active == 0
+    assert made == [8073]
+    # The failed close didn't skip the waterfall, and it closed before the slot freed.
+    assert waterfall.active_at_close == [1]
+    assert "released with none held" not in caplog.text
+    assert slots.try_acquire()
+
+
+class _RecordingWaterfall:
+    """A scan waterfall that notes how many slots were held when it closed."""
+
+    def __init__(self, slots, closed: asyncio.Event | None = None):
+        self._slots = slots
+        self._closed = closed
+        self.closing = asyncio.Event()
+        self.active_at_close = []
+
+    async def close(self):
+        self.active_at_close.append(self._slots.active)
+        self.closing.set()
+        if self._closed is not None:
+            await self._closed.wait()
+
+
+# Value: protects=the slot stays taken until a scan's waterfall (it shares the audio's Kiwi channel) has closed, even when the session closing cancels the old pump mid-close; fails_when=a second cancel skips _end_scan in the pump's finally, so the slot frees while the waterfall is still open; why_new=no slot test had a scan waterfall; seam=ListenSession._waterfall (set by hand instead of running a scan); no_claim=real waterfall close timing
+async def test_slot_waits_for_the_scan_waterfall_to_close():
+    from skywave_radio.session import ListenSession, Slots
+
+    closing, closed = asyncio.Event(), asyncio.Event()
+    slots = Slots(1)
+    session = ListenSession(
+        settings(),
+        _ignore,
+        _ignore,
+        slots=slots,
+        resolver=_resolve_any,
+        client_factory=_held_close_client("stop", closing, closed),
+    )
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    while not session._listening:
+        await asyncio.sleep(0.01)
+    waterfall_closed = asyncio.Event()
+    waterfall = _RecordingWaterfall(slots, waterfall_closed)
+    session._waterfall = waterfall
+    serving = asyncio.create_task(
+        session.handle({"type": "tune", "host": "b.example", "port": 8074, "freqKhz": 7200, "mode": "usb"})
+    )
+    await asyncio.wait_for(closing.wait(), timeout=5)
+    serving.cancel()
+    await asyncio.wait({serving})
+    # The session closing cancels the old pump again, in the middle of its close().
+    closing_session = asyncio.create_task(session.close())
+    await asyncio.wait_for(waterfall.closing.wait(), timeout=5)
+    assert waterfall.active_at_close == [1]
+    await asyncio.sleep(0.05)
+    assert slots.active == 1  # the waterfall is still closing on the volunteer's Kiwi
+    waterfall_closed.set()
+    await asyncio.wait_for(closing_session, timeout=5)
+    async with asyncio.timeout(5):
+        while slots.active:
+            await asyncio.sleep(0.01)
+
+
+# Value: protects=the waterfall closes before the slot frees even when the session's second cancel lands while the old pump waits for its scan to stop; fails_when=_end_scan skips _drop_waterfall on a cancel during its scan cancels; why_new=the waterfall test only covered a cancel inside client.close(); seam=ListenSession._waterfall and ._scan (set by hand instead of running a scan); no_claim=real scan task timing
+async def test_slot_waits_for_the_waterfall_when_cancelled_mid_scan_stop():
+    from skywave_radio.session import ListenSession, Slots
+
+    already_closed = asyncio.Event()
+    already_closed.set()
+    slots = Slots(1)
+    session = ListenSession(
+        settings(),
+        _ignore,
+        _ignore,
+        slots=slots,
+        resolver=_resolve_any,
+        client_factory=_held_close_client("stop", asyncio.Event(), already_closed),
+    )
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    while not session._listening:
+        await asyncio.sleep(0.01)
+    scan_cancelled, scan_may_end = asyncio.Event(), asyncio.Event()
+
+    async def slow_to_stop_scan():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            scan_cancelled.set()
+            await scan_may_end.wait()
+            raise
+
+    session._scan = asyncio.create_task(slow_to_stop_scan())
+    waterfall = _RecordingWaterfall(slots)
+    session._waterfall = waterfall
+    serving = asyncio.create_task(
+        session.handle({"type": "tune", "host": "b.example", "port": 8074, "freqKhz": 7200, "mode": "usb"})
+    )
+    await asyncio.wait_for(scan_cancelled.wait(), timeout=5)  # the old pump waits on its scan
+    serving.cancel()
+    await asyncio.wait({serving})
+    closing_session = asyncio.create_task(session.close())
+    await asyncio.wait_for(waterfall.closing.wait(), timeout=5)
+    assert waterfall.active_at_close == [1]
+    scan_may_end.set()
+    await asyncio.wait_for(closing_session, timeout=5)
+    async with asyncio.timeout(5):
+        while slots.active:
+            await asyncio.sleep(0.01)
+
+
+def _gate_resolver(gate: asyncio.Event, fail: Exception | None = None):
+    async def resolve(host, port, **kwargs):
+        await gate.wait()
+        if fail is not None:
+            raise fail
+        return "127.0.0.1"
+
+    return resolve
+
+
+# Value: protects=a slot taken by a tune still resolving its hostname is freed exactly once however that tune ends: a cancelled switch, a failed lookup or the session closing; fails_when=one of those paths leaks the slot or releases it twice; why_new=only Stop while resolving was tested; seam=none; no_claim=real DNS timing
+@pytest.mark.parametrize("end", ["switch-cancelled", "lookup-fails", "session-closes"])
+async def test_a_resolving_tune_frees_its_slot_once(end, caplog):
+    from skywave_radio.hostguard import HostRejected
+    from skywave_radio.session import ListenSession, Slots
+
+    gate = asyncio.Event()
+    fail = HostRejected("dns", "a.example didn't resolve") if end == "lookup-fails" else None
+    slots = Slots(1)
+    session = ListenSession(
+        settings(),
+        _ignore,
+        _ignore,
+        slots=slots,
+        resolver=_gate_resolver(gate, fail),
+        client_factory=_held_close_client("stop", asyncio.Event(), asyncio.Event()),
+    )
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    assert slots.active == 1
+    if end == "switch-cancelled":
+        serving = asyncio.create_task(
+            session.handle({"type": "tune", "host": "b.example", "port": 8074, "freqKhz": 7200, "mode": "usb"})
+        )
+        await asyncio.sleep(0)
+        serving.cancel()
+        await asyncio.wait({serving})
+        await session.close()
+    elif end == "lookup-fails":
+        gate.set()
+    else:
+        await session.close()
+    async with asyncio.timeout(5):
+        while slots.active:
+            await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    assert slots.active == 0
+    assert "released with none held" not in caplog.text
+
+
+# Value: protects=switching right after the old receiver failed keeps exactly one slot, held by the new pump; fails_when=the ended pump's slot is released as well as handed over, or the new tune takes a second slot; why_new=no test switched from a pump that had already ended; seam=none; no_claim=whether _pump_done had already run (both orders keep one slot)
+async def test_switch_right_after_the_old_receiver_failed_keeps_one_slot(caplog):
+    from skywave_radio.session import ListenSession, Slots
+
+    already_closed = asyncio.Event()
+    already_closed.set()  # neither receiver's close is held here
+    failing = _held_close_client("error", asyncio.Event(), already_closed)
+    streaming = _held_close_client("stop", asyncio.Event(), already_closed)
+
+    def factory(host, port, **kwargs):
+        return (failing if port == 8073 else streaming)(host, port, **kwargs)
+
+    slots = Slots(2)
+    session = ListenSession(settings(), _ignore, _ignore, slots=slots, resolver=_resolve_any, client_factory=factory)
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    async with asyncio.timeout(5):
+        while not session._pump.done():
+            await asyncio.sleep(0)
+    await session.handle({"type": "tune", "host": "b.example", "port": 8074, "freqKhz": 7200, "mode": "usb"})
+    while not session._listening:
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    assert slots.active == 1
+    await session.close()
+    async with asyncio.timeout(5):
+        while slots.active:
+            await asyncio.sleep(0.01)
+    assert "released with none held" not in caplog.text
+
+
+# Value: protects=a double release never pushes the listener count below zero, so the cap can't admit extra listeners; fails_when=release() decrements past zero; why_new=Slots had no floor; seam=none; no_claim=which code path would double-release (none known)
+def test_releasing_a_free_slot_never_goes_below_zero(caplog):
+    from skywave_radio.session import Slots
+
+    slots = Slots(1)
+    slots.release()
+    assert slots.active == 0
+    assert "released with none held" in caplog.text
+    assert slots.try_acquire()
+    assert not slots.try_acquire()
 
 
 def test_retune_while_connecting_keeps_one_connection():
