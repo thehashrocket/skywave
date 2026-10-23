@@ -411,7 +411,10 @@ def test_slot_freed_when_session_hits_time_limit():
         with client.websocket_connect("/ws", headers=ORIGIN) as ws1:
             ws1.send_text(tune_msg(kiwi.port))
             first = until_state(ws1, "stopped", "error")
-            # ws1 stays open on "Stopped"; it must not keep the only slot.
+            # ws1 stays open on "Stopped"; it must not keep the only slot. The
+            # slot frees once the Kiwi connection has closed, just after
+            # "Stopped" goes out, so wait for that before the next tune.
+            wait_for_free_slots(client)
             with client.websocket_connect("/ws", headers=ORIGIN) as ws2:
                 ws2.send_text(tune_msg(kiwi.port))
                 second = until_state(ws2, "listening", "error")
@@ -421,6 +424,60 @@ def test_slot_freed_when_session_hits_time_limit():
     assert first[-1]["state"] == "stopped"
     assert "session limit" in first[-1]["message"]
     assert second[-1]["state"] == "listening"
+
+
+# Value: protects=a session at its time limit keeps its listener slot until the Kiwi connection has closed; fails_when=the slot is released before close() finishes, so the service can go one connection over its limit on volunteers' Kiwis; why_new=the slot-freed test only checks the slot frees eventually; seam=none; no_claim=real close timing (close() is held open by hand)
+async def test_slot_stays_held_until_the_kiwi_connection_closes():
+    from skywave_radio.kiwi import KiwiInfo
+    from skywave_radio.session import ListenSession, Slots
+
+    closing = asyncio.Event()
+    closed = asyncio.Event()
+
+    class HeldClose:
+        """Yields one block, then close() waits until the test lets it finish."""
+
+        def __init__(self, host, port, **kwargs):
+            self.info = KiwiInfo(sample_rate=12000.0)
+
+        async def connect(self):
+            return self.info
+
+        async def tune(self, freq_khz):
+            pass
+
+        async def blocks(self):
+            yield None  # never read: the zero-minute limit ends the loop first
+
+        async def close(self):
+            closing.set()
+            await closed.wait()
+
+    async def resolve(host, port, **kwargs):
+        return "127.0.0.1"
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    async def send_bytes(_):
+        pass
+
+    slots = Slots(1)
+    session = ListenSession(
+        settings(max_session_minutes=0), send_text, send_bytes, slots=slots, resolver=resolve, client_factory=HeldClose
+    )
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    await asyncio.wait_for(closing.wait(), timeout=5)
+    assert sent[-1]["state"] == "stopped"
+    # "Stopped" has gone out, but the volunteer's channel is still closing.
+    assert slots.active == 1
+    closed.set()
+    async with asyncio.timeout(5):
+        while slots.active:
+            await asyncio.sleep(0.01)
+    await session.close()
 
 
 def test_retune_while_connecting_keeps_one_connection():
