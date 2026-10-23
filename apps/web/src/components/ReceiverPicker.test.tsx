@@ -9,7 +9,7 @@ import { sunPosition } from "@/lib/solar";
 import { TRPCProvider } from "@/lib/trpc";
 import type { AppRouter } from "@/server/root";
 import type { MapList } from "./MapPanel";
-import { nextRefetchMs, ReceiverPicker, ReceiverTable } from "./ReceiverPicker";
+import { ReceiverPicker, ReceiverTable } from "./ReceiverPicker";
 
 afterEach(cleanup);
 
@@ -112,9 +112,30 @@ describe("ReceiverTable", () => {
   // Value: protects=clicking any cell of a row chooses it; fails_when=the row-level click handler is dropped; why_new=only the name button was clickable; seam=none; no_claim=pointer hit areas
   it("chooses a receiver when any cell of its row is clicked", () => {
     const { onChoose } = setup();
-    fireEvent.click(screen.getByText("Charlie town"));
+    fireEvent.click(screen.getByText("Charlie town", { selector: ".location-text" }));
     expect(onChoose).toHaveBeenCalledWith(receivers[2]);
     expect(onChoose).toHaveBeenCalledTimes(1);
+  });
+
+  // Value: protects=phone rows keep a place to choose by (eng review R10, the Location column is hidden there) and the sort note sits with the table it describes (design D5); fails_when=the place line or the caption is dropped or moved back among the filters; why_new=both are new; seam=none; no_claim=which line shows at which width (CSS, browser check)
+  it("puts the place in each row's button and the sort note in the table's caption", () => {
+    setup();
+    const row = screen.getByRole("button", { name: /charlie\.example:8073/ });
+    expect(row.querySelector(".receiver-place")?.textContent).toBe("Charlie town");
+    // A volunteer who gave no location gets no empty place line.
+    cleanup();
+    render(
+      <ReceiverTable
+        receivers={[rx("Delta", { location: " | " })]}
+        freqKhz={10_000}
+        current={null}
+        sun={null}
+        onChoose={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /delta\.example:8073/ }).querySelector(".receiver-place")).toBeNull();
+    expect(screen.getByText("Best first").closest("caption")).toBeTruthy();
+    expect(screen.getByText("Best first").closest(".receivers-filters")).toBeNull();
   });
 
   it("labels the default order and swaps the label for a reset link once sorted", () => {
@@ -150,7 +171,7 @@ describe("ReceiverTable", () => {
   it("doesn't choose a row when the click ends a text selection in it", () => {
     const { onChoose } = setup();
     const spy = selection(true);
-    fireEvent.click(screen.getByText("Charlie town"), { detail: 1 });
+    fireEvent.click(screen.getByText("Charlie town", { selector: ".location-text" }), { detail: 1 });
     spy.mockRestore();
     expect(onChoose).not.toHaveBeenCalled();
   });
@@ -159,7 +180,7 @@ describe("ReceiverTable", () => {
   it("still chooses with text selected elsewhere, or from the keyboard", () => {
     const { onChoose } = setup();
     let spy = selection(false);
-    fireEvent.click(screen.getByText("Charlie town"), { detail: 1 });
+    fireEvent.click(screen.getByText("Charlie town", { selector: ".location-text" }), { detail: 1 });
     spy.mockRestore();
     spy = selection(true);
     fireEvent.click(screen.getByRole("button", { name: /charlie\.example:8073/ }), { detail: 0 });
@@ -250,7 +271,6 @@ describe("ReceiverTable list age", () => {
 // Stands in for the network: answers receivers.list with whatever `load` settles to.
 function renderPicker(
   load: Promise<unknown> | (() => Promise<unknown>),
-  note: string | null = null,
   onStopPicking: (() => void) | null = null,
   children: React.ReactNode = null,
   map?: (list: MapList) => React.ReactNode,
@@ -282,7 +302,6 @@ function renderPicker(
           onPickBest={onPickBest}
           picking={onStopPicking !== null}
           onStopPicking={onStopPicking ?? (() => {})}
-          note={note}
           map={map}
         >
           {children}
@@ -317,7 +336,7 @@ describe("ReceiverPicker", () => {
   // Value: protects=a running Pick best can be stopped from the same button; fails_when=the picking branch is removed; why_new=the button looked idle mid-run; seam=none; no_claim=what stopping does to the radio (page/hook tests)
   it("turns the button into Stop picking while a run is in progress", async () => {
     const stop = vi.fn();
-    renderPicker(Promise.resolve({ receivers, fetchedAt: 0 }), "A was full; trying B…", stop);
+    renderPicker(Promise.resolve({ receivers, fetchedAt: 0 }), stop);
     const button = await screen.findByRole("button", { name: "Stop picking" });
     // The second click of a double-click on Pick best mustn't cancel the run it just started.
     fireEvent.click(button, { detail: 2 });
@@ -342,8 +361,9 @@ describe("ReceiverPicker", () => {
     expect(calls).toBe(2);
     cleanup();
 
-    renderPicker(new Promise(() => {}), "A was full; trying B…");
-    expect(screen.getByRole("status").textContent).toBe("A was full; trying B…");
+    // The list's own state stays announced here; Pick best's note lives in the page's status line.
+    renderPicker(new Promise(() => {}));
+    expect(screen.getByRole("status").textContent).toBe("Loading the public receiver list…");
   });
 
   // Value: protects=the map is told the list failed only after a load fails (not while loading), can retry it, and gets the list's age; fails_when=failed keys on !receivers alone or retry/ageMs are miswired; why_new=page and MapPanel tests mock the picker/list, so this derivation was unexercised; seam=none; no_claim=MapPanel's rendering of these (its own tests)
@@ -356,7 +376,6 @@ describe("ReceiverPicker", () => {
         ++calls === 1
           ? new Promise((_, reject) => (resolveFirst = reject))
           : Promise.resolve({ receivers, fetchedAt: 0, ageMs: 3 * 60_000 }),
-      null,
       null,
       null,
       (list) => {
@@ -419,7 +438,6 @@ describe("ReceiverPicker", () => {
       Promise.resolve({ receivers, fetchedAt: serverNow - 2 * 60 * 60_000, ageMs: 2 * 60 * 60_000, stale: true }),
       null,
       null,
-      null,
       undefined,
       true,
     );
@@ -459,7 +477,6 @@ describe("ReceiverPicker", () => {
       () => (++calls === 1 ? Promise.reject(new Error("BAD_GATEWAY")) : new Promise(() => {})),
       null,
       null,
-      null,
       (list) => {
         seen.push(list);
         return null;
@@ -476,7 +493,6 @@ describe("ReceiverPicker", () => {
     const seen: MapList[] = [];
     const { queryClient } = renderPicker(
       () => (++calls === 1 ? Promise.reject(new Error("BAD_GATEWAY")) : new Promise(() => {})),
-      null,
       null,
       null,
       (list) => {
@@ -496,7 +512,7 @@ describe("ReceiverPicker", () => {
 
   // Value: protects=the page's help text shows inside the receivers section, under its heading and above Pick best; fails_when=ReceiverPicker stops rendering children (the page test mocks the picker, so it can't see this); why_new=DT1 children slot; seam=none; no_claim=the help text's wording (page test)
   it("shows its children under the heading, above Pick best", async () => {
-    const { button } = renderPicker(Promise.resolve({ receivers, fetchedAt: 0 }), null, null, <p>help text</p>);
+    const { button } = renderPicker(Promise.resolve({ receivers, fetchedAt: 0 }), null, <p>help text</p>);
     const help = screen.getByText("help text");
     const heading = screen.getByRole("heading", { name: "Receivers" });
     expect(heading.compareDocumentPosition(help) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -516,20 +532,6 @@ describe("ReceiverPicker", () => {
     // A copy 10 min old: the next poll comes just after its 15 min run out.
     expect(interval(query)).toBeGreaterThan(5 * 60_000 - 1_000);
     expect(interval(query)).toBeLessThanOrEqual(5 * 60_000 + 5_000);
-  });
-
-  // Value: protects=the list is polled just after the server's copy expires, then at the server's retry pace, and soon after a failed first load; fails_when=nextRefetchMs's age thresholds or the floor/ceiling drift; why_new=list polling (PR 1 review, skew-proof in PR 2a); seam=none; no_claim=react-query's timer itself
-  it.each([
-    ["a copy 10 min old", 10 * 60_000, 5 * 60_000 + 5_000],
-    ["a copy fetched just now", 0, 15 * 60_000],
-    ["a copy a moment from expiring", 15 * 60_000 - 1, 5_001],
-    ["a copy that just expired (the server is refreshing it)", 15 * 60_000, 15_000],
-    ["an expired copy within the server's retry window", 16 * 60_000 - 1, 15_000],
-    ["a copy still old after the server's retry (mirror down)", 16 * 60_000, 60_000],
-    ["a stale copy from a long outage", 60 * 60_000, 60_000],
-    ["no copy yet (the first load failed)", undefined, 15_000],
-  ])("polls again at the right time: %s", (_case, age, wait) => {
-    expect(nextRefetchMs(age)).toBe(wait);
   });
 });
 

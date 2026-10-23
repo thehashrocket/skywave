@@ -79,11 +79,11 @@ describe("MapPanel", () => {
   // Value: protects=before the radio starts, the panel holds its space and says when the map comes, without loading MapLibre; fails_when=the adapter mounts before admission or the shell is missing; why_new=O4, R7, design state table; seam=adapter mocked; no_claim=network requests (the adapter's import is the request)
   it("shows a reserved shell until admitted, then loads the adapter", async () => {
     const { rerender, props } = setup({ admitted: false });
-    expect(screen.getByText("Map loads once the radio is playing")).toBeTruthy();
+    expect(screen.getByText("Map loads in a few seconds")).toBeTruthy();
     expect(screen.queryByTestId("adapter")).toBeNull();
     rerender(<MapPanel {...props} admitted />);
     expect(await screen.findByTestId("adapter")).toBeTruthy();
-    expect(screen.queryByText("Map loads once the radio is playing")).toBeNull();
+    expect(screen.queryByText("Map loads in a few seconds")).toBeNull();
   });
 
   // Value: protects=the heading follows the dial and the legend says when the greyline and list are from, warning when the list is old; fails_when=the heading is static, times are local not UTC, or a 40-minute-old list reads like a fresh one; why_new=design decision 10, state table (list age); seam=none; no_claim=styling of the warning

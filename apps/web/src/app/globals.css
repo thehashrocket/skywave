@@ -14,12 +14,25 @@
   --ham: #2f6f6a;
   --lamp: #f2c55c;
   --danger: #f08a7e;
+  /* Shades with one job each. */
+  --brass-bright: #d3ad5e; /* Listen under the pointer */
+  --brass-ink: #6b5226; /* broadcast band labels on the dial glass */
+  --meter-mid: #6fb29e; /* the S-meter gradient's midpoint */
+
+  /* Waterfall colormap, low to high: read by Waterfall.tsx (FALLBACK_STOPS keeps these values). */
+  --wf-0: var(--enamel-deep);
+  --wf-1: #1b545c;
+  --wf-2: #70b29e;
+  --wf-3: #e8d27a;
+  --wf-4: #fff8de;
 
   --font-ui: "Atkinson Hyperlegible", system-ui, sans-serif;
   --font-instrument: "Barlow Condensed", "Arial Narrow", sans-serif;
 
   --radius-knob: 999px;
   --radius-panel: 6px;
+  --radius-dial: 10px;
+  --radius-inset: 4px;
 
   /* Receiver map: read into the MapLibre style (receiver-map-style.ts). */
   --map-sea: var(--enamel-deep);
@@ -53,6 +66,27 @@ body {
 
 a {
   color: var(--lamp);
+}
+
+/* The browser's own surfaces, in the console's colors. */
+::selection {
+  background: rgba(242, 197, 92, 0.35);
+  color: var(--text);
+}
+
+.dial-glass ::selection {
+  color: var(--ink);
+}
+
+input,
+textarea {
+  caret-color: var(--lamp);
+}
+
+html,
+.dial-scroll,
+.receivers-scroll {
+  scrollbar-color: var(--rule) var(--enamel-deep);
 }
 
 :focus-visible {
@@ -154,7 +188,7 @@ a {
 }
 
 .power:hover {
-  background: #d3ad5e;
+  background: var(--brass-bright);
 }
 
 .power-on {
@@ -207,7 +241,7 @@ a {
   cursor: default;
 }
 
-/* Pick best's note is its main feedback, so it reads at body size. */
+/* The list's state (loading, failed, stale) reads at body size, beside Pick best. */
 .receivers-note {
   color: var(--muted);
   font-size: 1rem;
@@ -436,20 +470,30 @@ a {
 }
 
 .receivers-credit,
-.receivers-updated,
-.receivers-sort-note {
+.receivers-updated {
   margin: 0;
   color: var(--muted);
   font-size: 0.85rem;
 }
 
+.receivers-sort {
+  caption-side: top;
+  padding: 0 0 6px;
+  text-align: left;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* Phones only: the Location column is hidden there; see the 520px block. */
+.receiver-place {
+  display: none;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
 /* Holds its line when empty, so the notice appearing doesn't move the rows. */
 .receivers-updated {
   min-height: 1lh;
-}
-
-.receivers-sort-note {
-  padding-bottom: 8px;
 }
 
 .receivers-empty {
@@ -482,7 +526,7 @@ a {
   width: 100%;
   min-width: 860px;
   height: auto;
-  border-radius: 10px;
+  border-radius: var(--radius-dial);
   background:
     radial-gradient(120% 140% at 50% 120%, rgba(242, 197, 92, 0.32), transparent 60%),
     linear-gradient(180deg, var(--glass) 0%, var(--glass-shade) 100%);
@@ -543,7 +587,7 @@ a {
 }
 
 .dial-band-broadcast text {
-  fill: #6b5226;
+  fill: var(--brass-ink);
 }
 
 .dial-band-ham rect {
@@ -583,8 +627,18 @@ a {
 
 .readout {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 6px;
+}
+
+.readout-error {
+  flex-basis: 100%;
+  /* Held even when empty, so a rejected entry's message doesn't move the page. */
+  min-height: 1lh;
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
 }
 
 .readout-input {
@@ -593,12 +647,13 @@ a {
   font-size: 3rem;
   line-height: 1;
   font-variant-numeric: tabular-nums;
-  width: 8.6ch;
+  /* Wide enough for "29,999.99" plus padding; 8.6ch clipped the last digit. */
+  width: 9.4ch;
   padding: 2px 4px;
   color: var(--lamp);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: var(--radius-inset);
   text-align: right;
 }
 
@@ -614,6 +669,7 @@ a {
 
 .readout-unit {
   font-family: var(--font-instrument);
+  font-weight: 500;
   font-size: 1.3rem;
   color: var(--muted);
 }
@@ -702,7 +758,7 @@ a {
 .smeter-track {
   position: relative;
   height: 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-inset);
   background: var(--enamel-deep);
   overflow: hidden;
 }
@@ -711,7 +767,7 @@ a {
   position: absolute;
   inset: 0;
   transform-origin: left center;
-  background: linear-gradient(90deg, var(--ham) 0%, #6fb29e 55%, var(--lamp) 100%);
+  background: linear-gradient(90deg, var(--ham) 0%, var(--meter-mid) 55%, var(--lamp) 100%);
   transition: transform 180ms linear;
 }
 
@@ -727,6 +783,7 @@ a {
   position: relative;
   height: 1.1em;
   font-family: var(--font-instrument);
+  font-weight: 500;
   font-size: 0.8rem;
   color: var(--muted);
 }
@@ -795,8 +852,12 @@ a {
   max-width: 75ch;
 }
 
-.status[data-state="error"] .status-message {
+.status-message[data-tone="danger"] {
   color: var(--danger);
+}
+
+.status-place {
+  color: var(--text);
 }
 
 .status-row {
@@ -806,7 +867,8 @@ a {
   gap: 6px 16px;
 }
 
-.status-back.link-button {
+.status-back.link-button,
+.status-pick.link-button {
   padding: 0;
   /* Receiver names run long; a wrapped button label would center. */
   text-align: left;
@@ -827,7 +889,7 @@ a {
   border-radius: var(--radius-panel);
   overflow: hidden;
   background: var(--enamel-deep);
-  cursor: crosshair;
+  cursor: default;
 }
 
 .waterfall-screen canvas {
@@ -835,6 +897,23 @@ a {
   width: 100%;
   height: 240px;
   image-rendering: auto;
+  transition: height 200ms ease-out;
+}
+
+/* Before the visit's first audio: a strip that points at Listen. */
+.waterfall:not([data-open]) .waterfall-screen canvas {
+  height: 56px;
+}
+
+/* Only a live waterfall can be clicked to tune. */
+.waterfall-screen[data-active] {
+  cursor: crosshair;
+}
+
+.waterfall:not([data-open]) .waterfall-axis,
+.waterfall:not([data-open]) .waterfall-passband,
+.waterfall:not([data-open]) .waterfall-center {
+  display: none;
 }
 
 .waterfall-passband {
@@ -865,30 +944,37 @@ a {
   margin: 0;
   color: var(--muted);
   font-size: 0.95rem;
+  padding-inline: 12px;
+  text-align: center;
   pointer-events: none;
 }
 
 .waterfall-axis {
   position: relative;
-  height: 2.6em;
+  /* Tick labels sit on the first line; the caption flows below them and can wrap. */
+  min-height: 2.6em;
+  padding-top: 1.5em;
   font-family: var(--font-instrument);
+  font-weight: 500;
   font-size: 0.9rem;
   color: var(--muted);
 }
 
-.waterfall-axis span {
+.waterfall-axis > span {
   position: absolute;
   top: 0;
   transform: translateX(-50%);
 }
 
-.waterfall-axis span:first-child {
+.waterfall-axis > span:first-child {
   transform: none;
 }
 
 .waterfall-axis .waterfall-unit {
-  top: 1.3em;
-  left: 50% !important;
+  position: static;
+  display: block;
+  transform: none;
+  text-align: center;
   font-family: var(--font-ui);
   font-size: 0.8rem;
 }
@@ -960,6 +1046,7 @@ a {
 
 .preset-mode {
   font-family: var(--font-instrument);
+  font-weight: 500;
   font-size: 0.95rem;
   color: var(--muted);
 }
@@ -970,14 +1057,13 @@ a {
   grid-template-columns: 6ch 4.2ch 1fr;
 }
 
-/* One column, so strongest-first reads top to bottom at any width. */
-.signals-list {
-  grid-template-columns: 1fr;
-  max-width: 640px;
-}
-
 .signals-again {
   margin-bottom: 12px;
+}
+
+/* Phones only; see the 520px block. */
+.signals-more {
+  display: none;
 }
 
 .signal-strength {
@@ -1025,12 +1111,16 @@ a {
 .presets-save button {
   font: inherit;
   font-weight: 700;
-  padding: 8px 18px;
+  padding: 7px 16px;
   border-radius: var(--radius-knob);
   border: 1px solid var(--brass);
   background: transparent;
   color: var(--brass);
   cursor: pointer;
+}
+
+.presets-save button:hover:not(:disabled) {
+  background: rgba(193, 154, 75, 0.12);
 }
 
 .presets-save button:disabled {
@@ -1235,6 +1325,15 @@ a {
   cursor: pointer;
 }
 
+.map-listen:hover:not(:disabled) {
+  background: var(--brass-bright);
+}
+
+.map-listen:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .map-legend {
   display: flex;
   flex-wrap: wrap;
@@ -1342,11 +1441,37 @@ a {
   .receivers-table-wrap {
     padding: 12px;
   }
-  .waterfall-screen canvas {
+  .waterfall[data-open] .waterfall-screen canvas {
     height: 180px;
   }
   :root {
     --map-height: 220px;
+  }
+  /* Table rows (not the map card, which shares these classes): the name in two lines at
+     most, then the place; host and antenna stay on wider screens. */
+  .receivers-table .receiver-name {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
+  .receivers-table .receiver-host {
+    display: none;
+  }
+  .receiver-place {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  /* SignalList marks the rows past PHONE_ROWS; Show all reveals them. */
+  .signals-list:not(.signals-list-all) li[data-beyond] {
+    display: none;
+  }
+  .signals-more {
+    display: inline-block;
+    margin-bottom: 20px;
   }
   /* The card docks under the map instead of covering it; relative keeps its ✕ on the card. */
   .map-card {
@@ -1362,6 +1487,23 @@ a {
 
 /* Fingers, at any width (a tablet, a touch laptop): map controls at 44px. */
 @media (max-width: 520px), (pointer: coarse) {
+  .power,
+  .presets-save button,
+  .receiver-choose {
+    min-height: 44px;
+  }
+  .mode span {
+    padding-block: 10px;
+  }
+  /* The ✕ stays its size; the hit area grows to 44px around it. */
+  .preset-delete {
+    position: relative;
+  }
+  .preset-delete::before {
+    content: "";
+    position: absolute;
+    inset: -6px;
+  }
   .map-listen,
   .map-card-close,
   .map-frame .maplibregl-ctrl-group button {
@@ -1370,8 +1512,31 @@ a {
   }
 }
 
+/* Hints for the pointer in hand. The fine (mouse and keyboard) sentence stays
+   in the accessibility tree everywhere; on touch it's only visually hidden. */
+.hint-coarse {
+  display: none;
+}
+
+@media (pointer: coarse) {
+  .hint-coarse {
+    display: inline;
+  }
+  .hint-fine {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .smeter-fill {
+    transition: none;
+  }
+  .waterfall-screen canvas {
     transition: none;
   }
   .map-canvas {

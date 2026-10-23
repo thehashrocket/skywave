@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ScanState } from "@/lib/use-radio";
-import { SignalList } from "./SignalList";
+import { PHONE_ROWS, SignalList } from "./SignalList";
 
 afterEach(cleanup);
 
@@ -16,7 +16,8 @@ function show(scan: ScanState | null, over: Partial<Parameters<typeof SignalList
       canScan
       listening
       freqKhz={9_420}
-      autoScanMs={10_000}
+      scanDelayMs={10_000}
+      checking={false}
       onTune={() => {}}
       onScanAgain={onScanAgain}
       {...over}
@@ -86,7 +87,7 @@ describe("SignalList", () => {
 
   // Value: protects=the waiting note states the page's real auto-scan delay; fails_when=the note hardcodes 10 seconds again; why_new=cycle-2 testing review (only 10_000 was tested); seam=none; no_claim=page wiring of AUTO_SCAN_MS (page.test)
   it("says how long until the scan from the delay it's given", () => {
-    show(null, { autoScanMs: 5_000 });
+    show(null, { scanDelayMs: 5_000 });
     expect(screen.getByRole("status").textContent).toContain("about 5 seconds");
   });
 
@@ -106,5 +107,75 @@ describe("SignalList", () => {
     });
     const rows = screen.getAllByRole("listitem");
     expect(rows.map((r) => r.hasAttribute("data-current"))).toEqual([true, false]);
+  });
+
+  // Value: protects=the waiting text names the real wait after Pick best (its 15 s check, then 10 s) (eng review R11); fails_when=checking isn't read or the texts swap; why_new=only the 10 s text existed; seam=none; no_claim=the scan timing itself (page.test.tsx)
+  it("says the scan waits for Pick best's check while it runs", () => {
+    show(null, { checking: true, scanDelayMs: 25_000 });
+    expect(screen.getByRole("status").textContent).toMatch(
+      /once Pick best has finished checking this receiver, about 25 seconds in/,
+    );
+  });
+
+  // Value: protects=a long scan offers "Show all" for phones and a new scan starts short again (eng review R9); fails_when=the button shows for a short list, doesn't expand, or the expansion sticks to the next scan; why_new=the list had no length behavior; seam=none; no_claim=which rows a phone hides (CSS, browser check)
+  it("offers the whole of a long scan, once per scan", () => {
+    const signals = Array.from({ length: PHONE_ROWS + 4 }, (_, i) => ({
+      freqKhz: 5_900 + i * 5,
+      snrDb: 40 - i,
+      band: "49m",
+    }));
+    const done = (): ScanState => ({
+      state: "done",
+      ...at,
+      signals,
+      hidden: 0,
+      bandsDone: 15,
+      bandsTotal: 15,
+      partial: false,
+    });
+    const first = done();
+    const view = render(
+      <SignalList
+        scan={first}
+        canScan
+        listening
+        freqKhz={9_420}
+        scanDelayMs={10_000}
+        checking={false}
+        onTune={() => {}}
+        onScanAgain={() => {}}
+      />,
+    );
+    const list = () => view.container.querySelector(".signals-list")!;
+    expect(list().classList.contains("signals-list-all")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: `Show all ${signals.length}` }));
+    expect(list().classList.contains("signals-list-all")).toBe(true);
+    expect(screen.queryByRole("button", { name: /^Show all/ })).toBeNull();
+    // The button went away; focus lands on the first row it revealed.
+    expect(document.activeElement).toBe(list().querySelectorAll(".preset-tune")[8]);
+    view.rerender(
+      <SignalList
+        scan={done()}
+        canScan
+        listening
+        freqKhz={9_420}
+        scanDelayMs={10_000}
+        checking={false}
+        onTune={() => {}}
+        onScanAgain={() => {}}
+      />,
+    );
+    expect(list().classList.contains("signals-list-all")).toBe(false);
+    cleanup();
+    show({
+      state: "done",
+      ...at,
+      signals: signals.slice(0, PHONE_ROWS),
+      hidden: 0,
+      bandsDone: 15,
+      bandsTotal: 15,
+      partial: false,
+    });
+    expect(screen.queryByRole("button", { name: /^Show all/ })).toBeNull();
   });
 });
