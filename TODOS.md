@@ -2,16 +2,64 @@
 
 ## Radio service
 
-### Fix the flaky slot-freed-at-time-limit test
+### Don't free a slot while a cancelled switch's old Kiwi is still closing
 
-**What:** Find why `tests/test_server.py::test_slot_freed_when_session_hits_time_limit` sometimes sees the second session end in `error` instead of `listening`, and fix the test or the service.
+**What:** When a receiver switch is cancelled while it waits for the old pump to stop, release the listener slot only once the old pump has finished, not in `_tune`'s `except BaseException` branch.
 
-**Why:** It failed once in the full radio lane on 2026-10-23 (branch `feat/design-pass`, which changes nothing in `apps/radio`) while the web suite ran in parallel; 5 solo reruns passed. A timing flake there could also hide a real bug where a session at its time limit doesn't free its slot, which would hold a volunteer's Kiwi channel.
+**Why:** In `ListenSession._tune` with `handing_over`, `stop(None)` waits on the old pump, which may be in its `finally` awaiting `client.close()` (up to `CLOSE_TIMEOUT_S`). If the caller is cancelled there (the browser leaves, or `server.py` gives up on a stalled browser), the slot is released at once while the old Kiwi connection is still open. Until the handler's `session.close()` aborts it, another listener can take the slot, putting a volunteer's Kiwi one connection over the limit.
 
-**Context:** Failure: `assert second[-1]["state"] == "listening"` → `AssertionError: assert 'error' == 'listening'` at `tests/test_server.py:423`, right after `first[-1]` was `stopped` with "session limit". Reproduce under CPU load (run `pnpm test:web` and `pnpm test:radio` together). Check whether the second session starts before the first one's slot is released; see the related pitfall about cancelled child tasks in `apps/radio/skywave_radio/session.py`. Use /investigate.
+**Context:** Found by the fix/slot-freed-flake /ship adversarial review (2026-10-23); not reproduced yet. One shape: hand the release to the old pump's done callback instead of releasing in the except branch. Tests: extend `test_slot_stays_held_until_the_kiwi_connection_closes` (held `close()`, assert `slots.active == 1` until it finishes) from the time-limit path to Stop, a `KiwiError` and a cancelled switch; `test_leaving_mid_switch_starts_no_new_pump` shows how to cancel mid-switch.
 
 **Effort:** S
-**Priority:** P0
+**Priority:** P2
+**Depends on:** None
+
+### Close or time out a browser socket after its session ends
+
+**What:** Close the browser WebSocket, or give it an idle timeout, once its session is stopped or errored and nothing new is tuned.
+
+**Why:** `/ws` keeps `serve()` waiting on `ws.receive()` until the browser leaves; Stop and the session limit end only the Kiwi side. A client can open many sockets that never take a slot and hold them indefinitely, using file descriptors and memory.
+
+**Context:** Raised by Codex in the fix/slot-freed-flake /ship adversarial review (2026-10-23); not measured. `apps/radio/skywave_radio/server.py` (`listen`). The web app reuses one open socket across tunes (`use-radio.ts`), so a timeout must be long enough not to drop a listener who pauses between stations, and the page must reconnect cleanly if it does.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+
+### Don't refuse a reconnect in the 2 s after "Stopped"
+
+**What:** Let a listener who reconnects on a new socket right after "Stopped" or an error get a slot: either send the terminal status after the Kiwi close and slot release, or add a "ready to reconnect" signal.
+
+**Why:** `_run` sends "stopped" and then closes the Kiwi (up to `CLOSE_TIMEOUT_S`, 2 s) before the slot frees. On a full service, a reload or second tab in that gap gets "at its listener limit". Same-socket retunes are fine: they take the slot over.
+
+**Context:** Both reviewers in the fix/slot-freed-flake /ship (2026-10-23). Sending the status later delays "Stopped" by up to 2 s after the audio has already ended, so decide which the listener should see first. `apps/radio/skywave_radio/session.py` (`_run`, `_pump_done`).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+### Make a double slot release loud
+
+**What:** Guard `Slots.release()` so `active` can't go below zero (assert, or clamp and log).
+
+**Why:** No path double-releases today, but if one ever did, `active` would go negative, the service would admit more listeners than `MAX_SESSIONS` (more volunteer channels than the limit) and `/healthz` would report a negative count, all silently.
+
+**Context:** fix/slot-freed-flake /ship adversarial review (2026-10-23). `apps/radio/skywave_radio/session.py` (`Slots`). An assert could end a live session if it fires; a clamp plus `log.error` keeps listening but hides the over-admission until someone reads the log.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+### End a session at its time limit even when the receiver goes quiet
+
+**What:** Enforce `MAX_SESSION_MINUTES` with its own timer, not only when `client.blocks()` yields.
+
+**Why:** The limit is checked per block, so a receiver that stops sending just before the limit keeps the session (and the volunteer's channel) until `blocks()` times out, up to about one receive timeout (~10 s) past the limit.
+
+**Context:** Raised by Codex in the fix/slot-freed-flake /ship adversarial review (2026-10-23). `apps/radio/skywave_radio/session.py` (`_run`), `kiwi.py` (`blocks`). Small overrun; matters only for broken or hostile receivers.
+
+**Effort:** S
+**Priority:** P3
 **Depends on:** None
 
 ### Retry the old Kiwi path only for a Kiwi that needs it
@@ -37,6 +85,18 @@
 **Effort:** M
 **Priority:** P3
 **Depends on:** None
+
+### Count listener slots across processes if the service ever scales out
+
+**What:** Move the listener count out of process memory (or document a single-worker requirement) before running more than one radio service process.
+
+**Why:** `Slots` lives in `app.state` and `/healthz` reports that process's count, so with several workers or replicas `MAX_SESSIONS` stops being a global cap and volunteers' receivers can be overbooked.
+
+**Context:** Raised by Codex in the fix/slot-freed-flake /ship adversarial review (2026-10-23). Today the Dockerfile runs one uvicorn worker (`apps/radio/Dockerfile`), so nothing is wrong yet.
+
+**Effort:** M
+**Priority:** P4
+**Depends on:** Running more than one radio service process
 
 ## Web app
 
@@ -139,6 +199,20 @@
 **Depends on:** None
 
 ## Completed
+
+### Fix the flaky slot-freed-at-time-limit test
+
+**What:** Find why `tests/test_server.py::test_slot_freed_when_session_hits_time_limit` sometimes sees the second session end in `error` instead of `listening`, and fix the test or the service.
+
+**Why:** It failed once in the full radio lane on 2026-10-23 (branch `feat/design-pass`, which changes nothing in `apps/radio`) while the web suite ran in parallel; 5 solo reruns passed. A timing flake there could also hide a real bug where a session at its time limit doesn't free its slot, which would hold a volunteer's Kiwi channel.
+
+**Context:** Failure: `assert second[-1]["state"] == "listening"` → `AssertionError: assert 'error' == 'listening'` at `tests/test_server.py:423`, right after `first[-1]` was `stopped` with "session limit". Reproduce under CPU load (run `pnpm test:web` and `pnpm test:radio` together).
+
+**Effort:** S
+**Priority:** P0
+**Depends on:** None
+
+**Completed:** fix/slot-freed-flake (2026-10-23). The test, not the service. `ListenSession._run` sends "stopped" before its `finally` closes the Kiwi connection (up to `CLOSE_TIMEOUT_S`, 2 s), and the slot is freed only after that, in `_pump_done`; the test tuned a second socket on seeing "stopped" and, under load, got "at its listener limit". Holding the slot while the volunteer's channel is still closing is correct. The test now waits with `wait_for_free_slots` before the second tune. With the close slowed by 0.5 s the old test failed 3 of 3 and the new one passed 5 of 5; with slot release disabled both fail 5 of 5, now with "the listener slot was never freed". The /ship review also added `test_slot_stays_held_until_the_kiwi_connection_closes`, which holds `close()` open and checks the slot stays taken until it finishes (it fails 3 of 3 when the release is moved ahead of the close).
 
 ### Give the remaining phone controls a 44 px tap target
 
