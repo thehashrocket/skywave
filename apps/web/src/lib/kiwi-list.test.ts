@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { MAX_FIELD, MAX_ROWS, parseGps, parseKiwiList, rankReceivers, type Receiver } from "./kiwi-list";
+import { MAX_FIELD, MAX_ROWS, parseGps, parseKiwiList, placeName, rankReceivers, type Receiver } from "./kiwi-list";
 
 // Seven real entries from the mirror, kept in its exact format (comments,
 // `var` wrapper, trailing comma).
@@ -328,6 +328,19 @@ function rx(host: string, over: Partial<Receiver> = {}): Receiver {
     ...over,
   };
 }
+
+// Value: protects=volunteers' pipe-separated locations read as place names in the status line and phone rows; fails_when=separators, spacing or empty parts leak through; why_new=placeName is new (design D9, eng R10); seam=none; no_claim=how every volunteer writes a location
+describe("placeName", () => {
+  it.each([
+    ["Assen | Netherlands", "Assen, Netherlands"],
+    ["Milford, PA", "Milford, PA"],
+    ["  | Twente |  | NL ", "Twente, NL"],
+    ["", ""],
+    [" | ", ""],
+  ])("%j reads %j", (location, place) => {
+    expect(placeName(location)).toBe(place);
+  });
+});
 
 describe("rankReceivers", () => {
   const hosts = (list: Receiver[]) => list.map((r) => r.host);

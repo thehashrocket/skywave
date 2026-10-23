@@ -157,7 +157,7 @@ export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen
             </Suspense>
           </MapBoundary>
         ) : (
-          !failure && <p className="map-shell">Map loads once the radio is playing</p>
+          !failure && <p className="map-shell">Map loads in a few seconds</p>
         )}
 
         {failure ? (

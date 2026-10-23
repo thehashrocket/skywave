@@ -2,7 +2,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Receiver } from "./kiwi-list";
-import { MAX_ATTEMPTS, usePickBest, WATCH_MS } from "./use-pick-best";
+import { MAX_ATTEMPTS, REFUSED_MS, usePickBest, WATCH_MS } from "./use-pick-best";
 import { RADIO_ERROR_CODES, type RadioErrorCode, type RadioStatus } from "./use-radio";
 
 function rx(host: string): Receiver {
@@ -298,15 +298,68 @@ describe("usePickBest", () => {
   // Value: protects=a second click retries instead of reading the last run's error as its answer; fails_when=the start-status guard is removed; why_new=Codex structured review [P2]; seam=none; no_claim=real socket timing
   it("gives a repeat click a real attempt even while the last error is still showing", () => {
     const { hook, report, tuned } = setup();
+    // An uncoded error is the service's, so the receiver can be tried again at once.
+    const serviceError: RadioStatus = { state: "error", host: "a", port: 8073, message: "listener limit" };
     act(() => hook.result.current.start([rx("a")]));
-    report(fail("a", "busy"));
-    expect(hook.result.current.note).toMatch(/Tried 1 receiver/);
+    report(serviceError);
+    expect(hook.result.current.running).toBe(false);
 
     act(() => hook.result.current.start([rx("a")]));
     expect(tuned()).toEqual(["a", "a"]);
-    expect(hook.result.current.note).toBeNull();
-    report(fail("a", "busy"));
-    expect(hook.result.current.note).toMatch(/Tried 1 receiver/);
+    expect(hook.result.current.running).toBe(true); // the still-showing error isn't this run's answer
+  });
+
+  // Value: protects=receivers that refused (in a run or tuned by hand) aren't redialed by the next run for REFUSED_MS, so a no_apps or full Kiwi doesn't cut the listener off again, while one that plays again, drops and timeouts don't count (state-machines review); fails_when=start ignores earlier refusals, keys miss case or the default port, uncoded errors or drops count, or playing doesn't clear a refusal; why_new=the list's stale counts rank them first again; seam=none; no_claim=real Kiwi slot timing
+  it("leaves out receivers that refused recently, until REFUSED_MS has passed", () => {
+    vi.useFakeTimers();
+    try {
+      const { hook, report, tuned } = setup();
+      act(() => hook.result.current.start(candidates));
+      report(fail("a", "busy"));
+      report(fail("b", "no_apps"));
+      report(fail("c", "busy")); // the run gives up
+      act(() => hook.result.current.start(candidates));
+      expect(tuned()).toEqual(["a", "b", "c", "d"]);
+
+      // A receiver tuned by hand that refuses counts too, whatever the case or a missing port.
+      report({ state: "error", host: "D", code: "password", message: "x" });
+      act(() => hook.result.current.start([rx("d")]));
+      expect(tuned()).toHaveLength(4);
+      expect(hook.result.current.note).toBe(
+        "D is the only listed receiver for this frequency, and it just refused. Try again in 15 minutes, or pick another frequency.",
+      );
+      act(() => hook.result.current.start(candidates));
+      expect(hook.result.current.note).toMatch(/^Every listed receiver for this frequency refused/);
+
+      // Drops and timeouts (one network blip) don't count either.
+      const blip = setup();
+      blip.report(fail("a", "closed"));
+      blip.report(fail("b", "timeout"));
+      // Nor do address/setup errors or the service's own network trouble.
+      blip.report(fail("c", "dns"));
+      blip.report(fail("d", "unreachable"));
+      act(() => blip.hook.result.current.start([rx("c"), rx("d")]));
+      expect(blip.tuned()).toEqual(["c"]);
+
+      // A receiver that refused and then plays (a slot opened) can be picked again.
+      const back = setup();
+      back.report(fail("a", "busy"));
+      back.report({ state: "listening", host: "A", port: 8073 });
+      act(() => back.hook.result.current.start(candidates));
+      expect(back.tuned()).toEqual(["a"]);
+
+      // The service's own errors don't count against a receiver.
+      const fresh = setup();
+      fresh.report({ state: "error", host: "a", port: 8073, message: "listener limit" });
+      act(() => fresh.hook.result.current.start(candidates));
+      expect(fresh.tuned()).toEqual(["a"]);
+
+      act(() => vi.advanceTimersByTime(REFUSED_MS));
+      act(() => hook.result.current.start(candidates));
+      expect(tuned()).toEqual(["a", "b", "c", "d", "a"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Value: protects=a failed Pick best during a live session doesn't leave the listener in silence; fails_when=the fallback tune is removed; why_new=red team found switching drops the working receiver; seam=none; no_claim=the old receiver still having a free slot

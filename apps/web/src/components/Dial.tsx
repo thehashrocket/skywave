@@ -1,12 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useRef, type KeyboardEvent, type PointerEvent } from "react";
-import { BROADCAST_BANDS, DIAL_MAX_KHZ, DIAL_MIN_KHZ, HAM_BANDS, type Band } from "@/lib/radio-types";
+import { BROADCAST_BANDS, clampKhz, DIAL_MAX_KHZ, DIAL_MIN_KHZ, HAM_BANDS, type Band } from "@/lib/radio-types";
 
 const W = 1000;
 const H = 160;
 const PAD = 20;
 const SCALE_Y = 92;
+
+// How far a finger moves sideways, more than up or down, before a touch counts as tuning.
+const TOUCH_SLOP_PX = 8;
+// How close to the strip's edge a dragged needle gets before the strip re-centers on it.
+const EDGE_PX = 40;
 
 const x = (khz: number) => PAD + ((khz - DIAL_MIN_KHZ) / (DIAL_MAX_KHZ - DIAL_MIN_KHZ)) * (W - PAD * 2);
 
@@ -59,7 +64,7 @@ type Props = {
 
 export function Dial({ freqKhz, onChange }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const dragging = useRef(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const fromPointer = useCallback(
     (clientX: number) => {
@@ -70,22 +75,68 @@ export function Dial({ freqKhz, onChange }: Props) {
       const khz = ((vx - PAD) / (W - PAD * 2)) * (DIAL_MAX_KHZ - DIAL_MIN_KHZ) + DIAL_MIN_KHZ;
       // Coarse tuning snaps to 5 kHz, the broadcast channel spacing.
       const snapped = Math.round(khz / 5) * 5;
-      onChange(Math.min(DIAL_MAX_KHZ, Math.max(10, snapped)));
+      onChange(clampKhz(snapped));
     },
     [onChange],
   );
 
+  // Where a pointer went down, and whether it's tuning yet. A mouse or pen
+  // tunes at once; a finger waits to see whether it's scrolling the page.
+  // Only the first finger counts: a second one would pull the needle back and forth.
+  const press = useRef<{ id: number; x: number; touch: boolean; tuning: boolean; y: number } | null>(null);
+
   const onPointerDown = (e: PointerEvent<SVGSVGElement>) => {
-    dragging.current = true;
+    const touch = e.pointerType === "touch";
+    // A second finger is ignored; a new primary touch means the last one ended unseen.
+    if (touch && press.current?.touch && !e.isPrimary) return;
+    press.current = { id: e.pointerId, x: e.clientX, y: e.clientY, touch, tuning: !touch };
+    if (touch) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     fromPointer(e.clientX);
   };
   const onPointerMove = (e: PointerEvent<SVGSVGElement>) => {
-    if (dragging.current) fromPointer(e.clientX);
+    const p = press.current;
+    if (!p || p.id !== e.pointerId) return;
+    // A mouse released where we never heard it (another window took the release):
+    // hovering mustn't keep retuning.
+    if (!p.touch && e.buttons === 0) {
+      press.current = null;
+      return;
+    }
+    if (!p.tuning) {
+      const dx = Math.abs(e.clientX - p.x);
+      if (dx < TOUCH_SLOP_PX || dx <= Math.abs(e.clientY - p.y)) return;
+      p.tuning = true;
+      e.currentTarget.setPointerCapture(e.pointerId);
+    }
+    fromPointer(e.clientX);
   };
-  const onPointerUp = () => {
-    dragging.current = false;
+  const onPointerUp = (e: PointerEvent<SVGSVGElement>) => {
+    const p = press.current;
+    if (p && p.id !== e.pointerId) return;
+    press.current = null;
+    if (!p?.touch) return;
+    // A tap tunes where it lands; a drag that ends near the strip's edge brings
+    // the rest of the dial into reach.
+    if (!p.tuning) fromPointer(e.clientX);
+    else if (svgRef.current) keepInView(e.clientX - svgRef.current.getBoundingClientRect().left, true);
   };
+  // The browser took the touch for a page scroll: nothing tunes.
+  const onPointerCancel = (e: PointerEvent<SVGSVGElement>) => {
+    if (press.current?.id === e.pointerId) press.current = null;
+  };
+
+  /**
+   * On narrow screens the strip scrolls sideways: center it on a needle at `px`
+   * (across the dial) that sits within EDGE_PX of either visible edge or beyond.
+   */
+  const keepInView = useCallback((px: number, smooth: boolean) => {
+    const box = scrollRef.current;
+    if (!box || box.scrollWidth <= box.clientWidth) return;
+    if (px > box.scrollLeft + EDGE_PX && px < box.scrollLeft + box.clientWidth - EDGE_PX) return;
+    const still = !smooth || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    box.scrollTo({ left: px - box.clientWidth / 2, behavior: still ? "auto" : "smooth" });
+  }, []);
 
   const onKeyDown = (e: KeyboardEvent<SVGSVGElement>) => {
     const steps: Record<string, number> = {
@@ -99,23 +150,18 @@ export function Dial({ freqKhz, onChange }: Props) {
     const step = steps[e.key];
     if (step === undefined) return;
     e.preventDefault();
-    onChange(Math.min(DIAL_MAX_KHZ, Math.max(10, Math.round((freqKhz + step) * 100) / 100)));
+    onChange(clampKhz(Math.round((freqKhz + step) * 100) / 100));
   };
 
   const needle = x(freqKhz);
 
-  // On narrow screens the dial scrolls sideways; keep the needle in view when
-  // the frequency changes from somewhere other than a drag on the dial.
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // Keep the needle in view when the frequency changes from somewhere other
+  // than a drag on the dial; a drag re-centers when it ends (touch) or not at all.
   useEffect(() => {
-    const box = scrollRef.current;
     const svg = svgRef.current;
-    if (!box || !svg || dragging.current || box.scrollWidth <= box.clientWidth) return;
-    const px = (needle / W) * svg.clientWidth;
-    if (px < box.scrollLeft + 40 || px > box.scrollLeft + box.clientWidth - 40) {
-      box.scrollTo({ left: px - box.clientWidth / 2 });
-    }
-  }, [needle]);
+    if (!svg || press.current?.tuning) return;
+    keepInView((needle / W) * svg.clientWidth, false);
+  }, [needle, keepInView]);
 
   return (
     <div className="dial">
@@ -134,7 +180,8 @@ export function Dial({ freqKhz, onChange }: Props) {
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
+          onPointerCancel={onPointerCancel}
+          onLostPointerCapture={onPointerCancel}
           onKeyDown={onKeyDown}
         >
           <text className="dial-row-label" x={PAD} y={14}>
@@ -165,7 +212,15 @@ export function Dial({ freqKhz, onChange }: Props) {
           </g>
         </svg>
       </div>
-      <p className="dial-hint">Drag to tune, or focus the dial and use the arrow keys. Shift steps by 10 kHz.</p>
+      <p className="dial-hint">
+        {/* Screen readers get the keyboard sentence; a touch screen shows the touch one instead. */}
+        <span className="hint-fine">
+          Drag to tune, or focus the dial and use the arrow keys. Shift steps by 10 kHz.
+        </span>
+        <span className="hint-coarse" aria-hidden="true">
+          Drag the dial or tap a band to tune.
+        </span>
+      </p>
     </div>
   );
 }

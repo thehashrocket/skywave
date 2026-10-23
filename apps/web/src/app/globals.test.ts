@@ -30,4 +30,22 @@ describe("globals.css", () => {
     const missing = used.filter((name) => !new RegExp(`\\.${name}(?![\\w-])`).test(css));
     expect(missing).toEqual([]);
   });
+
+  // Value: protects=phone-width rules that hide the host or clamp the name touch only table rows, not the map card that shares those classes; fails_when=a media rule names .receiver-host or .receiver-name without .receivers-table; why_new=no test read the media blocks; review found the map card losing its host; seam=none; no_claim=how a phone renders it (jsdom applies no media queries; source text only)
+  it("scopes media rules for receiver names and hosts to the table", () => {
+    const selectors: string[] = [];
+    for (const m of css.matchAll(/@media[^{]*\{/g)) {
+      // The block runs to its matching brace.
+      let depth = 1;
+      let i = m.index! + m[0].length;
+      const start = i;
+      for (; depth > 0; i++) depth += css[i] === "{" ? 1 : css[i] === "}" ? -1 : 0;
+      const block = css.slice(start, i - 1).replace(/\/\*[\s\S]*?\*\//g, "");
+      for (const rule of block.matchAll(/([^{}]+)\{/g)) selectors.push(...rule[1]!.split(",").map((s) => s.trim()));
+    }
+    const named = selectors.filter((s) => /\.receiver-(name|host)(?![\w-])/.test(s));
+    // The scan really finds the phone rules.
+    expect(named).toEqual(expect.arrayContaining([".receivers-table .receiver-host"]));
+    expect(named.filter((s) => !s.includes(".receivers-table"))).toEqual([]);
+  });
 });

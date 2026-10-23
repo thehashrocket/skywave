@@ -2,6 +2,18 @@
 
 ## Radio service
 
+### Fix the flaky slot-freed-at-time-limit test
+
+**What:** Find why `tests/test_server.py::test_slot_freed_when_session_hits_time_limit` sometimes sees the second session end in `error` instead of `listening`, and fix the test or the service.
+
+**Why:** It failed once in the full radio lane on 2026-10-23 (branch `feat/design-pass`, which changes nothing in `apps/radio`) while the web suite ran in parallel; 5 solo reruns passed. A timing flake there could also hide a real bug where a session at its time limit doesn't free its slot, which would hold a volunteer's Kiwi channel.
+
+**Context:** Failure: `assert second[-1]["state"] == "listening"` → `AssertionError: assert 'error' == 'listening'` at `tests/test_server.py:423`, right after `first[-1]` was `stopped` with "session limit". Reproduce under CPU load (run `pnpm test:web` and `pnpm test:radio` together). Check whether the second session starts before the first one's slot is released; see the related pitfall about cancelled child tasks in `apps/radio/skywave_radio/session.py`. Use /investigate.
+
+**Effort:** S
+**Priority:** P0
+**Depends on:** None
+
 ### Retry the old Kiwi path only for a Kiwi that needs it
 
 **What:** Add a single retry on `/<ts>/SND` when `/kiwi/<ts>/SND` gets no reply, but only after a receiver proves it needs one.
@@ -27,6 +39,26 @@
 **Depends on:** None
 
 ## Web app
+
+### Pick best follow-ups from the design-pass review
+
+**What:** Finish the refused-receiver memory and the Pick best edges the design-pass /ship reviews listed but didn't fix.
+
+**Why:** Pick best now skips receivers that refused (full, no apps, needs a password) for 15 minutes, which stops it redialing a volunteer's Kiwi that just said no. That memory has gaps that can still knock on the same receiver, and a few nearby edges can take a listener off their station.
+
+**Context:** Approved as follow-ups on 2026-10-23 (branch `feat/design-pass`). In `apps/web/src/lib/use-pick-best.ts` unless noted:
+- The memory is a `useRef` in the tab: a reload or another listener redials a receiver that just refused. Persist it (`sessionStorage`), or better, keep a per-receiver refusal memory in the radio service so every listener benefits.
+- During a list-mirror outage the page keeps an old copy (can be hours); after `REFUSED_MS` a refused receiver drops out while the stale copy still ranks it first. Keep entries until a fresher list arrives.
+- The error link (`app/page.tsx`) shows for any coded error, but only busy/no_apps/password are remembered, so after `dns`/`down` it can redial the same failing receiver first. Decide the retry policy per code.
+- `goBack` can redial a fallback receiver that refused while the run was starting; skip one refused within `REFUSED_MS`.
+- `start()` failing while a Go Back reconnect is in flight drops its tracking, so a failed go-back never says "Couldn't get back".
+- A quick tap to stop a momentum page scroll on the dial retunes the live receiver (`components/Dial.tsx`); consider ignoring taps during or just after a scroll.
+- `app/page.tsx` and `ReceiverPicker` both mount `useReceiverList`, so TanStack polls the list twice per cycle; let one observer poll.
+- Tests: an `it.each` over every error code asserting only busy/no_apps/password are remembered; `start()` returning false when all refused; the remaining status×action cells.
+
+**Effort:** M
+**Priority:** P2
+**Depends on:** None
 
 ### Receiver map follow-ups from PR 2b review
 
@@ -94,18 +126,6 @@
 **Priority:** P4
 **Depends on:** None
 
-### Give the remaining phone controls a 44 px tap target
-
-**What:** On phones, give these controls at least a 44 px tap target, as feat/phone-polish did for inline links: the Listen/Stop button (`.power`, `.power-on`), the mode segments (`.mode span`), the presets Save button (`.presets-save button`), the preset delete ✕ (`.preset-delete`, 32 px) and the receiver table's choose buttons (`.receiver-choose`, 6 px vertical padding).
-
-**Why:** The ≤520px block (`apps/web/src/app/globals.css:1276`) and the coarse-pointer block (`globals.css:1332`) set `min-height: 44px` only on `.pick-best`, `.link-button`, table header buttons and the map card controls. The five above get no such rule, so on a phone the main controls are smaller than the links around them. Found while writing DESIGN.md (listed there under Layout › Known gaps); feat/phone-polish being marked complete does not cover them.
-
-**Context:** Mode segments sit in one row, so taller padding must not wrap the group at 320 px. The preset delete ✕ is round, so grow its hit area (padding or a pseudo-element) rather than the visible circle. `.receiver-choose` fills a table cell, so its extra height adds to every row's height. Check at 320 and 390 px, then remove the item from DESIGN.md's Known gaps.
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** None
-
 ### Name the stations in the scan list
 
 **What:** Label "Strong signals now" rows with the station on that frequency now: match the public EiBi broadcast schedule by frequency and UTC time, and fall back to the receiver's own DX labels.
@@ -119,6 +139,20 @@
 **Depends on:** None
 
 ## Completed
+
+### Give the remaining phone controls a 44 px tap target
+
+**What:** On phones, give these controls at least a 44 px tap target, as feat/phone-polish did for inline links: the Listen/Stop button (`.power`, `.power-on`), the mode segments (`.mode span`), the presets Save button (`.presets-save button`), the preset delete ✕ (`.preset-delete`, 32 px) and the receiver table's choose buttons (`.receiver-choose`, 6 px vertical padding).
+
+**Why:** The ≤520px block (`apps/web/src/app/globals.css:1276`) and the coarse-pointer block (`globals.css:1332`) set `min-height: 44px` only on `.pick-best`, `.link-button`, table header buttons and the map card controls. The five above get no such rule, so on a phone the main controls are smaller than the links around them. Found while writing DESIGN.md (listed there under Layout › Known gaps); feat/phone-polish being marked complete does not cover them.
+
+**Context:** Mode segments sit in one row, so taller padding must not wrap the group at 320 px. The preset delete ✕ is round, so grow its hit area (padding or a pseudo-element) rather than the visible circle. `.receiver-choose` fills a table cell, so its extra height adds to every row's height. Check at 320 and 390 px, then remove the item from DESIGN.md's Known gaps.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+**Completed:** feat/design-pass (2026-10-22). Under `@media (max-width: 520px), (pointer: coarse)`: `.power` (Listen/Stop), presets Save and `.receiver-choose` get `min-height: 44px`, the mode segments 10px vertical padding, and `.preset-delete` a 44px hit area from a `::before` 6px outside its 32px ✕. Removed from DESIGN.md's Layout › Known gaps.
 
 ### Write a DESIGN.md for the web app
 

@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { receiverKey, type Receiver } from "./kiwi-list";
+import { LIST_MAX_AGE_MS, receiverKey, type Receiver } from "./kiwi-list";
+import { DEFAULT_KIWI_PORT } from "./receiver";
 import type { RadioErrorCode, RadioStatus } from "./use-radio";
 
 /**
@@ -33,6 +34,26 @@ const WHY_SKIPPED: Record<RadioErrorCode, string> = {
  * (hostguard.py) to give up on; a run stops after MAX_TOTAL receivers.
  */
 const ADDRESS_CODES = new Set<RadioErrorCode>(["dns", "blocked", "invalid"]);
+
+/**
+ * A receiver that refused is left out of new runs for this long, the age the
+ * public list's copy can reach: its stale counts would rank it first again, and
+ * retrying cuts the listener off and knocks on the volunteer's receiver for
+ * nothing. Playing again clears it.
+ */
+export const REFUSED_MS = LIST_MAX_AGE_MS; // README "Using it" quotes this number too.
+
+/**
+ * Only the receiver's own answers count as a refusal. Drops and timeouts can be
+ * one network blip, address and setup errors aren't about the volunteer's
+ * receiver, and "down"/"unreachable" can be the radio service's own network
+ * (its ScanCache doesn't remember drops or timeouts either).
+ */
+const REFUSALS = new Set<RadioErrorCode>(["busy", "no_apps", "password"]);
+
+const refusedKey = (r: { host: string; port?: number }) =>
+  receiverKey({ host: r.host.toLowerCase(), port: r.port ?? DEFAULT_KIWI_PORT });
+
 const MAX_TOTAL = 6; // README "Using it" quotes this number too.
 
 /**
@@ -133,6 +154,8 @@ export function usePickBest(
   acceptsRef.current = accepts;
   const provenanceRef = useRef(provenance);
   provenanceRef.current = provenance;
+  // When each receiver last refused, by refusedKey.
+  const refused = useRef(new Map<string, number>());
 
   /** End the chain, optionally leaving a note about why. */
   const finish = useCallback((why: string | null = null) => {
@@ -164,10 +187,26 @@ export function usePickBest(
     [tune],
   );
 
+  /** Starts a run; false when none began (nothing covers, or everything refused). */
   const start = useCallback(
-    (candidates: Receiver[]) => {
+    (covering: Receiver[]): boolean => {
+      if (!covering.length) {
+        finish("No listed receiver covers this frequency.");
+        return false;
+      }
+      const now = Date.now();
+      const candidates = covering.filter(
+        (r) => !(now - (refused.current.get(refusedKey(r)) ?? -Infinity) < REFUSED_MS),
+      );
       const first = candidates[0];
-      if (!first) return finish("No listed receiver covers this frequency.");
+      if (!first) {
+        finish(
+          covering.length === 1
+            ? `${covering[0]!.name} is the only listed receiver for this frequency, and it just refused. Try again in ${REFUSED_MS / 60_000} minutes, or pick another frequency.`
+            : `Every listed receiver for this frequency refused in the last ${REFUSED_MS / 60_000} minutes. Try again later, or pick another frequency.`,
+        );
+        return false;
+      }
       clearTimers(chain.current);
       const before = latestStatus.current;
       chain.current = {
@@ -175,13 +214,14 @@ export function usePickBest(
         tried: [first],
         strikes: 0,
         before,
-        fallback: playing(before, candidates, provenanceRef.current),
+        fallback: playing(before, covering, provenanceRef.current),
         retried: false,
       };
       setRunning(true);
       setSettled(false);
       setNote(null);
       tune(first, true);
+      return true;
     },
     [finish, tune],
   );
@@ -208,6 +248,12 @@ export function usePickBest(
   }, [finish, goBack]);
 
   useEffect(() => {
+    // A coded refusal is the receiver's own answer, however it was dialed; a
+    // receiver that plays has answered the other way.
+    if (status.state === "error" && status.code && REFUSALS.has(status.code) && status.host)
+      refused.current.set(refusedKey({ host: status.host, port: status.port }), Date.now());
+    else if (status.state === "listening" && status.host)
+      refused.current.delete(refusedKey({ host: status.host, port: status.port }));
     const c = chain.current;
     if (!c) return;
     // Clicking Pick best again right after a failure must not read that old

@@ -9,15 +9,20 @@ import { ReceiverPicker, type Playing } from "@/components/ReceiverPicker";
 import { SignalList } from "@/components/SignalList";
 import { SMeter } from "@/components/SMeter";
 import { Waterfall } from "@/components/Waterfall";
-import { covers, receiverKey, type Receiver } from "@/lib/kiwi-list";
-import { MODE_LABELS, MODES, guessMode, type Mode } from "@/lib/radio-types";
+import { covers, placeName, rankReceivers, receiverKey, type Receiver } from "@/lib/kiwi-list";
+import { MODE_LABELS, MODES, clampKhz, guessMode, inTuneRange, isMode, type Mode } from "@/lib/radio-types";
 import { DEFAULT_KIWI_PORT, parseReceiver } from "@/lib/receiver";
-import { usePickBest } from "@/lib/use-pick-best";
+import { usePickBest, WATCH_MS } from "@/lib/use-pick-best";
+import { LIST_FAILED_TEXT, listFailed, useReceiverList } from "@/lib/use-receiver-list";
 import { useMapAdmission } from "@/lib/use-map-admission";
 import { useRadio } from "@/lib/use-radio";
 import { useSolarClock } from "@/lib/use-solar-clock";
 
 const STORAGE_KEY = "skywave.receiver";
+const TUNING_KEY = "skywave.tuning";
+const DEFAULT_TUNING = { freqKhz: 10_000, mode: "am" as Mode };
+// How long the dial rests before the frequency is saved.
+const SAVE_TUNING_MS = 500;
 const CW_PITCH_KHZ = 0.7;
 
 /**
@@ -61,6 +66,29 @@ function loadReceiver(): Saved {
 function saveReceiver(r: Saved) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(r));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** The frequency and mode last tuned, or the default for a first visit or a value we didn't write. */
+function loadTuning(): { freqKhz: number; mode: Mode } {
+  try {
+    const raw = localStorage.getItem(TUNING_KEY);
+    const t: unknown = raw ? JSON.parse(raw) : null;
+    if (t && typeof t === "object" && "freqKhz" in t && "mode" in t) {
+      const { freqKhz, mode } = t as Record<string, unknown>;
+      if (typeof freqKhz === "number" && inTuneRange(freqKhz) && isMode(mode)) return { freqKhz, mode };
+    }
+  } catch {
+    /* storage unavailable or unreadable; fall through */
+  }
+  return DEFAULT_TUNING;
+}
+
+function saveTuning(t: { freqKhz: number; mode: Mode }) {
+  try {
+    localStorage.setItem(TUNING_KEY, JSON.stringify(t));
   } catch {
     /* ignore */
   }
@@ -118,10 +146,19 @@ export default function ListenPage() {
   // Whether the receiver serves https only. Set from a pasted https:// URL or a
   // list entry; typing a new host clears it.
   const [secure, setSecure] = useState(false);
-  const [freqKhz, setFreqKhz] = useState(10_000);
-  const [mode, setMode] = useState<Mode>("am");
+  const [freqKhz, setFreqKhz] = useState(DEFAULT_TUNING.freqKhz);
+  const [mode, setMode] = useState<Mode>(DEFAULT_TUNING.mode);
+  // Not until the saved tuning is restored: saving first would overwrite it with the default.
+  const [tuningRestored, setTuningRestored] = useState(false);
   const [volume, setVolume] = useState(0.8);
   const [browseOpen, setBrowseOpen] = useState(false);
+  // Set when Pick best had no list to rank, shown in the status row. A fresh
+  // object each press, so it's the newest message again; the text follows the
+  // list as it loads or fails. `from` names the control to press again: after
+  // the error link, Listen would redial the receiver that just failed.
+  const [pageMessage, setPageMessage] = useState<{ from: "listen" | "link" } | null>(null);
+  // Where focus goes when the error link starts a run and goes away.
+  const statusRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const r = loadReceiver();
@@ -131,7 +168,18 @@ export default function ListenPage() {
     setSecure(r.secure === true);
     // First visit: show the list so there's something to pick from.
     setBrowseOpen(!r.host);
+    const t = loadTuning();
+    setFreqKhz(t.freqKhz);
+    setMode(t.mode);
+    setTuningRestored(true);
   }, []);
+
+  // Remember where the dial rests, listening or not, for the next visit.
+  useEffect(() => {
+    if (!tuningRestored) return;
+    const timer = setTimeout(() => saveTuning({ freqKhz, mode }), SAVE_TUNING_MS);
+    return () => clearTimeout(timer);
+  }, [freqKhz, mode, tuningRestored]);
 
   const live = status.state === "listening" || status.state === "connecting";
   // A tune from idle or an error is under way before the service says so;
@@ -202,6 +250,7 @@ export default function ListenPage() {
   };
 
   const listen = () => {
+    setPageMessage(null);
     const r = normalizeReceiver();
     void tune({ host: r.host, port: Number(r.port), freqKhz, mode, ...listSource(fromList), ...wss(r.secure) });
   };
@@ -219,6 +268,7 @@ export default function ListenPage() {
       timer.current = null;
       pending.current = null;
       if (r.name) names.current.set(receiverKey(r), r.name);
+      setPageMessage(null);
       const secure = r.secure === true;
       tuning.current = { host: r.host, port: String(r.port), fromList, secure };
       setHost(r.host);
@@ -254,7 +304,34 @@ export default function ListenPage() {
     [isTarget],
   );
   const pickBest = usePickBest(status, tuneReceiver, coversDial, provenance);
-  const { cancel: cancelPickBest, stop: stopPickBest } = pickBest;
+  const { cancel: cancelPickBest, stop: stopPickBest, start: startPicking } = pickBest;
+  const list = useReceiverList();
+  const receivers = list.data?.receivers;
+  const listGone = listFailed(list);
+  const pickFrom = useCallback(
+    (ranked: Receiver[]) => {
+      setPageMessage(null);
+      return startPicking(ranked);
+    },
+    [startPicking],
+  );
+  /**
+   * Pick best from outside the Receivers section (a blank Listen, the error
+   * link): with no list to rank, say why instead of reporting that nothing
+   * covers the frequency.
+   */
+  const startPickBest = useCallback(
+    (from: "listen" | "link"): boolean => {
+      if (receivers) return pickFrom(rankReceivers(receivers, latest.current.freqKhz));
+      setPageMessage({ from });
+      return false;
+    },
+    [receivers, pickFrom],
+  );
+  // The list arriving (or coming back) answers "still loading" and "couldn't load".
+  useEffect(() => {
+    if (receivers) setPageMessage(null);
+  }, [receivers]);
   // With nothing to go back to, stop the attempt that's still connecting too.
   const stopPicking = useCallback(() => {
     if (!stopPickBest()) radio.stop();
@@ -384,8 +461,57 @@ export default function ListenPage() {
 
   const onWaterfallClick = (hz: number) => {
     const base = mode === "cw" ? freqKhz - CW_PITCH_KHZ : freqKhz;
-    changeFreq(Math.round((base + hz / 1000) * 100) / 100);
+    changeFreq(clampKhz(Math.round((base + hz / 1000) * 100) / 100));
   };
+
+  // The status row shows whichever message is newest: Pick best's note, the
+  // service's message, or the page's own. A finished run's note doesn't hide
+  // what happens next, and a new press isn't hidden by an older failure.
+  const [newest, setNewest] = useState<"note" | "service" | "page" | null>(null);
+  useEffect(() => {
+    if (pickBest.note) setNewest("note");
+  }, [pickBest.note]);
+  useEffect(() => {
+    if (status.message) setNewest("service");
+  }, [status]);
+  useEffect(() => {
+    if (pageMessage) setNewest("page");
+  }, [pageMessage]);
+  const serviceMessage = starting ? undefined : status.message;
+  const messages = {
+    note: pickBest.note,
+    service: serviceMessage,
+    page:
+      pageMessage &&
+      (listGone
+        ? `${LIST_FAILED_TEXT} Paste a receiver address, or try again below.`
+        : `The receiver list is still loading. Press ${pageMessage.from === "link" ? "Pick best receiver" : "Listen"} again in a moment.`),
+  };
+  // While a run is going, only its note shows: it names each refusal and
+  // what's next, and the bare refusal lands a render before the note does.
+  const source = pickBest.running ? "note" : newest && messages[newest] ? newest : "service";
+  const message = messages[source];
+  const messageTone =
+    source === "service"
+      ? status.state === "error"
+      : // A note reads as a failure only once nothing plays or connects (not while going back).
+        source === "note" && !pickBest.running && !busy;
+
+  // Where the receiver playing is, from the list, when it says.
+  const listedPlace = useMemo(() => {
+    if (status.state !== "listening" || !status.host) return "";
+    const port = status.port ?? DEFAULT_KIWI_PORT;
+    const host = status.host.toLowerCase();
+    const r = receivers?.find((x) => x.host.toLowerCase() === host && x.port === port);
+    return r ? placeName(r.location) : "";
+  }, [receivers, status.state, status.host, status.port]);
+
+  // The waterfall opens on the visit's first audio and stays open, so Stop and
+  // Listen never resize it again.
+  const [waterfallOpen, setWaterfallOpen] = useState(false);
+  useEffect(() => {
+    if (radio.heardAudio) setWaterfallOpen(true);
+  }, [radio.heardAudio]);
 
   return (
     <main className="console">
@@ -397,6 +523,8 @@ export default function ListenPage() {
             e.preventDefault();
             cancelPickBest();
             if (busy) radio.stop();
+            // A blank receiver asks skywave to pick one.
+            else if (!host.trim()) startPickBest("listen");
             else listen();
           }}
         >
@@ -411,11 +539,10 @@ export default function ListenPage() {
                 setSecure(false);
               }}
               onBlur={normalizeReceiver}
-              placeholder="kiwi hostname"
+              placeholder="Blank picks the best receiver"
               autoComplete="off"
               spellCheck={false}
               disabled={busy}
-              required
             />
           </div>
           <div className="field field-port">
@@ -445,6 +572,7 @@ export default function ListenPage() {
         </form>
       </header>
 
+      <h2 className="visually-hidden">Tuner</h2>
       <Dial freqKhz={freqKhz} onChange={onDial} />
 
       <section className="controls" aria-label="Tuning">
@@ -481,11 +609,23 @@ export default function ListenPage() {
       </section>
 
       <div className="status-row">
-        <div className="status" role="status" data-state={shownState}>
+        <div className="status" role="status" data-state={shownState} ref={statusRef} tabIndex={-1}>
           <span className="status-lamp" aria-hidden="true" />
           <span className="status-state">{STATE_TEXT[shownState]}</span>
-          {status.state === "listening" && status.host && <span className="status-detail">on {status.host}</span>}
-          {status.message && !starting && <span className="status-message">{status.message}</span>}
+          {status.state === "listening" &&
+            status.host &&
+            (listedPlace ? (
+              <span className="status-detail">
+                from <span className="status-place">{listedPlace}</span> · {status.host}
+              </span>
+            ) : (
+              <span className="status-detail">on {status.host}</span>
+            ))}
+          {message && (
+            <span className="status-message" data-tone={messageTone ? "danger" : undefined}>
+              {message}
+            </span>
+          )}
         </div>
         {/* Outside the live region, so a new Back target isn't announced. */}
         {backTo && (
@@ -500,7 +640,46 @@ export default function ListenPage() {
             Back to {backTo.label}
           </button>
         )}
+        {/* Only once nothing else is handling the error: not during a run, nor its watch for a late refusal. */}
+        {/* Only a receiver's own (coded) error: the service rejecting a tune, a down service or blocked audio isn't the receiver's fault. */}
+        {status.state === "error" && status.host && status.code && !starting && pickBest.settled && (
+          <button
+            type="button"
+            className="link-button status-pick"
+            onClick={(e) => {
+              if (e.detail > 1) return;
+              // A run hides this link; keep focus on the row that reports it.
+              if (startPickBest("link")) statusRef.current?.focus();
+            }}
+          >
+            Pick best receiver
+          </button>
+        )}
       </div>
+
+      <h2 className="visually-hidden">Waterfall</h2>
+      <Waterfall
+        expanded={waterfallOpen}
+        connecting={busy}
+        mode={mode}
+        sampleRate={status.sampleRate ?? 12000}
+        active={status.state === "listening"}
+        subscribe={radio.onSpectrum}
+        onClickOffset={onWaterfallClick}
+      />
+
+      <SignalList
+        scan={scan}
+        canScan={canScan}
+        listening={status.state === "listening"}
+        freqKhz={freqKhz}
+        scanDelayMs={pickBest.settled ? AUTO_SCAN_MS : WATCH_MS + AUTO_SCAN_MS}
+        checking={!pickBest.settled}
+        onTune={(khz) => changeFreq(khz, "am")}
+        onScanAgain={() => startScan(true)}
+      />
+
+      <Presets freqKhz={freqKhz} mode={mode} onSelect={(p) => changeFreq(clampKhz(p.freqKhz), p.mode)} />
 
       <ReceiverPicker
         freqKhz={freqKhz}
@@ -509,10 +688,9 @@ export default function ListenPage() {
         open={browseOpen}
         onOpenChange={setBrowseOpen}
         onChoose={chooseReceiver}
-        onPickBest={pickBest.start}
+        onPickBest={pickFrom}
         picking={pickBest.running}
         onStopPicking={stopPicking}
-        note={pickBest.note}
         map={(list) => (
           <MapPanel
             admitted={mapAdmitted}
@@ -534,26 +712,6 @@ export default function ListenPage() {
           . They're run by volunteers and most allow only a handful of listeners, so stop when you're done.
         </p>
       </ReceiverPicker>
-
-      <Waterfall
-        mode={mode}
-        sampleRate={status.sampleRate ?? 12000}
-        active={status.state === "listening"}
-        subscribe={radio.onSpectrum}
-        onClickOffset={onWaterfallClick}
-      />
-
-      <SignalList
-        scan={scan}
-        canScan={canScan}
-        listening={status.state === "listening"}
-        freqKhz={freqKhz}
-        autoScanMs={AUTO_SCAN_MS}
-        onTune={(khz) => changeFreq(khz, "am")}
-        onScanAgain={() => startScan(true)}
-      />
-
-      <Presets freqKhz={freqKhz} mode={mode} onSelect={(p) => changeFreq(p.freqKhz, p.mode)} />
     </main>
   );
 }

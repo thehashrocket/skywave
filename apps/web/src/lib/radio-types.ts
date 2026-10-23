@@ -1,6 +1,10 @@
 export const MODES = ["am", "usb", "lsb", "cw"] as const;
 export type Mode = (typeof MODES)[number];
 
+export function isMode(value: unknown): value is Mode {
+  return (MODES as readonly unknown[]).includes(value);
+}
+
 export const MODE_LABELS: Record<Mode, string> = { am: "AM", usb: "USB", lsb: "LSB", cw: "CW" };
 
 /** Audio passband relative to the tuned frequency, in Hz. Mirrors apps/radio/skywave_radio/dsp.py. */
@@ -53,3 +57,15 @@ export const HAM_BANDS: Band[] = [
 
 export const DIAL_MIN_KHZ = 0;
 export const DIAL_MAX_KHZ = 30_000;
+/** The lowest frequency anything tunes to; the dial's scale starts lower. */
+export const TUNE_MIN_KHZ = 10;
+
+/** Whether a frequency is one skywave tunes to. */
+export function inTuneRange(khz: number): boolean {
+  return khz >= TUNE_MIN_KHZ && khz <= DIAL_MAX_KHZ;
+}
+
+/** A frequency moved into the tunable range. */
+export function clampKhz(khz: number): number {
+  return Math.min(DIAL_MAX_KHZ, Math.max(TUNE_MIN_KHZ, khz));
+}

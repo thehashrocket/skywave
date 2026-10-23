@@ -298,6 +298,15 @@ export function freeSlots(r: Receiver) {
   return Math.max(0, r.usersMax - r.users);
 }
 
+/** A volunteer's location as a place name: "Assen | Netherlands" reads "Assen, Netherlands". */
+export function placeName(location: string): string {
+  return location
+    .split("|")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(", ");
+}
+
 export function isFull(r: Receiver) {
   return freeSlots(r) === 0;
 }

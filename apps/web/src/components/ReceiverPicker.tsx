@@ -1,51 +1,22 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
 import { memo, useDeferredValue, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   byRank,
   covers,
   freeSlots,
   isFull,
-  LIST_MAX_AGE_MS,
-  LIST_RETRY_MS,
+  placeName,
   rankReceivers,
   receiverKey,
   type Receiver,
 } from "@/lib/kiwi-list";
 import { formatHostPort } from "@/lib/receiver";
 import { isNight, type SunPosition } from "@/lib/solar";
-import { useTRPC } from "@/lib/trpc";
+import { ageNow, LIST_FAILED_TEXT, listFailed, useReceiverList } from "@/lib/use-receiver-list";
 import type { MapList } from "./MapPanel";
 
 const PAGE = 50;
-
-// Slack after the server's copy expires, so the poll finds the new one.
-const EXPIRY_SLACK_MS = 5_000;
-// Just after expiry the server is fetching a new copy; ask again soon.
-const JUST_EXPIRED_POLL_MS = 15_000;
-
-/**
- * When to poll the list again, given how old the server's copy is now: just
- * after it expires. For one retry window after that, ask again soon; later,
- * the mirror is down, so follow the server's own retry pace. Never longer
- * than one cache lifetime. With no list yet (the first load failed), ask
- * again soon: the server only waits a few seconds before retrying the mirror.
- */
-export function nextRefetchMs(age: number | undefined): number {
-  if (age === undefined) return JUST_EXPIRED_POLL_MS;
-  if (age >= LIST_MAX_AGE_MS + LIST_RETRY_MS) return LIST_RETRY_MS;
-  if (age >= LIST_MAX_AGE_MS) return JUST_EXPIRED_POLL_MS;
-  return Math.min(LIST_MAX_AGE_MS, LIST_MAX_AGE_MS - age + EXPIRY_SLACK_MS);
-}
-
-/**
- * How old a copy of the list is now: the server's age for it when it answered,
- * plus the time since by this browser's clock. The two clocks are never compared.
- */
-function ageNow(serverAgeMs: number, receivedAt: number): number {
-  return serverAgeMs + (Date.now() - receivedAt);
-}
 
 export type Playing = { host: string; port: number; phase: "connecting" | "listening" };
 
@@ -62,7 +33,6 @@ type Props = {
   /** A Pick best run is trying receivers; the button stops it instead. */
   picking: boolean;
   onStopPicking: () => void;
-  note: string | null;
   /** Shown under the heading, above the Pick best bar. */
   children?: ReactNode;
   /** The receiver map, drawn from this list, between the Pick best bar and the table. */
@@ -80,35 +50,16 @@ export function ReceiverPicker({
   onPickBest,
   picking,
   onStopPicking,
-  note,
   children,
   map,
 }: Props) {
-  const trpc = useTRPC();
-  // The list changes slowly and the server caches it for 15 minutes, so
-  // don't refetch on every focus.
-  const list = useQuery({
-    ...trpc.receivers.list.queryOptions(),
-    staleTime: 5 * 60_000,
-    // Just after the server's copy expires, while the tab is visible, so
-    // listener counts and full receivers stay current.
-    // The server says how old its copy was when it answered; adding the time
-    // since by this browser's clock keeps the two clocks from being compared.
-    refetchInterval: (query) => {
-      const data = query.state.data;
-      return nextRefetchMs(data && ageNow(data.ageMs ?? 0, query.state.dataUpdatedAt));
-    },
-    // The poll above is the retry policy; extra retries would only repeat the server's cached failure.
-    retry: false,
-  });
+  const list = useReceiverList();
   const receivers = list.data?.receivers;
   const serverAgeMs = list.data && (list.data.ageMs ?? 0);
   const receivedAt = list.data && list.dataUpdatedAt;
   const ageMs = list.data && ageNow(serverAgeMs!, receivedAt!);
-  // Refetching a query with no data puts it back to pending, so "loading" means
-  // no failure yet: after one, the failure (and its Try again) stays through
-  // every retry and poll.
-  const failed = !receivers && list.errorUpdatedAt > 0;
+  // After a failure, its Try again stays through every retry and poll.
+  const failed = listFailed(list);
   // A retry the listener asked for, not a background poll.
   const [retrying, setRetrying] = useState(false);
   // With no list yet, a second click joins the fetch already running, so both settle together.
@@ -150,25 +101,24 @@ export function ReceiverPicker({
           </button>
         )}
         <span className="receivers-note" role="status">
-          {note ??
-            (failed ? (
-              <>
-                {/* The button stays put (keeping focus) while the sentence changes, so
+          {failed ? (
+            <>
+              {/* The button stays put (keeping focus) while the sentence changes, so
                     a retry that fails again is announced again. */}
-                {retrying ? "Trying again…" : "Couldn't load the public receiver list."}{" "}
-                <button type="button" className="link-button inline" aria-busy={retrying || undefined} onClick={retry}>
-                  Try again
-                </button>{" "}
-                or paste an address above.
-              </>
-            ) : !receivers ? (
-              "Loading the public receiver list…"
-            ) : list.data?.stale ? (
-              // A failed refetch keeps the old data; it's still usable, so say how old.
-              `The public list isn't answering, so this is the copy from ${ago(ageMs!)}.`
-            ) : (
-              "Highest signal-to-noise receiver that covers this frequency."
-            ))}
+              {retrying ? "Trying again…" : LIST_FAILED_TEXT}{" "}
+              <button type="button" className="link-button inline" aria-busy={retrying || undefined} onClick={retry}>
+                Try again
+              </button>{" "}
+              or paste an address above.
+            </>
+          ) : !receivers ? (
+            "Loading the public receiver list…"
+          ) : list.data?.stale ? (
+            // A failed refetch keeps the old data; it's still usable, so say how old.
+            `The public list isn't answering, so this is the copy from ${ago(ageMs!)}.`
+          ) : (
+            "Highest signal-to-noise receiver that covers this frequency."
+          )}
         </span>
       </div>
 
@@ -356,13 +306,6 @@ export const ReceiverTable = memo(function ReceiverTable({
           <input type="checkbox" checked={onlyFree} onChange={(e) => edit(setOnlyFree)(e.target.checked)} />
           Has a free slot
         </label>
-        {sort ? (
-          <button type="button" className="link-button" onClick={() => edit(setSort)(null)}>
-            Sort by best
-          </button>
-        ) : (
-          <span className="receivers-sort-note">Best first</span>
-        )}
       </div>
       {/* Its own line, always present: screen readers announce it, and showing it never moves the rows. */}
       <p className="receivers-updated" role="status">
@@ -395,6 +338,16 @@ export const ReceiverTable = memo(function ReceiverTable({
       ) : (
         <div className="receivers-scroll">
           <table className="receivers-table" ref={tableRef} tabIndex={-1} aria-label="Public receivers">
+            {/* How the rows are sorted, with the headers that sort them, not among the filters. */}
+            <caption className="receivers-sort">
+              {sort ? (
+                <button type="button" className="link-button" onClick={() => edit(setSort)(null)}>
+                  Sort by best
+                </button>
+              ) : (
+                "Best first"
+              )}
+            </caption>
             <thead>
               <tr>
                 {COLUMNS.map((c) => (
@@ -476,7 +429,7 @@ const ReceiverRow = memo(function ReceiverRow({ receiver: r, tuned, night, onCho
     >
       <td>
         <button type="button" className="receiver-choose" aria-current={tuned ? "true" : undefined}>
-          <span className="receiver-name">
+          <span className="receiver-name" title={r.name}>
             {/* A ring while connecting, a filled dot once it plays: the map's marks. */}
             {tuned && (
               <span className="receiver-tuned" aria-hidden="true">
@@ -490,6 +443,8 @@ const ReceiverRow = memo(function ReceiverRow({ receiver: r, tuned, night, onCho
             {formatHostPort(r.host, r.port)}
             {r.antenna && ` · ${r.antenna}`}
           </span>
+          {/* Phones hide the Location column and the host line, so the place goes here instead. */}
+          {placeName(r.location) && <span className="receiver-place">{placeName(r.location)}</span>}
         </button>
       </td>
       <td className="col-location">

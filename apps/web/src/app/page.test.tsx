@@ -21,8 +21,18 @@ const radio = {
 
 vi.mock("@/lib/use-radio", () => ({ useRadio: () => radio }));
 // These talk to tRPC or draw on a canvas; the page's own wiring is what's under test.
-vi.mock("@/components/Presets", () => ({ Presets: () => <output aria-label="presets" /> }));
-vi.mock("@/components/Waterfall", () => ({ Waterfall: () => <output aria-label="waterfall" /> }));
+vi.mock("@/components/Presets", () => ({
+  Presets: ({ onSelect }: { onSelect: (p: { freqKhz: number; mode: "am" }) => void }) => {
+    presetSelect.current = onSelect;
+    return <output aria-label="presets" />;
+  },
+}));
+vi.mock("@/components/Waterfall", () => ({
+  Waterfall: ({ expanded, onClickOffset }: { expanded: boolean; onClickOffset: (hz: number) => void }) => {
+    waterfallClick.current = onClickOffset;
+    return <output aria-label="waterfall">{expanded ? "open" : "strip"}</output>;
+  },
+}));
 vi.mock("@/components/MapPanel", () => ({
   MapPanel: ({
     admitted,
@@ -62,6 +72,15 @@ const listed: Receiver = {
   maxKhz: 30_000,
 };
 const backup: Receiver = { ...listed, id: "backup", name: "Backup", host: "backup.example", port: 8073 };
+
+// The public list as the page sees it; tests swap in loading or failed.
+const waterfallClick: { current?: (hz: number) => void } = {};
+const presetSelect: { current?: (p: { freqKhz: number; mode: "am" }) => void } = {};
+const receiverList: { data?: { receivers: Receiver[] }; errorUpdatedAt: number } = { errorUpdatedAt: 0 };
+vi.mock("@/lib/use-receiver-list", async (actual) => ({
+  ...(await actual<typeof import("@/lib/use-receiver-list")>()),
+  useReceiverList: () => receiverList,
+}));
 
 vi.mock("@/components/ReceiverPicker", () => ({
   ReceiverPicker: ({
@@ -107,6 +126,8 @@ const { default: ListenPage } = await import("./page");
 
 beforeEach(() => {
   localStorage.clear();
+  receiverList.data = { receivers: [listed, backup] };
+  receiverList.errorUpdatedAt = 0;
   radio.status = { state: "idle" };
   radio.tuning = false;
   radio.heardAudio = false;
@@ -910,16 +931,18 @@ describe("ListenPage", () => {
     });
   });
 
-  // Value: protects=the radio comes first and receivers sit between it and the waterfall; fails_when=the picker moves back above the dial; why_new=DT1 page order; seam=picker mock; no_claim=visual spacing
-  it("puts the receivers between the radio and the waterfall", () => {
+  // Value: protects=the instrument and its live output sit together, with the receiver chooser after them (design D3), and screen readers reach the instrument by heading (D19); fails_when=the picker moves back between the radio and the waterfall, or the hidden headings go; why_new=design review reordered the page; seam=picker, waterfall and presets mocked; no_claim=visual spacing (browser check)
+  it("puts the waterfall, signals and presets before the receivers", () => {
     render(<ListenPage />);
     const order = [
+      screen.getByRole("heading", { name: "Tuner" }),
       screen.getByRole("slider", { name: "Tuning dial" }),
       screen.getByText("Not listening"),
-      screen.getByLabelText("browse"),
-      screen.getByText(/run by volunteers/),
+      screen.getByRole("heading", { name: "Waterfall" }),
       screen.getByLabelText("waterfall"),
       screen.getByLabelText("presets"),
+      screen.getByLabelText("browse"),
+      screen.getByText(/run by volunteers/),
     ];
     for (let i = 1; i < order.length; i++) {
       expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -1010,6 +1033,398 @@ describe("ListenPage", () => {
       expect(radio.retune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 9_420, mode: "am" }));
       act(() => fireEvent.click(screen.getByRole("button", { name: "Scan again" })));
       expect(radio.startScan).toHaveBeenLastCalledWith(true);
+    });
+  });
+  describe("design pass", () => {
+    // Rankable without a tie: equal receivers rank in a per-browser random order.
+    beforeEach(() => {
+      receiverList.data = { receivers: [listed, { ...backup, snr: 10 }] };
+    });
+    const message = () => document.querySelector(".status-message")?.textContent ?? null;
+    const listen = () => fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+
+    // Value: protects=a blank Receiver field makes Listen run Pick best on the ranked list (design D4) instead of failing validation; fails_when=the blank case falls through to tune("") or validation; why_new=Listen needed a hostname; seam=list hook mocked; no_claim=the ranking itself (kiwi-list tests)
+    it("runs Pick best from a blank Listen", () => {
+      render(<ListenPage />);
+      expect((screen.getByLabelText("Receiver") as HTMLInputElement).required).toBe(false);
+      act(listen);
+      expect(radio.tune).toHaveBeenCalledWith(expect.objectContaining({ host: listed.host, source: "list" }));
+    });
+
+    // Value: protects=a blank Listen before the list has loaded, or after it failed, says why and starts nothing (eng review R2); fails_when=Pick best runs on an empty list ("No listed receiver covers") or nothing is said; why_new=blank Listen is new; seam=list hook mocked; no_claim=real list outage
+    it.each([
+      ["loading", 0, "The receiver list is still loading. Press Listen again in a moment."],
+      ["failed", 1, "Couldn't load the public receiver list. Paste a receiver address, or try again below."],
+    ])("explains a blank Listen while the list is %s", (_, errorUpdatedAt, text) => {
+      receiverList.data = undefined;
+      receiverList.errorUpdatedAt = errorUpdatedAt;
+      const view = render(<ListenPage />);
+      act(listen);
+      expect(radio.tune).not.toHaveBeenCalled();
+      expect(message()).toBe(text);
+      // The list arriving answers it.
+      receiverList.data = { receivers: [listed] };
+      view.rerender(<ListenPage />);
+      expect(message()).toBeNull();
+    });
+
+    // Value: protects=a waterfall click near the bottom of the band can't tune below 10 kHz (Codex structured review); fails_when=onWaterfallClick skips clampKhz; why_new=the 10 kHz floor arrived with this pass; seam=Waterfall mocked; no_claim=the click-to-offset math (Waterfall)
+    it("keeps waterfall clicks within the tuning range", () => {
+      render(<ListenPage />);
+      const input = screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement;
+      act(() => input.focus());
+      fireEvent.change(input, { target: { value: "12" } });
+      fireEvent.submit(input.form!);
+      act(() => input.blur());
+      act(() => waterfallClick.current!(-6_000));
+      expect(input.value).toBe("10.00");
+    });
+
+    // Value: protects=the scan note counts Pick best's check when Pick best chose the receiver, and not otherwise (testing review); fails_when=scanDelayMs or checking is wired to the wrong side of pickBest.settled; why_new=only SignalList's own text was tested; seam=radio mocked; no_claim=the scan timer itself
+    it("tells the scan wait, counting Pick best's check only when it picked", () => {
+      radio.canScan = true;
+      const view = render(<ListenPage />);
+      act(listen); // blank: Pick best picks
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(screen.getByText(/once Pick best has finished checking this receiver, about 25 seconds in/)).toBeTruthy();
+      cleanup();
+
+      render(<ListenPage />); // a receiver someone else chose: no check to wait for
+      expect(screen.getByText(/about 10 seconds after a receiver starts playing/)).toBeTruthy();
+    });
+
+    // Value: protects=a "still loading" explanation turns into the failure text when the list then fails (adversarial review); fails_when=the message text is fixed when Listen is pressed; why_new=the text was frozen at press time; seam=list hook mocked; no_claim=real list outage
+    it("updates a blank Listen's explanation when the list then fails", () => {
+      receiverList.data = undefined;
+      receiverList.errorUpdatedAt = 0;
+      const view = render(<ListenPage />);
+      act(listen);
+      expect(message()).toBe("The receiver list is still loading. Press Listen again in a moment.");
+      receiverList.errorUpdatedAt = 1;
+      view.rerender(<ListenPage />);
+      expect(message()).toBe("Couldn't load the public receiver list. Paste a receiver address, or try again below.");
+    });
+
+    // Value: protects=during a run the status row shows Pick best's note, not the bare refusal, and the error link stays hidden until nothing is handling the error (eng review R4/R7, R5); fails_when=the service message wins mid-run or the link ignores pickBest.settled; why_new=the note and link moved into the status row; seam=list hook mocked; no_claim=real refusal timing
+    it("shows Pick best's note mid-run and offers Pick best only once it's settled", () => {
+      const view = render(<ListenPage />);
+      act(listen);
+      radio.status = { state: "error", code: "busy", message: "full", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(message()).toBe("K1VL was full; trying Backup…");
+      expect(document.querySelector(".status-message")!.getAttribute("data-tone")).toBeNull(); // mid-run: not a failure
+      expect(screen.queryByRole("button", { name: "Pick best receiver" })).toBeNull();
+      // A typed receiver that fails with nothing else going on.
+      act(() => fireEvent.click(screen.getByRole("button", { name: "stop picking" })));
+      radio.status = { state: "error", code: "busy", message: "full", host: "typed.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      expect(message()).toBe("full");
+      radio.tune.mockClear();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Pick best receiver" })));
+      // K1VL said it was full a moment ago, so the new run starts on Backup.
+      expect(radio.tune).toHaveBeenCalledWith(expect.objectContaining({ host: backup.host }));
+    });
+
+    // Value: protects=after an error, choosing a receiver hides the error link while that tune starts, so Pick best can't override the choice (red-team review); fails_when=the link ignores starting; why_new=review finding; seam=list hook mocked; no_claim=none beyond protects
+    it("hides the error link while a chosen receiver connects", () => {
+      radio.status = { state: "error", code: "busy", message: "full", host: "typed.example", port: 8073 };
+      const view = render(<ListenPage />);
+      expect(screen.getByRole("button", { name: "Pick best receiver" })).toBeTruthy();
+      radio.tuning = true;
+      act(() => fireEvent.click(screen.getByRole("button", { name: "choose listed" })));
+      view.rerender(<ListenPage />);
+      expect(screen.queryByRole("button", { name: "Pick best receiver" })).toBeNull();
+    });
+
+    // Value: protects=the error link ignores the second click of a double-click, so one double-click starts one Pick best run (review finding); fails_when=the e.detail guard is dropped; why_new=the link is new; seam=list hook mocked; no_claim=real mouse timing
+    it("starts one run from a double-click on the error link", () => {
+      radio.status = { state: "error", code: "busy", message: "full", host: "typed.example", port: 8073 };
+      render(<ListenPage />);
+      const link = screen.getByRole("button", { name: "Pick best receiver" });
+      act(() => {
+        fireEvent.click(link, { detail: 1 });
+        fireEvent.click(link, { detail: 2 });
+      });
+      expect(radio.tune).toHaveBeenCalledTimes(1);
+    });
+
+    // Value: protects=a run that ends back on a playing receiver shows its note in the neutral tone, not as a failure (eng review R7 tone rule); fails_when=the note's danger tone ignores whether something plays; why_new=only failed-run notes were tested; seam=list hook mocked; no_claim=none beyond protects
+    it("shows a run that ended back on a playing receiver without the danger tone", () => {
+      const view = render(<ListenPage />);
+      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "typed.example" } });
+      fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+      radio.status = { state: "listening", host: "typed.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      for (const r of [listed, backup]) {
+        radio.status = { state: "error", code: "busy", message: "full", host: r.host, port: r.port };
+        view.rerender(<ListenPage />);
+      }
+      // Going back: the lamp says Connecting, and recovering isn't a failure either.
+      radio.tuning = true;
+      view.rerender(<ListenPage />);
+      expect(message()).toMatch(/Going back to typed\.example…$/);
+      expect(document.querySelector(".status-message")!.getAttribute("data-tone")).toBeNull();
+      radio.tuning = false;
+      radio.status = { state: "listening", host: "typed.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      const note = document.querySelector(".status-message")!;
+      expect(note.textContent).toMatch(/Back on typed\.example\.$/);
+      expect(note.getAttribute("data-tone")).toBeNull();
+    });
+
+    // Value: protects=a late refusal inside Pick best's 15 s watch shows no error link, because Pick best moves on by itself (eng review R5); fails_when=the link shows on any error regardless of Pick best; why_new=plan audit: the watch case was untested; seam=list hook mocked; no_claim=settled vs running (every error the watch leaves unhandled ends it, so the two read the same)
+    it("keeps the error link hidden during Pick best's watch", () => {
+      const view = render(<ListenPage />);
+      act(listen);
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      // A late refusal from the receiver Pick best chose, inside its watch: Pick best moves on by itself.
+      radio.status = { state: "error", code: "no_apps", message: "apps only", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(screen.queryByRole("button", { name: "Pick best receiver" })).toBeNull();
+    });
+
+    // Value: protects=a browser that blocks storage still gets a working page on the default tuning, and saving fails quietly (design D10); fails_when=loadTuning or saveTuning lose their try/catch; why_new=plan audit: blocked storage was untested; seam=Storage.prototype spied; no_claim=a real private-mode browser
+    it("starts on the default tuning when storage is blocked", () => {
+      vi.useFakeTimers();
+      const blocked = () => {
+        throw new Error("storage blocked");
+      };
+      const get = vi.spyOn(Storage.prototype, "getItem").mockImplementation(blocked);
+      const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(blocked);
+      try {
+        render(<ListenPage />);
+        expect((screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement).value).toBe("10,000.00");
+        act(() => fireEvent.click(screen.getByRole("radio", { name: "USB" })));
+        act(() => vi.advanceTimersByTime(1_000)); // the save throws inside its try
+        expect((screen.getByRole("radio", { name: "USB" }) as HTMLInputElement).checked).toBe(true);
+      } finally {
+        get.mockRestore();
+        set.mockRestore();
+        vi.useRealTimers();
+      }
+    });
+
+    // Value: protects=Pick best after a receiver's error never tries that same receiver first, so a no_apps Kiwi isn't redialed to cut the listener off again (adversarial review); fails_when=startPickBest ranks the failed host:port; why_new=the list's copy can be 15 min old; seam=none; no_claim=real refusal timing
+    it("leaves out the receiver that just failed when the error link picks", () => {
+      receiverList.data = { receivers: [listed, { ...backup, snr: 10 }] };
+      radio.status = { state: "error", code: "no_apps", message: "no room", host: "SDR.K1VL.com", port: listed.port };
+      render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Pick best receiver" }), { detail: 1 }));
+      expect(radio.tune).toHaveBeenCalledTimes(1);
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: backup.host }));
+    });
+
+    // Value: protects=a saved preset outside 10 to 30,000 kHz (the server accepts up to 32,000) tunes inside the range (Codex adversarial review); fails_when=preset select skips clampKhz; why_new=the range is new on this branch; seam=Presets mocked; no_claim=how presets are stored
+    it("keeps a preset inside the tuning range", () => {
+      render(<ListenPage />);
+      act(() => presetSelect.current!({ freqKhz: 31_000, mode: "am" }));
+      expect((screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement).value).toBe("30,000.00");
+      act(() => presetSelect.current!({ freqKhz: 5, mode: "am" }));
+      expect((screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement).value).toBe("10.00");
+    });
+
+    // Value: protects=an error that isn't the receiver's own (service down, audio blocked, the service rejecting a tune) offers no Pick best link, so the typed receiver isn't swapped for a public one (Codex adversarial review); fails_when=the link ignores status.host or status.code; why_new=the link showed on every error; seam=radio mocked; no_claim=the service's own error texts
+    it("offers Pick best only for a receiver's own error", () => {
+      radio.status = { state: "error", message: "Can't reach the radio service." };
+      const view = render(<ListenPage />);
+      expect(screen.queryByRole("button", { name: "Pick best receiver" })).toBeNull();
+      // The service rejecting a tune still names the receiver, but carries no code.
+      radio.status = { state: "error", message: "listener limit", host: "typed.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      expect(screen.queryByRole("button", { name: "Pick best receiver" })).toBeNull();
+      radio.status = { state: "error", code: "busy", message: "full", host: "typed.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      expect(screen.getByRole("button", { name: "Pick best receiver" })).toBeTruthy();
+    });
+
+    // Value: protects=a blank Listen's "still loading" note goes away once the listener tunes a typed or listed receiver instead; fails_when=listen() or tuneReceiver() stop clearing pageMessage, so the stale note sits over the new tune; why_new=only the list arriving was tested as clearing it; seam=list hook mocked; no_claim=real list timing
+    it("drops a blank Listen's explanation once a receiver is tuned another way", () => {
+      receiverList.data = undefined;
+      render(<ListenPage />);
+      act(listen);
+      expect(message()).toBe("The receiver list is still loading. Press Listen again in a moment.");
+      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "typed.example" } });
+      act(listen);
+      expect(radio.tune).toHaveBeenCalledWith(expect.objectContaining({ host: "typed.example" }));
+      expect(message()).toBeNull();
+      cleanup();
+
+      render(<ListenPage />);
+      act(listen);
+      expect(message()).toBe("The receiver list is still loading. Press Listen again in a moment.");
+      act(() => fireEvent.click(screen.getByRole("button", { name: "choose listed" })));
+      expect(message()).toBeNull();
+    });
+
+    // Value: protects=pressing the error link moves focus to the status row, since the run hides the link and focus would drop to the page; fails_when=the statusRef focus call is dropped or runs when the link stays (no list); why_new=no test read focus after the link; seam=list hook mocked; no_claim=how a real screen reader announces the row
+    it("moves focus to the status row when the error link starts a run, and leaves it when it can't", () => {
+      radio.status = { state: "error", code: "busy", message: "full", host: "typed.example", port: 8073 };
+      render(<ListenPage />);
+      const link = screen.getByRole("button", { name: "Pick best receiver" });
+      act(() => link.focus());
+      act(() => fireEvent.click(link, { detail: 1 }));
+      expect(radio.tune).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).toBe(document.querySelector("div.status"));
+      cleanup();
+
+      // No list: the link stays to press again, so focus stays on it.
+      receiverList.data = undefined;
+      render(<ListenPage />);
+      const again = screen.getByRole("button", { name: "Pick best receiver" });
+      act(() => again.focus());
+      act(() => fireEvent.click(again, { detail: 1 }));
+      expect(document.activeElement).toBe(again);
+      cleanup();
+
+      // A list where nothing covers the frequency: no run starts, so focus stays too (Codex review).
+      receiverList.data = { receivers: [{ ...listed, minKhz: 20_000, maxKhz: 30_000 }] };
+      render(<ListenPage />);
+      const none = screen.getByRole("button", { name: "Pick best receiver" });
+      act(() => none.focus());
+      act(() => fireEvent.click(none, { detail: 1 }));
+      expect(document.activeElement).toBe(none);
+    });
+
+    // Value: protects=the error link checks the list like blank Listen does, instead of reporting that nothing covers the frequency (eng review R8); fails_when=the link calls Pick best with no list; why_new=the link is new; seam=list hook mocked; no_claim=none beyond protects
+    it.each([
+      // Listen would redial the receiver that just failed, so it names the link (adversarial review).
+      ["loading", 0, "The receiver list is still loading. Press Pick best receiver again in a moment."],
+      ["failed", 1, "Couldn't load the public receiver list. Paste a receiver address, or try again below."],
+    ])("explains the error link while the list is %s", (_, errorUpdatedAt, text) => {
+      receiverList.data = undefined;
+      receiverList.errorUpdatedAt = errorUpdatedAt;
+      radio.status = { state: "error", code: "busy", message: "full", host: "typed.example", port: 8073 };
+      render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Pick best receiver" })));
+      expect(radio.tune).not.toHaveBeenCalled();
+      expect(message()).toBe(text);
+    });
+
+    // Value: protects=the newest message wins: a finished run's note gives way to a later service message, and a new press isn't hidden by an older failure (eng review R7); fails_when=fixed precedence returns; why_new=Codex O2; seam=list hook mocked; no_claim=none beyond protects
+    it("shows the newest message, whichever said it", () => {
+      receiverList.data = { receivers: [] };
+      const view = render(<ListenPage />);
+      act(listen);
+      expect(message()).toBe("No listed receiver covers this frequency.");
+      radio.status = {
+        state: "error",
+        code: "closed",
+        message: "The receiver hung up.",
+        host: "typed.example",
+        port: 8073,
+      };
+      view.rerender(<ListenPage />);
+      expect(message()).toBe("The receiver hung up.");
+      receiverList.data = undefined;
+      view.rerender(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Pick best receiver" })));
+      expect(message()).toBe("The receiver list is still loading. Press Pick best receiver again in a moment.");
+    });
+
+    // Value: protects=only failures read in the danger tone: a service error and a finished run that found nothing, not the page's own "still loading" explanation (eng review R7); fails_when=messageTone is dropped, inverted, or applied to every message; why_new=the tone arrived with the merged status row and no test read it; seam=list hook mocked; no_claim=the color itself (CSS, browser check)
+    it("marks failures, not explanations, in the danger tone", () => {
+      const tone = () => document.querySelector(".status-message")?.getAttribute("data-tone") ?? null;
+      receiverList.data = { receivers: [] };
+      const view = render(<ListenPage />);
+      act(listen);
+      expect(message()).toBe("No listed receiver covers this frequency.");
+      expect(tone()).toBe("danger");
+      radio.status = {
+        state: "error",
+        code: "closed",
+        message: "The receiver hung up.",
+        host: "typed.example",
+        port: 8073,
+      };
+      view.rerender(<ListenPage />);
+      expect(tone()).toBe("danger");
+      receiverList.data = undefined;
+      view.rerender(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Pick best receiver" })));
+      expect(message()).toBe("The receiver list is still loading. Press Pick best receiver again in a moment.");
+      expect(tone()).toBeNull();
+    });
+
+    // Value: protects=the status names where a listed receiver is, and falls back to the host when the list doesn't know it (design D9); fails_when=the place lookup misses or prints nothing useful; why_new=status showed the host only; seam=list hook mocked; no_claim=how volunteers write locations (placeName tests)
+    it("says where a listed receiver is", () => {
+      const view = render(<ListenPage />);
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(document.querySelector(".status-detail")!.textContent).toBe(`from Vermont · ${listed.host}`);
+      radio.status = { state: "listening", host: "typed.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      expect(document.querySelector(".status-detail")!.textContent).toBe("on typed.example");
+      // A status with no port means the Kiwi default, 8073.
+      receiverList.data = {
+        receivers: [
+          { ...backup, location: "Ohio" },
+          { ...listed, host: "quiet.example", location: "" },
+        ],
+      };
+      radio.status = { state: "listening", host: backup.host };
+      view.rerender(<ListenPage />);
+      expect(document.querySelector(".status-detail")!.textContent).toBe(`from Ohio · ${backup.host}`);
+      // A listed receiver that gives no location reads like an unlisted one.
+      radio.status = { state: "listening", host: "quiet.example", port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(document.querySelector(".status-detail")!.textContent).toBe("on quiet.example");
+    });
+
+    // Value: protects=a return visit comes back on the last frequency and mode, a bad stored value falls back, and the default never overwrites the saved value on load (design D10, eng review S6); fails_when=the restore is dropped or either field's check is skipped (each bad row breaks one field); no test can see the tuningRestored guard, since the restore's rerender clears the default's pending save; why_new=frequency wasn't stored; seam=none; no_claim=private-mode storage quirks
+    it("remembers the last frequency and mode", () => {
+      vi.useFakeTimers();
+      try {
+        localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_420, mode: "usb" }));
+        render(<ListenPage />);
+        expect((screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement).value).toBe("9,420.00");
+        expect((screen.getByRole("radio", { name: "USB" }) as HTMLInputElement).checked).toBe(true);
+        act(() => vi.advanceTimersByTime(1_000));
+        expect(JSON.parse(localStorage.getItem("skywave.tuning")!)).toEqual({ freqKhz: 9_420, mode: "usb" });
+        act(() => fireEvent.click(screen.getByRole("radio", { name: "LSB" })));
+        act(() => vi.advanceTimersByTime(499));
+        expect(JSON.parse(localStorage.getItem("skywave.tuning")!).mode).toBe("usb");
+        act(() => vi.advanceTimersByTime(1));
+        expect(JSON.parse(localStorage.getItem("skywave.tuning")!)).toEqual({ freqKhz: 9_420, mode: "lsb" });
+        cleanup();
+
+        // Each bad row breaks one field only, so each check is needed on its own.
+        for (const bad of [
+          { freqKhz: -5, mode: "usb" },
+          { freqKhz: 9_420, mode: "fm" },
+          { freqKhz: "9420", mode: "usb" },
+          { mode: "usb" },
+        ]) {
+          localStorage.setItem("skywave.tuning", JSON.stringify(bad));
+          render(<ListenPage />);
+          expect((screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement).value).toBe("10,000.00");
+          expect((screen.getByRole("radio", { name: "AM" }) as HTMLInputElement).checked).toBe(true);
+          cleanup();
+        }
+
+        // A value that isn't JSON at all still opens on the default rather than breaking the page.
+        localStorage.setItem("skywave.tuning", "{not json");
+        render(<ListenPage />);
+        expect((screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement).value).toBe("10,000.00");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Value: protects=the waterfall opens on the visit's first audio and stays open through Stop (design D7); fails_when=it follows heardAudio, which drops on every tune; why_new=the strip is new; seam=Waterfall mocked; no_claim=the strip's height (browser check)
+    it("opens the waterfall on first audio and keeps it open", () => {
+      const view = render(<ListenPage />);
+      expect(screen.getByLabelText("waterfall").textContent).toBe("strip");
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      expect(screen.getByLabelText("waterfall").textContent).toBe("open");
+      radio.status = { state: "stopped" };
+      radio.heardAudio = false;
+      view.rerender(<ListenPage />);
+      expect(screen.getByLabelText("waterfall").textContent).toBe("open");
     });
   });
 });
