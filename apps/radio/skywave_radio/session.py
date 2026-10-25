@@ -678,6 +678,11 @@ class ListenSession:
             raise KiwiError("closed", f"{client.host}: the receiver connection ended")
         # Wait for the idle reader to finish: its recv would collide with the sweep's.
         await self._cancel(self._waterfall_idle)
+        if self._client is not client:
+            # The connection ended while the idle reader stopped: the waterfall
+            # and idle reader now belong to the next one, and a new dial would
+            # land on a channel whose slot may already be free.
+            raise KiwiError("closed", f"{client.host}: the receiver connection ended")
         self._waterfall_idle = None
         if self._waterfall is not None:
             refusal = getattr(self._waterfall, "refusal", None)
@@ -687,10 +692,6 @@ class ListenSession:
                 raise refusal
             await self._waterfall.fast()
             return self._waterfall
-        if self._client is not client:
-            # The connection ended while the idle reader stopped: don't dial a
-            # new waterfall onto a channel whose slot may already be free.
-            raise KiwiError("closed", f"{client.host}: the receiver connection ended")
         waterfall = self._waterfall_factory(
             client.host,
             client.port,

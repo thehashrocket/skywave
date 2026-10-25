@@ -1668,6 +1668,69 @@ async def test_a_scan_rechecks_its_connection_before_dialing():
     await session.close()
 
 
+# Value: protects=a scan whose connection ends while it waits for the idle reader leaves the next connection's kept waterfall and idle reader alone (no fast(), no sweep, idle reader still tracked), so a stale scan can't disturb a live session's audio; fails_when=_paired_waterfall re-checks the connection only before dialing, not before reusing a kept waterfall; why_new=owner D9 (Claude adversarial); seam=ListenSession._client, ._waterfall and ._waterfall_idle (set by hand to stand in for the next connection); no_claim=what makes a scan outlive its stop timeout
+async def test_a_stale_scan_leaves_the_next_connections_waterfall_alone():
+    from skywave_radio.kiwi import KiwiError
+    from skywave_radio.session import ListenSession, Slots
+
+    already_closed = asyncio.Event()
+    already_closed.set()
+    calls = []
+
+    class NextWaterfall:
+        async def fast(self):
+            calls.append("fast")
+
+        async def close(self):
+            calls.append("close")
+
+    session = ListenSession(
+        settings(),
+        _ignore,
+        _ignore,
+        slots=Slots(1),
+        resolver=_resolve_any,
+        client_factory=_held_close_client("stop", asyncio.Event(), already_closed),
+    )
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    while not session._listening:
+        await asyncio.sleep(0.01)
+    old = session._client
+    old.host = "a.example"
+    idle_stopping, idle_may_stop = asyncio.Event(), asyncio.Event()
+
+    async def slow_idle():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            idle_stopping.set()
+            await idle_may_stop.wait()
+            raise
+
+    session._waterfall_idle = asyncio.create_task(slow_idle())
+    pairing = asyncio.create_task(session._paired_waterfall(old))
+    next_idle = None
+    try:
+        await asyncio.wait_for(idle_stopping.wait(), timeout=5)
+        # Meanwhile the listener's next connection came up with its own
+        # waterfall and idle reader.
+        session._client = object()
+        session._waterfall = NextWaterfall()
+        next_idle = asyncio.create_task(asyncio.Event().wait())
+        session._waterfall_idle = next_idle
+    finally:
+        idle_may_stop.set()
+    with pytest.raises(KiwiError):
+        await asyncio.wait_for(pairing, timeout=5)
+    assert calls == []  # never swept or closed
+    assert session._waterfall_idle is next_idle  # still tracked
+    next_idle.cancel()
+    session._waterfall = None
+    session._waterfall_idle = None
+    session._client = old
+    await session.close()
+
+
 # Value: protects=a task that already failed is reported when it's next cancelled, not lost as an unexplained "never retrieved"; fails_when=_cancel returns early for a done task without looking at its exception; why_new=the early return skipped it; seam=none; no_claim=which tasks fail in practice
 async def test_cancel_reports_a_task_that_already_failed(caplog):
     from skywave_radio.session import ListenSession
