@@ -2,15 +2,15 @@
 
 ## Radio service
 
-### End sessions cleanly when cleanup itself goes wrong
+### Finish the session-end follow-ups from round 2's review
 
-**What:** Make every session end (switch, Stop, time limit, connect timeout) survive a cleanup error and leave no Kiwi socket open behind a freed slot: (1) a switch that fails with an unexpected error sends an error status and keeps the browser socket instead of dropping it; (2) `KiwiConnection.close` logs and swallows non-cancel errors after it aborts (it re-raises them today); (3) a band scan cancelled mid-handshake keeps its half-open waterfall where `_end_scan` can close it, so the slot can't free while that waterfall is still closing; (4) reword `_tune`'s except-branch comment to cover cancellation, a failed close and unexpected errors.
+**What:** (1) Make `abort()` stop any dial still in flight, not just drop its socket on arrival: check `KiwiConnection._aborted` before the https redial in `connect()`, and cancel an in-flight first dial too (keep a handle on the dial task), so an aborted waterfall never completes a handshake after its slot is freed. (2) Test the crash branch of `_run_scan`'s ended-connection guard (a sweep that raises after its connection ended). (3) In `_run`'s teardown, let a cancel win over a teardown error: log the error instead of replacing the `CancelledError`. (4) Small items from the round-2 re-review: `_stop_scan_tasks`, and `_run`'s teardown, read only the first failed task's exception (a second failure logs "never retrieved"); if the session-limit cancel lands inside a call that turns it into another error (e.g. a send raising `KiwiError("closed")`), the listener sees that error instead of the limit message; `_cancel`'s log line doesn't name the task; no test for `handle()`'s catch-all cleaning a bad scan id (bool or missing) to None; a scan task that outlives `_stop_scan_tasks`' timeout is dropped untracked, so a later failure only shows as "never retrieved" and cancel-swallowing tasks could pile up (keep them in a tracked set with a done callback that logs them); `_run`'s cancelled-teardown path reads teardown errors without logging them; a cancelled teardown leaves `_ending_target` set (harmless while the hold also needs a running pump; clear it); a scan whose connection ended still uses up its IP's sweep slot (`_sweep_times.start` runs before the connection check); `stop()` re-raises a scan task's error after the session did stop, so the listener sees "Something broke" instead of "Stopped." (log it, as `_run`'s teardown does when it has an ending), and the same error escapes `session.close()` in the server as an ASGI traceback; `_paired_waterfall`'s cancelled half-open waterfall closes gracefully where `abort()` would be quicker; the `MAX_SESSION_MINUTES` error reads "at least 1 minute" even for a huge value refused because it overflows in seconds; the comment on the re-check after `kept.fast()` and the Value line of `test_a_stale_scan_does_not_take_a_waterfall_stored_during_fast` still describe the hazard from before `kept` (now: a stale scan must not sweep its own old waterfall after its connection ended). (5) In `_tune`'s same-receiver retune, change `_mode` and the demodulator only after `client.tune()` succeeds, so an unexpected (non-Kiwi) error can't leave the session decoding with a mode the Kiwi never took. On that failure also send the current status back, so the browser's pending tune doesn't stay on "tuning" while audio plays. (6) CI runs only Python 3.13 while `requires-python` is `>=3.12`: add 3.12 to the radio CI matrix, or raise the floor.
 
-**Why:** Each is a rare way for a listener to be dropped with no message, see a misleading "Something broke", or for a volunteer's Kiwi to carry one connection over the limit for up to `CLOSE_TIMEOUT_S`.
+**Why:** (1) An aborted scan waterfall that gets a redirect can still open one brief extra connection to the volunteer's Kiwi before it's dropped. (2) Without a test, dropping that guard would let a crashed straggler sweep idle against the next connection. (3) A teardown error during a cancel turns a switch into a generic "Something broke".
 
-**Context:** Deferred from the fix/slot-accounting /ship review (2026-10-23) to round 2, which reworks session-end order. (1) `handle()` catches only `BadRequest`, so the error escapes `serve()`. (2) `apps/radio/skywave_radio/kiwi.py` `close()`; update `test_a_close_that_fails_still_drops_the_socket`. (3) `_paired_waterfall` holds the connecting waterfall in a local; test by holding `waterfall.connect()` and cancelling the session mid-switch. Also bound the wait for a cancelled scan (`_end_scan`'s `_cancel(self._scan)` has no timeout).
+**Context:** Deferred from the fix/session-end-order /ship review (2026-10-23, owner decision D4) to the next PR. `apps/radio/skywave_radio/kiwi.py` (`connect`, `_dial`, `abort`), `apps/radio/skywave_radio/session.py` (`_run_scan`, `_run`, `_tune`, `_stop_scan_tasks`, `_cancel`, `handle`), `.github/workflows/ci.yml` (6). None ends audio; (1) can briefly hold one Kiwi connection (a single handshake) after its slot is freed, and only when a scan swallows its cancel or the Kiwi redirects to https. Items (4)-(6) are small follow-ups from the round-2 re-reviews.
 
-**Effort:** M
+**Effort:** S
 **Priority:** P2
 **Depends on:** None
 
@@ -24,30 +24,6 @@
 
 **Effort:** S
 **Priority:** P2
-**Depends on:** None
-
-### Don't refuse a reconnect in the 2 s after "Stopped"
-
-**What:** Let a listener who reconnects on a new socket right after "Stopped" or an error get a slot: either send the terminal status after the Kiwi close and slot release, or add a "ready to reconnect" signal.
-
-**Why:** `_run` sends "stopped" and then closes the Kiwi (up to `CLOSE_TIMEOUT_S`, 2 s) before the slot frees. On a full service, a reload or second tab in that gap gets "at its listener limit". Same-socket retunes are fine: they take the slot over.
-
-**Context:** Both reviewers in the fix/slot-freed-flake /ship (2026-10-23). Sending the status later delays "Stopped" by up to 2 s after the audio has already ended, so decide which the listener should see first. `apps/radio/skywave_radio/session.py` (`_run`, `_pump_done`).
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** None
-
-### End a session at its time limit even when the receiver goes quiet
-
-**What:** Enforce `MAX_SESSION_MINUTES` with its own timer, not only when `client.blocks()` yields.
-
-**Why:** The limit is checked per block, so a receiver that stops sending just before the limit keeps the session (and the volunteer's channel) until `blocks()` times out, up to about one receive timeout (~10 s) past the limit.
-
-**Context:** Raised by Codex in the fix/slot-freed-flake /ship adversarial review (2026-10-23). `apps/radio/skywave_radio/session.py` (`_run`), `kiwi.py` (`blocks`). Small overrun; matters only for broken or hostile receivers.
-
-**Effort:** S
-**Priority:** P3
 **Depends on:** None
 
 ### Retry the old Kiwi path only for a Kiwi that needs it
@@ -187,6 +163,48 @@
 **Depends on:** None
 
 ## Completed
+
+### End sessions cleanly when cleanup itself goes wrong
+
+**What:** Make every session end (switch, Stop, time limit, connect timeout) survive a cleanup error and leave no Kiwi socket open behind a freed slot: (1) a switch that fails with an unexpected error sends an error status and keeps the browser socket instead of dropping it; (2) `KiwiConnection.close` logs and swallows non-cancel errors after it aborts (it re-raises them today); (3) a band scan cancelled mid-handshake keeps its half-open waterfall where `_end_scan` can close it, so the slot can't free while that waterfall is still closing; (4) reword `_tune`'s except-branch comment to cover cancellation, a failed close and unexpected errors.
+
+**Why:** Each is a rare way for a listener to be dropped with no message, see a misleading "Something broke", or for a volunteer's Kiwi to carry one connection over the limit for up to `CLOSE_TIMEOUT_S`.
+
+**Context:** Deferred from the fix/slot-accounting /ship review (2026-10-23) to round 2, which reworks session-end order. (1) `handle()` catches only `BadRequest`, so the error escapes `serve()`. (2) `apps/radio/skywave_radio/kiwi.py` `close()`; update `test_a_close_that_fails_still_drops_the_socket`. (3) `_paired_waterfall` holds the connecting waterfall in a local; test by holding `waterfall.connect()` and cancelling the session mid-switch. Also bound the wait for a cancelled scan (`_end_scan`'s `_cancel(self._scan)` has no timeout).
+
+**Effort:** M
+**Priority:** P2
+**Depends on:** None
+
+**Completed:** fix/session-end-order (2026-10-23). (1) `handle()` turns an unexpected error from a tune, Stop or scan into an error status and keeps the socket; `ClientGone` and cancels still propagate. (2) `KiwiConnection.close` aborts, logs and swallows non-cancel errors. (3) When ending is cancelled while a scan stops, `_end_scan` waits (up to `SCAN_STOP_TIMEOUT_S`) for that scan to close its half-open waterfall before the pump ends; the normal wait for a cancelled scan is bounded too, with a warning. (4) Comment rewritten. Tests: failed close on switch and Stop, half-open waterfall, stuck scan, close that fails. A scan that never stops can't keep its waterfall either: `_paired_waterfall` records the handshaking waterfall in `self._connecting`, and `_end_scan` calls `KiwiConnection.abort()` on it (open, mid-close or still dialing; `test_abort_reaches_a_socket_that_is_still_closing`, `test_abort_drops_an_open_or_still_dialing_socket`). Scan writes are tied to the connection that started them, and a tune for the receiver a session is still ending on is held until its status goes out (`test_a_tune_while_the_session_ends`).
+
+### Don't refuse a reconnect in the 2 s after "Stopped"
+
+**What:** Let a listener who reconnects on a new socket right after "Stopped" or an error get a slot: either send the terminal status after the Kiwi close and slot release, or add a "ready to reconnect" signal.
+
+**Why:** `_run` sends "stopped" and then closes the Kiwi (up to `CLOSE_TIMEOUT_S`, 2 s) before the slot frees. On a full service, a reload or second tab in that gap gets "at its listener limit". Same-socket retunes are fine: they take the slot over.
+
+**Context:** Both reviewers in the fix/slot-freed-flake /ship (2026-10-23). Sending the status later delays "Stopped" by up to 2 s after the audio has already ended, so decide which the listener should see first. `apps/radio/skywave_radio/session.py` (`_run`, `_pump_done`).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+**Completed:** fix/session-end-order (2026-10-23). `_run` builds its terminal status (still naming the receiver), closes the Kiwi and the scan's waterfall side by side, frees the slot itself, then sends it. Worst case with stalled receivers mid-scan is about 4.5 s (`SCAN_STOP_TIMEOUT_S` = `CLOSE_TIMEOUT_S` + 0.5, then the waterfall close); normally milliseconds. `test_terminal_status_waits_for_the_close_and_the_free_slot`; `test_slot_freed_when_session_hits_time_limit` no longer needs to wait for the slot.
+
+### End a session at its time limit even when the receiver goes quiet
+
+**What:** Enforce `MAX_SESSION_MINUTES` with its own timer, not only when `client.blocks()` yields.
+
+**Why:** The limit is checked per block, so a receiver that stops sending just before the limit keeps the session (and the volunteer's channel) until `blocks()` times out, up to about one receive timeout (~10 s) past the limit.
+
+**Context:** Raised by Codex in the fix/slot-freed-flake /ship adversarial review (2026-10-23). `apps/radio/skywave_radio/session.py` (`_run`), `kiwi.py` (`blocks`). Small overrun; matters only for broken or hostile receivers.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+**Completed:** fix/session-end-order (2026-10-23). The listening loop runs under `asyncio.timeout(MAX_SESSION_MINUTES)`, so a quiet receiver ends at the limit. `test_session_limit_ends_a_session_whose_receiver_went_quiet`.
 
 ### Don't free a slot while a cancelled switch's old Kiwi is still closing
 

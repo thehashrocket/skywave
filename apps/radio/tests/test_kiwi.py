@@ -318,8 +318,8 @@ async def test_a_queued_non_audio_frame_past_the_deadline_ends_the_stream(filler
     assert ws.sent == ["SET keepalive"]
 
 
-# Value: protects=a Kiwi close that fails with an unexpected error still drops the socket, so the listener slot never frees while the channel stays open; fails_when=close() aborts only on timeout or cancel; why_new=only the timeout and cancel paths aborted; seam=KiwiClient._ws (a stub socket whose close raises); no_claim=which errors websockets' close can raise
-async def test_a_close_that_fails_still_drops_the_socket():
+# Value: protects=a Kiwi close that fails with an unexpected error still drops the socket and ends quietly with a log, so the slot never frees over an open channel and a failed goodbye can't crash the session; fails_when=close() skips the abort or re-raises the error; why_new=only the timeout and cancel paths were tested; seam=KiwiClient._ws (a stub socket whose close raises); no_claim=which errors websockets' close can raise
+async def test_a_close_that_fails_still_drops_the_socket(caplog):
     aborted = []
 
     class BrokenClose:
@@ -330,10 +330,10 @@ async def test_a_close_that_fails_still_drops_the_socket():
 
     client = KiwiClient("kiwi.example")
     client._ws = BrokenClose()
-    with pytest.raises(OSError, match="close broke"):
-        await client.close()
+    await client.close()  # logs instead of raising
     assert aborted == [True]
     assert client._ws is None
+    assert "closing kiwi.example failed: close broke" in caplog.text
 
 
 # Value: protects=a Kiwi close cancelled partway (the session closing mid-switch) still drops the socket and passes the cancel on; fails_when=the abort branch is narrowed to Exception, which CancelledError skips; why_new=only the timeout and failure paths were tested; seam=KiwiClient._ws (a stub socket whose close hangs); no_claim=real websockets close timing
@@ -357,6 +357,165 @@ async def test_a_cancelled_close_still_drops_the_socket():
         await closing
     assert aborted == [True]
     assert client._ws is None
+
+
+# Value: protects=abort() drops a socket even while a close() is still waiting on it, so session teardown can cut off a stuck scan's waterfall; fails_when=abort() only reaches the open socket, not one a close took; why_new=abort() is new; seam=KiwiClient._ws (a stub socket whose close hangs); no_claim=real websockets close timing
+async def test_abort_reaches_a_socket_that_is_still_closing():
+    aborted = []
+    entered = asyncio.Event()
+
+    class HangingClose:
+        transport = type("Transport", (), {"abort": lambda self: aborted.append(True)})()
+
+        async def close(self):
+            entered.set()
+            await asyncio.Event().wait()
+
+    client = KiwiClient("kiwi.example")
+    client._ws = HangingClose()
+    closing = asyncio.create_task(client.close())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        client.abort()
+        assert aborted == [True]
+    finally:
+        closing.cancel()
+        await asyncio.gather(closing, return_exceptions=True)
+
+
+# Value: protects=abort() drops an open socket, and one a dial still in progress (or not yet started) returns afterwards, so a stuck scan's waterfall can't stay open on the Kiwi; fails_when=abort() only reaches sockets that already exist, or a later dial forgets it; why_new=only the closing case was tested; seam=kiwi._connect (the dial is held by hand) and KiwiClient._ws; no_claim=real websockets handshake timing
+@pytest.mark.parametrize("when", ["open", "dialing", "before"])
+async def test_abort_drops_an_open_or_still_dialing_socket(when, monkeypatch):
+    aborted = []
+
+    class Socket:
+        transport = type("Transport", (), {"abort": lambda self: aborted.append(True)})()
+
+    client = KiwiClient("kiwi.example")
+    if when == "open":
+        client._ws = Socket()
+        client.abort()
+        assert aborted == [True]
+        return
+    if when == "before":
+
+        async def instant_connect(*args, **kwargs):
+            return Socket()
+
+        monkeypatch.setattr(kiwi_module, "_connect", instant_connect)
+        client.abort()
+        with pytest.raises(KiwiError) as e:
+            await asyncio.wait_for(client._dial(), timeout=5)
+        assert e.value.code == "closed"
+        assert aborted == [True]
+        assert client._ws is None
+        return
+    dialing, may_open = asyncio.Event(), asyncio.Event()
+
+    async def held_connect(*args, **kwargs):
+        dialing.set()
+        await may_open.wait()
+        return Socket()
+
+    monkeypatch.setattr(kiwi_module, "_connect", held_connect)
+    dial = asyncio.create_task(client._dial())
+    try:
+        await asyncio.wait_for(dialing.wait(), timeout=5)
+        client.abort()
+        assert aborted == []  # nothing to drop yet
+    finally:
+        may_open.set()
+    with pytest.raises(KiwiError) as e:
+        await asyncio.wait_for(dial, timeout=5)
+    assert e.value.code == "closed"
+    assert aborted == [True]
+    assert client._ws is None
+
+
+# Value: protects=a second close() while the first is still saying goodbye waits until the socket is gone, so "close() returned" can't free a slot with the Kiwi channel open; fails_when=close() returns at once whenever _ws is already None; why_new=review (Claude adversarial): close() wasn't re-entrant; seam=KiwiClient._ws (a stand-in socket whose close is held by hand); no_claim=real websockets close timing
+async def test_a_second_close_waits_for_the_first():
+    closing, gone = asyncio.Event(), asyncio.Event()
+
+    class Socket:
+        transport = type("Transport", (), {"abort": lambda self: gone.set()})()
+
+        async def close(self):
+            closing.set()
+            await gone.wait()
+
+        async def wait_closed(self):
+            await gone.wait()
+
+    client = KiwiClient("kiwi.example")
+    client._ws = Socket()
+    first = asyncio.create_task(client.close())
+    tasks = [first]
+    try:
+        await asyncio.wait_for(closing.wait(), timeout=5)
+        second = asyncio.create_task(client.close())
+        tasks.append(second)
+        await asyncio.sleep(0.05)
+        assert not second.done()  # still waiting on the first close
+    finally:
+        gone.set()
+    await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+
+
+# Value: protects=a second close() never waits longer than CLOSE_TIMEOUT_S, even if the socket never reports closed, so a slot can't stay held on the library's word; fails_when=the second caller awaits wait_closed() with no deadline; why_new=review (Codex adversarial): the wait was bounded only by websockets internals; seam=kiwi.CLOSE_TIMEOUT_S shortened, KiwiClient._ws (a socket that never closes); no_claim=real websockets close behavior
+async def test_a_second_close_gives_up_on_a_socket_that_never_closes(monkeypatch):
+    monkeypatch.setattr(kiwi_module, "CLOSE_TIMEOUT_S", 0.1)
+    aborted, closing, never = [], asyncio.Event(), asyncio.Event()
+
+    class Socket:
+        transport = type("Transport", (), {"abort": lambda self: aborted.append(True)})()
+
+        async def close(self):
+            closing.set()
+            await never.wait()
+
+        async def wait_closed(self):
+            await never.wait()
+
+    client = KiwiClient("kiwi.example")
+    client._ws = Socket()
+    first = asyncio.create_task(client.close())
+    try:
+        await asyncio.wait_for(closing.wait(), timeout=5)
+        await asyncio.wait_for(client.close(), timeout=5)
+        assert aborted == [True, True]  # the first close's timeout, then the second caller's own
+    finally:
+        never.set()
+    await asyncio.wait_for(first, timeout=5)
+
+
+# Value: protects=a second close() cancelled while it waits still drops the socket, like the first close does, so its caller can never move on with the Kiwi channel open; fails_when=the second caller's wait re-raises the cancel without aborting; why_new=review (state matrix: close-while-closing-cancelled); seam=KiwiClient._ws (a socket that never closes); no_claim=real websockets close behavior
+async def test_a_cancelled_second_close_still_drops_the_socket():
+    aborted, closing, never = [], asyncio.Event(), asyncio.Event()
+
+    class Socket:
+        transport = type("Transport", (), {"abort": lambda self: aborted.append(True)})()
+
+        async def close(self):
+            closing.set()
+            await never.wait()
+
+        async def wait_closed(self):
+            await never.wait()
+
+    client = KiwiClient("kiwi.example")
+    client._ws = Socket()
+    first = asyncio.create_task(client.close())
+    try:
+        await asyncio.wait_for(closing.wait(), timeout=5)
+        second = asyncio.create_task(client.close())
+        await asyncio.sleep(0)  # let it start waiting
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        assert aborted == [True]  # the second caller dropped it on its way out
+    finally:
+        never.set()
+    await asyncio.wait_for(first, timeout=5)
 
 
 # Value: protects=keepalives keep going out while audio streams; fails_when=the keepalive call is lost from blocks() (it moved in this change); why_new=no test streamed past the 1 s keepalive interval and looked at commands; seam=none; no_claim=how long a real Kiwi waits before dropping a silent client
