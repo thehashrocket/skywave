@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Hashable
+from collections.abc import Awaitable, Callable, Hashable, Iterable
 from dataclasses import replace
 from typing import Any
 
@@ -79,6 +79,27 @@ SCAN_STOP_TIMEOUT_S = CLOSE_TIMEOUT_S + 0.5
 # A receiver as the session dials it: host, port, whether private addresses
 # may be dialed for it, and wss.
 Target = tuple[str, int, bool, bool]
+
+# Scan tasks that outlived SCAN_STOP_TIMEOUT_S after being cancelled: held so
+# they aren't garbage-collected mid-run, and logged when they finally end.
+_stragglers: set[asyncio.Task[None]] = set()
+
+
+def _task_name(task: asyncio.Task[Any]) -> str:
+    return getattr(task.get_coro(), "__qualname__", None) or task.get_name()
+
+
+def _log_straggler(task: asyncio.Task[None]) -> None:
+    _stragglers.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        log.warning("%s failed after the session stopped waiting: %r", _task_name(task), task.exception())
+    else:
+        log.info("%s finally stopped", _task_name(task))
+
+
+def _failures(tasks: Iterable[asyncio.Task[Any]]) -> list[BaseException]:
+    """Every finished task's error, each one read so none logs "never retrieved"."""
+    return [e for t in tasks if t.done() and not t.cancelled() and (e := t.exception()) is not None]
 
 SendText = Callable[[dict[str, Any]], Awaitable[None]]
 SendBytes = Callable[[bytes], Awaitable[None]]
@@ -314,7 +335,10 @@ class ListenSession:
                 )
             elif self._pump is None or self._pump.done():
                 await self._status("error", message="Something broke in the radio service. Try again.")
-            # Otherwise the session still plays; the request just didn't apply.
+            elif kind == "tune":
+                # The session still plays; the retune just didn't apply. Say where
+                # it stands, or the browser's pending tune waits on an answer forever.
+                await self._status("listening" if self._listening else "connecting")
 
     async def _tune(self, msg: dict[str, Any]) -> None:
         # Lowercased like the resolver does, so Kiwi.Example and kiwi.example
@@ -346,24 +370,30 @@ class ListenSession:
             # ended) is on its way. Redialing now would knock again on a Kiwi
             # that may just have refused us, and hide that answer.
             return
-        self._freq_khz = freq
         same_receiver = self._target == target and pump_running
         if same_receiver:
+            # Still resolving: _run reads _freq_khz/_mode when it builds the client.
+            # Otherwise change them only once the retune is sent, so a failed send
+            # can't leave us decoding with a mode the Kiwi never got.
+            client = self._client
+            if client is not None:
+                try:
+                    await client.tune(kiwi_freq_khz(freq, mode))
+                except KiwiError:
+                    # The connection is gone (the Kiwi closed it, or tune() gave
+                    # it up when the Kiwi stopped reading); the pump sees that
+                    # failure and reports it, so don't send a second error.
+                    return
+            self._freq_khz = freq
             if mode != self._mode:
                 self._mode = mode
-                if self._listening:
-                    self._demod = Demodulator(self._client.info.sample_rate, mode)
-            # Still resolving: _run reads _freq_khz/_mode when it builds the client.
-            if self._client is not None:
-                try:
-                    await self._client.tune(kiwi_freq_khz(freq, mode))
-                except KiwiError:
-                    # The Kiwi just dropped us; the pump sees the same failure
-                    # and reports it, so don't send a second error.
-                    return
+                if self._listening and client is not None:
+                    self._demod = Demodulator(client.info.sample_rate, mode)
             if self._listening:
                 await self._status("listening")
             return
+
+        self._freq_khz = freq
 
         # Keep the slot the old pump holds: its done callback then releases nothing.
         old_holder = self._slot_holder
@@ -411,6 +441,9 @@ class ListenSession:
         # are closed and its slot is free, so a reconnect on "Stopped" or an
         # error finds the slot available.
         ending: dict[str, Any] | None = None
+        # Cancelled (a Stop, a switch): a teardown error is logged, never raised
+        # in place of the cancel, which would turn a switch into "Something broke".
+        cancelled = False
         try:
             allow_private = self.settings.allow_private_hosts and not public_only
             ip = await self._resolver(host, port, allow_private=allow_private, owner=self.lookup_owner)
@@ -427,6 +460,15 @@ class ListenSession:
             await self._status("listening")
 
             last_meter = 0.0
+
+            def limit_ending() -> dict[str, Any]:
+                # Built when the limit fires, so it carries the frequency then.
+                return self._status_payload(
+                    "stopped",
+                    message=f"Hit the {self.settings.max_session_minutes:g}-minute session limit. "
+                    "Reconnect if you're still listening.",
+                )
+
             # Its own timer, not a check per block: a receiver that goes quiet
             # would otherwise hold the channel until blocks() times out.
             limit = asyncio.timeout(self.settings.max_session_minutes * 60)
@@ -452,20 +494,43 @@ class ListenSession:
             except TimeoutError:
                 if not limit.expired():
                     raise
-                ending = self._status_payload(
-                    "stopped",
-                    message=f"Hit the {self.settings.max_session_minutes:g}-minute session limit. "
-                    "Reconnect if you're still listening.",
-                )
-        except ClientGone:
-            pass
+                ending = limit_ending()
+            except KiwiError:
+                # The limit's cancel can land in a call that turns it into its
+                # own error (a send to the Kiwi raising "closed"): it's still the limit.
+                if not limit.expired():
+                    raise
+                ending = limit_ending()
+        except ClientGone as e:
+            if (current := asyncio.current_task()) is not None and current.cancelling():
+                # The browser left as a Stop or switch cancelled us: still the cancel.
+                cancelled = True
+                raise asyncio.CancelledError from e
         except HostRejected as e:
+            if (current := asyncio.current_task()) is not None and current.cancelling():
+                log.info("looking up %s ended as the session was cancelled: %r", host, e)
+                cancelled = True
+                raise asyncio.CancelledError from e
             ending = self._status_payload("error", message=str(e), code=e.code, retryAfterMs=e.retry_after_ms)
         except KiwiError as e:
+            if (current := asyncio.current_task()) is not None and current.cancelling():
+                log.info("%s ended as the session was cancelled: %r", host, e)
+                # A Stop or switch's cancel that a call turned into its own error
+                # (a send to the Kiwi raising "closed"): it's still that cancel,
+                # not the receiver failing, so no error goes to the listener.
+                cancelled = True
+                raise asyncio.CancelledError from e
             ending = self._status_payload("error", message=str(e), code=e.code)
         except asyncio.CancelledError:
+            cancelled = True
             raise
-        except Exception:
+        except Exception as e:
+            if (current := asyncio.current_task()) is not None and current.cancelling():
+                # A Stop or switch was cancelling us: still that cancel, so no
+                # error goes to the listener (and none is logged as a crash).
+                log.info("%s ended as the session was cancelled: %r", host, e, exc_info=e)
+                cancelled = True
+                raise asyncio.CancelledError from e
             log.exception("listen session crashed")
             ending = self._status_payload("error", message="Something broke in the radio service. Check its logs.")
         finally:
@@ -510,19 +575,21 @@ class ListenSession:
                         break
                     except asyncio.CancelledError:
                         drop_audio()
-                for task in closing:
-                    if not task.cancelled():
-                        task.exception()  # retrieved; the cancel is what propagates
+                for error in _failures(closing):
+                    log.warning("closing %s after a cancel failed: %r", host, error, exc_info=error)
+                # This pump's ending status won't go out, so stop holding tunes for it.
+                if ending is not None:
+                    self._ending_target = None
                 raise
-            teardown_error = next(
-                (t.exception() for t in closing if not t.cancelled() and t.exception() is not None), None
-            )
-            if teardown_error is not None and ending is None:
-                raise teardown_error
-            if teardown_error is not None:
-                # The sockets are dropped either way; the listener still hears
-                # how the session ended.
-                log.warning("closing %s after the session ended failed: %r", host, teardown_error)
+            teardown_errors = _failures(closing)
+            if teardown_errors and ending is None and not cancelled:
+                for error in teardown_errors[1:]:
+                    log.warning("closing %s also failed: %r", host, error, exc_info=error)
+                raise teardown_errors[0]
+            for error in teardown_errors:
+                # The sockets are dropped either way; an ending still goes to
+                # the listener, and a cancel still propagates.
+                log.warning("closing %s failed: %r", host, error, exc_info=error)
         # Every socket on the channel is closed (the finally above ran in full),
         # so free the slot now and then tell the browser. _pump_done, the done
         # callback, is the backstop for every pump that doesn't get here:
@@ -571,7 +638,12 @@ class ListenSession:
     async def stop(self, message: str | None) -> None:
         # A cancel aimed at our caller (the browser left mid-switch) still
         # propagates, or the switch would go on to dial a receiver for nobody.
-        await self._cancel(self._pump)
+        # An error the pump ended with is logged: the session stops either way,
+        # and raising it would answer Stop with "Something broke".
+        try:
+            await self._cancel(self._pump)
+        except Exception as e:
+            log.warning("the stopped session's pump had failed: %r", e, exc_info=e)
         self._pump = None
         # A pump that had already ended returns from _cancel at once, before
         # its _mark_idle callback runs, which then no longer sees it as ours.
@@ -579,7 +651,11 @@ class ListenSession:
             self.idle_since = time.monotonic()
         self._target = None
         await self._close_client()
-        await self._end_scan()
+        try:
+            await self._end_scan()
+        except Exception as e:
+            # Its waterfall is closed either way (_end_scan's finally).
+            log.warning("the stopped session's scan had failed: %r", e, exc_info=e)
         if message:
             await self._status("stopped", message=message)
 
@@ -621,6 +697,8 @@ class ListenSession:
         key = (self.lookup_owner, target)
         while (wait := self._sweep_times.wait_s(key)) > 0:
             await asyncio.sleep(wait)
+        if self._client is not client:
+            return  # the connection ended while it waited: don't use up the sweep slot
         self._sweep_times.start(key)
         try:
             waterfall = await self._paired_waterfall(client)
@@ -726,7 +804,9 @@ class ListenSession:
             try:
                 await waterfall.connect()
             except asyncio.CancelledError:
-                # Cancelled mid-handshake (the audio is ending): close the half-open one.
+                # Cancelled mid-handshake (the audio is ending): drop the half-open
+                # one at once rather than wait on a goodbye.
+                waterfall.abort()
                 await waterfall.close()
                 raise
             except Exception as e:
@@ -789,7 +869,12 @@ class ListenSession:
             # Let it finish (bounded) before the slot can free.
             stopping = {t for t in (scan, idle) if t is not None and not t.done()}
             if stopping:
-                await asyncio.wait(stopping, timeout=SCAN_STOP_TIMEOUT_S)
+                done, pending = await asyncio.wait(stopping, timeout=SCAN_STOP_TIMEOUT_S)
+                for error in _failures(done):
+                    log.warning("a stopped scan task failed: %r", error, exc_info=error)
+                for task in pending - _stragglers:
+                    _stragglers.add(task)
+                    task.add_done_callback(_log_straggler)
             raise
         finally:
             # However the stop went (even if a scan task raised): a new
@@ -803,8 +888,9 @@ class ListenSession:
             # Even when cancelled waiting on the scan: the waterfall shares the
             # Kiwi channel, and the pump that called us frees the slot next.
             # A scan that never stopped may still hold one mid-handshake (or
-            # mid-close, or still dialing): abort drops that socket, or makes
-            # the dial drop it the moment it opens.
+            # mid-close, or still dialing): abort drops that socket, cancels a
+            # dial still in progress (or stops one from starting), and a
+            # handshake that finishes anyway is dropped on arrival.
             connecting, self._connecting = self._connecting, None
             if connecting is not None:
                 connecting.abort()
@@ -826,9 +912,14 @@ class ListenSession:
             _, pending = await asyncio.wait(running, timeout=SCAN_STOP_TIMEOUT_S)
             if pending:
                 log.warning("%d cancelled scan task(s) still running after %gs", len(pending), SCAN_STOP_TIMEOUT_S)
-        for task in running:
-            if task.done() and not task.cancelled() and task.exception() is not None:
-                raise task.exception()
+                for task in pending - _stragglers:  # once, however often it is stopped
+                    _stragglers.add(task)
+                    task.add_done_callback(_log_straggler)
+        errors = _failures(running)
+        for error in errors[1:]:
+            log.warning("a stopped scan task also failed: %r", error)
+        if errors:
+            raise errors[0]
 
     @staticmethod
     async def _cancel(task: asyncio.Task[None] | None) -> None:
@@ -836,8 +927,8 @@ class ListenSession:
             if not task.cancelled() and task.exception() is not None:
                 # Ended with an error that may never have been read: say so
                 # here, not as an unexplained "never retrieved" at garbage
-                # collection. (One already raised by stop() logs again here.)
-                log.warning("a finished task had failed: %r", task.exception())
+                # collection.
+                log.warning("%s had failed: %r", _task_name(task), task.exception())
             return
         if task is None or task is asyncio.current_task():
             return

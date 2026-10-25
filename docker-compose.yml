@@ -20,6 +20,10 @@ services:
     ports:
       - "8765:8765"
     restart: unless-stopped
+    # Above uvicorn's 15 s graceful shutdown, the 5 s cleanup wait and the last
+    # teardowns at exit (see apps/radio/Dockerfile), so volunteers' Kiwis get a
+    # clean close on restart.
+    stop_grace_period: 30s
     profiles: ["radio"]
 
 volumes:

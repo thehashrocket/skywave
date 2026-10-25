@@ -1044,7 +1044,7 @@ async def test_cancelled_switch_keeps_the_slot_until_the_old_kiwi_closes(old_clo
     assert "released with none held" not in caplog.text
 
 
-# Value: protects=a switch or Stop whose old Kiwi close() fails frees the slot exactly once, closes the waterfall before the slot frees, and tells the listener with an error status instead of dropping the socket; fails_when=the except branch skips releasing for an already-ended pump, releases twice, or the error escapes handle(); why_new=the cancelled-switch test only covers a pump still closing; seam=none; no_claim=what real close failures look like (close() raises by hand)
+# Value: protects=a switch or Stop whose old Kiwi close() fails still does what was asked: the switch hands the slot to the new receiver and plays it, Stop frees the slot and says "Stopped."; either way the slot moves or frees exactly once, the waterfall closes first, and the failure is logged; fails_when=the teardown error replaces the cancel (a switch becomes "Something broke"), stop() re-raises it, the slot is released twice, or the waterfall is skipped; why_new=the cancelled-switch test only covers a pump still closing, then round 3b (TODO: a cancel wins over a teardown error; Stop answers "Stopped."); seam=none; no_claim=what real close failures look like (close() raises by hand)
 @pytest.mark.parametrize("action", ["switch", "stop"])
 async def test_switch_whose_old_close_fails_frees_the_slot_once(action, caplog):
     from skywave_radio.kiwi import KiwiInfo
@@ -1084,24 +1084,35 @@ async def test_switch_whose_old_close_fails_frees_the_slot_once(action, caplog):
         await asyncio.sleep(0.01)
     waterfall = _RecordingWaterfall(slots)
     session._waterfall = waterfall  # a scan's paired waterfall on the same channel
-    # The old pump ends with close()'s error, so stop() re-raises it with the
-    # pump already done; handle() reports it instead of dropping the socket.
+    # The old pump is cancelled and its close() fails: logged, and the request
+    # goes ahead.
+    old_pump = session._pump
     if action == "switch":
         await session.handle({"type": "tune", "host": "b.example", "port": 8074, "freqKhz": 7200, "mode": "usb"})
+        async with asyncio.timeout(5):
+            while not session._listening:
+                await asyncio.sleep(0.01)
+        assert sent[-1]["state"] == "listening" and sent[-1]["host"] == "b.example"
+        assert made == [8073, 8074]
+        assert slots.active == 1  # handed to the new receiver, not released and re-taken
     else:
         await session.handle({"type": "stop"})
-    assert sent[-1]["state"] == "error"
-    assert "Something broke" in sent[-1]["message"]
-    async with asyncio.timeout(5):
-        while slots.active:
-            await asyncio.sleep(0.01)
-    await asyncio.sleep(0.05)
-    assert slots.active == 0
-    assert made == [8073]
+        assert sent[-1] == {**sent[-1], "state": "stopped", "message": "Stopped."}
+        async with asyncio.timeout(5):
+            while slots.active:
+                await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        assert slots.active == 0
+        assert made == [8073]
+        assert slots.try_acquire()
+    assert not any(s["state"] == "error" for s in sent if s.get("type") == "status")
+    assert "close broke" in caplog.text
+    # The cancel won: the old pump ended cancelled, not with the close's error.
+    assert old_pump.cancelled()
+    assert "pump had failed" not in caplog.text
     # The failed close didn't skip the waterfall, and it closed before the slot freed.
     assert waterfall.active_at_close == [1]
     assert "released with none held" not in caplog.text
-    assert slots.try_acquire()
 
 
 class _RecordingWaterfall:
@@ -1372,6 +1383,9 @@ async def test_slot_waits_for_a_half_open_scan_waterfall():
         is_open = True
 
         def __init__(self, *args, **kwargs):
+            pass
+
+        def abort(self):
             pass
 
         async def connect(self):
@@ -3173,10 +3187,14 @@ class _ScanWaterfall:
         self.frame_error = frame_error
         self.idle_error = idle_error
         self.closed = False
+        self.aborted = False
         self.idling = asyncio.Event()
 
     async def connect(self):
         return self.info
+
+    def abort(self):
+        self.aborted = True
 
     async def fast(self):
         pass
@@ -3400,7 +3418,7 @@ class _BlockingWaterfall(_ScanWaterfall):
         await asyncio.Event().wait()
 
 
-# Value: protects=stopping or closing during a scan, whether the waterfall is still connecting or mid-sweep, closes it and leaves no scan task or reply behind; fails_when=_end_scan misses a running scan or a half-open waterfall, leaving a volunteer's channel open; why_new=only stop after a finished scan was tested (review D6); seam=stand-in waterfall; no_claim=real close timing
+# Value: protects=stopping or closing during a scan, whether the waterfall is still connecting or mid-sweep, closes it and leaves no scan task or reply behind, and a half-open one is aborted rather than waited on; fails_when=_end_scan misses a running scan or a half-open waterfall, leaving a volunteer's channel open, or a cut-off handshake waits on a graceful goodbye; why_new=only stop after a finished scan was tested (review D6), then round 3b (abort the half-open waterfall); seam=stand-in waterfall; no_claim=real close timing
 @pytest.mark.parametrize("block_in", ["connect", "frame"])
 @pytest.mark.parametrize("end", ["stop", "close"])
 async def test_ending_mid_scan_closes_the_waterfall(block_in, end):
@@ -3423,6 +3441,8 @@ async def test_ending_mid_scan_closes_the_waterfall(block_in, end):
     else:
         await session.close()
     assert made[0].closed
+    # Cut off mid-handshake, it is dropped at once rather than waited on.
+    assert made[0].aborted == (block_in == "connect")
     assert session._scan is None and session._waterfall is None and session._waterfall_idle is None
     assert [p["state"] for p in sent if p["type"] == "scan"] == ["scanning"]
 
@@ -3849,3 +3869,878 @@ async def test_stopping_under_a_cancelled_scope_keeps_the_scopes_cancellation():
             await anyio.sleep_forever()
         assert scope.cancelled_caught and task.done()
 
+
+
+# --- Round 3b: channel teardown and error-handling follow-ups ---
+
+
+def _streaming_client(*, tune_error=None, block_error_on_cancel=None, close_error=None, close_held=None):
+    """A fake Kiwi that streams silence until cancelled.
+
+    `tune_error` fails a retune (the first tune, before connect, still works);
+    `block_error_on_cancel` turns a cancel inside blocks() into that error, as a
+    send to a closed Kiwi does; `close_error` fails close(); `close_held` makes
+    close() wait on that event.
+    """
+    from skywave_radio.kiwi import IQBlock, KiwiInfo
+
+    class Streaming:
+        made: list["Streaming"] = []
+
+        def __init__(self, host, port, **kwargs):
+            self.host, self.port = host, port
+            self.info = KiwiInfo(sample_rate=12000.0)
+            self.connected = False
+            self.tunes: list[float] = []
+            Streaming.made.append(self)
+
+        async def connect(self):
+            self.connected = True
+            return self.info
+
+        async def tune(self, freq_khz):
+            if self.connected and tune_error is not None:
+                raise tune_error
+            self.tunes.append(freq_khz)
+
+        async def blocks(self):
+            try:
+                while True:
+                    yield IQBlock(seq=0, rssi_dbm=-73.0, samples=np.zeros(512, np.complex64), adc_overflow=False)
+                    await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                if block_error_on_cancel is not None:
+                    raise block_error_on_cancel from None
+                raise
+
+        def abort(self):
+            pass
+
+        async def close(self):
+            if close_held is not None:
+                await close_held.wait()
+            if close_error is not None:
+                raise close_error
+
+    return Streaming
+
+
+async def _start_listening(session, host="a.example", port=8073, mode="usb"):
+    await session.handle({"type": "tune", "host": host, "port": port, "freqKhz": 7200, "mode": mode})
+    async with asyncio.timeout(5):
+        while not session._listening:
+            await asyncio.sleep(0.01)
+
+
+# Value: protects=when the session limit's cancel lands inside a call that turns it into a KiwiError (a send to a closed Kiwi), the listener still hears the limit message; fails_when=_run reports that KiwiError as a receiver error; why_new=round 3b (TODO: limit cancel turned into another error); seam=a fake Kiwi whose blocks() raises KiwiError("closed") when cancelled; no_claim=which real calls convert cancels
+async def test_the_limit_is_reported_even_when_its_cancel_becomes_a_kiwi_error():
+    from skywave_radio.kiwi import KiwiError
+    from skywave_radio.session import ListenSession
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    client = _streaming_client(block_error_on_cancel=KiwiError("closed", "a.example closed the connection"))
+    session = ListenSession(
+        settings(max_session_minutes=0.005), send_text, _ignore, resolver=_resolve_any, client_factory=client
+    )
+    await _start_listening(session)
+    async with asyncio.timeout(5):
+        while not (sent and sent[-1].get("state") in ("stopped", "error")):
+            await asyncio.sleep(0.01)
+    assert sent[-1]["state"] == "stopped"
+    assert "session limit" in sent[-1]["message"]
+
+
+# Value: protects=a pump whose ending status waits on a slow close, then gets cancelled (Stop), stops holding same-receiver tunes, and every teardown error is logged rather than lost; fails_when=the cancelled teardown leaves _ending_target set, or reads only the first failed close task; why_new=round 3b (TODO: cancelled teardown leaves _ending_target set; only the first error is read); seam=a fake Kiwi that drops the stream then fails a held close, and a scan task that fails when cancelled; no_claim=real close timing
+async def test_a_cancelled_teardown_lets_go_of_its_receiver_and_logs_every_error(caplog):
+    from skywave_radio.kiwi import KiwiError, KiwiInfo
+    from skywave_radio.session import ListenSession
+
+    drop, closing, held = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class DropsThenFailsToClose:
+        def __init__(self, host, port, **kwargs):
+            self.info = KiwiInfo(sample_rate=12000.0)
+
+        async def connect(self):
+            return self.info
+
+        async def tune(self, freq_khz):
+            pass
+
+        async def blocks(self):
+            await drop.wait()
+            raise KiwiError("closed", "a.example closed the connection")
+            yield
+
+        def abort(self):
+            pass
+
+        async def close(self):
+            closing.set()
+            await held.wait()
+            raise RuntimeError("close broke")
+
+    session = ListenSession(settings(), _ignore, _ignore, resolver=_resolve_any, client_factory=DropsThenFailsToClose)
+    await _start_listening(session)
+
+    async def scan_that_fails_when_stopped():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise RuntimeError("scan broke") from None
+
+    session._scan = asyncio.create_task(scan_that_fails_when_stopped())
+    await asyncio.sleep(0)
+    drop.set()  # the receiver drops us: an ending to report, held behind close()
+    await asyncio.wait_for(closing.wait(), 5)
+    assert session._ending_target == ("a.example", 8073, True, False)
+    stopping = asyncio.create_task(session.stop("Stopped."))  # cancels the pump mid-teardown
+    await asyncio.sleep(0.05)
+    held.set()
+    await asyncio.wait_for(stopping, 5)
+    assert session._ending_target is None
+    assert "scan broke" in caplog.text  # read and logged, not left for the garbage collector
+    assert "close broke" not in caplog.text  # the cancel aborted that close before it failed
+
+
+# Value: protects=when a session that ended on its own fails to close both its audio and its scan, both errors are logged and the listener still gets the ending; fails_when=the teardown reads only the first failed task (the second logs "never retrieved"), or raises instead of reporting the ending; why_new=round 3b (TODO: only the first teardown error was read); seam=a fake Kiwi that drops the stream then fails close(), and a scan task that fails when cancelled; no_claim=real close failures
+async def test_every_teardown_error_is_logged(caplog):
+    from skywave_radio.kiwi import KiwiError, KiwiInfo
+    from skywave_radio.session import ListenSession
+
+    sent, drop = [], asyncio.Event()
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    class DropsThenFailsToClose:
+        def __init__(self, host, port, **kwargs):
+            self.info = KiwiInfo(sample_rate=12000.0)
+
+        async def connect(self):
+            return self.info
+
+        async def tune(self, freq_khz):
+            pass
+
+        async def blocks(self):
+            await drop.wait()
+            raise KiwiError("closed", "a.example closed the connection")
+            yield
+
+        def abort(self):
+            pass
+
+        async def close(self):
+            raise RuntimeError("close broke")
+
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any, client_factory=DropsThenFailsToClose)
+    await _start_listening(session)
+
+    async def scan_that_fails_when_stopped():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise RuntimeError("scan broke") from None
+
+    session._scan = asyncio.create_task(scan_that_fails_when_stopped())
+    await asyncio.sleep(0)
+    drop.set()
+    await asyncio.wait_for(asyncio.wait({session._pump}), 5)
+    assert "close broke" in caplog.text and "scan broke" in caplog.text
+    assert sent[-1]["state"] == "error" and sent[-1]["code"] == "closed"
+
+
+# Value: protects=a scan task that swallows its cancel past SCAN_STOP_TIMEOUT_S is kept (not garbage-collected mid-run) and logged when it finally ends; fails_when=_stop_scan_tasks drops it untracked; why_new=round 3b (TODO: track straggler scan tasks); seam=SCAN_STOP_TIMEOUT_S shortened, a task that ignores one cancel; no_claim=why a real scan would swallow a cancel
+async def test_a_scan_that_outlives_its_stop_timeout_is_tracked(monkeypatch, caplog):
+    import logging
+
+    from skywave_radio import session as session_module
+    from skywave_radio.session import ListenSession
+
+    monkeypatch.setattr(session_module, "SCAN_STOP_TIMEOUT_S", 0.1)
+    caplog.set_level(logging.INFO, logger="skywave_radio.session")
+    release = asyncio.Event()
+
+    async def stubborn():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()  # swallows the cancel for a while
+
+    task = asyncio.create_task(stubborn())
+    await asyncio.sleep(0)
+    await ListenSession._stop_scan_tasks(task)
+    assert task in session_module._stragglers
+    release.set()
+    await asyncio.wait_for(asyncio.wait({task}), 2)
+    await asyncio.sleep(0)
+    assert task not in session_module._stragglers
+    assert "finally stopped" in caplog.text
+
+    # One that finally fails is a warning, with its error.
+    release2 = asyncio.Event()
+
+    async def stubborn_then_broken():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release2.wait()
+            raise RuntimeError("straggler broke") from None
+
+    broken = asyncio.create_task(stubborn_then_broken())
+    await asyncio.sleep(0)
+    await ListenSession._stop_scan_tasks(broken)
+    release2.set()
+    await asyncio.wait_for(asyncio.wait({broken}), 2)
+    await asyncio.sleep(0)
+    assert any(r.levelname == "WARNING" and "straggler broke" in r.getMessage() for r in caplog.records)
+
+
+# Value: protects=a scan whose receiver connection ended while it waited out the sweep interval doesn't use up its listener's sweep slot; fails_when=_sweep_times.start runs before checking the connection; why_new=round 3b (TODO: an ended connection used the sweep slot); seam=ListenSession internals set by hand, SCAN_MIN_INTERVAL_S shortened; no_claim=real scan timing
+async def test_a_scan_whose_connection_ended_keeps_the_sweep_slot_free(monkeypatch):
+    from skywave_radio import session as session_module
+
+    monkeypatch.setattr(session_module, "SCAN_MIN_INTERVAL_S", 0.2)
+    session = listening_session(_ignore)
+    client = session._client
+    target = session._target
+    sweep = (session.lookup_owner, target)
+    session._sweep_times.start(sweep)  # a sweep just ran: the next one waits
+    started = session._sweep_times._starts[sweep]
+    real_sleep = asyncio.sleep
+
+    async def connection_ends_during_the_wait(delay):
+        session._client = None
+        await real_sleep(delay)
+
+    monkeypatch.setattr(session_module.asyncio, "sleep", connection_ends_during_the_wait)
+    await asyncio.wait_for(session._run_scan(target, client, fresh=True), 2)
+    assert session._sweep_times._starts.get(sweep) == started
+
+
+# Value: protects=Stop with a scan whose task failed still stops and answers "Stopped.", logging the scan's error; fails_when=stop() re-raises the scan's error, so the listener sees "Something broke" (and session.close() raises it as an ASGI traceback); why_new=round 3b (TODO: stop() re-raised a scan error); seam=ListenSession internals set by hand (a scan task that fails when cancelled); no_claim=real scan failures
+@pytest.mark.parametrize("end", ["stop", "close"])
+async def test_stop_answers_stopped_when_the_scan_failed(end, caplog):
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    session = listening_session(send_text)
+
+    async def scan_that_fails_when_stopped():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise RuntimeError("scan broke") from None
+
+    session._scan = asyncio.create_task(scan_that_fails_when_stopped())
+    await asyncio.sleep(0)
+    if end == "stop":
+        await session.handle({"type": "stop"})
+        assert sent[-1]["state"] == "stopped" and sent[-1]["message"] == "Stopped."
+    else:
+        await session.close()  # doesn't raise
+    assert "scan broke" in caplog.text
+    assert not any(p.get("state") == "error" for p in sent)
+
+
+# Value: protects=a retune the Kiwi doesn't take (an unexpected error) leaves the mode, frequency and demodulator as they were, and the browser gets the current status back instead of waiting on its tune forever; fails_when=_tune changes them before client.tune() succeeds, or handle() sends nothing while the session plays; why_new=round 3b (TODO: retune ordering and reply); seam=a fake Kiwi whose retune raises; no_claim=what real unexpected errors look like
+async def test_a_failed_retune_changes_nothing_and_answers(caplog):
+    from skywave_radio.session import ListenSession
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    client = _streaming_client(tune_error=RuntimeError("tune broke"))
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any, client_factory=client)
+    await _start_listening(session, mode="usb")
+    demod = session._demod
+    before = len(sent)
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 9535, "mode": "am"})
+    assert (session._mode, session._freq_khz) == ("usb", 7200)
+    assert session._demod is demod
+    replies = [p for p in sent[before:] if p.get("type") == "status"]
+    assert replies and replies[-1]["state"] == "listening"
+    assert replies[-1]["mode"] == "usb" and replies[-1]["freqKhz"] == 7200
+    assert "tune broke" in caplog.text
+    await session.close()
+
+
+# Value: protects=a retune that fails while the receiver is still connecting answers "connecting", not "listening"; fails_when=handle() always claims listening after a failed tune; why_new=coverage audit (round 3b); seam=a fake Kiwi whose connect is held and whose retune raises; no_claim=what real errors look like
+async def test_a_failed_retune_while_connecting_answers_connecting():
+    from skywave_radio.kiwi import KiwiInfo
+    from skywave_radio.session import ListenSession
+
+    sent, connecting = [], asyncio.Event()
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    class HeldConnect:
+        def __init__(self, host, port, **kwargs):
+            self.info = KiwiInfo(sample_rate=12000.0)
+            self.tunes = 0
+
+        async def tune(self, freq_khz):
+            self.tunes += 1
+            if self.tunes > 1:
+                raise RuntimeError("tune broke")
+
+        async def connect(self):
+            connecting.set()
+            await asyncio.Event().wait()
+
+        def abort(self):
+            pass
+
+        async def close(self):
+            pass
+
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any, client_factory=HeldConnect)
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    await asyncio.wait_for(connecting.wait(), 5)
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 9535, "mode": "am"})
+    assert sent[-1]["state"] == "connecting"
+    assert (session._mode, session._freq_khz) == ("usb", 7200)
+    await session.close()
+
+
+# Value: protects=Stop with a pump that fails as it is cancelled still answers "Stopped." and logs the pump's error; fails_when=stop() re-raises the pump's error (the listener sees "Something broke"); why_new=coverage audit (round 3b); seam=ListenSession._pump set by hand; no_claim=how a real pump fails
+async def test_stop_answers_stopped_when_the_pump_failed(caplog):
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    session = listening_session(send_text)
+
+    async def pump_that_fails_when_stopped():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise RuntimeError("pump broke") from None
+
+    session._pump = asyncio.create_task(pump_that_fails_when_stopped())
+    await asyncio.sleep(0)
+    await session.handle({"type": "stop"})
+    assert sent[-1]["state"] == "stopped" and sent[-1]["message"] == "Stopped."
+    assert "pump broke" in caplog.text
+
+
+# Value: protects=when two stopped scan tasks fail, the first error is raised and the second is logged, not left to the garbage collector; fails_when=only the first is read; why_new=coverage audit (round 3b); seam=two tasks that fail when cancelled; no_claim=real scan failures
+async def test_every_stopped_scan_error_is_read(caplog):
+    from skywave_radio.session import ListenSession
+
+    def failing(message):
+        async def scan():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise RuntimeError(message) from None
+
+        return asyncio.create_task(scan())
+
+    first, second = failing("scan one broke"), failing("scan two broke")
+    await asyncio.sleep(0)
+    with pytest.raises(RuntimeError) as e:
+        await ListenSession._stop_scan_tasks(first, second)
+    other = ({"scan one broke", "scan two broke"} - {str(e.value)}).pop()
+    assert other in caplog.text and "also failed" in caplog.text
+
+
+# Value: protects=a finished task's leftover error is logged under the task's name, so the log says which task failed; fails_when=_cancel logs an anonymous "a finished task had failed"; why_new=round 3b (TODO: _cancel's log line doesn't name the task); seam=none; no_claim=none beyond protects
+async def test_a_finished_tasks_error_is_logged_by_name(caplog):
+    from skywave_radio.session import ListenSession
+
+    async def broken_sweep():
+        raise RuntimeError("boom")
+
+    task = asyncio.create_task(broken_sweep())
+    await asyncio.wait({task})
+    await ListenSession._cancel(task)
+    assert "broken_sweep" in caplog.text and "boom" in caplog.text
+
+
+# Value: protects=shutdown waits (bounded) for socket cleanups still closing their Kiwis, so each closes cleanly instead of the process exit cutting it off; fails_when=the lifespan doesn't wait, or waits forever on a stuck one; why_new=owner D6 (round 3a adversarial review), shipped in round 3b; seam=app.state.cleanups filled by hand, SHUTDOWN_CLEANUP_TIMEOUT_S shortened; no_claim=uvicorn's own shutdown order
+async def test_shutdown_waits_for_socket_cleanups(monkeypatch, caplog):
+    from skywave_radio import server as server_module
+
+    monkeypatch.setattr(server_module, "SHUTDOWN_CLEANUP_TIMEOUT_S", 1.0)
+    app = create_app(settings())
+    finished = []
+
+    async def slow_cleanup():
+        # gstack-timing-ok: a short cleanup well inside the 1 s bound; the stuck one shows the bound holds
+        await asyncio.sleep(0.05)
+        finished.append(True)
+
+    async def stuck_cleanup():
+        await asyncio.Event().wait()
+
+    slow = asyncio.create_task(slow_cleanup())
+    stuck = asyncio.create_task(stuck_cleanup())
+    for task in (slow, stuck):  # registered as the socket handler does
+        app.state.cleanups.add(task)
+        task.add_done_callback(app.state.cleanups.discard)
+    async with app.router.lifespan_context(app):
+        pass
+    assert finished == [True]
+    assert "1 socket cleanup(s) still running at shutdown" in caplog.text
+    stuck.cancel()
+
+
+# Value: protects=a browser that leaves just as its close frame goes out doesn't surface as an ASGI traceback; fails_when=_close_bounded catches only its own timeout; why_new=round 3a adversarial review (uvicorn may raise an OSError subclass), shipped in round 3b; seam=a stand-in socket whose close raises; no_claim=which exact error uvicorn raises
+@pytest.mark.parametrize("error", [ConnectionResetError("gone"), RuntimeError("Cannot call send once a close message has been sent.")])
+async def test_a_close_frame_to_a_vanished_browser_is_quiet(error, caplog):
+    import logging
+
+    from skywave_radio.server import IDLE_CLOSE_CODE, _close_bounded
+
+    caplog.set_level(logging.INFO, logger="skywave_radio")
+
+    class Gone:
+        async def close(self, code, reason):
+            raise error
+
+    await _close_bounded(Gone(), IDLE_CLOSE_CODE, "idle")  # doesn't raise
+    assert "already gone" in caplog.text
+
+
+# Value: protects=a page reconnecting in a loop at the cap logs one refusal warning per address per interval, not one per attempt, while other addresses and later intervals still log; fails_when=every refusal logs, the throttle is global, or an address never logs again; why_new=round 3a adversarial review, shipped in round 3b; seam=TestClient's client address, REFUSAL_LOG_INTERVAL_S shortened; no_claim=real reconnect rates
+def test_refusals_are_logged_once_per_interval(caplog, monkeypatch):
+    from skywave_radio import server as server_module
+
+    app = create_app(settings(max_sockets_per_ip=1))
+    client = TestClient(app, client=PUBLIC)
+    other = TestClient(app, client=("2001:4860:4861::1", 50000))
+
+    def refuse(c, times=1):
+        for _ in range(times):
+            with c.websocket_connect("/ws", headers=ORIGIN) as refused:
+                refused.receive()
+
+    with client.websocket_connect("/ws", headers=ORIGIN), other.websocket_connect("/ws", headers=ORIGIN):
+        refuse(client, 3)
+        assert caplog.text.count("refused a socket") == 1
+        refuse(other)  # another address is logged on its own
+        assert caplog.text.count("refused a socket") == 2
+        monkeypatch.setattr(server_module, "REFUSAL_LOG_INTERVAL_S", 0.0)
+        refuse(client)  # and the first again, once its interval has passed
+        assert caplog.text.count("refused a socket") == 3
+
+
+# Value: protects=a Stop whose cancel a call turns into a KiwiError (a send to a closed Kiwi) still answers "Stopped." with no error status, and the pump ends cancelled; fails_when=_run records that KiwiError as a receiver error and sends it after Stop; why_new=round 3b state-machine review; seam=a fake Kiwi whose blocks() raises KiwiError("closed") when cancelled; no_claim=which real calls convert cancels
+async def test_a_stop_whose_cancel_becomes_a_kiwi_error_is_still_a_stop():
+    from skywave_radio.kiwi import KiwiError
+    from skywave_radio.session import ListenSession
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    client = _streaming_client(block_error_on_cancel=KiwiError("closed", "a.example closed the connection"))
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any, client_factory=client)
+    await _start_listening(session)
+    pump = session._pump
+    await session.handle({"type": "stop"})
+    await asyncio.sleep(0.05)
+    assert sent[-1]["state"] == "stopped" and sent[-1]["message"] == "Stopped."
+    assert not any(p.get("state") == "error" for p in sent)
+    assert pump.cancelled()
+
+
+# Value: protects=a same-receiver retune the Kiwi takes is applied: the new frequency and mode are stored, the demodulator is rebuilt for the new mode, and the listening status carries them; fails_when=the reordered assignments are dropped or wrongly gated, leaving the old demodulator decoding (wrong sideband); why_new=round 3b review (testing, state machines): only the failure path was tested; seam=fake Kiwi; no_claim=real Kiwi retune timing
+async def test_a_retune_the_kiwi_takes_is_applied():
+    from skywave_radio.session import ListenSession
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    client = _streaming_client()
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any, client_factory=client)
+    await _start_listening(session, mode="usb")
+    demod = session._demod
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 9535, "mode": "am"})
+    assert (session._mode, session._freq_khz) == ("am", 9535)
+    assert session._demod is not demod and session._demod.mode == "am"
+    assert sent[-1]["state"] == "listening" and (sent[-1]["mode"], sent[-1]["freqKhz"]) == ("am", 9535)
+    await session.close()
+
+
+# Value: protects=a same-receiver retune while the address still resolves is stored, so the first tune the Kiwi gets and the demodulator use it; fails_when=the resolving branch drops the new frequency or mode; why_new=round 3b state-machine review; seam=a held resolver; no_claim=real DNS timing
+async def test_a_retune_while_resolving_is_used_for_the_first_tune():
+    from skywave_radio.session import ListenSession
+
+    resolving, release = asyncio.Event(), asyncio.Event()
+
+    async def held_resolver(host, port, **kwargs):
+        resolving.set()
+        await release.wait()
+        return "127.0.0.1"
+
+    client = _streaming_client()
+    client.made.clear()
+    session = ListenSession(settings(), _ignore, _ignore, resolver=held_resolver, client_factory=client)
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    await asyncio.wait_for(resolving.wait(), 5)
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 9535, "mode": "am"})
+    release.set()
+    async with asyncio.timeout(5):
+        while not session._listening:
+            await asyncio.sleep(0.01)
+    assert len(client.made) == 1  # still one connection
+    assert client.made[0].tunes[0] == 9535
+    assert session._demod.mode == "am"
+    await session.close()
+
+
+# Value: protects=a session the browser left (no ending to report) whose audio and scan both fail to close raises one error, logs the other, and still frees its slot; fails_when=a second teardown error is left unread, or the slot is kept; why_new=round 3b state-machine review (ended-without-ending cell); seam=a send that raises ClientGone, a failing close() and a scan task that fails when cancelled; no_claim=real close failures
+async def test_a_left_session_with_two_failed_closes_frees_its_slot(caplog):
+    from skywave_radio.session import ClientGone, ListenSession, Slots
+
+    gone = asyncio.Event()
+
+    async def send_bytes(_data):
+        if gone.is_set():
+            raise ClientGone()
+
+    client = _streaming_client(close_error=RuntimeError("close broke"))
+    slots = Slots(1)
+    session = ListenSession(settings(), _ignore, send_bytes, slots=slots, resolver=_resolve_any, client_factory=client)
+    await _start_listening(session)
+
+    async def scan_that_fails_when_stopped():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise RuntimeError("scan broke") from None
+
+    session._scan = asyncio.create_task(scan_that_fails_when_stopped())
+    await asyncio.sleep(0)
+    pump = session._pump
+    gone.set()  # the browser leaves: the next audio send fails
+    await asyncio.wait_for(asyncio.wait({pump}), 5)
+    assert str(pump.exception()) in ("close broke", "scan broke")
+    assert "also failed" in caplog.text
+    assert slots.active == 0
+
+
+# Value: protects=a same-receiver retune the Kiwi stops reading ends the session for the listener: one error status saying "stopped reading", the slot freed, no "listening" after it, and the frequency left where the Kiwi last took it; fails_when=_tune reports its own error, the pump keeps playing, or the error is a generic one; why_new=owner D1 and D2 (round 3b): end-to-end check of the give-up path; seam=a fake Kiwi whose retune times out and gives the connection up, after which its reader raises that error (KiwiClient's half is tested in test_kiwi.py); no_claim=real TCP buffering
+async def test_a_retune_the_kiwi_stops_reading_ends_the_session():
+    from skywave_radio.kiwi import IQBlock, KiwiError, KiwiInfo
+    from skywave_radio.session import ListenSession, Slots
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    class StallsOnRetune:
+        def __init__(self, host, port, **kwargs):
+            self.info = KiwiInfo(sample_rate=12000.0)
+            self.connected = False
+            self.given_up = asyncio.Event()
+            self.broken = KiwiError("timeout", f"{host} stopped reading")
+
+        async def connect(self):
+            self.connected = True
+            return self.info
+
+        async def tune(self, freq_khz):
+            if self.connected:
+                self.given_up.set()  # as KiwiClient.tune does on a send timeout
+                raise self.broken
+
+        async def blocks(self):
+            while not self.given_up.is_set():
+                yield IQBlock(seq=0, rssi_dbm=-73.0, samples=np.zeros(512, np.complex64), adc_overflow=False)
+                await asyncio.sleep(0.01)
+            raise self.broken
+
+        def abort(self):
+            pass
+
+        async def close(self):
+            pass
+
+    slots = Slots(1)
+    session = ListenSession(settings(), send_text, _ignore, slots=slots, resolver=_resolve_any, client_factory=StallsOnRetune)
+    await _start_listening(session, mode="usb")
+    before = len(sent)
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 9535, "mode": "am"})
+    assert len(sent) == before  # handle() sends nothing of its own
+    await asyncio.wait_for(asyncio.wait({session._pump}), 5)
+    after = [p for p in sent[before:] if p.get("type") == "status"]
+    assert [p["state"] for p in after] == ["error"]
+    assert after[0]["code"] == "timeout" and "stopped reading" in after[0]["message"]
+    assert slots.active == 0
+    assert (session._mode, session._freq_khz) == ("usb", 7200)
+
+
+# Value: protects=a close frame to a browser that left, sent through a real Starlette WebSocket (which turns uvicorn's OSError into WebSocketDisconnect), is quiet rather than an ASGI traceback; fails_when=_close_bounded catches only OSError/RuntimeError; why_new=round 3b adversarial review: the fake-socket test passed below Starlette's wrapping; seam=a Starlette WebSocket whose ASGI send raises OSError; no_claim=which exact OSError uvicorn raises
+async def test_a_close_frame_through_starlette_to_a_vanished_browser_is_quiet(caplog):
+    import logging
+
+    from starlette.websockets import WebSocket, WebSocketState
+
+    from skywave_radio.server import TOO_MANY_SOCKETS_CODE, _close_bounded
+
+    caplog.set_level(logging.INFO, logger="skywave_radio")
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    async def send(_message):
+        raise ConnectionResetError("gone")
+
+    ws = WebSocket({"type": "websocket", "path": "/ws", "headers": []}, receive, send)
+    ws.client_state = ws.application_state = WebSocketState.CONNECTED
+    await _close_bounded(ws, TOO_MANY_SOCKETS_CODE, "too many sockets")  # doesn't raise
+    assert "already gone" in caplog.text
+
+
+# Value: protects=a Stop whose cancel a call turns into some other error (not a KiwiError) still answers "Stopped." with no error status; the error is logged; fails_when=only KiwiError is treated as the cancel, so "Something broke" goes out mid-Stop, or a Stop is logged as a crash; why_new=round 3b adversarial review; seam=a fake Kiwi whose blocks() raises RuntimeError when cancelled; no_claim=which real calls convert cancels
+async def test_a_stop_whose_cancel_becomes_another_error_is_still_a_stop(caplog):
+    import logging
+
+    from skywave_radio.session import ListenSession
+
+    caplog.set_level(logging.INFO, logger="skywave_radio.session")
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    client = _streaming_client(block_error_on_cancel=RuntimeError("converted the cancel"))
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any, client_factory=client)
+    await _start_listening(session)
+    pump = session._pump
+    await session.handle({"type": "stop"})
+    await asyncio.sleep(0.05)
+    assert sent[-1]["state"] == "stopped" and sent[-1]["message"] == "Stopped."
+    assert not any(p.get("state") == "error" for p in sent)
+    assert pump.cancelled()
+    assert "converted the cancel" in caplog.text
+    assert not any(r.levelname == "ERROR" for r in caplog.records)  # a Stop isn't logged as a crash
+
+
+# Value: protects=refusal-log entries are pruned on every refusal, logged or not, so retries inside the interval can't keep a burst of addresses in memory for good; fails_when=pruning runs only when a warning is logged; why_new=round 3b Codex review (both passes); seam=server.time replaced with a hand-driven clock; no_claim=real attack rates
+def test_refusal_log_entries_are_pruned_on_every_refusal(monkeypatch):
+    from types import SimpleNamespace
+
+    from skywave_radio import server as server_module
+
+    clock = [1000.0]
+    monkeypatch.setattr(server_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    app = create_app(settings(max_sockets_per_ip=1))
+    a = TestClient(app, client=PUBLIC)
+    b = TestClient(app, client=("2001:4860:4861::1", 50000))
+
+    def refuse(c):
+        with c.websocket_connect("/ws", headers=ORIGIN) as refused:
+            refused.receive()
+
+    with a.websocket_connect("/ws", headers=ORIGIN), b.websocket_connect("/ws", headers=ORIGIN):
+        refuse(a)  # logged at 1000
+        clock[0] = 1030.0
+        refuse(b)  # logged at 1030
+        clock[0] = 1070.0  # a's entry is stale, b's is not
+        refuse(b)  # suppressed, but still prunes a
+        assert set(app.state.refusals_logged) == {"2001:4860:4861::/64"}
+
+
+# Value: protects=shutdown also waits for a socket cleanup registered after its wait began (a handler cancelled as shutdown starts), and logs a cleanup that failed rather than leaving it unread; fails_when=the lifespan waits on a one-time snapshot or never reads failures; why_new=round 3b Codex review; seam=app.state.cleanups filled by hand; no_claim=uvicorn's own shutdown order
+async def test_shutdown_waits_for_late_cleanups_and_logs_failures(monkeypatch, caplog):
+    from skywave_radio import server as server_module
+
+    monkeypatch.setattr(server_module, "SHUTDOWN_CLEANUP_TIMEOUT_S", 2.0)
+    app = create_app(settings())
+    finished = []
+
+    async def late_cleanup():
+        await asyncio.sleep(0.05)  # gstack-timing-ok: still closing after the first cleanup ends
+        finished.append(True)
+
+    async def first_cleanup():
+        await asyncio.sleep(0)  # gstack-timing-ok: lets the shutdown wait start first
+        late = asyncio.create_task(late_cleanup())
+        app.state.cleanups.add(late)
+        late.add_done_callback(app.state.cleanups.discard)
+        raise RuntimeError("cleanup broke")
+
+    first = asyncio.create_task(first_cleanup())
+    app.state.cleanups.add(first)
+    first.add_done_callback(app.state.cleanups.discard)
+    async with app.router.lifespan_context(app):
+        pass
+    assert finished == [True]
+    assert "cleanup broke" in caplog.text
+    assert "still running at shutdown" not in caplog.text
+
+
+# Value: protects=a scan task stopped more than once while it ignores its cancel is tracked and logged once, not once per stop; fails_when=_stop_scan_tasks adds a callback every time; why_new=round 3b Codex review; seam=SCAN_STOP_TIMEOUT_S shortened, a task that ignores cancels until released; no_claim=why a real scan would ignore cancels
+async def test_a_straggler_stopped_twice_is_logged_once(monkeypatch, caplog):
+    import logging
+
+    from skywave_radio import session as session_module
+    from skywave_radio.session import ListenSession
+
+    monkeypatch.setattr(session_module, "SCAN_STOP_TIMEOUT_S", 0.05)
+    caplog.set_level(logging.INFO, logger="skywave_radio.session")
+    release = asyncio.Event()
+
+    async def stubborn():
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                pass  # ignores every cancel
+
+    task = asyncio.create_task(stubborn())
+    await asyncio.sleep(0)
+    await ListenSession._stop_scan_tasks(task)
+    await ListenSession._stop_scan_tasks(task)
+    release.set()
+    await asyncio.wait_for(asyncio.wait({task}), 2)
+    await asyncio.sleep(0)
+    assert caplog.text.count("finally stopped") == 1
+
+
+# Value: protects=a Stop that lands while the receiver's address is still being looked up, where the lookup turns the cancel into a HostRejected, still answers "Stopped." with no error status, frees the slot and logs the lookup's error; fails_when=_run reports that HostRejected as the receiver failing; why_new=round 3b review (testing, state machines) and owner D1 of the fresh run; seam=a resolver that raises HostRejected when cancelled; no_claim=which real lookups convert cancels
+async def test_a_stop_during_a_lookup_that_turns_into_a_rejection_is_still_a_stop(caplog):
+    import logging
+
+    from skywave_radio.hostguard import HostRejected
+    from skywave_radio.session import ListenSession, Slots
+
+    caplog.set_level(logging.INFO, logger="skywave_radio.session")
+    sent, resolving = [], asyncio.Event()
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    async def resolver(host, port, **kwargs):
+        resolving.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise HostRejected("dns", f"Looking up {host} took too long.") from None
+
+    slots = Slots(1)
+    session = ListenSession(settings(), send_text, _ignore, slots=slots, resolver=resolver, client_factory=_streaming_client())
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    await asyncio.wait_for(resolving.wait(), 5)
+    pump = session._pump
+    await session.handle({"type": "stop"})
+    await asyncio.sleep(0.05)
+    assert sent[-1]["state"] == "stopped" and sent[-1]["message"] == "Stopped."
+    assert not any(p.get("state") == "error" for p in sent)
+    assert pump.cancelled() and slots.active == 0
+    assert "took too long" in caplog.text
+
+
+# Value: protects=a Stop whose cancel becomes a KiwiError and whose Kiwi close then also fails still answers "Stopped." with no error status: the close error is logged, never raised in place of the cancel; fails_when=the teardown raises its error because the converted cancel left `cancelled` unset; why_new=round 3b state machines (converted cancel x teardown error) and owner D1 of the fresh run; seam=a fake Kiwi whose blocks() raises KiwiError when cancelled and whose close() fails; no_claim=real close failures
+async def test_a_converted_stop_with_a_failing_close_is_still_a_stop(caplog):
+    from skywave_radio.kiwi import KiwiError
+    from skywave_radio.session import ListenSession
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    client = _streaming_client(
+        block_error_on_cancel=KiwiError("closed", "a.example closed the connection"),
+        close_error=RuntimeError("close broke"),
+    )
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any, client_factory=client)
+    await _start_listening(session)
+    pump = session._pump
+    await session.handle({"type": "stop"})
+    await asyncio.sleep(0.05)
+    assert sent[-1]["state"] == "stopped" and sent[-1]["message"] == "Stopped."
+    assert not any(p.get("state") == "error" for p in sent)
+    assert pump.cancelled()
+    assert "close broke" in caplog.text
+
+
+# Value: protects=when the caller of _end_scan is cancelled while a scan stops (the backstop path), a scan task that fails in that wait has its error logged, and one still running past the wait is tracked and logged when it ends; fails_when=the backstop waits but neither reads errors nor registers stragglers; why_new=round 3b adversarial review (Claude, third run); seam=SCAN_STOP_TIMEOUT_S shortened, a scan task that ignores its first cancel; no_claim=why a real scan would ignore a cancel
+@pytest.mark.parametrize("finishes", ["inside the wait", "after the wait"])
+async def test_the_scan_stop_backstop_reads_errors_and_tracks_stragglers(finishes, monkeypatch, caplog):
+    import logging
+
+    from skywave_radio import session as session_module
+
+    monkeypatch.setattr(session_module, "SCAN_STOP_TIMEOUT_S", 0.2)
+    caplog.set_level(logging.INFO, logger="skywave_radio.session")
+    session = listening_session(_ignore)
+    release = asyncio.Event()
+
+    async def stubborn_scan():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()  # ignores the stop for a while, then fails
+            raise RuntimeError("scan broke late") from None
+
+    scan = session._scan = asyncio.create_task(stubborn_scan())
+    await asyncio.sleep(0)
+    ending = asyncio.create_task(session._end_scan())
+    await asyncio.sleep(0.05)  # gstack-timing-ok: lets _stop_scan_tasks start waiting
+    ending.cancel()  # the caller is cancelled mid-stop: the backstop takes over
+    await asyncio.sleep(0)
+    if finishes == "inside the wait":
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await ending
+    if finishes == "after the wait":
+        assert scan in session_module._stragglers
+        release.set()
+        await asyncio.wait_for(asyncio.wait({scan}), 2)
+        await asyncio.sleep(0)
+        assert scan not in session_module._stragglers
+    assert any("scan broke late" in r.getMessage() and r.levelname == "WARNING" for r in caplog.records)
+
+
+# Value: protects=a Stop whose cancel lands as the browser leaves (a send raising ClientGone) is still treated as the cancel: the pump ends cancelled and a failing close is logged, not raised; fails_when=the ClientGone branch swallows the cancel, letting a teardown error replace it; why_new=round 3b adversarial review (Claude, third run); seam=a fake Kiwi whose blocks() raises ClientGone when cancelled and whose close() fails; no_claim=how often a browser leaves at that instant
+async def test_a_stop_as_the_browser_leaves_is_still_a_cancel(caplog):
+    from skywave_radio.session import ClientGone, ListenSession
+
+    client = _streaming_client(block_error_on_cancel=ClientGone(), close_error=RuntimeError("close broke"))
+    session = ListenSession(settings(), _ignore, _ignore, resolver=_resolve_any, client_factory=client)
+    await _start_listening(session)
+    pump = session._pump
+    await session.stop("Stopped.")
+    assert pump.cancelled()
+    assert "close broke" in caplog.text
+    assert "pump had failed" not in caplog.text
+
+
+# Value: protects=the shutdown budget: the cleanup wait outlasts one cleanup's worst case (scan stop plus Kiwi close), and uvicorn's graceful timeout, that wait and the last teardowns at exit fit inside the container's stop period; fails_when=someone raises CLOSE_TIMEOUT_S/SCAN_STOP_TIMEOUT_S, the Dockerfile timeout or the compose period without the others, so shutdown cuts a volunteer's Kiwi close short; why_new=round 3b review (testing, third run); seam=the constants plus the Dockerfile CMD and docker-compose.yml text; no_claim=how long a real Kiwi takes to close
+def test_the_shutdown_budget_fits_the_stop_period():
+    import pathlib
+    import re
+
+    from skywave_radio import server as server_module
+    from skywave_radio.kiwi import CLOSE_TIMEOUT_S
+    from skywave_radio.session import SCAN_STOP_TIMEOUT_S
+
+    one_cleanup = SCAN_STOP_TIMEOUT_S + CLOSE_TIMEOUT_S
+    assert server_module.SHUTDOWN_CLEANUP_TIMEOUT_S > one_cleanup
+    root = pathlib.Path(__file__).resolve().parents[3]
+    graceful = re.search(r'"--timeout-graceful-shutdown", "(\d+)"', (root / "apps/radio/Dockerfile").read_text())
+    period = re.search(r"stop_grace_period: (\d+)s", (root / "docker-compose.yml").read_text())
+    assert graceful and period
+    # uvicorn's wait, the cleanup wait, then asyncio.run's exit waiting on what's left.
+    assert int(graceful[1]) + server_module.SHUTDOWN_CLEANUP_TIMEOUT_S + one_cleanup < int(period[1])

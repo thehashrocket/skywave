@@ -6,6 +6,8 @@ Run with:  uvicorn skywave_radio.server:app --port 8765
 from __future__ import annotations
 
 import asyncio
+import collections
+import contextlib
 import hmac
 import ipaddress
 import json
@@ -32,6 +34,14 @@ TOO_MANY_SOCKETS_CODE = 4001
 # How long a close frame we start may take. A browser that stopped reading can
 # block it; past this, returning drops the connection without one.
 CLOSE_FRAME_TIMEOUT_S = 2.0
+# How long shutdown waits for socket cleanups still closing their Kiwis (each
+# is bounded on its own, about 4.5 s at worst). Past this, asyncio.run's exit
+# cancels what's left and waits for that teardown too; the container's stop
+# period (docker-compose.yml) covers uvicorn's 15 s, this and that.
+SHUTDOWN_CLEANUP_TIMEOUT_S = 5.0
+# One "refused a socket" warning per address per this many seconds, so a page
+# reconnecting in a loop doesn't flood the log.
+REFUSAL_LOG_INTERVAL_S = 60.0
 
 
 async def _close_bounded(ws: WebSocket, code: int, reason: str) -> None:
@@ -40,6 +50,11 @@ async def _close_bounded(ws: WebSocket, code: int, reason: str) -> None:
             await ws.close(code=code, reason=reason)
     except TimeoutError:
         log.info("socket not reading; dropping it without a close frame")
+    except (OSError, RuntimeError, WebSocketDisconnect):
+        # The browser left as the frame went out (Starlette turns uvicorn's
+        # OSError into WebSocketDisconnect, or raises a RuntimeError once the
+        # socket is closed); the socket is gone either way.
+        log.info("socket already gone; no close frame sent")
 
 
 def socket_owner(host: str | None) -> str | None:
@@ -80,8 +95,31 @@ def check_settings(settings: Settings) -> None:
 def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
     settings = settings or Settings.from_env()
     check_settings(settings)
-    app = FastAPI(title="skywave radio service")
+    # Socket cleanups still running after their handler was cancelled; held
+    # here so they aren't garbage-collected before they finish.
+    cleanups: set[asyncio.Task[None]] = set()
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        # uvicorn waits for socket handlers before this until its graceful
+        # shutdown timeout (15 s in the Dockerfile), then cancels them; let their
+        # cleanups close each Kiwi cleanly (bounded) rather than the process
+        # exit cutting them off. The container's stop period covers both.
+        # Looped: a handler cancelled as this wait starts adds its cleanup late.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + SHUTDOWN_CLEANUP_TIMEOUT_S
+        while cleanups and (remaining := deadline - loop.time()) > 0:
+            done, _ = await asyncio.wait(set(cleanups), timeout=remaining)
+            for task in done:
+                if not task.cancelled() and task.exception() is not None:
+                    log.warning("a socket cleanup failed at shutdown: %r", task.exception(), exc_info=task.exception())
+        if cleanups:
+            log.warning("%d socket cleanup(s) still running at shutdown", len(cleanups))
+
+    app = FastAPI(title="skywave radio service", lifespan=lifespan)
     app.state.settings = settings
+    app.state.cleanups = cleanups
     # Caps live Kiwi connections, not browser sockets: a tab sitting on
     # "Stopped" or "Problem" holds no slot.
     slots = app.state.slots = Slots(settings.max_sessions)
@@ -92,9 +130,9 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
     # Browser sockets open per socket_owner, for MAX_SOCKETS_PER_IP.
     open_sockets: dict[str, int] = {}
     app.state.open_sockets = open_sockets
-    # Socket cleanups still running after their handler was cancelled; held
-    # here so they aren't garbage-collected before they finish.
-    cleanups: set[asyncio.Task[None]] = set()
+    # When each owner's last refusal was logged.
+    refusals_logged: collections.OrderedDict[str, float] = collections.OrderedDict()
+    app.state.refusals_logged = refusals_logged
 
     @app.get("/healthz")
     async def healthz() -> dict:
@@ -118,7 +156,16 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
         owner = socket_owner(client_ip)
         await ws.accept()
         if owner is not None and open_sockets.get(owner, 0) >= settings.max_sockets_per_ip:
-            log.warning("refused a socket: %s already holds %d", owner, settings.max_sockets_per_ip)
+            now = time.monotonic()
+            # Pruned on every refusal, logged or not, so retries inside the
+            # interval can't keep a burst of addresses here for good.
+            # Entries are only ever added, so the oldest come first: stop at the
+            # first fresh one (an OrderedDict pops its front cheaply).
+            while refusals_logged and now - next(iter(refusals_logged.values())) >= REFUSAL_LOG_INTERVAL_S:
+                refusals_logged.popitem(last=False)
+            if owner not in refusals_logged:
+                refusals_logged[owner] = now
+                log.warning("refused a socket: %s already holds %d", owner, settings.max_sockets_per_ip)
             await _close_bounded(ws, TOO_MANY_SOCKETS_CODE, "too many sockets")
             return
         counted = False

@@ -205,11 +205,16 @@ class KiwiConnection:
         # A socket whose close() is still waiting: abort() can reach it, and a
         # second close() waits on it.
         self._closing: ClientConnection | None = None
-        # Set by abort(): a dial still in progress drops its socket on arrival.
+        # Set by abort(): no dial starts after it, and one in progress is cancelled.
         self._aborted = False
+        # The dial in progress, so abort() can cancel it before any handshake.
+        self._dialing: asyncio.Future[ClientConnection] | None = None
         self._last_keepalive = 0.0
         # Whether the Kiwi has sent anything since we sent auth.
         self._answered = False
+        # Why this connection was given up while still open (a retune the Kiwi
+        # stopped reading): what any read or send raises once the socket is dropped.
+        self._broken: KiwiError | None = None
 
     @property
     def hostport(self) -> str:
@@ -246,42 +251,73 @@ class KiwiConnection:
             raise KiwiError("timeout", f"{self.host} never sent {self.HANDSHAKE_WANTS}") from e
         return self.info
 
+    def _dropped(self) -> KiwiError:
+        return KiwiError("closed", f"{self.host} was dropped while connecting")
+
     async def _dial(self) -> None:
         """Open the WebSocket, or raise KiwiError (InvalidStatus for a redirect)."""
+        if self._aborted:
+            # abort() already ran (the https redial after it, too): dial nothing.
+            raise self._dropped()
         url = self.url
         try:
             parse_uri(url)
         except (websockets.InvalidURI, ValueError) as e:
             raise KiwiError("invalid", f"{self.hostport} isn't an address we can dial.") from e
+        dial: asyncio.Future[ClientConnection] | None = None
         try:
-            self._ws = await asyncio.wait_for(
-                _connect(
-                    url,
-                    host=self.connect_host,
-                    port=self.port,
-                    # Never via a proxy from the environment: that would dial
-                    # the name, not the address hostguard checked.
-                    proxy=None,
-                    max_size=MAX_FRAME_BYTES,
-                    compression=None,
-                    open_timeout=self.timeout_s,
-                    close_timeout=CLOSE_TIMEOUT_S,
-                    ping_interval=None,  # the Kiwi has its own keepalive
-                    user_agent_header="skywave",
-                ),
-                timeout=self.timeout_s,
+            dial = asyncio.ensure_future(
+                asyncio.wait_for(
+                    _connect(
+                        url,
+                        host=self.connect_host,
+                        port=self.port,
+                        # Never via a proxy from the environment: that would dial
+                        # the name, not the address hostguard checked.
+                        proxy=None,
+                        max_size=MAX_FRAME_BYTES,
+                        compression=None,
+                        open_timeout=self.timeout_s,
+                        close_timeout=CLOSE_TIMEOUT_S,
+                        ping_interval=None,  # the Kiwi has its own keepalive
+                        user_agent_header="skywave",
+                    ),
+                    timeout=self.timeout_s,
+                )
             )
+            self._dialing = dial
+            self._ws = await dial
+        except asyncio.CancelledError:
+            if dial is not None and dial.done() and not dial.cancelled():
+                # The dial had already finished when our caller's cancel arrived
+                # in its place: drop the socket it opened, which nothing else
+                # holds, or it stays open on the Kiwi after the slot frees.
+                if dial.exception() is None:
+                    dial.result().transport.abort()
+                raise
+            current = asyncio.current_task()
+            if (
+                self._aborted
+                and dial is not None
+                and dial.cancelled()
+                and not (current is not None and current.cancelling())
+            ):
+                # abort() cancelled the dial, not our caller: no handshake happened.
+                raise self._dropped() from None
+            raise
         except InvalidStatus as e:
             if e.response.status_code in REDIRECT_STATUSES:
                 raise
             raise self._unreachable(e) from e
         except (OSError, asyncio.TimeoutError, websockets.InvalidHandshake) as e:
             raise self._unreachable(e) from e
+        finally:
+            self._dialing = None
         if self._aborted:
             # abort() ran while we dialed: drop the socket we just got.
             ws, self._ws = self._ws, None
             ws.transport.abort()
-            raise KiwiError("closed", f"{self.host} was dropped while connecting")
+            raise self._dropped()
 
     def _https_upgrade(self, e: InvalidStatus) -> int | None:
         """The port to redial over https, if `e` is a redirect we follow.
@@ -343,6 +379,8 @@ class KiwiConnection:
         try:
             msg = await self._ws.recv()
         except websockets.ConnectionClosed as e:
+            if self._broken is not None:
+                raise self._broken from e
             raise KiwiError("closed", f"{self.host} closed the connection") from e
         return msg if isinstance(msg, bytes) else msg.encode()
 
@@ -364,12 +402,17 @@ class KiwiConnection:
         except asyncio.TimeoutError as e:
             raise KiwiError("timeout", f"{self.host} stopped reading") from e
         except websockets.ConnectionClosed as e:
+            if self._broken is not None:
+                raise self._broken from e
             raise KiwiError("closed", f"{self.host} closed the connection") from e
 
     def abort(self) -> None:
-        """Drop the socket at once: an open one, one a close() is still waiting
-        on, or one a dial still in progress is about to return."""
+        """Drop the socket at once: an open one, or one a close() is still
+        waiting on. A dial still in progress is cancelled (one whose handshake
+        already finished drops its socket on arrival), and none starts after."""
         self._aborted = True
+        if self._dialing is not None:
+            self._dialing.cancel()
         for ws in (self._ws, self._closing):
             if ws is not None:
                 ws.transport.abort()
@@ -490,9 +533,25 @@ class KiwiClient(KiwiConnection):
         return rate
 
     async def tune(self, freq_khz: float) -> None:
-        self.freq_khz = freq_khz
+        old, self.freq_khz = self.freq_khz, freq_khz
         if self._ws is not None and self.info.sample_rate is not None:
-            await self._send_mod()
+            try:
+                await self._send_mod()
+            except KiwiError as e:
+                if e.code != "timeout":
+                    # The send surely failed: keep the frequency it's still on.
+                    self.freq_khz = old
+                    raise
+                # The Kiwi stopped reading, but the frame may already be queued
+                # and taken later, so its tuning is unknown. Give the connection
+                # up: the reader then ends the session with this error, rather
+                # than decoding a mode the Kiwi may or may not be on.
+                self._broken = e
+                self.abort()
+                raise
+            except BaseException:
+                self.freq_khz = old
+                raise
 
     async def _send_mod(self) -> None:
         assert self.freq_khz is not None

@@ -383,7 +383,7 @@ async def test_abort_reaches_a_socket_that_is_still_closing():
         await asyncio.gather(closing, return_exceptions=True)
 
 
-# Value: protects=abort() drops an open socket, and one a dial still in progress (or not yet started) returns afterwards, so a stuck scan's waterfall can't stay open on the Kiwi; fails_when=abort() only reaches sockets that already exist, or a later dial forgets it; why_new=only the closing case was tested; seam=kiwi._connect (the dial is held by hand) and KiwiClient._ws; no_claim=real websockets handshake timing
+# Value: protects=abort() drops an open socket, cancels a dial still in progress before any handshake, and stops a dial that hasn't started from dialing at all, so a stuck scan's waterfall never completes a handshake on the Kiwi after its slot is freed; fails_when=abort() only reaches sockets that already exist, lets a dial in progress finish its handshake, or a later dial forgets it; why_new=only the closing case was tested, then round 3b (TODO: abort stops an in-flight dial); seam=kiwi._connect (the dial is held by hand) and KiwiClient._ws; no_claim=real websockets handshake timing
 @pytest.mark.parametrize("when", ["open", "dialing", "before"])
 async def test_abort_drops_an_open_or_still_dialing_socket(when, monkeypatch):
     aborted = []
@@ -398,8 +398,10 @@ async def test_abort_drops_an_open_or_still_dialing_socket(when, monkeypatch):
         assert aborted == [True]
         return
     if when == "before":
+        dialed = []
 
         async def instant_connect(*args, **kwargs):
+            dialed.append(True)
             return Socket()
 
         monkeypatch.setattr(kiwi_module, "_connect", instant_connect)
@@ -407,29 +409,201 @@ async def test_abort_drops_an_open_or_still_dialing_socket(when, monkeypatch):
         with pytest.raises(KiwiError) as e:
             await asyncio.wait_for(client._dial(), timeout=5)
         assert e.value.code == "closed"
-        assert aborted == [True]
+        assert dialed == []  # never dialed, so nothing to drop
         assert client._ws is None
         return
-    dialing, may_open = asyncio.Event(), asyncio.Event()
+    dialing, cancelled = asyncio.Event(), []
 
     async def held_connect(*args, **kwargs):
         dialing.set()
-        await may_open.wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
         return Socket()
 
     monkeypatch.setattr(kiwi_module, "_connect", held_connect)
     dial = asyncio.create_task(client._dial())
-    try:
-        await asyncio.wait_for(dialing.wait(), timeout=5)
-        client.abort()
-        assert aborted == []  # nothing to drop yet
-    finally:
-        may_open.set()
+    await asyncio.wait_for(dialing.wait(), timeout=5)
+    client.abort()
+    with pytest.raises(KiwiError) as e:
+        await asyncio.wait_for(dial, timeout=5)
+    assert e.value.code == "closed"
+    assert cancelled == [True]  # the handshake itself was stopped
+    assert aborted == []  # no socket ever opened
+    assert client._ws is None
+
+
+# Value: protects=an abort that lands just as the handshake completes (the dial finishes despite the cancel) still drops the new socket, so no Kiwi channel outlives its slot; fails_when=the check after the dial is removed; why_new=coverage audit (round 3b): rewriting the "dialing" case to cover cancellation left this path untested; seam=kiwi._connect (a handshake that finishes anyway when cancelled); no_claim=real websockets timing
+async def test_an_abort_landing_as_the_handshake_completes_drops_the_socket(monkeypatch):
+    aborted, dialing = [], asyncio.Event()
+
+    class Socket:
+        transport = type("Transport", (), {"abort": lambda self: aborted.append(True)})()
+
+    async def finishes_anyway(*args, **kwargs):
+        dialing.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            pass  # the handshake had already finished
+        return Socket()
+
+    monkeypatch.setattr(kiwi_module, "_connect", finishes_anyway)
+    client = KiwiClient("kiwi.example")
+    dial = asyncio.create_task(client._dial())
+    await asyncio.wait_for(dialing.wait(), timeout=5)
+    client.abort()
     with pytest.raises(KiwiError) as e:
         await asyncio.wait_for(dial, timeout=5)
     assert e.value.code == "closed"
     assert aborted == [True]
     assert client._ws is None
+
+
+# Value: protects=a caller cancelled after its dial already finished (the socket open, the caller not yet resumed) drops that socket rather than orphaning it open on the Kiwi; fails_when=the cancel branch re-raises without looking at the finished dial; why_new=round 3b security review: running the dial as its own task opened this window; seam=kiwi._connect returning at once, the cancel timed between the dial finishing and the caller resuming; no_claim=how often real cancels land there
+async def test_a_cancel_after_the_dial_finished_drops_its_socket(monkeypatch):
+    aborted = []
+
+    class Socket:
+        transport = type("Transport", (), {"abort": lambda self: aborted.append(True)})()
+
+    async def instant_connect(*args, **kwargs):
+        return Socket()
+
+    monkeypatch.setattr(kiwi_module, "_connect", instant_connect)
+    client = KiwiClient("kiwi.example")
+    caller = asyncio.create_task(client._dial())
+    async with asyncio.timeout(5):
+        while not (client._dialing is not None and client._dialing.done()):
+            await asyncio.sleep(0)
+    caller.cancel()  # lands before the caller resumes with the socket
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    assert aborted == [True]
+    assert client._ws is None
+
+
+# Value: protects=a retune whose send surely failed (the connection closed) leaves the client on the frequency it is still on; fails_when=tune() stores the new frequency before the send succeeds; why_new=round 3b state-machine review; seam=KiwiClient._send_mod raising, _ws set by hand; no_claim=real send failures
+async def test_a_failed_tune_keeps_the_old_frequency(monkeypatch):
+    client = KiwiClient("kiwi.example")
+    client._ws = object()
+    client.info.sample_rate = 12000.0
+    client.freq_khz = 7200.0
+
+    async def refused():
+        raise KiwiError("closed", "kiwi.example closed the connection")
+
+    monkeypatch.setattr(client, "_send_mod", refused)
+    with pytest.raises(KiwiError):
+        await client.tune(9535.0)
+    assert client.freq_khz == 7200.0
+
+
+# Value: protects=a retune the Kiwi stops reading (the frame may still be queued) gives the connection up, and the reader then ends the session with "stopped reading" rather than going on with tuning the service can't know; fails_when=tune() rolls back and keeps the connection, or the reader reports a generic "closed"; why_new=owner D1 (round 3b red team: a queued retune could be taken later and garble audio); seam=a stand-in socket whose send never finishes and whose recv ends once the transport is aborted; no_claim=real TCP buffering
+async def test_a_retune_the_kiwi_stops_reading_ends_the_connection():
+    from websockets.exceptions import ConnectionClosedError
+
+    gone = asyncio.Event()
+
+    class Stalled:
+        transport = type("Transport", (), {"abort": lambda self: gone.set()})()
+
+        async def send(self, msg):
+            await asyncio.Event().wait()
+
+        async def recv(self):
+            await gone.wait()
+            raise ConnectionClosedError(None, None)
+
+    client = KiwiClient("kiwi.example", timeout_s=0.1)
+    client._ws = Stalled()
+    client.info.sample_rate = 12000.0
+    client.freq_khz = 7200.0
+    with pytest.raises(KiwiError) as e:
+        await asyncio.wait_for(client.tune(9535.0), 5)
+    assert e.value.code == "timeout"
+    assert gone.is_set()  # given up
+    with pytest.raises(KiwiError) as read:
+        await asyncio.wait_for(client._recv(), 5)
+    assert read.value.code == "timeout" and "stopped reading" in str(read.value)
+
+
+# Value: protects=once a retune gave the connection up, a send (a keepalive, an MSG reply) that hits the dropped socket also raises "stopped reading", so the listener sees the reason whichever call the reader was in; fails_when=_send turns it into a generic "closed"; why_new=round 3b review pass 3 (four reviewers); seam=a stand-in socket whose send raises ConnectionClosed, _broken set by hand; no_claim=which call the reader is in
+async def test_a_send_after_the_connection_was_given_up_says_why():
+    from websockets.exceptions import ConnectionClosedError
+
+    class Dropped:
+        async def send(self, msg):
+            raise ConnectionClosedError(None, None)
+
+    client = KiwiClient("kiwi.example")
+    client._ws = Dropped()
+    client._broken = KiwiError("timeout", "kiwi.example stopped reading")
+    with pytest.raises(KiwiError) as e:
+        await client._send("SET keepalive")
+    assert e.value.code == "timeout" and "stopped reading" in str(e.value)
+
+
+# Value: protects=a retune cancelled while its send is in flight (the browser left) keeps the old frequency and doesn't give the connection up; fails_when=the cancel path takes the timeout branch or keeps the new frequency; why_new=round 3b state machines (send-cancelled x tune); seam=KiwiClient._send_mod held, _ws set by hand; no_claim=real cancel timing
+async def test_a_cancelled_retune_keeps_the_old_frequency(monkeypatch):
+    client = KiwiClient("kiwi.example")
+    client._ws = object()
+    client.info.sample_rate = 12000.0
+    client.freq_khz = 7200.0
+    sending = asyncio.Event()
+
+    async def held():
+        sending.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(client, "_send_mod", held)
+    retune = asyncio.create_task(client.tune(9535.0))
+    await asyncio.wait_for(sending.wait(), 5)
+    retune.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await retune
+    assert client.freq_khz == 7200.0 and client._broken is None
+
+
+# Value: protects=a cancel aimed at the dialing task itself still propagates as a cancel when abort() also ran, so the caller's cancel handling (a scan closing its half-open waterfall) still runs; fails_when=_dial turns every cancel after abort into KiwiError("closed"); why_new=coverage audit (round 3b); seam=kiwi._connect held; no_claim=real handshake timing
+async def test_the_callers_cancel_wins_over_abort_while_dialing(monkeypatch):
+    dialing = asyncio.Event()
+
+    async def held_connect(*args, **kwargs):
+        dialing.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(kiwi_module, "_connect", held_connect)
+    client = KiwiClient("kiwi.example")
+    dial = asyncio.create_task(client._dial())
+    await asyncio.wait_for(dialing.wait(), timeout=5)
+    client.abort()
+    dial.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await dial
+
+
+# Value: protects=a connection aborted while its first dial is answered with an https redirect never redials, so an aborted scan waterfall can't open an extra connection to the volunteer's Kiwi; fails_when=connect() redials over https without checking abort; why_new=round 3b (TODO: the https redial after abort); seam=kiwi._connect (a redirect answer, with abort landing during it); no_claim=real redirect timing
+async def test_an_aborted_connection_does_not_redial_over_https(monkeypatch):
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    client = KiwiClient("kiwi.example", 8073)
+    calls = []
+
+    async def redirecting_connect(*args, **kwargs):
+        calls.append(kwargs.get("port"))
+        client.abort()  # the session ends while the Kiwi answers
+        raise InvalidStatus(Response(301, "Moved", Headers({"Location": "https://kiwi.example/"})))
+
+    monkeypatch.setattr(kiwi_module, "_connect", redirecting_connect)
+    with pytest.raises(KiwiError) as e:
+        await asyncio.wait_for(client.connect(), timeout=5)
+    assert e.value.code == "closed"
+    assert calls == [8073]  # no second, https dial
 
 
 # Value: protects=a second close() while the first is still saying goodbye waits until the socket is gone, so "close() returned" can't free a slot with the Kiwi channel open; fails_when=close() returns at once whenever _ws is already None; why_new=review (Claude adversarial): close() wasn't re-entrant; seam=KiwiClient._ws (a stand-in socket whose close is held by hand); no_claim=real websockets close timing
