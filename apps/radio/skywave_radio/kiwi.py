@@ -202,6 +202,11 @@ class KiwiConnection:
         self.timestamp = timestamp
         self.info = KiwiInfo()
         self._ws: ClientConnection | None = None
+        # A socket whose close() is still waiting: abort() can reach it, and a
+        # second close() waits on it.
+        self._closing: ClientConnection | None = None
+        # Set by abort(): a dial still in progress drops its socket on arrival.
+        self._aborted = False
         self._last_keepalive = 0.0
         # Whether the Kiwi has sent anything since we sent auth.
         self._answered = False
@@ -272,6 +277,11 @@ class KiwiConnection:
             raise self._unreachable(e) from e
         except (OSError, asyncio.TimeoutError, websockets.InvalidHandshake) as e:
             raise self._unreachable(e) from e
+        if self._aborted:
+            # abort() ran while we dialed: drop the socket we just got.
+            ws, self._ws = self._ws, None
+            ws.transport.abort()
+            raise KiwiError("closed", f"{self.host} was dropped while connecting")
 
     def _https_upgrade(self, e: InvalidStatus) -> int | None:
         """The port to redial over https, if `e` is a redirect we follow.
@@ -356,9 +366,31 @@ class KiwiConnection:
         except websockets.ConnectionClosed as e:
             raise KiwiError("closed", f"{self.host} closed the connection") from e
 
+    def abort(self) -> None:
+        """Drop the socket at once: an open one, one a close() is still waiting
+        on, or one a dial still in progress is about to return."""
+        self._aborted = True
+        for ws in (self._ws, self._closing):
+            if ws is not None:
+                ws.transport.abort()
+
     async def close(self) -> None:
+        if self._ws is None and self._closing is not None:
+            # Another close() is still saying goodbye: wait for it, so a return
+            # always means the socket is gone. Its timeout or abort should end
+            # this; if the socket still isn't gone by then, drop it ourselves.
+            closing = self._closing
+            try:
+                await asyncio.wait_for(closing.wait_closed(), timeout=CLOSE_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                closing.transport.abort()
+            except asyncio.CancelledError:
+                closing.transport.abort()
+                raise
+            return
         if self._ws is not None:
             ws, self._ws = self._ws, None
+            self._closing = ws
             # ws.close() first waits, with no timeout, for our send buffer to
             # drain, so a Kiwi that stopped reading would hang it and keep the
             # listener slot. Give up after CLOSE_TIMEOUT_S and drop the socket.
@@ -366,11 +398,18 @@ class KiwiConnection:
                 await asyncio.wait_for(ws.close(), timeout=CLOSE_TIMEOUT_S)
             except asyncio.TimeoutError:
                 ws.transport.abort()
-            except BaseException:
-                # Cancelled, or the close itself failed: drop the socket either
-                # way, or the listener slot can free while the channel stays open.
+            except asyncio.CancelledError:
+                # Drop the socket, or the listener slot can free while the
+                # channel stays open.
                 ws.transport.abort()
                 raise
+            except Exception as e:
+                # Dropped either way. A failed goodbye isn't the caller's
+                # problem: raising it would turn a normal ending into a crash.
+                ws.transport.abort()
+                log.warning("closing %s failed: %s", self.host, e, exc_info=True)
+            finally:
+                self._closing = None
 
 
 class KiwiClient(KiwiConnection):
