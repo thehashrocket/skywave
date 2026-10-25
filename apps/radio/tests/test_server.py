@@ -1228,7 +1228,7 @@ async def test_a_failed_handshake_from_an_ended_connection_closes_its_waterfall(
     await session.close()
 
 
-# Value: protects=a scan from a connection that has ended touches nothing on the session: the waterfall there belongs to the next connection, so it is neither switched to fast mode nor closed; fails_when=_paired_waterfall's entry check is dropped, so an old scan reuses (and later drains or closes) the next connection's waterfall; why_new=the other ended-connection tests had no waterfall on the session, so they only reached the later checks; seam=ListenSession._client and ._waterfall (set by hand to stand in for the next connection); no_claim=how a real next connection builds its waterfall
+# Value: protects=a scan from a connection that has ended touches nothing on the session: the waterfall and idle reader there belong to the next connection, so the waterfall is neither switched to fast mode nor closed, and the idle reader is neither cancelled nor dropped; fails_when=_paired_waterfall's entry check is dropped, so an old scan stops the next connection's idle reader before the later re-check runs; why_new=the other ended-connection tests had no waterfall or idle reader on the session; seam=ListenSession._client and ._waterfall (set by hand to stand in for the next connection); no_claim=how a real next connection builds its waterfall
 async def test_a_scan_from_an_ended_connection_leaves_the_next_waterfall_alone():
     from skywave_radio.kiwi import KiwiError
     from skywave_radio.session import ListenSession, Slots
@@ -1258,11 +1258,16 @@ async def test_a_scan_from_an_ended_connection_leaves_the_next_waterfall_alone()
     old = session._client
     old.host, old.port, old.connect_host, old.secure, old.timestamp = "a.example", 8073, "127.0.0.1", False, 1
     session._waterfall = NextWaterfall()
-    session._client = object()  # the next connection, with its own waterfall
+    next_idle = asyncio.create_task(asyncio.Event().wait())
+    session._waterfall_idle = next_idle
+    session._client = object()  # the next connection, with its own waterfall and idle reader
     with pytest.raises(KiwiError):
         await asyncio.wait_for(session._paired_waterfall(old), timeout=5)
     assert calls == []
+    assert session._waterfall_idle is next_idle and not next_idle.done()
+    next_idle.cancel()
     session._waterfall = None
+    session._waterfall_idle = None
     session._client = old
     await session.close()
 
@@ -1727,6 +1732,60 @@ async def test_a_stale_scan_leaves_the_next_connections_waterfall_alone():
     next_idle.cancel()
     session._waterfall = None
     session._waterfall_idle = None
+    session._client = old
+    await session.close()
+
+
+# Value: protects=a stale scan whose connection ends while its kept waterfall switches to fast mode gives up instead of handing back (and sweeping) the waterfall the next connection stored meanwhile; fails_when=_paired_waterfall returns self._waterfall after the fast() await without re-checking the connection; why_new=review (red team), within owner D9; seam=ListenSession._client and ._waterfall (swapped by hand during a held fast()); no_claim=how a real next connection builds its waterfall
+async def test_a_stale_scan_does_not_take_a_waterfall_stored_during_fast():
+    from skywave_radio.kiwi import KiwiError
+    from skywave_radio.session import ListenSession, Slots
+
+    already_closed = asyncio.Event()
+    already_closed.set()
+    switching, may_switch = asyncio.Event(), asyncio.Event()
+    next_calls = []
+
+    class OldWaterfall:
+        async def fast(self):
+            switching.set()
+            await may_switch.wait()
+
+        async def close(self):
+            pass
+
+    class NextWaterfall:
+        async def fast(self):
+            next_calls.append("fast")
+
+        async def close(self):
+            next_calls.append("close")
+
+    session = ListenSession(
+        settings(),
+        _ignore,
+        _ignore,
+        slots=Slots(1),
+        resolver=_resolve_any,
+        client_factory=_held_close_client("stop", asyncio.Event(), already_closed),
+    )
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    while not session._listening:
+        await asyncio.sleep(0.01)
+    old = session._client
+    old.host = "a.example"
+    session._waterfall = OldWaterfall()
+    pairing = asyncio.create_task(session._paired_waterfall(old))
+    try:
+        await asyncio.wait_for(switching.wait(), timeout=5)
+        session._client = object()  # the next connection comes up meanwhile
+        session._waterfall = NextWaterfall()
+    finally:
+        may_switch.set()
+    with pytest.raises(KiwiError):
+        await asyncio.wait_for(pairing, timeout=5)
+    assert next_calls == []
+    session._waterfall = None
     session._client = old
     await session.close()
 

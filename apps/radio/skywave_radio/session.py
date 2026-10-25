@@ -685,13 +685,18 @@ class ListenSession:
             raise KiwiError("closed", f"{client.host}: the receiver connection ended")
         self._waterfall_idle = None
         if self._waterfall is not None:
-            refusal = getattr(self._waterfall, "refusal", None)
+            kept = self._waterfall
+            refusal = getattr(kept, "refusal", None)
             if refusal is not None:
                 # Refused but kept open (it may carry the audio): it can't
                 # sweep, and the receiver's reason still stands.
                 raise refusal
-            await self._waterfall.fast()
-            return self._waterfall
+            await kept.fast()
+            if self._client is not client:
+                # Ended while switching speed: never hand back (and sweep)
+                # whatever waterfall the next connection has stored by now.
+                raise KiwiError("closed", f"{client.host}: the receiver connection ended")
+            return kept
         waterfall = self._waterfall_factory(
             client.host,
             client.port,
