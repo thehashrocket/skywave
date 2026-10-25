@@ -41,6 +41,13 @@ export type RadioErrorCode = (typeof RADIO_ERROR_CODES)[number];
 const KNOWN_CODES: ReadonlySet<string> = new Set(RADIO_ERROR_CODES);
 // How long a new connection to the radio service may take to open.
 const CONNECT_TIMEOUT_MS = 10_000;
+// The service closes a socket left idle (nothing playing, no messages) with
+// this code. It's a quiet hang-up, not an outage: the next tune reconnects.
+// Keep in step with IDLE_CLOSE_CODE in apps/radio/skywave_radio/server.py.
+export const IDLE_CLOSE_CODE = 4000;
+// The service refuses a socket when this browser's address already holds too
+// many. Keep in step with TOO_MANY_SOCKETS_CODE in apps/radio/skywave_radio/server.py.
+export const TOO_MANY_SOCKETS_CODE = 4001;
 
 export type RadioStatus = {
   state: RadioState;
@@ -152,6 +159,8 @@ export function useRadio() {
   // pendingRef, a dropped socket doesn't clear it (the tune still goes out on
   // a new socket and must carry the newest dial); only tune and stop do.
   const latestRef = useRef<Tuning | null>(null);
+  // tune(), for a socket's close handler that must send a tune again.
+  const retryTuneRef = useRef<((t: Tuning) => Promise<void>) | null>(null);
   // The socket a dial move for the tune in progress already went out on: on
   // that socket the service has the newer tuning, and the tune's own send
   // would undo it. (A fresh socket has had nothing, so the tune must go.)
@@ -367,10 +376,12 @@ export function useRadio() {
         if (typeof e.data === "string") handleText(e.data);
         else handleBinary(e.data as ArrayBuffer);
       };
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         // Only the live socket may touch audio and status. After Stop and a
         // quick Listen, the old socket's close arrives while a new one plays.
         if (wsRef.current !== ws) return;
+        // A Listen that crossed an idle hang-up in flight: send it again below.
+        const crossed = event.code === IDLE_CLOSE_CODE && tuningRef.current ? latestRef.current : null;
         wsRef.current = null;
         nodeRef.current?.port.postMessage({ type: "reset" });
         listeningRef.current = null;
@@ -379,6 +390,19 @@ export function useRadio() {
         setMeter(null);
         setTuningBoth(false);
         setHeardAudioBoth(false);
+        // Hung up for being idle: nothing was playing, so the status stands.
+        if (event.code === IDLE_CLOSE_CODE) {
+          if (crossed && !stoppingRef.current) void retryTuneRef.current?.(crossed);
+          return;
+        }
+        if (event.code === TOO_MANY_SOCKETS_CODE) {
+          setStatus({
+            state: "error",
+            message:
+              "Too many radio connections are open from your network (your other tabs, or others sharing it). Close a skywave tab, or try again later.",
+          });
+          return;
+        }
         if (!stoppingRef.current) {
           // Always a fresh, uncoded error: anything waiting on this socket
           // (Pick best's retries) must see that nothing more is coming.
@@ -435,6 +459,9 @@ export function useRadio() {
     },
     [ensureAudio, ensureSocket, setTuningBoth, setHeardAudioBoth, clearScan],
   );
+  useEffect(() => {
+    retryTuneRef.current = tune;
+  }, [tune]);
 
   /**
    * Retune the receiver being listened to or tuned; never opens a connection

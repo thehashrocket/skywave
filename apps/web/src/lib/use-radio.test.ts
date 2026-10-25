@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useRadio, type Tuning } from "./use-radio";
+import { IDLE_CLOSE_CODE, TOO_MANY_SOCKETS_CODE, useRadio, type Tuning } from "./use-radio";
 
 /** A WebSocket whose close completes only when the test says so, like a real close handshake. */
 class FakeSocket {
@@ -16,7 +16,7 @@ class FakeSocket {
   onopen: (() => void) | null = null;
   onerror: (() => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code: number }) => void) | null = null;
 
   constructor(readonly url: string) {
     FakeSocket.instances.push(this);
@@ -37,9 +37,9 @@ class FakeSocket {
     this.readyState = FakeSocket.CLOSING;
   }
 
-  finishClose() {
+  finishClose(code = 1006) {
     this.readyState = FakeSocket.CLOSED;
-    this.onclose?.();
+    this.onclose?.({ code });
   }
 
   frame(tag: number, payload: ArrayBufferView) {
@@ -304,6 +304,131 @@ describe("useRadio", () => {
     act(() => result.current.stop());
     expect(result.current.status).toEqual({ state: "idle" });
     expect(FakeSocket.instances[0]!.sent.filter((m) => m.type === "stop")).toHaveLength(1);
+  });
+
+  // Value: protects=the service hanging up an idle socket keeps the page's status (no "Lost the connection") and the next Listen opens a new socket; fails_when=onclose treats the idle close code like an outage, or keeps the closed socket for the next tune; why_new=the service now closes idle sockets; seam=none; no_claim=the service's idle timing (radio tests)
+  it("treats an idle hang-up as quiet and reconnects on the next tune", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => ws!.status("stopped", { message: "Hit the 60-minute session limit. Press Listen to keep going." }));
+    const before = result.current.status;
+    act(() => ws!.finishClose(IDLE_CLOSE_CODE));
+    expect(result.current.status).toEqual(before);
+    await act(() => result.current.tune(tuning));
+    expect(FakeSocket.instances).toHaveLength(2);
+    expect(FakeSocket.instances[1]!.sent.at(-1)).toEqual({ type: "tune", ...tuning });
+  });
+
+  // Value: protects=a Listen that crosses the service's idle hang-up isn't lost: the page sends it again on a new socket; fails_when=onclose drops a pending tune on the idle code; why_new=owner D2 (round 3a coverage audit); seam=none; no_claim=real network timing
+  it("resends a tune that crossed an idle hang-up", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => ws!.status("stopped", { message: "Stopped." }));
+    await act(() => result.current.tune(tuning)); // Listen again on the still-open socket
+    await act(async () => ws!.finishClose(IDLE_CLOSE_CODE)); // the hang-up crosses it
+    expect(FakeSocket.instances).toHaveLength(2);
+    expect(FakeSocket.instances[1]!.sent.at(-1)).toEqual({ type: "tune", ...tuning });
+    expect(result.current.tuning).toBe(true);
+  });
+
+  // Value: protects=the resend of a crossed tune carries the newest dial, not the frequency the Listen started with; fails_when=onclose resends the tune's original argument, or pendingRef (cleared just before); why_new=testing review; seam=none; no_claim=real network timing
+  it("resends the newest dial for a tune that crossed an idle hang-up", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => ws!.status("stopped", { message: "Stopped." }));
+    await act(() => result.current.tune(tuning));
+    act(() => result.current.retune({ ...tuning, freqKhz: tuning.freqKhz + 5 }));
+    await act(async () => ws!.finishClose(IDLE_CLOSE_CODE));
+    expect(FakeSocket.instances).toHaveLength(2);
+    expect(FakeSocket.instances[1]!.sent.at(-1)).toEqual({ type: "tune", ...tuning, freqKhz: tuning.freqKhz + 5 });
+  });
+
+  // Value: protects=a Listen followed by Stop, then the idle hang-up, opens no new socket and stays stopped: the retry never restarts audio the listener just stopped; fails_when=stop() leaves the crossed tune pending for onclose; why_new=review (testing, state matrix closing x idle-close); seam=none; no_claim=none beyond protects
+  it("does not resend a tune the listener stopped before the idle hang-up", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => ws!.status("stopped", { message: "Stopped." }));
+    await act(() => result.current.tune(tuning));
+    act(() => result.current.stop());
+    await act(async () => ws!.finishClose(IDLE_CLOSE_CODE));
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(result.current.status).toEqual({ state: "idle" });
+  });
+
+  // Value: protects=a page unmounted while a tune is pending doesn't reopen a socket when the idle hang-up arrives; fails_when=the idle retry ignores the unmount; why_new=review (state matrix: unmount x idle close with a pending tune); seam=none; no_claim=none beyond protects
+  it("does not resend after unmount", async () => {
+    const { result, unmount } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => ws!.status("stopped", { message: "Stopped." }));
+    await act(() => result.current.tune(tuning));
+    unmount();
+    await act(async () => ws!.finishClose(IDLE_CLOSE_CODE));
+    expect(FakeSocket.instances).toHaveLength(1);
+  });
+
+  // Value: protects=a close of any kind after unmount, with nothing pending, opens no new socket and doesn't throw; a guard for a future reconnect-on-drop path, since none of these branches reconnects today; fails_when=a branch learns to reconnect without checking for unmount; why_new=state matrix close codes x after_unmount; seam=none; no_claim=React's handling of state set after unmount
+  it.each([
+    ["idle", IDLE_CLOSE_CODE],
+    ["too-many", TOO_MANY_SOCKETS_CODE],
+    ["any other", 1006],
+  ])("opens nothing on a %s close after unmount", async (_label, code) => {
+    const { result, unmount } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => ws!.status("listening"));
+    unmount();
+    expect(() => act(() => ws!.finishClose(code))).not.toThrow();
+    expect(FakeSocket.instances).toHaveLength(1);
+  });
+
+  // Value: protects=an idle hang-up landing after Stop, with nothing pending, leaves the page stopped and opens nothing; fails_when=the live-socket guard is dropped or moved below the idle branch; why_new=state matrix code_4000 (nothing pending) x after_stop; seam=none; no_claim=none beyond protects
+  it("stays stopped on an idle hang-up after Stop", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => ws!.status("listening"));
+    act(() => result.current.stop());
+    act(() => ws!.finishClose(IDLE_CLOSE_CODE));
+    expect(result.current.status).toEqual({ state: "idle" });
+    expect(FakeSocket.instances).toHaveLength(1);
+  });
+
+  // Value: protects=an idle hang-up with no tune pending opens no new socket; fails_when=the retry fires without a pending tune; why_new=owner D2; seam=none; no_claim=none beyond protects
+  it("does not reconnect on an idle hang-up with nothing pending", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => ws!.status("stopped", { message: "Stopped." }));
+    await act(async () => ws!.finishClose(IDLE_CLOSE_CODE));
+    expect(FakeSocket.instances).toHaveLength(1);
+  });
+
+  // Value: protects=a socket the service refuses for too many connections from this address explains that, instead of "Lost the connection"; fails_when=onclose treats the code like any drop; why_new=owner D3 (per-address socket cap); seam=none; no_claim=the service's counting (radio tests)
+  it("explains a socket refused for too many connections", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => ws!.finishClose(TOO_MANY_SOCKETS_CODE));
+    expect(result.current.status.state).toBe("error");
+    expect(result.current.status.message).toMatch(/Too many radio connections/);
+    expect(result.current.tuning).toBe(false);
+  });
+
+  // Value: protects=a too-many refusal that lands after Stop isn't reported: Stop lets go of the socket, so its late close is ignored like any other; fails_when=the live-socket guard in onclose is dropped or moved below the 4001 branch; why_new=coverage audit question (4001 after Stop); seam=none; no_claim=the service's counting
+  it("does not explain a too-many refusal after Stop", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => result.current.stop());
+    const before = result.current.status;
+    act(() => ws!.finishClose(TOO_MANY_SOCKETS_CODE));
+    expect(result.current.status.message ?? "").not.toMatch(/Too many radio connections/);
+    expect(result.current.status).toEqual(before);
   });
 
   // Value: protects=a drop after Stop isn't reported as a problem; fails_when=onclose ignores stoppingRef; why_new=state matrix idle x socket-drop; seam=none; no_claim=none beyond protects

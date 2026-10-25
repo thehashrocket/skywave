@@ -28,6 +28,8 @@ def settings(**over):
         token=None,
         max_sessions=2,
         max_session_minutes=60,
+        idle_socket_minutes=10,
+        max_sockets_per_ip=8,
         allow_private_hosts=True,
         ident="test",
         kiwi_agc=True,
@@ -192,6 +194,436 @@ class _StopsReading(KiwiClient):
         return info
 
 
+# A public address, so the per-address socket cap counts it; TestClient's own
+# "testclient" and private addresses go uncounted.
+PUBLIC = ("1.2.3.4", 50000)
+EXPECTED = {"type": "status", "state": "error", "message": "Expected JSON."}
+
+
+def until_released(app, timeout_s=5):
+    """Wait for every socket's count to be released."""
+    started = time.monotonic()
+    while app.state.open_sockets:
+        # gstack-timing-ok: a poll deadline; the contract is "released at all"
+        assert time.monotonic() - started < timeout_s, f"never released: {app.state.open_sockets}"
+        time.sleep(0.02)  # gstack-timing-ok: poll interval
+
+
+def until_closed(ws, limit=5000):
+    """Messages until the service closes the socket; returns (close message, statuses seen)."""
+    seen = []
+    for _ in range(limit):
+        msg = ws.receive()
+        if msg["type"] == "websocket.close":
+            return msg, seen
+        if msg.get("text"):
+            seen.append(json.loads(msg["text"]))
+    raise AssertionError(f"never closed: {seen}")
+
+
+# Value: protects=a browser socket with no session and no messages is closed after IDLE_SOCKET_MINUTES with the idle code, so idle tabs and scripts can't hold sockets forever; fails_when=serve() waits on receive() with no idle clock, or closes with another code the page treats as an outage; why_new=TODOS (idle sockets held indefinitely); seam=none; no_claim=real browser timing
+@pytest.mark.timeout(15)
+def test_an_idle_socket_is_closed():
+    from skywave_radio.server import IDLE_CLOSE_CODE
+
+    app = create_app(settings(idle_socket_minutes=0.005))  # 0.3 s
+    with TestClient(app, client=PUBLIC).websocket_connect("/ws", headers=ORIGIN) as ws:
+        closed, _ = until_closed(ws)
+        until_released(app)
+    assert closed["code"] == IDLE_CLOSE_CODE
+
+
+# Value: protects=an idle socket whose browser stopped reading is still dropped: the idle close frame is bounded, so serve() can't hang on it forever and pin the socket; fails_when=serve() awaits ws.close() with no deadline; why_new=review (Codex, both passes): the close frame can block on a non-reading client; seam=starlette WebSocket.close patched to never finish, CLOSE_FRAME_TIMEOUT_S shortened; no_claim=real TCP buffer behaviour
+@pytest.mark.timeout(15)
+def test_an_idle_socket_that_stopped_reading_is_still_dropped(monkeypatch, caplog):
+    import logging
+
+    from starlette.websockets import WebSocket
+
+    from skywave_radio import server as server_module
+
+    real_close = WebSocket.close
+    stuck = []
+
+    async def never_finishes(self, code=1000, reason=None):
+        if code == server_module.IDLE_CLOSE_CODE:
+            stuck.append(True)
+            await asyncio.Event().wait()
+        await real_close(self, code=code, reason=reason)
+
+    monkeypatch.setattr(WebSocket, "close", never_finishes)
+    monkeypatch.setattr(server_module, "CLOSE_FRAME_TIMEOUT_S", 0.2)
+    caplog.set_level(logging.INFO, logger="skywave_radio")
+    app = create_app(settings(idle_socket_minutes=0.005))  # 0.3 s
+    with TestClient(app, client=PUBLIC).websocket_connect("/ws", headers=ORIGIN):
+        started = time.monotonic()
+        while "without a close frame" not in caplog.text:
+            # gstack-timing-ok: a generous deadline on a poll; the contract is "given up on at all"
+            assert time.monotonic() - started < 5, "the stuck idle close was never given up on"
+            time.sleep(0.05)  # gstack-timing-ok: poll interval
+        until_released(app)
+    assert stuck == [True]
+
+
+# Value: protects=a socket refused for too many connections whose client stopped reading is still dropped, so the refusing handler can't hang; fails_when=the refusal uses a bare ws.close; why_new=coverage audit: only the idle path pinned the bounded close; seam=starlette WebSocket.close patched to hang on the too-many code (test-only), CLOSE_FRAME_TIMEOUT_S shortened; no_claim=real TCP buffers
+def test_a_refused_socket_that_stopped_reading_is_still_dropped(monkeypatch, caplog):
+    import logging
+
+    from starlette.websockets import WebSocket
+
+    from skywave_radio import server as server_module
+
+    real_close = WebSocket.close
+    stuck = []
+
+    async def never_finishes(self, code=1000, reason=None):
+        if code == server_module.TOO_MANY_SOCKETS_CODE:
+            stuck.append(True)
+            await asyncio.Event().wait()
+        await real_close(self, code=code, reason=reason)
+
+    monkeypatch.setattr(WebSocket, "close", never_finishes)
+    monkeypatch.setattr(server_module, "CLOSE_FRAME_TIMEOUT_S", 0.2)
+    caplog.set_level(logging.INFO, logger="skywave_radio")
+    app = create_app(settings(max_sockets_per_ip=1))
+    client = TestClient(app, client=PUBLIC)
+    with client.websocket_connect("/ws", headers=ORIGIN):
+        with client.websocket_connect("/ws", headers=ORIGIN):
+            started = time.monotonic()
+            while "without a close frame" not in caplog.text:
+                # gstack-timing-ok: a generous deadline on a poll; the contract is "given up on at all"
+                assert time.monotonic() - started < 5, "the stuck refusal was never given up on"
+                time.sleep(0.05)  # gstack-timing-ok: poll interval
+    until_released(app)
+    assert stuck == [True]
+
+
+# Value: protects=one address can hold at most MAX_SOCKETS_PER_IP browser sockets: the next is refused with the too-many code, and closing one frees room, so a script can't exhaust the service by keeping sockets alive; fails_when=sockets aren't counted per address, the count isn't released on close, or the refusal uses a code the page can't explain; why_new=owner D3 (round 3a): the idle timeout alone doesn't stop chatty scripts; seam=TestClient's client address (a public one); no_claim=real proxy address handling
+@pytest.mark.timeout(15)
+def test_one_address_can_hold_only_so_many_sockets():
+    from skywave_radio.server import TOO_MANY_SOCKETS_CODE
+
+    app = create_app(settings(max_sockets_per_ip=2))
+    client = TestClient(app, client=PUBLIC)
+    expected = EXPECTED
+    with client.websocket_connect("/ws", headers=ORIGIN) as first:
+        with client.websocket_connect("/ws", headers=ORIGIN) as second:
+            with client.websocket_connect("/ws", headers=ORIGIN) as third:
+                refused = third.receive()
+            assert refused["type"] == "websocket.close" and refused["code"] == TOO_MANY_SOCKETS_CODE
+            second.send_text("not json")
+            assert json.loads(second.receive_text()) == expected  # the first two still work
+        # Closing one frees room for another.
+        started = time.monotonic()
+        while app.state.open_sockets.get(PUBLIC[0], 0) > 1:
+            assert time.monotonic() - started < 5, "the closed socket was never released"  # gstack-timing-ok: poll deadline
+            time.sleep(0.02)
+        with client.websocket_connect("/ws", headers=ORIGIN) as again:
+            again.send_text("not json")
+            assert json.loads(again.receive_text()) == expected
+        first.send_text("not json")
+        assert json.loads(first.receive_text()) == expected
+    until_released(app)
+
+
+# Value: protects=addresses that aren't a real user's (private, loopback, TestClient's name) are never counted, so behind a proxy the service doesn't trust every listener isn't squeezed into one shared limit; fails_when=the cap counts raw addresses; why_new=owner D4 (red team: an untrusted proxy turned the cap into a site-wide lockout); seam=TestClient's client address; no_claim=real proxies
+@pytest.mark.parametrize("address", ["testclient", "172.17.0.1", "10.0.0.5", "127.0.0.1", "100.64.0.1"])
+def test_only_public_addresses_are_counted(address):
+    app = create_app(settings(max_sockets_per_ip=1))
+    client = TestClient(app, client=(address, 50000))
+    with client.websocket_connect("/ws", headers=ORIGIN) as first:
+        with client.websocket_connect("/ws", headers=ORIGIN) as second:
+            for ws in (first, second):
+                ws.send_text("not json")
+                assert json.loads(ws.receive_text()) == EXPECTED
+            assert app.state.open_sockets == {}
+
+
+# Value: protects=the cap's owner key: a public IPv4 as is, IPv6 grouped by /64 (a user can pick any address in theirs), an IPv4-mapped IPv6 as its IPv4, and anything not public uncounted; fails_when=IPv6 is keyed per address, or private/unknown addresses are counted; why_new=owner D3/D4 (round 3a review); seam=none; no_claim=real client address formats beyond these
+@pytest.mark.parametrize(
+    ("host", "owner"),
+    [
+        ("1.2.3.4", "1.2.3.4"),
+        ("2001:4860:4860::8888", "2001:4860:4860::/64"),
+        ("2001:4860:4860:0:abcd::1", "2001:4860:4860::/64"),
+        ("::ffff:1.2.3.4", "1.2.3.4"),
+        ("172.17.0.1", None),
+        ("100.64.0.1", None),
+        ("fe80::1", None),
+        ("::1", None),
+        ("testclient", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_socket_owner(host, owner):
+    from skywave_radio.server import socket_owner
+
+    assert socket_owner(host) == owner
+
+
+# Value: protects=two IPv6 addresses in one /64 share the cap, so rotating addresses can't get past it, while another /64 is a separate user; fails_when=IPv6 is counted per exact address; why_new=owner D3 (security review: IPv6 rotation); seam=TestClient's client address; no_claim=real IPv6 allocation sizes
+@pytest.mark.timeout(15)
+def test_an_ipv6_client_is_counted_by_its_64():
+    from skywave_radio.server import TOO_MANY_SOCKETS_CODE
+
+    app = create_app(settings(max_sockets_per_ip=1))
+    with TestClient(app, client=("2001:4860:4860::1", 50000)).websocket_connect("/ws", headers=ORIGIN):
+        with TestClient(app, client=("2001:4860:4860::2", 50000)).websocket_connect("/ws", headers=ORIGIN) as same:
+            refused = same.receive()
+        assert refused["type"] == "websocket.close" and refused["code"] == TOO_MANY_SOCKETS_CODE
+        with TestClient(app, client=("2001:4860:4861::1", 50000)).websocket_connect("/ws", headers=ORIGIN) as other:
+            other.send_text("not json")
+            assert json.loads(other.receive_text()) == EXPECTED
+    until_released(app)
+
+
+# Value: protects=an idle-closed socket frees its place before its close frame goes out, so the page's immediate reconnect (a resent Listen) isn't refused at the cap while the old socket's cleanup still runs; fails_when=the count is released only after session.close(), or the old socket's cleanup releases a second time; why_new=testing review: the crossed-tune resend could hit the cap; seam=ListenSession.close slowed (test-only); no_claim=real network timing
+@pytest.mark.timeout(15)
+def test_an_idle_closed_socket_frees_its_place_for_the_reconnect(monkeypatch):
+    from skywave_radio.server import IDLE_CLOSE_CODE
+    from skywave_radio.session import ListenSession
+
+    real_close = ListenSession.close
+
+    async def slow_close(self):
+        await asyncio.sleep(1.0)  # gstack-timing-ok: a cleanup still running when the page reconnects
+        await real_close(self)
+
+    monkeypatch.setattr(ListenSession, "close", slow_close)
+    app = create_app(settings(idle_socket_minutes=0.01, max_sockets_per_ip=1))  # 0.6 s
+    client = TestClient(app, client=PUBLIC)
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        closed, _ = until_closed(ws)
+        assert closed["code"] == IDLE_CLOSE_CODE
+        with client.websocket_connect("/ws", headers=ORIGIN) as again:  # at once, as the page does
+            again.send_text("not json")
+            assert json.loads(again.receive_text()) == EXPECTED
+            # Once the old socket's slow cleanup ends, it hasn't released a second time and
+            # taken the reconnect's place: the address still counts exactly one socket.
+            for _ in range(7):  # 1.4 s, outlasting the slowed close; chatter keeps this one open
+                time.sleep(0.2)  # gstack-timing-ok: spaces the messages inside the idle time; the assert checks the count
+                again.send_text("not json")
+                assert json.loads(again.receive_text()) == EXPECTED
+            assert app.state.open_sockets == {PUBLIC[0]: 1}
+
+
+# Value: protects=cancelling a socket's handler while it waits for serve() to unwind still closes the session, so the volunteer's Kiwi channel and the listener slot are freed at once, not when a blocked audio send finally times out; fails_when=session.close() runs in the cancellable handler itself; why_new=owner D1 (round 3a review: security + state machines); seam=a public client address (so its socket is counted and must be released) and the ASGI app driven directly on this test's loop (TestClient's loop shuts down when the handler ends, cancelling the pump either way), a browser whose binary sends block, and ListenSession.handle patched with a request that cancels the handler and unwinds slowly (test-only); no_claim=what cancels a handler in production (uvicorn only at shutdown)
+@pytest.mark.timeout(20)
+def test_cancelling_the_handler_mid_cleanup_still_ends_the_session(monkeypatch):
+    from skywave_radio.session import ListenSession
+
+    handler: dict[str, asyncio.Task] = {}
+    real_handle = ListenSession.handle
+
+    async def handle(self, msg):
+        if msg.get("type") != "hang":
+            return await real_handle(self, msg)
+        handler["task"].cancel()  # the handler starts its cleanup...
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            handler["task"].cancel()  # ...and is cancelled again while it waits on serve()
+            await asyncio.sleep(0.3)  # gstack-timing-ok: serve() unwinding slowly
+            raise
+
+    monkeypatch.setattr(ListenSession, "handle", handle)
+
+    async def main():
+        async with FakeKiwi() as kiwi:
+            app = create_app(settings())
+            inbox: asyncio.Queue = asyncio.Queue()
+            listening = asyncio.Event()
+            stuck = asyncio.Event()
+
+            async def send(message):
+                if message["type"] == "websocket.send" and message.get("bytes") is not None and stuck.is_set():
+                    await asyncio.Event().wait()  # the browser stopped reading: audio sends block
+                if '"listening"' in (message.get("text") or ""):
+                    listening.set()
+
+            scope = {
+                "type": "websocket", "path": "/ws", "raw_path": b"/ws", "root_path": "", "query_string": b"",
+                "headers": [(b"origin", ORIGIN["origin"].encode())], "scheme": "ws", "subprotocols": [],
+                "client": PUBLIC, "server": ("testserver", 80),
+            }
+            await inbox.put({"type": "websocket.connect"})
+            await inbox.put({"type": "websocket.receive", "text": tune_msg(kiwi.port)})
+            handler["task"] = asyncio.create_task(app(scope, inbox.get, send))
+            await asyncio.wait_for(listening.wait(), 5)
+            stuck.set()
+            await inbox.put({"type": "websocket.receive", "text": json.dumps({"type": "hang"})})
+            with pytest.raises(asyncio.CancelledError):
+                await handler["task"]  # cancelled, as staged
+            started = time.monotonic()
+            while app.state.slots.active or kiwi._open_snd() or app.state.open_sockets:
+                # gstack-timing-ok: a poll deadline well inside the 15 s send timeout that would free it anyway
+                assert time.monotonic() - started < 3, "the cancelled handler left the session or its count behind"
+                await asyncio.sleep(0.05)
+
+    asyncio.run(main())
+
+
+# Value: protects=the service and the page agree on the too-many-sockets close code, so a refused socket shows its own explanation, not "Lost the connection"; fails_when=one side changes the number; why_new=new close code; seam=none; no_claim=browser close-code handling
+def test_web_and_service_agree_on_the_too_many_sockets_code():
+    import re
+    from pathlib import Path
+
+    from skywave_radio.server import TOO_MANY_SOCKETS_CODE
+
+    web = Path(__file__).resolve().parents[3] / "apps/web/src/lib/use-radio.ts"
+    found = re.search(r"TOO_MANY_SOCKETS_CODE = (\d+);", web.read_text())
+    assert found and int(found.group(1)) == TOO_MANY_SOCKETS_CODE
+
+
+# Value: protects=a socket whose session is playing is never closed as idle, however long it plays without a message from the browser; fails_when=the idle clock runs during playback; why_new=new idle timeout; seam=none; no_claim=hours-long sessions
+@pytest.mark.timeout(15)
+def test_a_playing_session_is_not_closed_as_idle():
+    def body(kiwi):
+        client = TestClient(create_app(settings(idle_socket_minutes=0.005)))  # 0.3 s
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "listening")
+            started = time.monotonic()
+            frames = 0
+            # gstack-timing-ok: the contract is "still streaming well past the idle time"
+            while time.monotonic() - started < 1.0:
+                msg = ws.receive()
+                assert msg["type"] != "websocket.close", "closed while playing"
+                frames += msg.get("bytes") is not None
+        return frames
+
+    assert run_with_fake(body) > 0
+
+
+# Value: protects=a scan sent with nothing playing is refused and starts nothing, so the socket still idles out; fails_when=a refused scan clears idle_since or starts a pump; why_new=state matrix no_pump x scan; seam=none; no_claim=none beyond protects
+@pytest.mark.timeout(15)
+def test_a_scan_with_nothing_playing_still_lets_the_socket_idle_out():
+    from skywave_radio.server import IDLE_CLOSE_CODE
+
+    client = TestClient(create_app(settings(idle_socket_minutes=0.005)))  # 0.3 s
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.send_text(scan_msg(4))
+        reply = until_scan(ws, "error")[-1]
+        closed, _ = until_closed(ws)
+    assert reply["message"] == "Start listening to a receiver first."
+    assert closed["code"] == IDLE_CLOSE_CODE
+
+
+# Value: protects=a scan while playing, and the playing after it, run past the idle time without an idle close; fails_when=the scan or its waterfall marks the session idle; why_new=state matrix pump_running x scan; seam=none; no_claim=real sweep timing
+@pytest.mark.timeout(20)
+def test_a_scan_while_playing_is_not_closed_as_idle():
+    def body(kiwi):
+        client = TestClient(create_app(settings(idle_socket_minutes=0.005)))  # 0.3 s
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "listening")
+            ws.send_text(scan_msg(5))
+            replies = until_scan(ws, "done", "error")
+            started = time.monotonic()
+            # gstack-timing-ok: the contract is "still open well past the idle time after the scan"
+            while time.monotonic() - started < 1.0:
+                msg = ws.receive()
+                assert msg["type"] != "websocket.close", "closed as idle after a scan"
+        return replies[-1]
+
+    assert run_with_fake(body, wf_bins=carrier_bins(9_420.0))["state"] == "done"
+
+
+# Value: protects=switching receivers while playing, past the idle time, never closes the socket as idle (the old pump marks the session idle only for the instant before the new one starts); fails_when=the switch leaves idle_since set, or the old pump's end marks a playing session idle; why_new=state matrix playing x switch; seam=none (two names for the one fake Kiwi make two receivers); no_claim=real Kiwi switch timing
+@pytest.mark.timeout(15)
+def test_switching_receivers_is_not_an_idle_close():
+    def body(kiwi):
+        client = TestClient(create_app(settings(idle_socket_minutes=0.005)))  # 0.3 s
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port, host="127.0.0.1"))
+            until_state(ws, "listening")
+            time.sleep(0.4)  # play past the idle time
+            ws.send_text(tune_msg(kiwi.port, host="localhost"))  # another receiver to the session
+            seen = until_state(ws, "listening")
+            started = time.monotonic()
+            # gstack-timing-ok: the contract is "still open well past the idle time after the switch"
+            while time.monotonic() - started < 1.0:
+                msg = ws.receive()
+                assert msg["type"] != "websocket.close", "closed as idle after a switch"
+        return seen[-1]
+
+    assert run_with_fake(body)["host"] == "localhost"
+
+
+# Value: protects=the idle clock starts when the session ends (not when the socket opened), and the socket then closes; fails_when=the clock counts playback time, closing at once on Stop, or never starts after a session ends; why_new=new idle timeout; seam=none; no_claim=real browser timing
+@pytest.mark.timeout(15)
+def test_the_idle_clock_starts_when_the_session_ends():
+    from skywave_radio.server import IDLE_CLOSE_CODE
+
+    def body(kiwi):
+        client = TestClient(create_app(settings(idle_socket_minutes=0.02)))  # 1.2 s
+        with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "listening")
+            time.sleep(1.4)  # play past the idle time
+            ws.send_text(json.dumps({"type": "stop"}))
+            until_state(ws, "stopped")
+            stopped = time.monotonic()
+            closed, _ = until_closed(ws)
+            return closed, time.monotonic() - stopped
+
+    closed, after = run_with_fake(body)
+    assert closed["code"] == IDLE_CLOSE_CODE
+    # gstack-timing-ok: the bound is the contract (the clock restarts at the session's end); half the
+    # idle time leaves room for the client's lag behind the server
+    assert after >= 0.6
+
+
+# Value: protects=when a session ends on its own (the limit, a Kiwi drop) with no message from the browser, the idle clock starts at that end, so the socket gets a full idle period after it; fails_when=serve() counts only from the last browser message (the tune), closing early; why_new=owner D1 (round 3a coverage audit): the Stop test's own message masked this; seam=none; no_claim=real Kiwi drop timing
+@pytest.mark.timeout(15)
+def test_a_session_that_ends_on_its_own_starts_the_idle_clock():
+    from skywave_radio.server import IDLE_CLOSE_CODE
+
+    def body(kiwi):
+        app = create_app(settings(idle_socket_minutes=0.04, max_session_minutes=0.02))  # idle 2.4 s, limit 1.2 s
+        with TestClient(app).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "stopped")  # the limit ends it, with no browser message since the tune
+            ended = time.monotonic()
+            closed, _ = until_closed(ws)
+            return closed, time.monotonic() - ended
+
+    closed, after = run_with_fake(body)
+    assert closed["code"] == IDLE_CLOSE_CODE
+    # gstack-timing-ok: the bound is the contract (a full 2.4 s idle period after the session's own
+    # end; counting from the tune instead would close about 1.2 s after it), 0.6 s of slack either way
+    assert after >= 1.8
+
+
+# Value: protects=any message from the browser restarts the idle clock, so a page that keeps talking isn't hung up on; fails_when=the clock ignores messages; why_new=new idle timeout; seam=none; no_claim=which messages real pages send
+@pytest.mark.timeout(15)
+def test_messages_keep_an_idle_socket_open():
+    from skywave_radio.server import IDLE_CLOSE_CODE
+
+    client = TestClient(create_app(settings(idle_socket_minutes=0.005)))  # 0.3 s
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        for _ in range(6):  # 0.6 s of chatter, twice the idle time
+            # gstack-timing-ok: the sleep spaces the messages past the idle time; the assert checks the reply
+            time.sleep(0.1)
+            ws.send_text("not json")
+            assert json.loads(ws.receive_text()) == {"type": "status", "state": "error", "message": "Expected JSON."}
+        closed, _ = until_closed(ws)
+    assert closed["code"] == IDLE_CLOSE_CODE
+
+
+# Value: protects=the service and the page agree on the idle close code, so an idle hang-up never shows "Lost the connection"; fails_when=one side changes the number; why_new=new close code; seam=none; no_claim=browser close-code handling
+def test_web_and_service_agree_on_the_idle_close_code():
+    import re
+    from pathlib import Path
+
+    from skywave_radio.server import IDLE_CLOSE_CODE
+
+    web = Path(__file__).resolve().parents[3] / "apps/web/src/lib/use-radio.ts"
+    found = re.search(r"IDLE_CLOSE_CODE = (\d+);", web.read_text())
+    assert found and int(found.group(1)) == IDLE_CLOSE_CODE
+
+
 # Value: protects=a Kiwi that stops reading ends the session with 'stopped reading' and frees the slot, even though closing its socket would block too; fails_when=close() waits on the full socket with no bound, or the send timeout doesn't end the session; why_new=only _send was tested, against a stub with no close(); seam=KiwiClient._ws (a socket whose sends and close never finish); no_claim=real TCP buffer sizes
 @pytest.mark.timeout(15)
 def test_kiwi_that_stops_reading_ends_the_session_and_frees_the_slot():
@@ -283,6 +715,16 @@ def test_bad_origin_rejected():
     assert_rejected(create_app(settings()), headers={"origin": "https://evil.example"})
 
 
+# Value: protects=a socket refused for its origin from a public address is never counted, so bad requests can't use up an address's places; fails_when=the count is taken before the origin/token checks; why_new=state matrix counted owner x origin reject; seam=TestClient's client address; no_claim=none beyond protects
+def test_a_refused_origin_is_never_counted():
+    app = create_app(settings(max_sockets_per_ip=1))
+    with pytest.raises(WebSocketDisconnect) as e:
+        with TestClient(app, client=PUBLIC).websocket_connect("/ws", headers={"origin": "https://evil.example"}):
+            pass
+    assert e.value.code == status.WS_1008_POLICY_VIOLATION
+    assert app.state.open_sockets == {}
+
+
 def test_malformed_origin_port_closes_with_policy_violation():
     assert_rejected(create_app(settings()), headers={"origin": "http://localhost:99999"})
 
@@ -315,6 +757,28 @@ def test_a_session_limit_that_cannot_work_stops_startup(raw, monkeypatch):
         Settings.from_env()
 
 
+# Value: protects=an idle-socket timeout that would hang up on every page at once (nan, a decimal typo under 1 minute) or silently never fire (an overflow) stops startup; usable values pass; fails_when=IDLE_SOCKET_MINUTES is read with a bare float(); why_new=new setting; seam=none; no_claim=other settings
+@pytest.mark.parametrize(("raw", "ok"), [("nan", False), ("0.5", False), ("1e308", False), ("ten", False), ("1", True), ("inf", True)])
+def test_the_idle_socket_timeout_is_checked_at_startup(raw, ok, monkeypatch):
+    monkeypatch.setenv("IDLE_SOCKET_MINUTES", raw)
+    if ok:
+        assert Settings.from_env().idle_socket_minutes == float(raw)
+    else:
+        with pytest.raises(ValueError, match="IDLE_SOCKET_MINUTES"):
+            Settings.from_env()
+
+
+# Value: protects=a per-address socket cap that would refuse every page (0, negative) or isn't a whole number stops startup; usable values pass; fails_when=MAX_SOCKETS_PER_IP is read with a bare int() or allows 0; why_new=new setting; seam=none; no_claim=other settings
+@pytest.mark.parametrize(("raw", "ok"), [("0", False), ("-3", False), ("2.5", False), ("lots", False), ("1", True), ("8", True)])
+def test_the_socket_cap_is_checked_at_startup(raw, ok, monkeypatch):
+    monkeypatch.setenv("MAX_SOCKETS_PER_IP", raw)
+    if ok:
+        assert Settings.from_env().max_sockets_per_ip == int(raw)
+    else:
+        with pytest.raises(ValueError, match="MAX_SOCKETS_PER_IP"):
+            Settings.from_env()
+
+
 # Value: protects=the shipped apps/radio/.env.example starts the service (every value it sets passes the startup checks); fails_when=an example value, e.g. MAX_SESSION_MINUTES, stops validating; why_new=MAX_SESSION_MINUTES gained a startup check; seam=none; no_claim=values left commented out
 def test_the_example_env_file_is_valid(monkeypatch):
     from pathlib import Path
@@ -325,6 +789,8 @@ def test_the_example_env_file_is_valid(monkeypatch):
             name, _, value = line.partition("=")
             monkeypatch.setenv(name.strip(), value.strip())
     assert Settings.from_env().max_session_minutes == 60
+    assert Settings.from_env().idle_socket_minutes == 10
+    assert Settings.from_env().max_sockets_per_ip == 8
 
 
 # Value: protects=the limits an operator may set (exactly 1 minute, and inf spelled any way the check allows) still start the service; fails_when=the floor creeps above 1 or the inf spelling check narrows; why_new=review: only far-from-the-floor values were accepted in tests; seam=none; no_claim=how long real sessions run
@@ -2319,8 +2785,26 @@ async def test_a_stalled_browser_frees_its_slot_soon_with_a_real_receiver(monkey
     assert elapsed < kiwi_module.CLOSE_TIMEOUT_S + 2
 
 
-# Value: protects=the browser isn't left showing "Listening" with no audio after we give up on it; fails_when=the server keeps its receive loop open after a stall; why_new=Codex O6; seam=none; no_claim=uvicorn closing the transport when the app returns (its documented behaviour)
-async def test_a_stalled_browser_is_disconnected(monkeypatch):
+# Value: protects=Stop marks the session idle even when its pump ended on its own in the same loop pass, so the socket still idles out instead of staying open (and counted) for good; fails_when=only the pump's done callback sets idle_since, which then no longer sees the pump as current; why_new=red team (pass 2); seam=a finished future standing in for the pump, its callbacks still queued; no_claim=how often the race happens
+async def test_stop_marks_the_session_idle_when_the_pump_ended_first():
+    from skywave_radio.session import ListenSession
+
+    async def ignore(_payload):
+        pass
+
+    session = ListenSession(settings(), ignore, ignore)
+    pump = asyncio.get_running_loop().create_future()
+    pump.add_done_callback(session._mark_idle)
+    session._pump, session.idle_since = pump, None
+    pump.set_result(None)  # done, but _mark_idle hasn't run yet
+    await session.stop("Stopped.")
+    await asyncio.sleep(0)  # let the queued callback run
+    assert session.idle_since is not None
+
+
+# Value: protects=the browser isn't left showing "Listening" with no audio after we give up on it, and a counted address gets its socket place back; fails_when=the server keeps its receive loop open after a stall, or a stalled socket's count is never released; why_new=Codex O6, then state matrix (counted and uncounted owner x stall); seam=none; no_claim=uvicorn closing the transport when the app returns (its documented behaviour)
+@pytest.mark.parametrize("client", [("8.8.8.8", 50000), ("testclient", 50000)])
+async def test_a_stalled_browser_is_disconnected(monkeypatch, client):
     from skywave_radio import session as session_module
     from skywave_radio.kiwi import IQBlock, KiwiInfo
 
@@ -2367,7 +2851,7 @@ async def test_a_stalled_browser_is_disconnected(monkeypatch):
         "raw_path": b"/ws",
         "query_string": b"",
         "headers": [(b"origin", b"http://localhost:3000")],
-        "client": ("8.8.8.8", 50000),
+        "client": client,
         "server": ("testserver", 80),
         "scheme": "ws",
         "subprotocols": [],
@@ -2375,6 +2859,7 @@ async def test_a_stalled_browser_is_disconnected(monkeypatch):
     }
     await asyncio.wait_for(app(scope, receive, send), 5)
     assert app.state.slots.active == 0
+    assert app.state.open_sockets == {}
 
 
 # Value: protects=switching receivers never lets go of the slot, so another listener can't take it mid-switch; fails_when=_tune releases and re-acquires again; why_new=TODOS slot handover (not reachable today, fragile); seam=none; no_claim=a real second listener racing

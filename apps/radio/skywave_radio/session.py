@@ -221,6 +221,10 @@ class ListenSession:
         self._on_stalled = on_stalled
         self._client: KiwiClient | None = None
         self._pump: asyncio.Task[None] | None = None
+        # When this session went idle, at creation or when its pump ended
+        # (time.monotonic()), or None while a pump runs: the server closes a
+        # socket left idle too long.
+        self.idle_since: float | None = time.monotonic()
         # The pump whose end releases this session's slot. Switching receivers
         # hands the slot to the new pump instead of releasing and re-taking it,
         # which another listener could win in between.
@@ -385,14 +389,21 @@ class ListenSession:
         self._pump = self._slot_holder = asyncio.create_task(
             self._run(host, port, public_only=public_only, secure=secure)
         )
+        self.idle_since = None
         # A done callback, not a finally in _run: a task cancelled before it
         # first runs never enters its body.
         self._pump.add_done_callback(self._pump_done)
+        self._pump.add_done_callback(self._mark_idle)
 
     def _pump_done(self, pump: asyncio.Task[None]) -> None:
         if pump is self._slot_holder:
             self._slot_holder = None
             self._slots.release()
+
+    def _mark_idle(self, pump: asyncio.Task[None]) -> None:
+        # A pump replaced by a switch is no longer self._pump: the new one plays.
+        if pump is self._pump:
+            self.idle_since = time.monotonic()
 
     async def _run(self, host: str, port: int, *, public_only: bool = False, secure: bool = False) -> None:
         await self._status("connecting", host=host)
@@ -562,6 +573,10 @@ class ListenSession:
         # propagates, or the switch would go on to dial a receiver for nobody.
         await self._cancel(self._pump)
         self._pump = None
+        # A pump that had already ended returns from _cancel at once, before
+        # its _mark_idle callback runs, which then no longer sees it as ours.
+        if self.idle_since is None:
+            self.idle_since = time.monotonic()
         self._target = None
         await self._close_client()
         await self._end_scan()

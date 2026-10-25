@@ -34,6 +34,17 @@ def _minutes(name: str, default: str) -> float:
     return value
 
 
+def _count(name: str, default: str) -> int:
+    raw = os.environ.get(name, default)
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise ValueError(f"{name} must be a whole number of at least 1, not {raw!r}")
+    return value
+
+
 def _split(origin: str) -> tuple[str, str | None, int | None] | None:
     """(scheme, hostname, port) for an origin, or None if it doesn't parse.
 
@@ -91,6 +102,13 @@ class Settings:
     ident: str
     # Let the Kiwi apply its own AGC before we get I/Q.
     kiwi_agc: bool
+    # Close a browser's socket after this long with no session playing and
+    # no message from it; the page opens a new one on its next tune.
+    idle_socket_minutes: float
+    # Browser sockets one public address (IPv6 by /64) may hold open at once,
+    # so a script can't exhaust the service by opening sockets and keeping them
+    # alive. Private and unknown addresses aren't counted (see socket_owner).
+    max_sockets_per_ip: int
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -103,4 +121,6 @@ class Settings:
             allow_private_hosts=_bool("ALLOW_PRIVATE_HOSTS", False),
             ident=os.environ.get("KIWI_IDENT", "skywave"),
             kiwi_agc=_bool("KIWI_AGC", True),
+            idle_socket_minutes=_minutes("IDLE_SOCKET_MINUTES", "10"),
+            max_sockets_per_ip=_count("MAX_SOCKETS_PER_IP", "8"),
         )
