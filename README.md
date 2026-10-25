@@ -13,7 +13,7 @@ The Kiwi only hands over raw I/Q. Everything from there to your speakers (filter
 
 ## Run it locally
 
-You need Node 24 (see `.nvmrc`), pnpm 12, Python 3.11+, and Postgres (Docker is easiest).
+You need Node 24 (see `.nvmrc`), pnpm 12, Python 3.12+, and Postgres (Docker is easiest).
 
 The repo pins pnpm 12.14.0 in `package.json`. If your global pnpm is 10.x, it downloads 12 for you but skips the install script that puts pnpm 12's native binary in place, and every pnpm command then fails with `Failed to switch pnpm to v12.14.0 ... ENOEXEC`. Upgrade the global pnpm first, from outside the repo:
 
@@ -62,7 +62,7 @@ The list comes from [rx.linkfanel.net](http://rx.linkfanel.net/), which mirrors 
 - **Readout:** click the big number and type an exact frequency, in kHz or with a unit (`7.2 MHz`, `7200k`). Anything else stays in the box, flagged, with the range to use; Escape puts the current frequency back. skywave remembers the last frequency and mode, as well as the last receiver, for your next visit.
 - **Waterfall:** shows the ±6 kHz the Kiwi is sending, right under the status line. Click a signal to tune to it. The shaded strip is your current mode's passband. Until the first audio of a visit it's a short strip pointing at Listen.
 - **Modes:** AM for broadcasters and WWV. LSB below 10 MHz and USB above for ham voice. CW for Morse; the service tunes 700 Hz low so code comes out as a 700 Hz tone.
-- **Etiquette:** each listener takes one of a volunteer's 4–8 channels. The service caps itself at `MAX_SESSIONS` listeners and drops a session after `MAX_SESSION_MINUTES`.
+- **Etiquette:** each listener takes one of a volunteer's 4–8 channels. The service caps itself at `MAX_SESSIONS` listeners and drops a session after `MAX_SESSION_MINUTES` (at least 1, or `inf` for no limit; any other value stops the service at startup).
 
 ## Learning the DSP offline
 

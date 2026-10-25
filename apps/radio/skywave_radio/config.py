@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -14,6 +15,23 @@ def _bool(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _minutes(name: str, default: str) -> float:
+    # nan or a misplaced decimal point would end every session the moment it
+    # starts, and a number too big for a float (in minutes or in seconds)
+    # would quietly mean no limit: only a spelled-out inf/infinity does that.
+    raw = os.environ.get(name, default)
+    problem = ValueError(f"{name} must be at least 1 minute (or inf for no limit), not {raw!r}")
+    try:
+        value = float(raw)
+    except ValueError:
+        raise problem from None
+    if math.isnan(value) or value < 1:
+        raise problem
+    if math.isinf(value * 60) and raw.strip().lower().lstrip("+") not in {"inf", "infinity"}:
+        raise problem
+    return value
 
 
 def _split(origin: str) -> tuple[str, str | None, int | None] | None:
@@ -81,7 +99,7 @@ class Settings:
             allowed_origins=tuple(o.strip() for o in origins.split(",") if o.strip()),
             token=os.environ.get("RADIO_TOKEN") or None,
             max_sessions=int(os.environ.get("MAX_SESSIONS", "2")),
-            max_session_minutes=float(os.environ.get("MAX_SESSION_MINUTES", "60")),
+            max_session_minutes=_minutes("MAX_SESSION_MINUTES", "60"),
             allow_private_hosts=_bool("ALLOW_PRIVATE_HOSTS", False),
             ident=os.environ.get("KIWI_IDENT", "skywave"),
             kiwi_agc=_bool("KIWI_AGC", True),
