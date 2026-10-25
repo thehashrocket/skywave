@@ -41,7 +41,7 @@ from typing import Any
 from .config import Settings
 from .dsp import CW_PITCH_HZ, MODES, Demodulator, Spectrum, encode_audio, encode_spectrum
 from .hostguard import HostRejected, is_public_address, resolve_receiver
-from .kiwi import DEFAULT_PORT, KiwiClient, KiwiError
+from .kiwi import CLOSE_TIMEOUT_S, DEFAULT_PORT, KiwiClient, KiwiError
 from .scan import ScanResult, sweep
 from .waterfall import WaterfallClient
 
@@ -71,6 +71,10 @@ SCAN_CACHE_MAX = 500
 SCAN_MIN_INTERVAL_S = 30.0
 # Pause before draining a paired waterfall again after idling failed while it is still open.
 IDLE_RETRY_S = 1.0
+# How long ending a session waits for a cancelled scan to stop. Its own cleanup
+# is a waterfall close (bounded by CLOSE_TIMEOUT_S); past this, log and move on.
+# The listener's "Stopped" waits on this, so keep it tight.
+SCAN_STOP_TIMEOUT_S = CLOSE_TIMEOUT_S + 0.5
 
 # A receiver as the session dials it: host, port, whether private addresses
 # may be dialed for it, and wss.
@@ -227,11 +231,18 @@ class ListenSession:
         self._freq_khz = 0.0
         # host, port, whether private addresses may be dialed for it, and wss.
         self._target: Target | None = None
+        # The receiver a pump that has ended is still closing, until its status
+        # goes out. A tune for it meanwhile is the browser not knowing yet.
+        self._ending_target: Target | None = None
         self._listening = False
         # The band scan's waterfall, paired with self._client. It shares that
         # channel and closing it ends the audio, so once opened it idles until
         # the receiver connection ends (_end_scan), and uses no slot.
         self._waterfall: WaterfallClient | None = None
+        # A scan's waterfall still in its handshake. Only the scan holds it, so
+        # it's kept here too: ending the session can drop it even if that scan
+        # never stops.
+        self._connecting: WaterfallClient | None = None
         self._waterfall_idle: asyncio.Task[None] | None = None
         self._scan: asyncio.Task[None] | None = None
         # The newest scan request's id; a running scan answers under it.
@@ -283,6 +294,23 @@ class ListenSession:
                 raise BadRequest(f"Unknown message type {kind!r}.")
         except BadRequest as e:
             await self._status("error", message=str(e))
+        except ClientGone:
+            raise
+        except Exception:
+            # Keep the socket rather than let the error drop it with no word
+            # why. Say "error" only if the session really ended: the browser
+            # treats that status as the radio having stopped.
+            log.exception("handling %r failed", kind)
+            if kind == "scan":
+                scan_id = msg.get("id")
+                if not isinstance(scan_id, int) or isinstance(scan_id, bool):
+                    scan_id = None
+                await self._scan_reply(
+                    scan_id, self._target, "error", message="The scan broke. Check the radio service's logs."
+                )
+            elif self._pump is None or self._pump.done():
+                await self._status("error", message="Something broke in the radio service. Try again.")
+            # Otherwise the session still plays; the request just didn't apply.
 
     async def _tune(self, msg: dict[str, Any]) -> None:
         # Lowercased like the resolver does, so Kiwi.Example and kiwi.example
@@ -302,14 +330,20 @@ class ListenSession:
         if not 0 < freq <= MAX_FREQ_KHZ:
             raise BadRequest("Frequency must be between 0 and 32,000 kHz.")
 
-        self._freq_khz = freq
         public_only = msg.get("source") == "list"
         secure = msg.get("secure") is True
         # Same receiver means same address dialed under the same rule: a list
         # tune of an address a typed tune reached privately must restart, but
         # with private hosts off (production) the two are one receiver.
         target = (host, port, self.settings.allow_private_hosts and not public_only, secure)
-        same_receiver = self._target == target and self._pump is not None and not self._pump.done()
+        pump_running = self._pump is not None and not self._pump.done()
+        if pump_running and self._ending_target == target:
+            # That session has ended and is closing; its status (the reason it
+            # ended) is on its way. Redialing now would knock again on a Kiwi
+            # that may just have refused us, and hide that answer.
+            return
+        self._freq_khz = freq
+        same_receiver = self._target == target and pump_running
         if same_receiver:
             if mode != self._mode:
                 self._mode = mode
@@ -334,10 +368,12 @@ class ListenSession:
         try:
             await self.stop(None)
         except BaseException:
-            # Cancelled mid-switch, the old pump may still be closing its Kiwi.
-            # Free the slot when it ends, not now, or another listener could
-            # take it while that channel is still open. For a pump that has
-            # already ended, asyncio runs the callback on the next loop pass.
+            # The switch was cancelled (the browser left), or stopping the old
+            # pump failed. Either way the old pump may still be closing its
+            # Kiwi: free the slot when it ends, not now, or another listener
+            # could take it while that channel is still open. For a pump that
+            # has already ended, asyncio runs the callback on the next loop pass.
+            # handle() reports a failure; a cancel keeps propagating.
             if old_holder is not None:
                 old_holder.add_done_callback(lambda _: self._slots.release())
             raise
@@ -345,6 +381,7 @@ class ListenSession:
             raise BadRequest("The radio service is at its listener limit. Try again in a bit.")
         self._mode = mode
         self._target = target
+        self._ending_target = None
         self._pump = self._slot_holder = asyncio.create_task(
             self._run(host, port, public_only=public_only, secure=secure)
         )
@@ -359,6 +396,10 @@ class ListenSession:
 
     async def _run(self, host: str, port: int, *, public_only: bool = False, secure: bool = False) -> None:
         await self._status("connecting", host=host)
+        # How this pump ended, for the browser. Sent only once its Kiwi sockets
+        # are closed and its slot is free, so a reconnect on "Stopped" or an
+        # error finds the slot available.
+        ending: dict[str, Any] | None = None
         try:
             allow_private = self.settings.allow_private_hosts and not public_only
             ip = await self._resolver(host, port, allow_private=allow_private, owner=self.lookup_owner)
@@ -374,61 +415,124 @@ class ListenSession:
             self._listening = True
             await self._status("listening")
 
-            started = time.monotonic()
-            limit_s = self.settings.max_session_minutes * 60
             last_meter = 0.0
-            # blocks() raises when the receiver goes quiet, so this loop (and
-            # the limit check) comes round at least every timeout_s.
-            async for block in client.blocks():
-                if time.monotonic() - started > limit_s:
-                    await self._status(
-                        "stopped",
-                        message=f"Hit the {self.settings.max_session_minutes:g}-minute session limit. "
-                        "Reconnect if you're still listening.",
-                    )
-                    return
-                # A short SND block has no samples: the demodulator's filter
-                # can't take an empty array, and there's nothing to send.
-                # blocks() times out a receiver that only sends these.
-                if not block.samples.size:
-                    continue
-                audio = self._demod.process(block.samples)
-                await self._send_bytes(AUDIO_TAG + encode_audio(audio))
-                for frame in self._spectrum.process(block.samples):
-                    await self._send_bytes(SPECTRUM_TAG + encode_spectrum(frame.db))
-                now = time.monotonic()
-                if now - last_meter >= METER_INTERVAL_S:
-                    last_meter = now
-                    await self._send_text(
-                        {"type": "meter", "rssi": round(block.rssi_dbm, 1), "overflow": block.adc_overflow}
-                    )
+            # Its own timer, not a check per block: a receiver that goes quiet
+            # would otherwise hold the channel until blocks() times out.
+            limit = asyncio.timeout(self.settings.max_session_minutes * 60)
+            try:
+                async with limit:
+                    async for block in client.blocks():
+                        # A short SND block has no samples: the demodulator's
+                        # filter can't take an empty array, and there's nothing
+                        # to send. blocks() times out a receiver that only
+                        # sends these.
+                        if not block.samples.size:
+                            continue
+                        audio = self._demod.process(block.samples)
+                        await self._send_bytes(AUDIO_TAG + encode_audio(audio))
+                        for frame in self._spectrum.process(block.samples):
+                            await self._send_bytes(SPECTRUM_TAG + encode_spectrum(frame.db))
+                        now = time.monotonic()
+                        if now - last_meter >= METER_INTERVAL_S:
+                            last_meter = now
+                            await self._send_text(
+                                {"type": "meter", "rssi": round(block.rssi_dbm, 1), "overflow": block.adc_overflow}
+                            )
+            except TimeoutError:
+                if not limit.expired():
+                    raise
+                ending = self._status_payload(
+                    "stopped",
+                    message=f"Hit the {self.settings.max_session_minutes:g}-minute session limit. "
+                    "Reconnect if you're still listening.",
+                )
         except ClientGone:
             pass
         except HostRejected as e:
-            await self._status("error", message=str(e), code=e.code, retryAfterMs=e.retry_after_ms)
+            ending = self._status_payload("error", message=str(e), code=e.code, retryAfterMs=e.retry_after_ms)
         except KiwiError as e:
-            await self._status("error", message=str(e), code=e.code)
+            ending = self._status_payload("error", message=str(e), code=e.code)
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("listen session crashed")
-            await self._status("error", message="Something broke in the radio service. Check its logs.")
+            ending = self._status_payload("error", message="Something broke in the radio service. Check its logs.")
         finally:
             self._listening = False
-            # This pump is done with its receiver even while close() below
+            # This pump is done with its receiver even while the teardown below
             # waits, so a tune for it now must start over, not retune a dead client.
+            # One that ended on its own holds same-receiver tunes until its
+            # status has gone out (see _tune).
+            if ending is not None:
+                self._ending_target = self._target
             self._target = None
-            # The scan's waterfall shares this Kiwi channel, and the slot frees
-            # when this pump ends, so close it even if the close below is
-            # cancelled a second time (the session closing mid-switch) or fails.
-            try:
-                if self._client is not None:
-                    await self._client.close()
-                    self._client = None
-            finally:
-                await self._end_scan()
+            # Close the audio and the scan (with its waterfall, which shares this
+            # Kiwi channel) side by side, so the listener's status waits for the
+            # slower of the two, not their sum. The slot frees when this pump
+            # ends, so a second cancel (the session closing mid-switch) must not
+            # end the pump early: it aborts the audio socket (gone at once) and
+            # waits out the scan's teardown, which is bounded. The client is
+            # taken here, not in the close task, so that abort reaches it even
+            # if the task never gets to run.
+            client, self._client = self._client, None
+            closing = {asyncio.create_task(self._end_scan())}
+            closing_audio = asyncio.create_task(client.close()) if client is not None else None
+            if closing_audio is not None:
+                closing.add(closing_audio)
 
-    async def _status(self, state: str, **extra: Any) -> None:
+            def drop_audio() -> None:
+                if client is not None:
+                    client.abort()
+                if closing_audio is not None:
+                    closing_audio.cancel()
+
+            try:
+                await asyncio.wait(closing)
+            except asyncio.CancelledError:
+                drop_audio()
+                # Later cancels (a Stop or switch, then the browser leaving)
+                # don't end the wait either: it's bounded, and ending early
+                # would free the slot while the scan's waterfall still closes.
+                while True:
+                    try:
+                        await asyncio.wait(closing)
+                        break
+                    except asyncio.CancelledError:
+                        drop_audio()
+                for task in closing:
+                    if not task.cancelled():
+                        task.exception()  # retrieved; the cancel is what propagates
+                raise
+            teardown_error = next(
+                (t.exception() for t in closing if not t.cancelled() and t.exception() is not None), None
+            )
+            if teardown_error is not None and ending is None:
+                raise teardown_error
+            if teardown_error is not None:
+                # The sockets are dropped either way; the listener still hears
+                # how the session ended.
+                log.warning("closing %s after the session ended failed: %r", host, teardown_error)
+        # Every socket on the channel is closed (the finally above ran in full),
+        # so free the slot now and then tell the browser. _pump_done, the done
+        # callback, is the backstop for every pump that doesn't get here:
+        # cancelled before it started, while listening (Stop, a switch) or
+        # during teardown, or failing its teardown with no ending to report.
+        self._pump_done(asyncio.current_task())
+        if ending is not None:
+            # Same-receiver tunes stay held through this send: a switch now
+            # would cancel it, losing the reason (a refusal, the limit) and
+            # redialing the Kiwi that gave it.
+            await self._send_status(ending)
+            self._ending_target = None
+
+    async def _close_client(self) -> None:
+        # Let go first: a close cut short by a cancel leaves no dead client to
+        # retune or close again.
+        client, self._client = self._client, None
+        if client is not None:
+            await client.close()
+
+    def _status_payload(self, state: str, **extra: Any) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "type": "status",
             "state": state,
@@ -441,6 +545,12 @@ class ListenSession:
         if self._client is not None and self._client.info.sample_rate:
             payload["sampleRate"] = self._client.info.sample_rate
         payload.update({k: v for k, v in extra.items() if v is not None})
+        return payload
+
+    async def _status(self, state: str, **extra: Any) -> None:
+        await self._send_status(self._status_payload(state, **extra))
+
+    async def _send_status(self, payload: dict[str, Any]) -> None:
         try:
             await self._send_text(payload)
         except Exception:
@@ -453,9 +563,7 @@ class ListenSession:
         await self._cancel(self._pump)
         self._pump = None
         self._target = None
-        if self._client is not None:
-            await self._client.close()
-            self._client = None
+        await self._close_client()
         await self._end_scan()
         if message:
             await self._status("stopped", message=message)
@@ -503,6 +611,8 @@ class ListenSession:
             waterfall = await self._paired_waterfall(client)
             result = await sweep(waterfall.frame, waterfall.info.freq_offset_khz, waterfall.bandwidth_khz)
         except KiwiError as e:
+            if self._client is not client:
+                return  # this connection ended; its teardown owns the waterfall
             if self._waterfall is not None and self._waterfall.is_open:
                 # Still paired with the audio: closing it would end the
                 # listener's audio over a scan problem. Keep it drained; idle
@@ -519,9 +629,15 @@ class ListenSession:
             return
         except Exception:
             log.exception("scan crashed")
+            if self._client is not client:
+                return
             # Keep any waterfall drained: a dropped one takes the audio with it.
             self._idle_waterfall()
             await self._swept(target, "error", message="The scan broke. Check the radio service's logs.")
+            return
+        if self._client is not client:
+            # The connection ended mid-sweep: no answer about a receiver we
+            # left, and nothing cached or idled against the next one.
             return
         self._idle_waterfall()
         if result.bands_done == 0 and result.bands_total > 0:
@@ -556,6 +672,10 @@ class ListenSession:
             self._waterfall_idle = asyncio.create_task(self._idle(self._waterfall))
 
     async def _paired_waterfall(self, client: KiwiClient) -> WaterfallClient:
+        if self._client is not client:
+            # A scan from a connection that has ended: the session's waterfall
+            # (if any) belongs to the next one.
+            raise KiwiError("closed", f"{client.host}: the receiver connection ended")
         # Wait for the idle reader to finish: its recv would collide with the sweep's.
         await self._cancel(self._waterfall_idle)
         self._waterfall_idle = None
@@ -567,6 +687,10 @@ class ListenSession:
                 raise refusal
             await self._waterfall.fast()
             return self._waterfall
+        if self._client is not client:
+            # The connection ended while the idle reader stopped: don't dial a
+            # new waterfall onto a channel whose slot may already be free.
+            raise KiwiError("closed", f"{client.host}: the receiver connection ended")
         waterfall = self._waterfall_factory(
             client.host,
             client.port,
@@ -576,27 +700,36 @@ class ListenSession:
             # Same timestamp: joins the audio's channel instead of being refused.
             timestamp=client.timestamp,
         )
+        self._connecting = waterfall
         try:
-            await waterfall.connect()
-        except asyncio.CancelledError:
-            # Cancelled mid-handshake (the audio is ending): close the half-open one.
-            await waterfall.close()
-            raise
-        except Exception as e:
-            unpaired = isinstance(e, KiwiError) and e.code == "unpaired"
-            if waterfall.is_open and not unpaired:
-                # Not set up, or refused after the Kiwi may have paired it: keep
-                # it, so the caller drains it rather than closing it and ending
-                # the audio. A Kiwi that really refused it closes it itself.
-                self._waterfall = waterfall
-                if isinstance(e, KiwiError) and e.code != "timeout":
-                    waterfall.refusal = e
-            else:
-                # Never paired (badp=5) or already closed: safe to close.
+            try:
+                await waterfall.connect()
+            except asyncio.CancelledError:
+                # Cancelled mid-handshake (the audio is ending): close the half-open one.
                 await waterfall.close()
-            raise
-        self._waterfall = waterfall
-        return waterfall
+                raise
+            except Exception as e:
+                unpaired = isinstance(e, KiwiError) and e.code == "unpaired"
+                if waterfall.is_open and not unpaired and self._client is client:
+                    # Not set up, or refused after the Kiwi may have paired it:
+                    # keep it, so the caller drains it rather than closing it and
+                    # ending the audio. A Kiwi that really refused it closes it itself.
+                    self._waterfall = waterfall
+                    if isinstance(e, KiwiError) and e.code != "timeout":
+                        waterfall.refusal = e
+                else:
+                    # Never paired (badp=5), already closed, or its connection
+                    # has ended: safe to close.
+                    await waterfall.close()
+                raise
+            if self._client is not client:
+                await waterfall.close()
+                raise KiwiError("closed", f"{client.host}: the receiver connection ended")
+            self._waterfall = waterfall
+            return waterfall
+        finally:
+            if self._connecting is waterfall:
+                self._connecting = None
 
     async def _idle(self, waterfall: WaterfallClient) -> None:
         while True:
@@ -625,21 +758,67 @@ class ListenSession:
 
     async def _end_scan(self) -> None:
         """Stop any scan and close its waterfall; the receiver connection has ended."""
+        scan, idle = self._scan, self._waterfall_idle
         try:
-            await self._cancel(self._scan)
-            await self._cancel(self._waterfall_idle)
-            self._scan = self._waterfall_idle = None
-            # A new connection gets a new sweep: the last answer may be an error
-            # from a scan this ending cut short.
-            self._last_sweep = None
+            await self._stop_scan_tasks(scan, idle)
+        except asyncio.CancelledError:
+            # Backstop for a caller that cancels this while a scan stops (the
+            # pump runs it as its own task and doesn't): that scan may still be
+            # closing a half-open waterfall on this channel that only it holds.
+            # Let it finish (bounded) before the slot can free.
+            stopping = {t for t in (scan, idle) if t is not None and not t.done()}
+            if stopping:
+                await asyncio.wait(stopping, timeout=SCAN_STOP_TIMEOUT_S)
+            raise
         finally:
+            # However the stop went (even if a scan task raised): a new
+            # connection gets a new sweep, since the last answer may be an
+            # error from a scan this ending cut short.
+            if self._scan is scan:
+                self._scan = None
+            if self._waterfall_idle is idle:
+                self._waterfall_idle = None
+            self._last_sweep = None
             # Even when cancelled waiting on the scan: the waterfall shares the
             # Kiwi channel, and the pump that called us frees the slot next.
+            # A scan that never stopped may still hold one mid-handshake (or
+            # mid-close, or still dialing): abort drops that socket, or makes
+            # the dial drop it the moment it opens.
+            connecting, self._connecting = self._connecting, None
+            if connecting is not None:
+                connecting.abort()
             await self._drop_waterfall()
 
     @staticmethod
+    async def _stop_scan_tasks(*tasks: asyncio.Task[None] | None) -> None:
+        """Cancel the scan and idle tasks and wait for them together, but not forever.
+
+        Their own cleanup is a bounded waterfall close; one that outlives
+        SCAN_STOP_TIMEOUT_S has swallowed its cancel, so log it and let the
+        session end (its connecting waterfall is aborted) instead of holding
+        the slot indefinitely. Both are stopped before either's error is raised.
+        """
+        running = {t for t in tasks if t is not None and not t.done() and t is not asyncio.current_task()}
+        for task in running:
+            task.cancel()
+        if running:
+            _, pending = await asyncio.wait(running, timeout=SCAN_STOP_TIMEOUT_S)
+            if pending:
+                log.warning("%d cancelled scan task(s) still running after %gs", len(pending), SCAN_STOP_TIMEOUT_S)
+        for task in running:
+            if task.done() and not task.cancelled() and task.exception() is not None:
+                raise task.exception()
+
+    @staticmethod
     async def _cancel(task: asyncio.Task[None] | None) -> None:
-        if task is None or task.done() or task is asyncio.current_task():
+        if task is not None and task.done():
+            if not task.cancelled() and task.exception() is not None:
+                # Ended with an error that may never have been read: say so
+                # here, not as an unexplained "never retrieved" at garbage
+                # collection. (One already raised by stop() logs again here.)
+                log.warning("a finished task had failed: %r", task.exception())
+            return
+        if task is None or task is asyncio.current_task():
             return
         task.cancel()
         # Wait for it without taking on its CancelledError. A cancel aimed at
