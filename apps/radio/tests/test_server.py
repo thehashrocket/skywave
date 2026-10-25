@@ -1043,7 +1043,7 @@ async def test_teardown_survives_repeated_cancels():
             await asyncio.sleep(0.01)
 
 
-# Value: protects=a second cancel during teardown aborts the audio client itself, so the socket drops even if the close task never runs or its close() doesn't react to the cancel; fails_when=the teardown relies on cancelling the close task (and KiwiConnection.close's own handler) to drop the socket; why_new=review (Claude adversarial, owner D6): the abort rested on asyncio running the close task first; seam=none (a fake client whose close() ignores the cancel's meaning); no_claim=real websockets abort timing
+# Value: protects=a second cancel during teardown aborts the audio client itself, so the socket drops even when its close() doesn't react to the cancel; fails_when=the teardown relies on cancelling the close task (and KiwiConnection.close's own handler) to drop the socket; why_new=review (Claude adversarial, owner D6): the abort rested on asyncio running the close task first; seam=none (a fake client whose close() ignores the cancel's meaning); no_claim=real websockets abort timing
 async def test_a_second_cancel_aborts_the_audio_client_itself():
     from skywave_radio.session import ListenSession, Slots
 
@@ -1072,6 +1072,51 @@ async def test_a_second_cancel_aborts_the_audio_client_itself():
         assert slots.active == 0
     finally:
         closed.set()
+    await session.close()
+
+
+# Value: protects=a second cancel that lands before the audio close task's first step still drops the socket and frees the slot only after, so a close() that never runs can't leave a volunteer channel open; fails_when=the teardown relies on the close task running (or on KiwiConnection.close's cancel handler) to drop the socket; why_new=owner D6/D7: the earlier test only covered a close already in progress; seam=asyncio.create_task wrapped for the fake's close coroutine only, cancelling it (and the pump) before it starts, which asyncio's FIFO order otherwise never produces; no_claim=real websockets abort timing
+async def test_a_cancel_before_the_audio_close_starts_still_aborts_it(monkeypatch):
+    from skywave_radio.session import ListenSession, Slots
+
+    closing, closed = asyncio.Event(), asyncio.Event()
+    closed.set()
+    held = _held_close_client("limit", closing, closed)
+    made = []
+
+    def factory(host, port, **kwargs):
+        made.append(held(host, port, **kwargs))
+        return made[-1]
+
+    real_create_task = asyncio.create_task
+    cancelled_early = []
+
+    def create_task(coro, **kwargs):
+        task = real_create_task(coro, **kwargs)
+        if not cancelled_early and getattr(coro, "__qualname__", "").endswith("HeldClose.close"):
+            cancelled_early.append(task)
+            task.cancel()  # before its first step: close() never runs
+            asyncio.current_task().cancel()  # the second cancel, landing on the pump right now
+        return task
+
+    slots = Slots(1)
+    session = ListenSession(
+        settings(max_session_minutes=0),  # the limit fires at once
+        _ignore,
+        _ignore,
+        slots=slots,
+        resolver=_resolve_any,
+        client_factory=factory,
+    )
+    monkeypatch.setattr(asyncio, "create_task", create_task)
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"})
+    pump = session._pump
+    await asyncio.wait({pump}, timeout=5)
+    monkeypatch.undo()
+    assert pump.done() and cancelled_early
+    assert not closing.is_set()  # close() never ran
+    assert getattr(made[0], "aborted", False)  # the socket was dropped anyway
+    assert slots.active == 0
     await session.close()
 
 
