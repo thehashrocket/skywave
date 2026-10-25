@@ -1083,10 +1083,17 @@ async def test_a_cancel_before_the_audio_close_starts_still_aborts_it(monkeypatc
     closed.set()
     held = _held_close_client("limit", closing, closed)
     made = []
+    slots = Slots(1)
 
     def factory(host, port, **kwargs):
-        made.append(held(host, port, **kwargs))
-        return made[-1]
+        client = held(host, port, **kwargs)
+
+        def abort():
+            client.held_at_abort = slots.active  # is the channel still counted?
+
+        client.abort = abort
+        made.append(client)
+        return client
 
     real_create_task = asyncio.create_task
     cancelled_early = []
@@ -1099,7 +1106,6 @@ async def test_a_cancel_before_the_audio_close_starts_still_aborts_it(monkeypatc
             asyncio.current_task().cancel()  # the second cancel, landing on the pump right now
         return task
 
-    slots = Slots(1)
     session = ListenSession(
         settings(max_session_minutes=0),  # the limit fires at once
         _ignore,
@@ -1115,8 +1121,8 @@ async def test_a_cancel_before_the_audio_close_starts_still_aborts_it(monkeypatc
     monkeypatch.undo()
     assert pump.done() and cancelled_early
     assert not closing.is_set()  # close() never ran
-    assert getattr(made[0], "aborted", False)  # the socket was dropped anyway
-    assert slots.active == 0
+    assert getattr(made[0], "held_at_abort", None) == 1  # dropped anyway, while the slot was still held
+    assert slots.active == 0  # and freed only after
     await session.close()
 
 
