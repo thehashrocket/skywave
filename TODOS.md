@@ -4,7 +4,7 @@
 
 ### Finish the session-end follow-ups from round 2's review
 
-**What:** (1) Make `abort()` stop any dial still in flight, not just drop its socket on arrival: check `KiwiConnection._aborted` before the https redial in `connect()`, and cancel an in-flight first dial too (keep a handle on the dial task), so an aborted waterfall never completes a handshake after its slot is freed. (2) Test the crash branch of `_run_scan`'s ended-connection guard (a sweep that raises after its connection ended). (3) In `_run`'s teardown, let a cancel win over a teardown error: log the error instead of replacing the `CancelledError`. (4) Small items from the round-2 re-review: `_stop_scan_tasks`, and `_run`'s teardown, read only the first failed task's exception (a second failure logs "never retrieved"); if the session-limit cancel lands inside a call that turns it into another error (e.g. a send raising `KiwiError("closed")`), the listener sees that error instead of the limit message; `_cancel`'s log line doesn't name the task; no test for `handle()`'s catch-all cleaning a bad scan id (bool or missing) to None; a scan task that outlives `_stop_scan_tasks`' timeout is dropped untracked, so a later failure only shows as "never retrieved" and cancel-swallowing tasks could pile up (keep them in a tracked set with a done callback that logs them); `_run`'s cancelled-teardown path reads teardown errors without logging them; a cancelled teardown leaves `_ending_target` set (harmless while the hold also needs a running pump; clear it); a scan whose connection ended still uses up its IP's sweep slot (`_sweep_times.start` runs before the connection check); `stop()` re-raises a scan task's error after the session did stop, so the listener sees "Something broke" instead of "Stopped." (log it, as `_run`'s teardown does when it has an ending), and the same error escapes `session.close()` in the server as an ASGI traceback; `_paired_waterfall`'s cancelled half-open waterfall closes gracefully where `abort()` would be quicker; the `MAX_SESSION_MINUTES` error reads "at least 1 minute" even for a huge value refused because it overflows in seconds; the comment on the re-check after `kept.fast()` and the Value line of `test_a_stale_scan_does_not_take_a_waterfall_stored_during_fast` still describe the hazard from before `kept` (now: a stale scan must not sweep its own old waterfall after its connection ended). (5) In `_tune`'s same-receiver retune, change `_mode` and the demodulator only after `client.tune()` succeeds, so an unexpected (non-Kiwi) error can't leave the session decoding with a mode the Kiwi never took. On that failure also send the current status back, so the browser's pending tune doesn't stay on "tuning" while audio plays. (6) CI runs only Python 3.13 while `requires-python` is `>=3.12`: add 3.12 to the radio CI matrix, or raise the floor.
+**What:** (1) Make `abort()` stop any dial still in flight, not just drop its socket on arrival: check `KiwiConnection._aborted` before the https redial in `connect()`, and cancel an in-flight first dial too (keep a handle on the dial task), so an aborted waterfall never completes a handshake after its slot is freed. (2) Test the crash branch of `_run_scan`'s ended-connection guard (a sweep that raises after its connection ended). (3) In `_run`'s teardown, let a cancel win over a teardown error: log the error instead of replacing the `CancelledError`. (4) Small items from the round-2 re-review: `_stop_scan_tasks`, and `_run`'s teardown, read only the first failed task's exception (a second failure logs "never retrieved"); if the session-limit cancel lands inside a call that turns it into another error (e.g. a send raising `KiwiError("closed")`), the listener sees that error instead of the limit message; `_cancel`'s log line doesn't name the task; no test for `handle()`'s catch-all cleaning a bad scan id (bool or missing) to None; a scan task that outlives `_stop_scan_tasks`' timeout is dropped untracked, so a later failure only shows as "never retrieved" and cancel-swallowing tasks could pile up (keep them in a tracked set with a done callback that logs them); `_run`'s cancelled-teardown path reads teardown errors without logging them; a cancelled teardown leaves `_ending_target` set (harmless while the hold also needs a running pump; clear it); a scan whose connection ended still uses up its IP's sweep slot (`_sweep_times.start` runs before the connection check); `stop()` re-raises a scan task's error after the session did stop, so the listener sees "Something broke" instead of "Stopped." (log it, as `_run`'s teardown does when it has an ending), and the same error escapes `session.close()` in the server as an ASGI traceback; `_paired_waterfall`'s cancelled half-open waterfall closes gracefully where `abort()` would be quicker; the `MAX_SESSION_MINUTES` error reads "at least 1 minute" even for a huge value refused because it overflows in seconds; the comment on the re-check after `kept.fast()` and the Value line of `test_a_stale_scan_does_not_take_a_waterfall_stored_during_fast` still describe the hazard from before `kept` (now: a stale scan must not sweep its own old waterfall after its connection ended). (5) In `_tune`'s same-receiver retune, change `_mode` and the demodulator only after `client.tune()` succeeds, so an unexpected (non-Kiwi) error can't leave the session decoding with a mode the Kiwi never took. On that failure also send the current status back, so the browser's pending tune doesn't stay on "tuning" while audio plays. (6) CI runs only Python 3.13 while `requires-python` is `>=3.12`: add 3.12 to the radio CI matrix, or raise the floor. (7) From the round-3a (idle socket) review: on shutdown, wait (bounded, a few seconds) for the socket cleanups still running in `server.py`'s `cleanups` set, so a cleanup cut off by shutdown still closes its Kiwi cleanly instead of the process exit dropping the TCP connection (owner D6, round 3a); catch a peer that vanished while the idle close frame goes out (uvicorn may raise an `OSError` subclass from `ws.close`, logged as an ASGI traceback; no leak); rate-limit the "refused a socket" warning per address. (8) Test and wording tidies from round 3a: `_minutes()`'s error text reads as if only for the session limit, but `IDLE_SOCKET_MINUTES` uses it too; `test_one_address_can_hold_only_so_many_sockets` keeps a needless `expected = EXPECTED` alias and `test_messages_keep_an_idle_socket_open` repeats the `EXPECTED` dict literally; no test runs a socket with `IDLE_SOCKET_MINUTES=inf` to show it is never idle-closed and the loop doesn't spin.
 
 **Why:** (1) An aborted scan waterfall that gets a redirect can still open one brief extra connection to the volunteer's Kiwi before it's dropped. (2) Without a test, dropping that guard would let a crashed straggler sweep idle against the next connection. (3) A teardown error during a cancel turns a switch into a generic "Something broke".
 
@@ -14,17 +14,29 @@
 **Priority:** P2
 **Depends on:** None
 
-### Close or time out a browser socket after its session ends
+### Limit how many Kiwi channels one address can hold
 
-**What:** Close the browser WebSocket, or give it an idle timeout, once its session is stopped or errored and nothing new is tuned.
+**What:** Decide whether one address may hold several listener slots at once, and if not, add a per-address slot limit (for example `MAX_SESSIONS_PER_IP`) checked where a session takes a slot.
 
-**Why:** `/ws` keeps `serve()` waiting on `ws.receive()` until the browser leaves; Stop and the session limit end only the Kiwi side. A client can open many sockets that never take a slot and hold them indefinitely, using file descriptors and memory.
+**Why:** `MAX_SOCKETS_PER_IP` caps browser sockets, not Kiwi channels. With the defaults (8 sockets, `MAX_SESSIONS` 2), one person or script with two tabs can hold every listener slot and keep refreshing them, locking everyone else out of listening.
 
-**Context:** Raised by Codex in the fix/slot-freed-flake /ship adversarial review (2026-10-23); not measured. `apps/radio/skywave_radio/server.py` (`listen`). The web app reuses one open socket across tunes (`use-radio.ts`), so a timeout must be long enough not to drop a listener who pauses between stations, and the page must reconnect cleanly if it does.
+**Context:** Raised by the security review of feat/idle-socket-timeout (2026-10-25); owner chose to decide it separately (D2). Unchanged from before that PR. Trade-off: people sharing one home, office or carrier address would share the limit; count by `socket_owner` (public addresses only, IPv6 by /64) so an untrusted proxy can't lump every listener together. `apps/radio/skywave_radio/session.py` (`Slots.try_acquire`, `_tune`).
 
 **Effort:** S
-**Priority:** P2
-**Depends on:** None
+**Priority:** P3
+**Depends on:** Owner's choice of limit and shared-address handling
+
+### Tighten the socket cap's IPv6 grouping and the lookup limit
+
+**What:** Decide how coarsely to group IPv6 for `MAX_SOCKETS_PER_IP` (/64 today; /56 or /48 would stop rotation inside one home or hosting allocation), whether to add an overall socket ceiling, and key hostguard's one-lookup-at-a-time limit (`ListenSession.lookup_owner`) by the same owner as the socket cap.
+
+**Why:** A client with a /56 or /48 can open 8 sockets in each of its /64s, and nothing caps the total. The lookup limit still keys on the exact address, so several addresses in one /64 can run parallel slow lookups and delay receiver resolution for everyone (`MAX_PENDING_LOOKUPS`).
+
+**Context:** Raised by the Claude and Codex adversarial reviews of feat/idle-socket-timeout (2026-10-25); owner chose a TODO (D7). Both predate that PR. Coarser grouping can lump separate customers some ISPs place in one /56. `apps/radio/skywave_radio/server.py` (`socket_owner`), `session.py` (`lookup_owner`), `hostguard.py`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** Owner's choice of grouping and ceiling
 
 ### Retry the old Kiwi path only for a Kiwi that needs it
 
@@ -163,6 +175,20 @@
 **Depends on:** None
 
 ## Completed
+
+### Close or time out a browser socket after its session ends
+
+**What:** Close the browser WebSocket, or give it an idle timeout, once its session is stopped or errored and nothing new is tuned.
+
+**Why:** `/ws` keeps `serve()` waiting on `ws.receive()` until the browser leaves; Stop and the session limit end only the Kiwi side. A client can open many sockets that never take a slot and hold them indefinitely, using file descriptors and memory.
+
+**Context:** Raised by Codex in the fix/slot-freed-flake /ship adversarial review (2026-10-23); not measured. `apps/radio/skywave_radio/server.py` (`listen`). The web app reuses one open socket across tunes (`use-radio.ts`), so a timeout must be long enough not to drop a listener who pauses between stations, and the page must reconnect cleanly if it does.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+
+**Completed:** feat/idle-socket-timeout (2026-10-25). A browser socket with no session playing and no message for `IDLE_SOCKET_MINUTES` (default 10, checked at startup) is closed with code 4000; the close frame is bounded, the idle clock runs from the later of the last message and the session's end, and the page treats 4000 as a quiet hang-up, resending a Listen that crossed it with the newest dial. One public address (IPv6 by /64) can hold at most `MAX_SOCKETS_PER_IP` sockets (default 8); the next is refused with 4001, which the page explains. Private and unknown addresses aren't counted, so an untrusted proxy can't turn the cap into a site-wide lockout. A socket's count is released once, before its idle close frame or in a shielded cleanup that always closes the session, even if the handler is cancelled mid-cleanup. Owner decisions D1-D7 (round 3a).
 
 ### End sessions cleanly when cleanup itself goes wrong
 
