@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Mode } from "./radio-types";
+import { inTuneRange, isMode, type Mode } from "./radio-types";
 
 export type RadioState = "idle" | "connecting" | "listening" | "stopped" | "error";
 
@@ -62,7 +62,13 @@ export type RadioStatus = {
   sampleRate?: number;
   host?: string;
   port?: number;
+  /** Where the receiver is tuned, as the service has it (it keeps the old one after a refused retune). */
+  freqKhz?: number;
+  mode?: Mode;
 };
+
+/** The service's tuning once it has answered every tune sent while it played. */
+export type Settled = { freqKhz?: number; mode?: Mode };
 
 export type Meter = { rssi: number; overflow: boolean };
 
@@ -165,6 +171,26 @@ export function useRadio() {
   // that socket the service has the newer tuning, and the tune's own send
   // would undo it. (A fresh socket has had nothing, so the tune must go.)
   const retunedRef = useRef<WebSocket | null>(null);
+  // Tunes sent while the service was playing that it hasn't answered yet. It
+  // answers each with one status carrying its tuning: the new one, or the old
+  // one if it failed or refused it (an uncoded error first, for a refusal);
+  // or, if the tune broke the connection or the session was already ending,
+  // by that ending, which forgets the count.
+  // Counted per message here, not per render, so no answer is lost.
+  const owedRef = useRef(0);
+  const serviceLiveRef = useRef(false);
+  // The last status was an uncoded error: a refusal's status may come next.
+  const refusedRef = useRef(false);
+  const forgetOwed = useCallback(() => {
+    owedRef.current = 0;
+    serviceLiveRef.current = false;
+    refusedRef.current = false;
+  }, []);
+  const [settled, setSettled] = useState<Settled | null>(null);
+  const sendTune = useCallback((ws: WebSocket, t: Tuning) => {
+    if (serviceLiveRef.current) owedRef.current++;
+    ws.send(JSON.stringify({ type: "tune", ...t }));
+  }, []);
   // Band scan. canScan: the service said it can ("features" on its statuses);
   // an older one would answer a scan request with an error status.
   const [canScan, setCanScan] = useState(false);
@@ -253,6 +279,23 @@ export function useRadio() {
         setCanScan(Array.isArray(msg.features) && msg.features.includes("scan"));
         listeningRef.current =
           state === "listening" && host !== undefined && port !== undefined ? { host, port } : null;
+        const freqKhz =
+          typeof msg.freqKhz === "number" && Number.isFinite(msg.freqKhz) && inTuneRange(msg.freqKhz)
+            ? msg.freqKhz
+            : undefined;
+        const mode = isMode(msg.mode) ? msg.mode : undefined;
+        if (state === "listening") {
+          serviceLiveRef.current = true;
+          refusedRef.current = false;
+          if (owedRef.current > 0 && --owedRef.current === 0) setSettled({ freqKhz, mode });
+        } else if (rejected && !refusedRef.current) {
+          // Maybe a refusal, with the playing status next (owner D1, round 3d).
+          refusedRef.current = true;
+        } else {
+          // Connecting, stopped, a coded ending, or an uncoded error nothing
+          // followed: nothing it owes will come.
+          forgetOwed();
+        }
         // The service drops a scan when its receiver connection ends, without a
         // reply. Clear ours too, or a reconnect to the same receiver would keep
         // "Scanning…" (or an old list) and never scan again.
@@ -266,6 +309,8 @@ export function useRadio() {
           sampleRate,
           host,
           port,
+          freqKhz,
+          mode,
         });
       } else if (msg.type === "meter") {
         setMeter({ rssi: Number(msg.rssi), overflow: Boolean(msg.overflow) });
@@ -296,7 +341,7 @@ export function useRadio() {
         }
       }
     },
-    [setTuningBoth, setHeardAudioBoth, clearScan],
+    [setTuningBoth, setHeardAudioBoth, clearScan, forgetOwed],
   );
 
   const handleBinary = useCallback(
@@ -385,6 +430,7 @@ export function useRadio() {
         wsRef.current = null;
         nodeRef.current?.port.postMessage({ type: "reset" });
         listeningRef.current = null;
+        forgetOwed();
         setCanScan(false);
         clearScan();
         setMeter(null);
@@ -418,7 +464,7 @@ export function useRadio() {
         }
       };
     });
-  }, [handleBinary, handleText, setTuningBoth, setHeardAudioBoth, clearScan]);
+  }, [handleBinary, handleText, setTuningBoth, setHeardAudioBoth, clearScan, forgetOwed]);
 
   /** Start listening, or retune if already connected. Call from a click so audio can start. */
   const tune = useCallback(
@@ -455,9 +501,9 @@ export function useRadio() {
       if (generation !== generationRef.current) return;
       // A dial move while audio woke already went out for this receiver; sending now would undo it.
       if (retunedRef.current === ws) return;
-      ws.send(JSON.stringify({ type: "tune", ...(latestRef.current ?? t) }));
+      sendTune(ws, latestRef.current ?? t);
     },
-    [ensureAudio, ensureSocket, setTuningBoth, setHeardAudioBoth, clearScan],
+    [ensureAudio, ensureSocket, setTuningBoth, setHeardAudioBoth, clearScan, sendTune],
   );
   useEffect(() => {
     retryTuneRef.current = tune;
@@ -476,10 +522,10 @@ export function useRadio() {
     }
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "tune", ...t }));
+      sendTune(ws, t);
       if (forPending) retunedRef.current = ws;
     }
-  }, []);
+  }, [sendTune]);
 
   const stop = useCallback(() => {
     generationRef.current++;
@@ -493,12 +539,13 @@ export function useRadio() {
     }
     nodeRef.current?.port.postMessage({ type: "reset" });
     listeningRef.current = null;
+    forgetOwed();
     clearScan();
     setMeter(null);
     setTuningBoth(false);
     setHeardAudioBoth(false);
     setStatus({ state: "idle" });
-  }, [setTuningBoth, setHeardAudioBoth, clearScan]);
+  }, [setTuningBoth, setHeardAudioBoth, clearScan, forgetOwed]);
 
   /**
    * Scan the receiver being listened to for strong broadcast signals. `fresh`
@@ -542,6 +589,7 @@ export function useRadio() {
 
   return {
     status,
+    settled,
     meter,
     tuning,
     heardAudio,

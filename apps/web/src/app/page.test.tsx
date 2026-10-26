@@ -2,10 +2,11 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Receiver } from "@/lib/kiwi-list";
-import type { RadioStatus, ScanState } from "@/lib/use-radio";
+import type { RadioStatus, ScanState, Settled } from "@/lib/use-radio";
 
 const radio = {
   status: { state: "idle" } as RadioStatus,
+  settled: null as Settled | null,
   meter: null,
   tuning: false,
   heardAudio: false,
@@ -129,6 +130,7 @@ beforeEach(() => {
   receiverList.data = { receivers: [listed, backup] };
   receiverList.errorUpdatedAt = 0;
   radio.status = { state: "idle" };
+  radio.settled = null;
   radio.tuning = false;
   radio.heardAudio = false;
   radio.canScan = false;
@@ -393,6 +395,39 @@ describe("ListenPage", () => {
       fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "sdr.k1vl.com" } });
       fireEvent.click(screen.getByRole("button", { name: "Listen" }));
       expect(radio.tune).toHaveBeenLastCalledWith({ host: "sdr.k1vl.com", port: 8076, freqKhz: 10_001, mode: "am" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=once the service has answered every tune, the dial and mode move to the tuning it kept (a refused or failed retune puts them back), but not while a newer move is queued, and a settle missing a field leaves that field; fails_when=the page ignores settled, applies it over a queued move, or writes undefined; why_new=TODO "Revert the web dial when the service refuses a retune"; seam=mocked radio hook; no_claim=the hook's counting (use-radio tests)
+  it("moves the dial to the service's settled tuning unless a move is queued", () => {
+    vi.useFakeTimers();
+    try {
+      localStorage.setItem("skywave.receiver", JSON.stringify({ host: "kiwi.example", port: "8073" }));
+      radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
+      const view = render(<ListenPage />);
+      const slider = screen.getByRole("slider", { name: "Tuning dial" });
+      const at = () => slider.getAttribute("aria-valuenow");
+      fireEvent.keyDown(slider, { key: "ArrowUp" });
+      act(() => vi.advanceTimersByTime(500));
+      expect(at()).toBe("10001");
+
+      radio.settled = { freqKhz: 10_000, mode: "usb" };
+      view.rerender(<ListenPage />);
+      expect(at()).toBe("10000");
+      expect((screen.getByRole("radio", { name: "USB" }) as HTMLInputElement).checked).toBe(true);
+
+      fireEvent.keyDown(slider, { key: "ArrowUp" }); // queued, not yet sent
+      radio.settled = { freqKhz: 9_000, mode: "usb" };
+      view.rerender(<ListenPage />);
+      expect(at()).toBe("10001");
+      act(() => vi.advanceTimersByTime(500));
+
+      radio.settled = {};
+      view.rerender(<ListenPage />);
+      expect(at()).toBe("10001");
+      expect((screen.getByRole("radio", { name: "USB" }) as HTMLInputElement).checked).toBe(true);
     } finally {
       vi.useRealTimers();
     }
