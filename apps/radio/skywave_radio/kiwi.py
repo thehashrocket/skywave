@@ -74,6 +74,12 @@ MAX_FRAME_BYTES = 2**20
 MAX_EXTRA_KEYS = 64
 
 
+def _drop_late_socket(dial: asyncio.Future[ClientConnection]) -> None:
+    # Reads the result or error either way, so neither is left unretrieved.
+    if not dial.cancelled() and dial.exception() is None:
+        dial.result().transport.abort()
+
+
 class KiwiError(Exception):
     """A Kiwi refused or dropped us. `code` is machine-readable."""
 
@@ -295,6 +301,12 @@ class KiwiConnection:
                 if dial.exception() is None:
                     dial.result().transport.abort()
                 raise
+            if dial is not None and not dial.done():
+                # Can't happen with asyncio's own tasks (a cancelled awaiter
+                # resumes only once the dial is done), but if the dial ever
+                # outlives us, drop whatever socket it opens when it lands.
+                dial.add_done_callback(_drop_late_socket)
+                dial.cancel()  # and stop it now: abort() can't reach it once _dialing clears (owner D9)
             current = asyncio.current_task()
             if (
                 self._aborted
@@ -380,7 +392,10 @@ class KiwiConnection:
             msg = await self._ws.recv()
         except websockets.ConnectionClosed as e:
             if self._broken is not None:
-                raise self._broken from e
+                # A fresh error each time (re-raising the stored one would grow
+                # its traceback on every raise), chained to it so a log shows why
+                # the connection was given up.
+                raise KiwiError(self._broken.code, str(self._broken)) from self._broken
             raise KiwiError("closed", f"{self.host} closed the connection") from e
         return msg if isinstance(msg, bytes) else msg.encode()
 
@@ -403,7 +418,10 @@ class KiwiConnection:
             raise KiwiError("timeout", f"{self.host} stopped reading") from e
         except websockets.ConnectionClosed as e:
             if self._broken is not None:
-                raise self._broken from e
+                # A fresh error each time (re-raising the stored one would grow
+                # its traceback on every raise), chained to it so a log shows why
+                # the connection was given up.
+                raise KiwiError(self._broken.code, str(self._broken)) from self._broken
             raise KiwiError("closed", f"{self.host} closed the connection") from e
 
     def abort(self) -> None:

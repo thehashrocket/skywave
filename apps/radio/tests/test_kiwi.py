@@ -501,7 +501,7 @@ async def test_a_failed_tune_keeps_the_old_frequency(monkeypatch):
     assert client.freq_khz == 7200.0
 
 
-# Value: protects=a retune the Kiwi stops reading (the frame may still be queued) gives the connection up, and the reader then ends the session with "stopped reading" rather than going on with tuning the service can't know; fails_when=tune() rolls back and keeps the connection, or the reader reports a generic "closed"; why_new=owner D1 (round 3b red team: a queued retune could be taken later and garble audio); seam=a stand-in socket whose send never finishes and whose recv ends once the transport is aborted; no_claim=real TCP buffering
+# Value: protects=a retune the Kiwi stops reading (the frame may still be queued) gives the connection up, and the reader then ends the session with "stopped reading" rather than going on with tuning the service can't know; fails_when=tune() rolls back and keeps the connection, or the reader reports a generic "closed", or _recv re-raises the stored error (rewriting its cause) or drops the stored error from the fresh one's cause; why_new=owner D1 (round 3b red team: a queued retune could be taken later and garble audio), round 3c (fresh error from _recv); seam=a stand-in socket whose send never finishes and whose recv ends once the transport is aborted; no_claim=real TCP buffering
 async def test_a_retune_the_kiwi_stops_reading_ends_the_connection():
     from websockets.exceptions import ConnectionClosedError
 
@@ -528,6 +528,8 @@ async def test_a_retune_the_kiwi_stops_reading_ends_the_connection():
     with pytest.raises(KiwiError) as read:
         await asyncio.wait_for(client._recv(), 5)
     assert read.value.code == "timeout" and "stopped reading" in str(read.value)
+    assert read.value is not client._broken  # a fresh error: the stored one keeps its own cause
+    assert read.value.__cause__ is client._broken  # and the traceback still shows why it was given up
 
 
 # Value: protects=once a retune gave the connection up, a send (a keepalive, an MSG reply) that hits the dropped socket also raises "stopped reading", so the listener sees the reason whichever call the reader was in; fails_when=_send turns it into a generic "closed"; why_new=round 3b review pass 3 (four reviewers); seam=a stand-in socket whose send raises ConnectionClosed, _broken set by hand; no_claim=which call the reader is in
@@ -544,6 +546,8 @@ async def test_a_send_after_the_connection_was_given_up_says_why():
     with pytest.raises(KiwiError) as e:
         await client._send("SET keepalive")
     assert e.value.code == "timeout" and "stopped reading" in str(e.value)
+    assert e.value is not client._broken  # a fresh error: the stored one keeps its own cause
+    assert e.value.__cause__ is client._broken  # and the traceback still shows why it was given up
 
 
 # Value: protects=a retune cancelled while its send is in flight (the browser left) keeps the old frequency and doesn't give the connection up; fails_when=the cancel path takes the timeout branch or keeps the new frequency; why_new=round 3b state machines (send-cancelled x tune); seam=KiwiClient._send_mod held, _ws set by hand; no_claim=real cancel timing
@@ -904,3 +908,65 @@ def test_connections_get_unique_timestamps():
     stamps = [c.timestamp for c in clients]
     assert len(set(stamps)) == 3 and stamps == sorted(stamps)
     assert WaterfallClient("kiwi.example", 8073, timestamp=stamps[0]).timestamp == stamps[0]
+
+
+# Value: protects=if a dial ever outlives the _dial call that started it (a cancel reaching the caller while the dial still runs), the socket it opens is dropped on arrival instead of staying open on the volunteer's Kiwi, and a late failure or cancel closes nothing and raises nothing (owner decisions D1, D3 and D9, round 3c); fails_when=_dial unwinds without a done callback on a still-pending dial or without asking it to stop, or the callback calls result()/exception() unguarded; why_new=round 3b Codex finding, owner D1 (round 3c): asyncio itself never lets this happen, so the guard is a safety net; seam=asyncio.ensure_future in kiwi swapped for one dial-only future whose await unwinds at once; loop exception handler captured; no_claim=a real event loop producing this order
+@pytest.mark.parametrize("late", ["opens", "fails", "cancelled"])
+async def test_a_dial_that_outlives_its_caller_drops_its_socket_on_arrival(late, monkeypatch):
+    import gc
+
+    from skywave_radio import kiwi as kiwi_module
+
+    class OutlivingDial(asyncio.Future):
+        cancel_requested = False
+
+        def __await__(self):
+            raise asyncio.CancelledError  # the caller unwinds while this dial runs on
+            yield  # pragma: no cover - makes this a generator
+
+        def cancel(self, msg=None):
+            # Like a task asked to stop: the request is noted, the dial ends later.
+            self.cancel_requested = True
+            return True
+
+    dial = OutlivingDial()
+    real_ensure_future = asyncio.ensure_future
+
+    def only_the_dial(awaitable, **kwargs):
+        if getattr(awaitable, "__qualname__", "") == "wait_for":
+            awaitable.close()
+            return dial
+        return real_ensure_future(awaitable, **kwargs)
+
+    monkeypatch.setattr(kiwi_module.asyncio, "ensure_future", only_the_dial)
+    client = KiwiClient("kiwi.example")
+    with pytest.raises(asyncio.CancelledError):
+        await client._dial()
+    monkeypatch.undo()
+    assert dial.cancel_requested  # stopped at once, not left to run to its timeout (owner D9)
+    loop = asyncio.get_running_loop()
+    loop_errors = []
+    loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
+    aborted = []
+
+    class Transport:
+        def abort(self):
+            aborted.append(True)
+
+    class Late:
+        transport = Transport()
+
+    try:
+        if late == "opens":
+            dial.set_result(Late())
+        elif late == "fails":
+            dial.set_exception(OSError("refused"))
+        else:
+            asyncio.Future.cancel(dial)
+        await asyncio.sleep(0)  # done callbacks run on the next loop step
+        del dial
+        gc.collect()  # an unread error would be reported now
+        assert aborted == ([True] if late == "opens" else [])
+        assert loop_errors == []
+    finally:
+        loop.set_exception_handler(None)
