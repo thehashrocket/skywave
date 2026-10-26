@@ -2,25 +2,13 @@
 
 ## Radio service
 
-### Round 3d: small follow-ups from round 3c's reviews
-
-**What:** (1) `_task_name`'s comments still say a host "can be megabytes long" and that the pump is named "before its host is validated"; `_tune` now caps hosts at 253 characters first, so the 200-character clip is only a backstop (say so, and name the 200 once). (2) `_recv`/`_send` raise the fresh error `from self._broken`, which hides the Kiwi's close frame (`ConnectionClosed`) from tracebacks; add it as a note. (3) `_tune` copies the whole host string (`strip().lower()`) before the 253-character check; check the raw length first. (4) `_end_scan`'s backstop registers every stopping task as a straggler before its wait, so a scan that stops on time logs "has stopped" at INFO; log only the ones still pending after the wait. (5) A same-receiver retune into a new mode whose `Demodulator` fails to build leaves the Kiwi on the new mode's offset while decoding with the old one (owner D7, round 3c: accepted as unreachable while modes are a fixed list; revisit if they become dynamic).
-
-**Why:** Small log, comment and robustness items; none ends audio or leaves a Kiwi channel open.
-
-**Context:** From the chore/round-3c-tidies /ship reviews (2026-10-25); owner D13 chose to ship and record these. `apps/radio/skywave_radio/{session,kiwi}.py`.
-
-**Effort:** S
-**Priority:** P4
-**Depends on:** None
-
 ### Revert the web dial when the service refuses a retune
 
 **What:** When a same-receiver retune fails (the service answers with the current "listening" or "connecting" status), move the web app's dial back to the frequency still playing.
 
 **Why:** Since round 3b the service keeps the old frequency after a failed retune and says so, but the page's dial keeps showing the frequency it asked for, so the dial and the audio disagree until the next move.
 
-**Context:** Accepted in the fix/channel-teardown-followups /ship review (2026-10-25). `apps/web` (`use-radio.ts`, the status handler).
+**Context:** Accepted in the fix/channel-teardown-followups /ship review (2026-10-25). Since round 3d the service also answers any refused message, while a station still holds its receiver, with "error" and then that station's status (owner D1), which carries `freqKhz` and `mode`; the page's uncoded-error handling also clears the scan list then. `apps/web` (`use-radio.ts`, the status handler).
 
 **Effort:** S
 **Priority:** P3
@@ -187,6 +175,20 @@
 **Depends on:** None
 
 ## Completed
+
+### Round 3d: small follow-ups from round 3c's reviews
+
+**What:** (1) `_task_name`'s comments still say a host "can be megabytes long" and that the pump is named "before its host is validated"; `_tune` now caps hosts at 253 characters first, so the 200-character clip is only a backstop (say so, and name the 200 once). (2) `_recv`/`_send` raise the fresh error `from self._broken`, which hides the Kiwi's close frame (`ConnectionClosed`) from tracebacks; add it as a note. (3) `_tune` copies the whole host string (`strip().lower()`) before the 253-character check; check the raw length first. (4) `_end_scan`'s backstop registers every stopping task as a straggler before its wait, so a scan that stops on time logs "has stopped" at INFO; log only the ones still pending after the wait. (5) A same-receiver retune into a new mode whose `Demodulator` fails to build leaves the Kiwi on the new mode's offset while decoding with the old one (owner D7, round 3c: accepted as unreachable while modes are a fixed list; revisit if they become dynamic).
+
+**Why:** Small log, comment and robustness items; none ends audio or leaves a Kiwi channel open.
+
+**Context:** From the chore/round-3c-tidies /ship reviews (2026-10-25); owner D13 chose to ship and record these. `apps/radio/skywave_radio/{session,kiwi}.py`.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None
+
+**Completed:** chore/round-3d-followups (2026-10-25). All five items, plus input hardening from its reviews: `_tune` refuses non-string hosts and modes without stringifying them, overlong hosts, modes and number text before copying or parsing, and odd ports (bool, containers, fractions, `""`, `"0"`; owner D2: strict, while null, absent and the number 0 still mean 8073); a refused message while a station holds its receiver leaves it playing and answers "error" then its status (owner D1); unknown types are echoed clipped; deeply nested or over-long JSON numbers are just bad JSON. Item (5) stays an accepted gap (owner D7), now noted at the demodulator build.
 
 ### Round 3c: tests, CI and wording left from rounds 2, 3a and 3b
 
