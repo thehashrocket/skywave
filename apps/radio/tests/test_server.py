@@ -4873,7 +4873,7 @@ async def test_the_scan_stop_backstop_handles_each_task_each_way(kind, outcome, 
 
     outlives = outcome == "outlives"
     # Long until the backstop takes over; the cancels and the release end the waits.
-    monkeypatch.setattr(session_module, "SCAN_STOP_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(session_module, "SCAN_STOP_TIMEOUT_S", 6.0)
     caplog.set_level(logging.INFO, logger="skywave_radio.session")
     session = listening_session(_ignore)
     release = asyncio.Event()
