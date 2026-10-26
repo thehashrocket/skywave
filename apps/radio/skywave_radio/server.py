@@ -282,7 +282,9 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
                     continue
                 try:
                     msg = json.loads(raw)
-                except json.JSONDecodeError:
+                # Bad JSON, a number past Python's int digit limit, or nesting
+                # too deep to parse: all just bad JSON, not a dropped session.
+                except (ValueError, RecursionError):
                     await send_text(EXPECTED_JSON)
                     continue
                 if isinstance(msg, dict):
