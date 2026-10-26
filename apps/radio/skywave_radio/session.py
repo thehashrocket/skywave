@@ -80,21 +80,37 @@ SCAN_STOP_TIMEOUT_S = CLOSE_TIMEOUT_S + 0.5
 # may be dialed for it, and wss.
 Target = tuple[str, int, bool, bool]
 
-# Scan tasks that outlived SCAN_STOP_TIMEOUT_S after being cancelled: held so
-# they aren't garbage-collected mid-run, and logged when they finally end.
-_stragglers: set[asyncio.Task[None]] = set()
+# Cancelled scan tasks that may outlive their stop (past SCAN_STOP_TIMEOUT_S,
+# or caught by _end_scan's backstop): held so they aren't garbage-collected
+# mid-run, and logged when they end. Server shutdown waits on these too.
+scan_stragglers: set[asyncio.Task[None]] = set()
 
 
 def _task_name(task: asyncio.Task[Any]) -> str:
-    return getattr(task.get_coro(), "__qualname__", None) or task.get_name()
+    name = task.get_name()
+    qualname = getattr(task.get_coro(), "__qualname__", None)
+    if qualname is None:
+        return name
+    # Tasks named here carry their receiver; asyncio's own are "Task-N". The
+    # pump is named before its host is validated: escape anything unprintable.
+    if name.startswith("Task-"):
+        return qualname
+    clipped = name[:200]  # before escaping: a host can be megabytes long
+    shown = clipped if clipped.isprintable() else repr(clipped)
+    return f"{qualname} ({shown}{'…' if len(name) > 200 else ''})"
 
 
 def _log_straggler(task: asyncio.Task[None]) -> None:
-    _stragglers.discard(task)
+    scan_stragglers.discard(task)
     if not task.cancelled() and task.exception() is not None:
-        log.warning("%s failed after the session stopped waiting: %r", _task_name(task), task.exception())
+        log.warning(
+            "%s failed after it was stopped: %r",
+            _task_name(task),
+            task.exception(),
+            exc_info=task.exception(),
+        )
     else:
-        log.info("%s finally stopped", _task_name(task))
+        log.info("%s has stopped", _task_name(task))
 
 
 def _failures(tasks: Iterable[asyncio.Task[Any]]) -> list[BaseException]:
@@ -353,6 +369,8 @@ class ListenSession:
         mode = str(msg.get("mode", "am")).lower()
         if not host:
             raise BadRequest("Pick a receiver first.")
+        if len(host) > 253:  # longer than any DNS name: don't carry it into task names and logs
+            raise BadRequest("That receiver address is too long.")
         if mode not in MODES:
             raise BadRequest(f"Mode must be one of {', '.join(MODES)}.")
         if not 0 < freq <= MAX_FREQ_KHZ:
@@ -386,9 +404,12 @@ class ListenSession:
                     return
             self._freq_khz = freq
             if mode != self._mode:
-                self._mode = mode
+                # The demodulator first: if building it fails, _mode and the
+                # decoder still agree (the Kiwi already has the retune). Built
+                # after the send so a pump that came up during it gets one too.
                 if self._listening and client is not None:
                     self._demod = Demodulator(client.info.sample_rate, mode)
+                self._mode = mode
             if self._listening:
                 await self._status("listening")
             return
@@ -417,7 +438,7 @@ class ListenSession:
         self._target = target
         self._ending_target = None
         self._pump = self._slot_holder = asyncio.create_task(
-            self._run(host, port, public_only=public_only, secure=secure)
+            self._run(host, port, public_only=public_only, secure=secure), name=f"{host}:{port}"
         )
         self.idle_since = None
         # A done callback, not a finally in _run: a task cancelled before it
@@ -677,7 +698,9 @@ class ListenSession:
             # takes the audio down with it.
             await self._scan_reply(scan_id, target, "scanning")
             return
-        self._scan = asyncio.create_task(self._run_scan(target, client, fresh=msg.get("fresh") is True))
+        self._scan = asyncio.create_task(
+            self._run_scan(target, client, fresh=msg.get("fresh") is True), name=f"{target[0]}:{target[1]}"
+        )
 
     async def _run_scan(self, target: Target, client: KiwiClient, *, fresh: bool) -> None:
         cached = None if fresh else self._scan_cache.get(target)
@@ -762,7 +785,8 @@ class ListenSession:
 
     def _idle_waterfall(self) -> None:
         if self._waterfall is not None and (self._waterfall_idle is None or self._waterfall_idle.done()):
-            self._waterfall_idle = asyncio.create_task(self._idle(self._waterfall))
+            name = f"{self._target[0]}:{self._target[1]}" if self._target is not None else None
+            self._waterfall_idle = asyncio.create_task(self._idle(self._waterfall), name=name)
 
     async def _paired_waterfall(self, client: KiwiClient) -> WaterfallClient:
         if self._client is not client:
@@ -786,8 +810,9 @@ class ListenSession:
                 raise refusal
             await kept.fast()
             if self._client is not client:
-                # Ended while switching speed: never hand back (and sweep)
-                # whatever waterfall the next connection has stored by now.
+                # Ended while switching speed: don't sweep this waterfall, whose
+                # connection (and maybe slot) is gone; any the next connection
+                # stored meanwhile is left alone.
                 raise KiwiError("closed", f"{client.host}: the receiver connection ended")
             return kept
         waterfall = self._waterfall_factory(
@@ -836,11 +861,16 @@ class ListenSession:
         while True:
             try:
                 await waterfall.idle()
-            except KiwiError as e:
-                # The audio pump reports it if the Kiwi took the audio down too.
-                log.info("scan waterfall ended: %s", e)
-            except Exception:
-                log.exception("scan waterfall crashed while idling")
+            except Exception as e:
+                if (current := asyncio.current_task()) is not None and current.cancelling():
+                    # A cancel that came back as an error is still the cancel:
+                    # don't keep looping and hold up the stop (owner D11).
+                    raise asyncio.CancelledError from e
+                if isinstance(e, KiwiError):
+                    # The audio pump reports it if the Kiwi took the audio down too.
+                    log.info("scan waterfall ended: %s", e)
+                else:
+                    log.exception("scan waterfall crashed while idling")
             else:
                 return
             if not waterfall.is_open:
@@ -867,14 +897,17 @@ class ListenSession:
             # pump runs it as its own task and doesn't): that scan may still be
             # closing a half-open waterfall on this channel that only it holds.
             # Let it finish (bounded) before the slot can free.
+            # Read any that had already failed: the cut-short stop never did.
+            for error in _failures(t for t in (scan, idle) if t is not None):
+                log.warning("a stopped scan task failed: %r", error, exc_info=error)
             stopping = {t for t in (scan, idle) if t is not None and not t.done()}
+            # Tracked before the wait, so a second cancel cutting it short
+            # still leaves each held and its error logged when it ends.
+            for task in stopping - scan_stragglers:
+                scan_stragglers.add(task)
+                task.add_done_callback(_log_straggler)
             if stopping:
-                done, pending = await asyncio.wait(stopping, timeout=SCAN_STOP_TIMEOUT_S)
-                for error in _failures(done):
-                    log.warning("a stopped scan task failed: %r", error, exc_info=error)
-                for task in pending - _stragglers:
-                    _stragglers.add(task)
-                    task.add_done_callback(_log_straggler)
+                await asyncio.wait(stopping, timeout=SCAN_STOP_TIMEOUT_S)
             raise
         finally:
             # However the stop went (even if a scan task raised): a new
@@ -912,12 +945,12 @@ class ListenSession:
             _, pending = await asyncio.wait(running, timeout=SCAN_STOP_TIMEOUT_S)
             if pending:
                 log.warning("%d cancelled scan task(s) still running after %gs", len(pending), SCAN_STOP_TIMEOUT_S)
-                for task in pending - _stragglers:  # once, however often it is stopped
-                    _stragglers.add(task)
+                for task in pending - scan_stragglers:  # once, however often it is stopped
+                    scan_stragglers.add(task)
                     task.add_done_callback(_log_straggler)
         errors = _failures(running)
         for error in errors[1:]:
-            log.warning("a stopped scan task also failed: %r", error)
+            log.warning("a stopped scan task also failed: %r", error, exc_info=error)
         if errors:
             raise errors[0]
 
@@ -928,7 +961,7 @@ class ListenSession:
                 # Ended with an error that may never have been read: say so
                 # here, not as an unexplained "never retrieved" at garbage
                 # collection.
-                log.warning("%s had failed: %r", _task_name(task), task.exception())
+                log.warning("%s had failed: %r", _task_name(task), task.exception(), exc_info=task.exception())
             return
         if task is None or task is asyncio.current_task():
             return

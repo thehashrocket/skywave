@@ -2,16 +2,16 @@
 
 ## Radio service
 
-### Round 3c: tests, CI and wording left from rounds 2, 3a and 3b
+### Round 3d: small follow-ups from round 3c's reviews
 
-**What:** (1) Add Python 3.12 to the radio CI matrix (`requires-python` is `>=3.12`, CI runs only 3.13), or raise the floor. (2) Tests: the crash branch of `_run_scan`'s ended-connection guard (a sweep that raises after its connection ended); `handle()`'s catch-all cleaning a bad scan id (bool or missing) to None; a socket with `IDLE_SOCKET_MINUTES=inf` is never idle-closed and its loop doesn't spin. (3) Wording: `_minutes()`'s error text reads as if only for the session limit, but `IDLE_SOCKET_MINUTES` uses it too; the `MAX_SESSION_MINUTES` error reads "at least 1 minute" even for a huge value refused because it overflows in seconds; the comment on the re-check after `kept.fast()` and the Value line of `test_a_stale_scan_does_not_take_a_waterfall_stored_during_fast` still describe the hazard from before `kept`. (4) Test tidies from round 3a: `test_one_address_can_hold_only_so_many_sockets` keeps a needless `expected = EXPECTED` alias, and `test_messages_keep_an_idle_socket_open` repeats the `EXPECTED` dict literally. (5) From round 3b's reviews: two `log.warning` calls for failed tasks lack `exc_info`, and the name-based failure logs (`_task_name`) don't say which receiver; a second cancel landing during `_end_scan`'s backstop wait skips its straggler registration and error reads (sockets are still aborted); `_recv`/`_send` re-raise the same stored `_broken` error object, which rewrites its cause and keeps a reference cycle (raise a fresh `KiwiError` instead); in `_tune`, build the new `Demodulator` before setting `_mode`, so a constructor failure can't leave mode and decoder out of step.
+**What:** (1) `_task_name`'s comments still say a host "can be megabytes long" and that the pump is named "before its host is validated"; `_tune` now caps hosts at 253 characters first, so the 200-character clip is only a backstop (say so, and name the 200 once). (2) `_recv`/`_send` raise the fresh error `from self._broken`, which hides the Kiwi's close frame (`ConnectionClosed`) from tracebacks; add it as a note. (3) `_tune` copies the whole host string (`strip().lower()`) before the 253-character check; check the raw length first. (4) `_end_scan`'s backstop registers every stopping task as a straggler before its wait, so a scan that stops on time logs "has stopped" at INFO; log only the ones still pending after the wait. (5) A same-receiver retune into a new mode whose `Demodulator` fails to build leaves the Kiwi on the new mode's offset while decoding with the old one (owner D7, round 3c: accepted as unreachable while modes are a fixed list; revisit if they become dynamic).
 
-**Why:** (1) A 3.12-only break would ship unseen. (2)-(5) Small gaps in tests, logs and messages; none ends audio or leaves a Kiwi channel open.
+**Why:** Small log, comment and robustness items; none ends audio or leaves a Kiwi channel open.
 
-**Context:** Left from fix/session-end-order (round 2, owner D4), feat/idle-socket-timeout (round 3a) and fix/channel-teardown-followups (round 3b, 2026-10-25). `apps/radio/skywave_radio/{session,kiwi,config}.py`, `apps/radio/tests/`, `.github/workflows/ci.yml`.
+**Context:** From the chore/round-3c-tidies /ship reviews (2026-10-25); owner D13 chose to ship and record these. `apps/radio/skywave_radio/{session,kiwi}.py`.
 
 **Effort:** S
-**Priority:** P3
+**Priority:** P4
 **Depends on:** None
 
 ### Revert the web dial when the service refuses a retune
@@ -187,6 +187,21 @@
 **Depends on:** None
 
 ## Completed
+
+### Round 3c: tests, CI and wording left from rounds 2, 3a and 3b
+
+**What:** (1) Add Python 3.12 to the radio CI matrix (`requires-python` is `>=3.12`, CI runs only 3.13), or raise the floor. (2) Tests: the crash branch of `_run_scan`'s ended-connection guard (a sweep that raises after its connection ended); `handle()`'s catch-all cleaning a bad scan id (bool or missing) to None; a socket with `IDLE_SOCKET_MINUTES=inf` is never idle-closed and its loop doesn't spin. (3) Wording: `_minutes()`'s error text reads as if only for the session limit, but `IDLE_SOCKET_MINUTES` uses it too; the `MAX_SESSION_MINUTES` error reads "at least 1 minute" even for a huge value refused because it overflows in seconds; the comment on the re-check after `kept.fast()` and the Value line of `test_a_stale_scan_does_not_take_a_waterfall_stored_during_fast` still describe the hazard from before `kept`. (4) Test tidies from round 3a: `test_one_address_can_hold_only_so_many_sockets` keeps a needless `expected = EXPECTED` alias, and `test_messages_keep_an_idle_socket_open` repeats the `EXPECTED` dict literally. (5) From round 3b's reviews: two `log.warning` calls for failed tasks lack `exc_info`, and the name-based failure logs (`_task_name`) don't say which receiver; a second cancel landing during `_end_scan`'s backstop wait skips its straggler registration and error reads (sockets are still aborted); `_recv`/`_send` re-raise the same stored `_broken` error object, which rewrites its cause and keeps a reference cycle (raise a fresh `KiwiError` instead); in `_tune`, build the new `Demodulator` before setting `_mode`, so a constructor failure can't leave mode and decoder out of step.
+
+**Why:** (1) A 3.12-only break would ship unseen. (2)-(5) Small gaps in tests, logs and messages; none ends audio or leaves a Kiwi channel open.
+
+**Context:** Left from fix/session-end-order (round 2, owner D4), feat/idle-socket-timeout (round 3a) and fix/channel-teardown-followups (round 3b, 2026-10-25). `apps/radio/skywave_radio/{session,kiwi,config}.py`, `apps/radio/tests/`, `.github/workflows/ci.yml`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+**Completed:** chore/round-3c-tidies (2026-10-25). All five items, plus owner decisions from that branch's reviews: D1 a dial that outlives `_dial` drops its socket on arrival and (D9) is cancelled at once; D2 shutdown also waits on running socket handlers, re-checked as each ends (D10), and (D8) on this loop's scan tasks that outlived their stop; D3 every case of those nets tested; D4/D5 a cleanup's failure is logged by whoever would otherwise miss it (an unawaited cleanup itself, or `_await_cleanup` when its handler is cancelled again); D6 a 10 s cleanup wait with a 40 s container stop period, held by a budget test; D10 refused sockets get a bounded close; D11 the idle waterfall reader stops when a cancel comes back as an error; D12 the docs say the exit after the wait is uncapped. Also: hosts over 253 characters are refused, task names carry and escape their receiver, warnings carry tracebacks.
+
 
 ### Finish the session-end follow-ups from round 2's review
 
