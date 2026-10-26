@@ -258,6 +258,16 @@ export default function ListenPage() {
   // Stable so Pick best's retry effect doesn't re-run on every frequency change.
   const latest = useRef({ freqKhz, mode });
   latest.current = { freqKhz, mode };
+
+  // The service has answered every tune sent while it played, so its tuning is
+  // what plays: move the dial back if it refused or failed the last one. A
+  // move still queued goes out next and gets its own answer.
+  const { settled } = radio;
+  useEffect(() => {
+    if (!settled || timer.current) return;
+    if (settled.freqKhz !== undefined && settled.freqKhz !== latest.current.freqKhz) setFreqKhz(settled.freqKhz);
+    if (settled.mode !== undefined && settled.mode !== latest.current.mode) setMode(settled.mode);
+  }, [settled]);
   // List names by host:port, so Back can say where it goes.
   const names = useRef(new Map<string, string>());
   const tuneReceiver = useCallback(

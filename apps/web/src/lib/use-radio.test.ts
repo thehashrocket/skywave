@@ -1093,4 +1093,130 @@ describe("useRadio", () => {
       expect(third.result.current.canScan).toBe(false);
     });
   });
+
+  describe("the service's settled tuning", () => {
+    const on = { host: "kiwi.example", port: 8073 };
+    async function playing() {
+      const hook = renderHook(() => useRadio());
+      await act(() => hook.result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.status("connecting", on));
+      act(() => ws.status("listening", { ...on, freqKhz: 10_000, mode: "am" }));
+      return { ...hook, ws };
+    }
+
+    // Value: protects=a status's tuning reaches the page only when it is usable (a finite number in tuning range, a known mode); fails_when=handleText passes junk the dial would show; why_new=web dial revert (Codex: unchecked freqKhz); seam=FakeSocket; no_claim=what the service sends
+    it("passes a status's tuning on, dropping values it can't use", async () => {
+      const { result, ws } = await playing();
+      expect(result.current.status).toMatchObject({ freqKhz: 10_000, mode: "am" });
+      act(() => ws.status("listening", { ...on, freqKhz: "9535", mode: "fm" }));
+      expect(result.current.status.freqKhz).toBeUndefined();
+      expect(result.current.status.mode).toBeUndefined();
+      act(() => ws.status("listening", { ...on, freqKhz: 99_999 }));
+      expect(result.current.status.freqKhz).toBeUndefined();
+    });
+
+    // Value: protects=after a refused retune (an uncoded error, then the status still playing) or a failed one (just the status), the settled tuning is the one still playing, and after a retune it took it is the new one; a status nobody asked for settles nothing; fails_when=the hook settles before every tune is answered, resets on a refusal's error, or settles on the service's own start-up status; why_new=TODO "Revert the web dial when the service refuses a retune" and owner D1 (round 3d); seam=FakeSocket; no_claim=the service's answers (radio tests)
+    it.each([
+      ["refused", [["error", { message: "Port must be between 1 and 65535." }], ["listening", { freqKhz: 10_000, mode: "am" }]], 10_000],
+      ["failed", [["listening", { freqKhz: 10_000, mode: "am" }]], 10_000],
+      ["taken", [["listening", { freqKhz: 9_535, mode: "am" }]], 9_535],
+    ] as const)("settles on the service's tuning after a %s retune", async (_, answers, khz) => {
+      const { result, ws } = await playing();
+      expect(result.current.settled).toBeNull();
+      act(() => result.current.retune({ ...tuning, freqKhz: 9_535 }));
+      for (const [state, extra] of answers) act(() => ws.status(state, { ...on, ...extra }));
+      expect(result.current.settled).toEqual({ freqKhz: khz, mode: "am" });
+    });
+
+    // Value: protects=two refused retunes in a row each settle back on the playing tuning (each error is followed by its status, so neither is taken for an ending); fails_when=the refusal flag outlives the status that answers it; why_new=round 3d web review pass 2 (mutation survived); seam=FakeSocket; no_claim=none beyond protects
+    it("settles after each of two refusals in a row", async () => {
+      const { result, ws } = await playing();
+      for (const khz of [9_535, 9_540]) {
+        act(() => result.current.retune({ ...tuning, freqKhz: khz }));
+        act(() => ws.status("error", { ...on, message: "refused" }));
+        act(() => ws.status("listening", { ...on, freqKhz: 10_000 + khz - 9_535, mode: "am" }));
+        expect(result.current.settled).toEqual({ freqKhz: 10_000 + khz - 9_535, mode: "am" });
+      }
+    });
+
+    // Value: protects=answers are counted per message, so two that arrive together (one render) still settle exactly once, on the last; fails_when=counting moves back into a per-render effect; why_new=round 3d web review (React batching lost a decrement); seam=FakeSocket, two statuses in one act; no_claim=real browser batching
+    it("counts answers per message, even two in one render", async () => {
+      const { result, ws } = await playing();
+      act(() => result.current.retune({ ...tuning, freqKhz: 9_535 }));
+      act(() => result.current.retune({ ...tuning, freqKhz: 9_540 }));
+      act(() => ws.status("listening", { ...on, freqKhz: 9_535, mode: "am" }));
+      expect(result.current.settled).toBeNull(); // one still owed
+      act(() => {
+        result.current.retune({ ...tuning, freqKhz: 9_545 });
+        ws.status("listening", { ...on, freqKhz: 9_540, mode: "am" });
+        ws.status("listening", { ...on, freqKhz: 10_000, mode: "am" });
+      });
+      expect(result.current.settled).toEqual({ freqKhz: 10_000, mode: "am" });
+    });
+
+    // Value: protects=a tune of the receiver already playing (a list click, Pick best) is owed an answer like a dial retune, so an older retune's answer can't settle the dial before it; fails_when=only retune() counts; why_new=round 3d web review (a stale answer overwrote a newer tune); seam=FakeSocket; no_claim=none beyond protects
+    it("counts a tune of the playing receiver too", async () => {
+      const { result, ws } = await playing();
+      act(() => result.current.retune({ ...tuning, freqKhz: 9_535 }));
+      await act(() => result.current.tune({ ...tuning, freqKhz: 9_540 }));
+      act(() => ws.status("listening", { ...on, freqKhz: 9_535, mode: "am" }));
+      expect(result.current.settled).toBeNull();
+      act(() => ws.status("listening", { ...on, freqKhz: 9_540, mode: "am" }));
+      expect(result.current.settled).toEqual({ freqKhz: 9_540, mode: "am" });
+    });
+
+    // Value: protects=nothing is owed for a tune sent while the service wasn't playing (its start-up "listening" answers nothing), and a coded ending, a new connection or a dropped socket forgets what was owed, so a later session's first status can't settle the dial; fails_when=the count survives those or counts tunes sent while connecting; why_new=web dial revert; seam=FakeSocket; no_claim=none beyond protects
+    it.each([
+      ["a coded ending", (ws: FakeSocket) => ws.status("error", { ...on, code: "closed", message: "x" })],
+      ["a new connection", (ws: FakeSocket) => ws.status("connecting", on)],
+      ["a stop", (ws: FakeSocket) => ws.status("stopped", on)],
+    ])("owes nothing after %s", async (_, end) => {
+      const { result, ws } = await playing();
+      act(() => result.current.retune({ ...tuning, freqKhz: 9_535 }));
+      act(() => end(ws));
+      act(() => result.current.retune({ ...tuning, freqKhz: 9_540 })); // not playing: owed nothing
+      act(() => ws.status("listening", { ...on, freqKhz: 7_000, mode: "am" }));
+      expect(result.current.settled).toBeNull();
+      // Only the next retune is owed, so its answer settles at once.
+      act(() => result.current.retune({ ...tuning, freqKhz: 9_545 }));
+      act(() => ws.status("listening", { ...on, freqKhz: 7_000, mode: "am" }));
+      expect(result.current.settled).toEqual({ freqKhz: 7_000, mode: "am" });
+    });
+
+    // Value: protects=an uncoded error that nothing follows (an ending, or a refused Listen with nothing playing) and Stop both forget what was owed, so a later "listening" can't settle on it; only a status right after the error counts as a refusal's answer; fails_when=the count survives an uncoded error followed by something else, or Stop; why_new=round 3d web review pass 2 (Claude, Codex); seam=FakeSocket; no_claim=none beyond protects
+    it.each([
+      ["an uncoded error nothing follows", (ws: FakeSocket) => {
+        ws.status("error", { message: "Something broke in the radio service. Check its logs." });
+        ws.status("error", { message: "The radio service is at its listener limit." });
+      }],
+      ["Stop", (_: FakeSocket, stop: () => void) => stop()],
+    ])("owes nothing after %s", async (_, end) => {
+      const { result, ws } = await playing();
+      act(() => result.current.retune({ ...tuning, freqKhz: 9_535 }));
+      act(() => end(ws, result.current.stop));
+      await act(() => result.current.tune(tuning)); // nothing playing: owed nothing
+      const live = FakeSocket.instances.at(-1)!;
+      act(() => live.status("listening", { ...on, freqKhz: 10_000, mode: "am" }));
+      expect(result.current.settled).toBeNull();
+      // The next retune is the only one owed, so its answer settles at once.
+      act(() => result.current.retune({ ...tuning, freqKhz: 9_540 }));
+      act(() => live.status("listening", { ...on, freqKhz: 10_000, mode: "am" }));
+      expect(result.current.settled).toEqual({ freqKhz: 10_000, mode: "am" });
+    });
+
+    // Value: protects=a dropped socket forgets what was owed; fails_when=onclose leaves the count; why_new=web dial revert; seam=FakeSocket; no_claim=none beyond protects
+    it("owes nothing after the socket drops", async () => {
+      const { result, ws } = await playing();
+      act(() => result.current.retune({ ...tuning, freqKhz: 9_535 }));
+      act(() => ws.finishClose());
+      await act(() => result.current.tune(tuning));
+      const next = FakeSocket.instances[1]!;
+      act(() => next.status("listening", { ...on, freqKhz: 10_000, mode: "am" }));
+      expect(result.current.settled).toBeNull();
+      act(() => result.current.retune({ ...tuning, freqKhz: 9_540 }));
+      act(() => next.status("listening", { ...on, freqKhz: 10_000, mode: "am" }));
+      expect(result.current.settled).toEqual({ freqKhz: 10_000, mode: "am" });
+    });
+  });
 });
