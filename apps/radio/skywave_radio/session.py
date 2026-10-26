@@ -84,6 +84,20 @@ Target = tuple[str, int, bool, bool]
 # or caught by _end_scan's backstop): held so they aren't garbage-collected
 # mid-run, and logged when they end. Server shutdown waits on these too.
 scan_stragglers: set[asyncio.Task[None]] = set()
+# Those of them still running when a stop's wait ended (timed out or was cut
+# short by another cancel): only these log "has stopped".
+late_stragglers: set[asyncio.Task[None]] = set()
+# Task names carry a host; log at most this much of one.
+TASK_NAME_MAX = 200
+# A receiver host longer than any DNS name is refused: the raw value before it
+# is copied (stripped, lowercased), the cleaned one after.
+RAW_HOST_MAX = 1024
+HOST_MAX = 253
+# Longer than any name in MODES: refused before it is lowercased.
+MODE_MAX = 8
+# A port or frequency sent as text longer than this is refused before int() or
+# float() parses it: no real one is near this long.
+NUMBER_TEXT_MAX = 32
 
 
 def _task_name(task: asyncio.Task[Any]) -> str:
@@ -92,16 +106,20 @@ def _task_name(task: asyncio.Task[Any]) -> str:
     if qualname is None:
         return name
     # Tasks named here carry their receiver; asyncio's own are "Task-N". The
-    # pump is named before its host is validated: escape anything unprintable.
+    # pump is named before its host is resolved, so the host may still hold
+    # unprintable characters: escape them. A valid host (up to HOST_MAX) plus its
+    # port can still pass TASK_NAME_MAX, so long names are clipped.
     if name.startswith("Task-"):
         return qualname
-    clipped = name[:200]  # before escaping: a host can be megabytes long
+    clipped = name[:TASK_NAME_MAX]
     shown = clipped if clipped.isprintable() else repr(clipped)
-    return f"{qualname} ({shown}{'…' if len(name) > 200 else ''})"
+    return f"{qualname} ({shown}{'…' if len(name) > TASK_NAME_MAX else ''})"
 
 
 def _log_straggler(task: asyncio.Task[None]) -> None:
     scan_stragglers.discard(task)
+    late = task in late_stragglers
+    late_stragglers.discard(task)
     if not task.cancelled() and task.exception() is not None:
         log.warning(
             "%s failed after it was stopped: %r",
@@ -109,8 +127,10 @@ def _log_straggler(task: asyncio.Task[None]) -> None:
             task.exception(),
             exc_info=task.exception(),
         )
-    else:
+    elif late:
         log.info("%s has stopped", _task_name(task))
+    else:
+        log.debug("%s stopped in time", _task_name(task))
 
 
 def _failures(tasks: Iterable[asyncio.Task[Any]]) -> list[BaseException]:
@@ -332,9 +352,16 @@ class ListenSession:
             elif kind == "scan":
                 await self._start_scan(msg)
             else:
-                raise BadRequest(f"Unknown message type {kind!r}.")
+                # Echo only a short string type: never repr() a list or object whole.
+                shown = f" {kind[:40]!r}" if isinstance(kind, str) else ""
+                raise BadRequest(f"Unknown message type{shown}.")
         except BadRequest as e:
             await self._status("error", message=str(e))
+            if self._pump_owns_receiver():
+                # Refused before anything changed: the session still plays. The
+                # browser reads "error" as the radio having stopped, so say where
+                # it stands (owner D1, round 3d).
+                await self._status("listening" if self._listening else "connecting")
         except ClientGone:
             raise
         except Exception:
@@ -351,25 +378,61 @@ class ListenSession:
                 )
             elif self._pump is None or self._pump.done():
                 await self._status("error", message="Something broke in the radio service. Try again.")
-            elif kind == "tune":
+            elif kind == "tune" and self._pump_owns_receiver():
                 # The session still plays; the retune just didn't apply. Say where
                 # it stands, or the browser's pending tune waits on an answer forever.
                 await self._status("listening" if self._listening else "connecting")
 
+    def _pump_owns_receiver(self) -> bool:
+        # A pump that ended on its own clears _target before it closes the Kiwi
+        # and sends its ending: say nothing for it, or "connecting" could land
+        # after that ending and stick.
+        return self._pump is not None and not self._pump.done() and self._target is not None
+
     async def _tune(self, msg: dict[str, Any]) -> None:
         # Lowercased like the resolver does, so Kiwi.Example and kiwi.example
         # are the same receiver and a retune doesn't reconnect.
-        host = str(msg.get("host", "")).strip().lower()
-        try:
-            port = int(msg.get("port") or DEFAULT_PORT)
-            freq = float(msg["freqKhz"])
-        except (KeyError, TypeError, ValueError, OverflowError) as e:
-            # OverflowError: JSON like "port": 1e999 parses to inf, and int(inf) overflows.
-            raise BadRequest("tune needs host, port and freqKhz.") from e
-        mode = str(msg.get("mode", "am")).lower()
+        raw_host = msg.get("host")
+        if raw_host is None:  # null or absent: no receiver picked
+            raw_host = ""
+        if not isinstance(raw_host, str):  # never str() a list or object: that copies it whole
+            raise BadRequest("tune needs host, port and freqKhz.")
+        if len(raw_host) > RAW_HOST_MAX:  # checked before copying it
+            raise BadRequest("That receiver address is too long.")
+        host = raw_host.strip().lower()
         if not host:
             raise BadRequest("Pick a receiver first.")
-        if len(host) > 253:  # longer than any DNS name: don't carry it into task names and logs
+        raw_port = msg.get("port")
+        if raw_port is None or (type(raw_port) is int and raw_port == 0):
+            raw_port = DEFAULT_PORT  # null, absent or the number 0 (not "0" or 0.0): the default
+        raw_freq = msg.get("freqKhz")
+        # JSON true/false are ints to Python, int() truncates 8073.9, and an
+        # empty list or object is no port: refuse them rather than dial a port
+        # or frequency the client never meant.
+        if (
+            isinstance(raw_port, bool)
+            or not isinstance(raw_port, (int, float, str))
+            or (isinstance(raw_port, float) and not raw_port.is_integer())
+        ):
+            raise BadRequest("Port must be between 1 and 65535.")
+        if isinstance(raw_port, str) and len(raw_port) > NUMBER_TEXT_MAX:
+            raise BadRequest("Port must be between 1 and 65535.")
+        if isinstance(raw_freq, bool) or (isinstance(raw_freq, str) and len(raw_freq) > NUMBER_TEXT_MAX):
+            raise BadRequest("tune needs host, port and freqKhz.")
+        try:
+            port = int(raw_port)
+            freq = float(raw_freq)
+        except (TypeError, ValueError, OverflowError) as e:
+            # OverflowError: a JSON freqKhz integer too big for a float.
+            raise BadRequest("tune needs host, port and freqKhz.") from e
+        raw_mode = msg.get("mode", "am")
+        # Same rule as the host, and never lowercase a long one: no mode is that long.
+        if not isinstance(raw_mode, str) or len(raw_mode) > MODE_MAX:
+            raise BadRequest(f"Mode must be one of {', '.join(MODES)}.")
+        mode = raw_mode.lower()
+        if not 1 <= port <= 65535:  # also keeps a huge port out of task names
+            raise BadRequest("Port must be between 1 and 65535.")
+        if len(host) > HOST_MAX:  # longer than any DNS name: kept out of task names and logs
             raise BadRequest("That receiver address is too long.")
         if mode not in MODES:
             raise BadRequest(f"Mode must be one of {', '.join(MODES)}.")
@@ -407,6 +470,10 @@ class ListenSession:
                 # The demodulator first: if building it fails, _mode and the
                 # decoder still agree (the Kiwi already has the retune). Built
                 # after the send so a pump that came up during it gets one too.
+                # Accepted gap (owner D7, round 3c): a failure here leaves the
+                # Kiwi on the new mode's offset (CW is shifted) while decoding
+                # the old mode. Unreachable while modes are a fixed list; revisit
+                # if they ever become dynamic.
                 if self._listening and client is not None:
                     self._demod = Demodulator(client.info.sample_rate, mode)
                 self._mode = mode
@@ -907,7 +974,13 @@ class ListenSession:
                 scan_stragglers.add(task)
                 task.add_done_callback(_log_straggler)
             if stopping:
-                await asyncio.wait(stopping, timeout=SCAN_STOP_TIMEOUT_S)
+                try:
+                    _, pending = await asyncio.wait(stopping, timeout=SCAN_STOP_TIMEOUT_S)
+                except asyncio.CancelledError:
+                    # Cut short: whatever still runs has outlived the stop.
+                    late_stragglers.update(t for t in stopping if not t.done())
+                    raise
+                late_stragglers.update(pending)  # a stop on time stays quiet
             raise
         finally:
             # However the stop went (even if a scan task raised): a new
@@ -945,6 +1018,7 @@ class ListenSession:
             _, pending = await asyncio.wait(running, timeout=SCAN_STOP_TIMEOUT_S)
             if pending:
                 log.warning("%d cancelled scan task(s) still running after %gs", len(pending), SCAN_STOP_TIMEOUT_S)
+                late_stragglers.update(pending)
                 for task in pending - scan_stragglers:  # once, however often it is stopped
                     scan_stragglers.add(task)
                     task.add_done_callback(_log_straggler)

@@ -875,7 +875,7 @@ def test_validation_errors():
         assert "Mode must be" in json.loads(ws.receive_text())["message"]
         # Numbers too big for int()/float() are bad requests, not crashes.
         ws.send_text('{"type": "tune", "host": "x.org", "port": 1e999, "freqKhz": 7000}')
-        assert "needs host, port and freqKhz" in json.loads(ws.receive_text())["message"]
+        assert "Port must be between" in json.loads(ws.receive_text())["message"]
         ws.send_text(tune_msg(8073, 10**400, host="x.org"))
         assert "needs host, port and freqKhz" in json.loads(ws.receive_text())["message"]
 
@@ -4863,7 +4863,7 @@ async def test_a_retune_whose_demodulator_fails_keeps_mode_and_decoder_together(
     await session.close()
 
 
-# Value: protects=whichever task _end_scan's backstop is waiting on (the scan or the idle waterfall reader), each way it can end is handled: stopping cleanly inside the wait leaves nothing tracked and no warning, failing inside it logs the error with its traceback, outliving it keeps the task held until it ends, and a second cancel cutting the wait short still leaves it held and its error logged; fails_when=the backstop forgets the idle task, registers stragglers only after its wait, or warns about a clean stop; why_new=round 3c state machines (backstop cells for both task kinds); seam=SCAN_STOP_TIMEOUT_S set per row, a task that ignores its first cancel; no_claim=why a real task would ignore a cancel
+# Value: protects=whichever task _end_scan's backstop is waiting on (the scan or the idle waterfall reader), each way it can end is handled: stopping cleanly inside the wait leaves nothing tracked and logs no "has stopped" (round 3d: only a DEBUG "stopped in time"), failing inside it logs the error with its traceback, outliving it keeps the task held until it ends, and a second cancel cutting the wait short still leaves it held and its error logged; fails_when=the backstop forgets the idle task, registers stragglers only after its wait, or warns about a clean stop; why_new=round 3c state machines (backstop cells for both task kinds); seam=SCAN_STOP_TIMEOUT_S set per row, a task that ignores its first cancel; no_claim=why a real task would ignore a cancel
 @pytest.mark.parametrize("outcome", ["clean inside", "fails inside", "outlives", "second cancel"])
 @pytest.mark.parametrize("kind", ["scan", "idle"])
 async def test_the_scan_stop_backstop_handles_each_task_each_way(kind, outcome, monkeypatch, caplog):
@@ -4917,7 +4917,7 @@ async def test_the_scan_stop_backstop_handles_each_task_each_way(kind, outcome, 
     if fails:
         assert warnings and warnings[0].exc_info
     else:
-        assert not warnings and "has stopped" in caplog.text
+        assert not warnings and "has stopped" not in caplog.text  # stopped on time: nothing to report
 
 
 # Value: protects=shutdown also waits on socket handlers still running, so a cleanup a handler adds after the wait started is still awaited and its Kiwi closes cleanly, whatever order the server shuts down in (owner decision, round 3c); fails_when=the lifespan waits only on cleanups already registered, so an empty set ends the wait at once; why_new=round 3b Codex finding, owner D2 (round 3c); seam=app.state.handlers filled by hand with a stand-in handler; no_claim=uvicorn's own shutdown order
@@ -5433,3 +5433,481 @@ async def test_a_cancelled_idle_reader_stops_even_if_the_cancel_becomes_an_error
     reader.cancel()
     await asyncio.wait_for(asyncio.wait({reader}), 2)
     assert reader.cancelled()
+
+
+# Value: protects=a host string far past any DNS name is refused before it is even copied (stripped and lowercased), so one message can't cost two copies of megabytes; fails_when=the raw-length check goes and only the 253 check after strip() remains; why_new=round 3c adversarial review (Claude); seam=str subclass that counts strip() calls; no_claim=uvicorn's frame size limit
+async def test_a_huge_host_is_refused_before_it_is_copied():
+    from skywave_radio.session import ListenSession
+
+    stripped = []
+
+    class CountingStr(str):
+        def strip(self, *args):
+            stripped.append(True)
+            return super().strip(*args)
+
+        def __str__(self):
+            return self
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any)
+    await session.handle({"type": "tune", "host": CountingStr("a" * 5000), "port": 8073, "freqKhz": 7200, "mode": "am"})
+    assert stripped == []
+    assert sent and "too long" in sent[-1]["message"]
+
+
+# Value: protects=a scan task that outlived a stop logs "has stopped" exactly once when it finally ends, cleanly or cancelled, and leaves both straggler sets, whether _stop_scan_tasks's wait timed out, the backstop's wait timed out, or a second cancel cut the backstop's wait short; one that ends inside the backstop's wait, cleanly or cancelled, logs no "has stopped" at INFO, only a DEBUG "stopped in time"; fails_when=a late kind is left unmarked (the second-cancel path) or a cancelled end is treated differently from a clean one; why_new=round 3d review (state machines, maintainability); seam=SCAN_STOP_TIMEOUT_S set per path, a task that ignores its first cancel; no_claim=real scan timing
+@pytest.mark.parametrize("ends", ["clean", "cancelled"])
+@pytest.mark.parametrize("path", ["stop timed out", "backstop timed out", "backstop cut short", "backstop in time"])
+async def test_a_stopped_scan_task_reports_its_end_only_if_it_outlived_the_stop(path, ends, monkeypatch, caplog):
+    import logging
+
+    from skywave_radio import session as session_module
+    from skywave_radio.session import ListenSession
+
+    caplog.set_level(logging.DEBUG, logger="skywave_radio.session")
+    monkeypatch.setattr(session_module, "SCAN_STOP_TIMEOUT_S", 0.2 if path == "stop timed out" else 6.0)
+    session = listening_session(_ignore)
+    release = asyncio.Event()
+
+    async def stubborn():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()  # a second cancel here ends it cancelled
+
+    task = session._scan = asyncio.create_task(stubborn())
+    await asyncio.sleep(0)
+    if path == "stop timed out":
+        await ListenSession._stop_scan_tasks(task)  # times out, leaves it running
+    else:
+        ending = asyncio.create_task(session._end_scan())
+        await asyncio.sleep(0.05)  # gstack-timing-ok: lets _stop_scan_tasks start waiting
+        ending.cancel()  # the backstop takes over
+        if path == "backstop timed out":
+            monkeypatch.setattr(session_module, "SCAN_STOP_TIMEOUT_S", 0.2)
+        await asyncio.sleep(0.05)  # gstack-timing-ok: lets the backstop start its wait
+        if path == "backstop cut short":
+            ending.cancel()
+        elif path == "backstop in time":
+            (task.cancel() if ends == "cancelled" else release.set())  # ends inside the wait
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(ending, 2)
+    if path != "backstop in time":
+        assert task in session_module.late_stragglers
+        task.cancel() if ends == "cancelled" else release.set()
+    await asyncio.wait_for(asyncio.wait({task}), 2)
+    await asyncio.sleep(0)
+    assert task not in session_module.scan_stragglers and task not in session_module.late_stragglers
+    assert not [r for r in caplog.records if r.levelname == "WARNING" and "failed after it was stopped" in r.getMessage()]
+    expected = 0 if path == "backstop in time" else 1
+    assert caplog.text.count("has stopped") == expected
+    if path == "backstop in time":
+        # Still traced, at debug, without the INFO noise.
+        assert any(r.levelname == "DEBUG" and "stopped in time" in r.getMessage() for r in caplog.records)
+
+
+def _watched(value, stringified):
+    """Wrap a list or dict so turning it into a string (which copies it whole) is recorded."""
+    if isinstance(value, list):
+        base = list
+    elif isinstance(value, dict):
+        base = dict
+    else:
+        return value
+
+    class Watched(base):
+        def __repr__(self):
+            stringified.append(True)
+            return super().__repr__()
+
+    return Watched(value)
+
+
+# Value: protects=a host that isn't a JSON string (a list or object) is refused before it is stringified, so the length guard can't be sidestepped and junk never becomes a host; fails_when=_tune str()s the raw value before checking its type; why_new=round 3d adversarial review (Claude); seam=none; no_claim=JSON parse cost before _tune
+@pytest.mark.parametrize("host", [["a.example"], {"name": "a.example"}, 7], ids=["list", "object", "number"])
+async def test_a_tune_whose_host_is_not_a_string_is_refused(host):
+    from skywave_radio.session import ListenSession
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    stringified = []
+    host = _watched(host, stringified)
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any)
+    await session.handle({"type": "tune", "host": host, "port": 8073, "freqKhz": 7200, "mode": "am"})
+    assert session._pump is None
+    assert sent and sent[-1]["state"] == "error"
+    assert stringified == []
+
+
+# Value: protects=a tune's mode, port and frequency are checked like its host: a non-string mode is refused without being stringified, a port that is a bool, container, fraction, "0", "" or outside 1-65535 is refused (owner D2: strict), port or frequency text over NUMBER_TEXT_MAX is refused before int()/float(), a null, bad or overlong frequency is refused, and a null, empty or blank host asks to pick a receiver; fails_when=_tune str()s the mode, defaults or truncates an odd port, parses overlong number text, or treats a null/blank host as a host; why_new=round 3d adversarial review (Claude and Codex); seam=none; no_claim=JSON parse cost
+@pytest.mark.parametrize(
+    ("changes", "says"),
+    [
+        ({"mode": ["am"]}, "Mode must be one of"),
+        ({"mode": {"x": 1}}, "Mode must be one of"),
+        ({"port": -1}, "Port must be between"),
+        ({"port": 70000}, "Port must be between"),
+        ({"port": "9" * 4000}, "Port must be between"),
+        ({"host": None}, "Pick a receiver first"),
+        ({"host": None, "port": 70000}, "Pick a receiver first"),
+        ({"port": True}, "Port must be between"),
+        ({"port": False}, "Port must be between"),
+        ({"port": ""}, "tune needs host"),
+        ({"port": []}, "Port must be between"),
+        ({"port": {}}, "Port must be between"),
+        ({"port": 0.0}, "Port must be between"),
+        ({"port": "0"}, "Port must be between"),
+        ({"port": "9" * 5000}, "Port must be between"),  # past int()'s digit limit: refused by length first
+        ({"freqKhz": "7" * 4000}, "tune needs host"),  # float() would give inf: refused by length first
+        ({"freqKhz": None}, "tune needs host"),
+        ({"freqKhz": "abc"}, "tune needs host"),
+        ({"host": ""}, "Pick a receiver first"),
+        ({"host": "  \t "}, "Pick a receiver first"),
+        ({"host": 0}, "tune needs host"),
+        ({"host": False}, "tune needs host"),
+        ({"host": []}, "tune needs host"),
+        ({"port": 8073.9}, "Port must be between"),
+        ({"freqKhz": True}, "tune needs host"),
+        ({"mode": "u" * 5000}, "Mode must be one of"),
+    ],
+    ids=[
+        "mode-list", "mode-object", "port-negative", "port-high", "port-huge", "host-null",
+        "host-null-bad-port", "port-bool", "port-false", "port-empty-string", "port-empty-list",
+        "port-empty-object", "port-zero-float", "port-zero-string", "port-long-string",
+        "freq-long-string", "freq-null", "freq-text", "host-empty", "host-blank", "host-zero", "host-false", "host-empty-list", "port-fraction", "freq-bool", "mode-long",
+    ],
+)
+async def test_a_tune_with_a_bad_mode_port_or_null_host_is_refused(changes, says):
+    from skywave_radio.session import ListenSession
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    stringified = []
+    if "mode" in changes:
+        changes = {**changes, "mode": _watched(changes["mode"], stringified)}
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any)
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "am", **changes})
+    assert session._pump is None
+    assert sent and sent[-1]["state"] == "error" and says in sent[-1]["message"]
+    assert stringified == []
+
+
+# Value: protects=a tune with port 0, null or no port dials the default Kiwi port, and the range check accepts both edges (1 and 65535), so the new 1-65535 check never refuses a port the service used to take; fails_when=the range check moves ahead of the default fallback, an edge is excluded, or the type guard refuses a digit string or an integer-valued float; why_new=round 3d review (testing, state machines); seam=a resolver that records the port it is asked for; no_claim=which ports real Kiwis use
+@pytest.mark.parametrize(
+    ("port", "dialed"),
+    [("absent", 8073), (0, 8073), (None, 8073), (1, 1), (65535, 65535), ("8074", 8074), (8073.0, 8073)],
+    ids=["absent", "zero", "null", "lowest", "highest", "digit-string", "whole-float"],
+)
+async def test_a_tune_accepts_the_default_and_edge_ports(port, dialed):
+    from skywave_radio.session import ListenSession
+
+    asked = asyncio.Event()
+    ports = []
+
+    async def recording_resolver(host, port, **kwargs):
+        ports.append(port)
+        asked.set()
+        return "127.0.0.1"
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    session = ListenSession(settings(), send_text, _ignore, resolver=recording_resolver, client_factory=_streaming_client())
+    message = {"type": "tune", "host": "a.example", "freqKhz": 7200, "mode": "am"}
+    if port != "absent":
+        message["port"] = port
+    await session.handle(message)
+    await asyncio.wait_for(asked.wait(), 2)
+    assert ports == [dialed]
+    assert not [p for p in sent if p.get("state") == "error"]
+    await session.close()
+
+
+# Value: protects=an unknown message type is echoed back only as a short string, never as a whole list or object; fails_when=handle() repr()s the raw type into the error; why_new=round 3d review (security); seam=a list subclass that records being stringified; no_claim=JSON parse cost
+async def test_an_unknown_message_type_is_not_echoed_whole():
+    from skywave_radio.session import ListenSession
+
+    stringified = []
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any)
+    await session.handle({"type": _watched(["x"] * 10, stringified)})
+    await session.handle({"type": "z" * 500})
+    await session.handle({"type": "hang"})
+    assert stringified == []
+    assert sent[0]["message"] == "Unknown message type."
+    assert repr("z" * 40) + "." in sent[1]["message"] and "z" * 41 not in sent[1]["message"]
+    assert sent[2]["message"] == "Unknown message type 'hang'."
+
+
+# Value: protects=a tune with no mode plays AM and an uppercase mode is folded, so a client's casing or omission never refuses audio; fails_when=_tune drops the "am" default or the lower() (the new non-string mode guard sits right next to both); why_new=round 3d coverage audit (mutants survived the full suite); seam=a resolver that records being asked, so the tune got past validation; no_claim=which clients omit mode (the web client always sends lowercase)
+@pytest.mark.parametrize(("mode", "expected"), [("absent", "am"), ("USB", "usb"), ("Cw", "cw")])
+async def test_a_tune_without_a_mode_or_with_uppercase_still_plays(mode, expected):
+    from skywave_radio.session import ListenSession
+
+    asked = asyncio.Event()
+
+    async def recording_resolver(host, port, **kwargs):
+        asked.set()
+        return "127.0.0.1"
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    session = ListenSession(settings(), send_text, _ignore, resolver=recording_resolver, client_factory=_streaming_client())
+    message = {"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200}
+    if mode != "absent":
+        message["mode"] = mode
+    await session.handle(message)
+    await asyncio.wait_for(asked.wait(), 2)
+    assert session._mode == expected
+    assert not [p for p in sent if p.get("state") == "error"]
+    await session.close()
+
+
+# Value: protects=a tune the service refuses while a station plays leaves that station playing (same pump, same Kiwi channel, same frequency) and then says so with a listening status carrying the current frequency and mode, so the page doesn't show the radio as stopped while audio still flows; fails_when=handle() sends only "error" after a refusal, or a refusal tears down the session; why_new=owner D1, round 3d (adversarial review: a refused tune left the channel open while the page read it as ended); seam=a fake Kiwi that streams until cancelled; no_claim=how the page renders the brief error
+@pytest.mark.parametrize(
+    "changes",
+    [{"port": 70000}, {"mode": "fm"}, {"freqKhz": 99999}, {"host": "x" * 300}],
+    ids=["bad-port", "bad-mode", "bad-freq", "long-host"],
+)
+async def test_a_refused_tune_while_listening_keeps_playing_and_says_so(changes):
+    from skywave_radio.session import ListenSession
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    client = _streaming_client()
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any, client_factory=client)
+    await _start_listening(session, mode="usb")
+    pump, kiwi = session._pump, session._client
+    before = len(sent)
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 9535, "mode": "am", **changes})
+    assert session._pump is pump and not pump.done()
+    assert session._client is kiwi
+    replies = [p for p in sent[before:] if p.get("type") == "status"]
+    assert [r["state"] for r in replies] == ["error", "listening"]
+    assert replies[-1]["mode"] == "usb" and replies[-1]["freqKhz"] == 7200
+    await session.close()
+
+
+# Value: protects=a refused tune with nothing playing answers only "error", with no listening status after it; fails_when=handle() resends a status even when no session runs; why_new=owner D1, round 3d; seam=none; no_claim=none beyond protects
+async def test_a_refused_tune_with_nothing_playing_only_says_error():
+    from skywave_radio.session import ListenSession
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any)
+    await session.handle({"type": "tune", "host": "a.example", "port": 70000, "freqKhz": 7200, "mode": "am"})
+    assert [p["state"] for p in sent if p.get("type") == "status"] == ["error"]
+
+
+
+# Value: protects=an overlong mode is refused before it is lowercased, so a huge mode string never gets copied; fails_when=_tune drops the MODE_MAX check (the mode is still refused, but only after lower() copies it); why_new=round 3d adversarial review (Codex); seam=a str subclass that records lower(); no_claim=JSON parse cost
+async def test_an_overlong_mode_is_refused_before_it_is_lowercased():
+    from skywave_radio.session import ListenSession
+
+    lowered = []
+
+    class Recording(str):
+        def lower(self):
+            lowered.append(True)
+            return super().lower()
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any)
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": Recording("U" * 5000)})
+    assert lowered == []
+    assert "Mode must be one of" in sent[-1]["message"]
+
+
+class _HeldConnect:
+    """A fake Kiwi whose connect never finishes: the session stays connecting."""
+
+    def __init__(self, host, port, **kwargs):
+        from skywave_radio.kiwi import KiwiInfo
+
+        self.info = KiwiInfo(sample_rate=12000.0)
+
+    async def tune(self, freq_khz):
+        pass
+
+    async def connect(self):
+        await asyncio.Event().wait()
+
+    def abort(self):
+        pass
+
+    async def close(self):
+        pass
+
+
+# Value: protects=after a refused message, the service re-announces the session only while a pump still owns its receiver (listening or connecting), never for one that has ended or is tearing itself down, so a stale "connecting" can't land after the session's own ending and stick; a scan is never answered with a status; fails_when=handle() resends for any running pump, or never resends; why_new=owner D1 and the round 3d state matrix / red team (error, connecting, stopped reproduced); seam=fake Kiwis that stream, hold connect, or hold close; no_claim=real teardown timings
+@pytest.mark.parametrize("pump", ["listening", "connecting", "done", "ending"])
+@pytest.mark.parametrize("kind", ["tune", "unknown", "scan"])
+async def test_a_refusal_re_announces_only_a_session_that_still_owns_its_receiver(kind, pump):
+    from skywave_radio.session import ListenSession
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    held = asyncio.Event()
+    if pump == "connecting":
+        factory, limit = _HeldConnect, 30
+    else:
+        factory, limit = _streaming_client(close_held=held if pump == "ending" else None), 30
+    if pump in ("done", "ending"):
+        limit = 0.01
+    session = ListenSession(settings(max_session_minutes=limit), send_text, _ignore, resolver=_resolve_any, client_factory=factory)
+    tune = {"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 7200, "mode": "usb"}
+    async with asyncio.timeout(5):
+        await session.handle(tune)
+        if pump == "connecting":
+            while session._client is None:
+                await asyncio.sleep(0.01)
+        else:
+            while not session._listening:
+                await asyncio.sleep(0.01)
+        if pump in ("done", "ending"):
+            while session._target is not None:  # the limit hit: _run's finally has begun
+                await asyncio.sleep(0.01)
+        if pump == "done":
+            while not session._pump.done():
+                await asyncio.sleep(0.01)
+    if pump == "ending":
+        assert not session._pump.done()
+    if kind == "scan" and pump == "listening":
+        # A cached answer, so the sweep replies at once instead of dialing a waterfall.
+        session._scan_cache.put(session._target, "cached answer", 60)
+    message = {
+        "tune": {**tune, "port": 70000},
+        "unknown": {"type": "hang"},
+        "scan": {"type": "scan", "id": 1},
+    }[kind]
+    before = len(sent)
+    await session.handle(message)
+    for _ in range(5):  # let a started sweep send its reply
+        await asyncio.sleep(0)
+    statuses = [p["state"] for p in sent[before:] if p.get("type") == "status"]
+    scans = [(p["state"], p.get("message")) for p in sent[before:] if p.get("type") == "scan"]
+    held.set()
+    if kind == "scan":
+        assert statuses == []
+        expected = "cached answer" if pump == "listening" else "Start listening to a receiver first."
+        assert scans == [("error", expected)]
+    elif pump in ("listening", "connecting"):
+        assert statuses == ["error", pump]
+    else:
+        assert statuses == ["error"]
+    await session.close()
+
+
+# Value: protects=a retune that breaks unexpectedly while its session is tearing itself down (the limit hit mid-retune) sends no "connecting" after it, so the session's own ending is the last word; fails_when=the failed-retune branch resends for any running pump; why_new=round 3d state matrix (pass 2); seam=a fake Kiwi whose retune waits on a gate then raises, and whose close is held; no_claim=real Kiwi timings
+async def test_a_failed_retune_during_teardown_leaves_the_ending_last():
+    from skywave_radio.session import ListenSession
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    held, gate, retuning = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    base = _streaming_client(close_held=held)
+
+    class GatedRetune(base):
+        async def tune(self, freq_khz):
+            if self.connected:
+                retuning.set()
+                await gate.wait()
+                raise RuntimeError("tune broke")
+            await super().tune(freq_khz)
+
+    session = ListenSession(settings(max_session_minutes=0.01), send_text, _ignore, resolver=_resolve_any, client_factory=GatedRetune)
+    await _start_listening(session)
+    retune = asyncio.create_task(
+        session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 9535, "mode": "usb"})
+    )
+    async with asyncio.timeout(5):
+        await retuning.wait()
+        while session._target is not None:  # the limit hit: the pump is tearing down
+            await asyncio.sleep(0.01)
+    assert not session._pump.done()
+    before = len(sent)
+    gate.set()
+    await retune
+    assert [p for p in sent[before:] if p.get("type") == "status"] == []
+    held.set()
+    async with asyncio.timeout(5):
+        while not session._pump.done():
+            await asyncio.sleep(0.01)
+    assert [p for p in sent if p.get("type") == "status"][-1]["state"] == "stopped"
+    await session.close()
+
+
+# Value: protects=a frame holding a number too long for Python's int parser (over 4300 digits) is answered like any bad JSON and the session keeps going, instead of ending the sender's session with a traceback; fails_when=serve() catches only JSONDecodeError; why_new=round 3d adversarial review (Claude); seam=none; no_claim=what clients send such numbers
+def test_a_number_too_long_to_parse_is_bad_json_not_a_crash():
+    client = TestClient(create_app(settings()))
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.send_text('{"type": "tune", "host": "x.org", "port": ' + "9" * 5000 + ', "freqKhz": 7000}')
+        first = json.loads(ws.receive_text())
+        ws.send_text(tune_msg(8073, 99999, "am", host="x.org"))
+        second = json.loads(ws.receive_text())
+    assert first == {"type": "status", "state": "error", "message": "Expected JSON."}
+    assert "between 0 and 32,000" in second["message"]
+
+
+# Value: protects=a tune with no host key at all asks to pick a receiver, like null or empty; fails_when=_tune treats a missing host differently from null; why_new=round 3d state matrix; seam=none; no_claim=none beyond protects
+async def test_a_tune_without_a_host_asks_to_pick_one():
+    from skywave_radio.session import ListenSession
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any)
+    await session.handle({"type": "tune", "port": 8073, "freqKhz": 7200, "mode": "am"})
+    assert session._pump is None
+    assert "Pick a receiver first" in sent[-1]["message"]
+
+
+# Value: protects=a frame nested too deep for the JSON parser is answered like any bad JSON and the session keeps going, instead of silently ending the sender's socket and its audio; fails_when=serve() doesn't catch RecursionError; why_new=round 3d review (red team, Claude adversarial); seam=none; no_claim=what clients send such frames
+def test_json_nested_too_deep_is_bad_json_not_a_dropped_session():
+    client = TestClient(create_app(settings()))
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.send_text("[" * 200000)
+        first = json.loads(ws.receive_text())
+        ws.send_text(tune_msg(8073, 99999, "am", host="x.org"))
+        second = json.loads(ws.receive_text())
+    assert first == {"type": "status", "state": "error", "message": "Expected JSON."}
+    assert "between 0 and 32,000" in second["message"]
+
