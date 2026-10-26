@@ -2,13 +2,37 @@
 
 ## Radio service
 
-### Revert the web dial when the service refuses a retune
+### Dial retunes never open a Kiwi channel
 
-**What:** When a same-receiver retune fails (the service answers with the current "listening" or "connecting" status), move the web app's dial back to the frequency still playing.
+**What:** Dial retunes carry `"retune": true`; the radio service applies one only to a session still running, and with nothing playing answers with its current status instead of starting a session. Tunes without the flag (Listen, list choices, an older page) keep today's behaviour. While there, have the service echo an id the page puts on each tune, so the page can settle the dial on the answer to its newest tune exactly: today it counts answers, and a dial move sent while the receiver was still connecting (not counted, since the service may or may not answer it) can be answered late and settle the dial on that older tuning until the next move (fix/web-dial-revert review; owner D4: fix it here, with the tune id).
 
-**Why:** Since round 3b the service keeps the old frequency after a failed retune and says so, but the page's dial keeps showing the frequency it asked for, so the dial and the audio disagree until the next move.
+**Why:** A dial retune in flight when a session ends (the time limit, a receiver drop) arrives after the ending and starts a whole new session: a listener slot and a volunteer's Kiwi channel taken without a Listen click, and a way around the session limit. Owner D3 (fix/web-dial-revert review, 2026-10-26): fix in its own PR.
 
-**Context:** Accepted in the fix/channel-teardown-followups /ship review (2026-10-25). Since round 3d the service also answers any refused message, while a station still holds its receiver, with "error" and then that station's status (owner D1), which carries `freqKhz` and `mode`; the page's uncoded-error handling also clears the scan list then. `apps/web` (`use-radio.ts`, the status handler).
+**Context:** `apps/radio/skywave_radio/session.py` (`handle`, `_tune`), `apps/web/src/lib/use-radio.ts` (`retune`), README protocol. Deploy the radio service first (it ignores an unknown key either way).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+
+### Dial revert: small known gaps
+
+**What:** (1) A refused retune's uncoded error status clears the band-scan list while the station keeps playing (the service's sweep goes on and its replies are then ignored). (2) If the service settles while a dial move is queued and that move is then dropped (playback ended or a switch started), the dial keeps the unsent value. (3) In the one render between a refusal's error and its follow-up status, a dial move updates the dial but isn't sent. (4) `use-radio` accepts 10–30,000 kHz from a status, the service up to 32,000: a settle outside the page's range moves the mode back but not the dial (the page never sends such values).
+
+**Why:** Each leaves the dial or scan list out of step with what plays, briefly or until the next move; none cuts audio or holds a receiver. Owner D5 (fix/web-dial-revert review, 2026-10-26): record, fix later.
+
+**Context:** `apps/web/src/lib/use-radio.ts` (status handler, `settled`), `apps/web/src/app/page.tsx` (`sendRetune`, the settled effect).
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None
+
+### Restore the address after a refused receiver switch
+
+**What:** When the service refuses a switch to another receiver (for example a bad list entry) and the old station keeps playing, put the page's host and port fields back to the receiver still playing.
+
+**Why:** Today the fields keep naming the refused receiver, so every dial move goes there and is refused while the old station plays on. Already true before the dial revert. Owner D6 (fix/web-dial-revert review, 2026-10-26): its own fix.
+
+**Context:** `apps/web/src/app/page.tsx` (`tuneReceiver`, `tuning`), `apps/web/src/lib/use-radio.ts` (uncoded error handling).
 
 **Effort:** S
 **Priority:** P3
@@ -175,6 +199,20 @@
 **Depends on:** None
 
 ## Completed
+
+### Revert the web dial when the service refuses a retune
+
+**What:** When a same-receiver retune fails (the service answers with the current "listening" or "connecting" status), move the web app's dial back to the frequency still playing.
+
+**Why:** Since round 3b the service keeps the old frequency after a failed retune and says so, but the page's dial keeps showing the frequency it asked for, so the dial and the audio disagree until the next move.
+
+**Context:** Accepted in the fix/channel-teardown-followups /ship review (2026-10-25). Since round 3d the service also answers any refused message, while a station still holds its receiver, with "error" and then that station's status (owner D1), which carries `freqKhz` and `mode`; the page's uncoded-error handling also clears the scan list then. `apps/web` (`use-radio.ts`, the status handler).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+**Completed:** fix/web-dial-revert (2026-10-26). `use-radio` counts, per message, the tunes it sends while the service plays (dial retunes and tunes of the playing receiver) and the statuses that answer them; an uncoded error keeps the count only if the playing status follows it (a refusal's, owner D1), and any other ending, a new connection, Stop or a dropped socket clears it. When every one is answered it publishes the service's tuning (`freqKhz` and `mode`, checked), and the page moves the dial and mode there unless a newer move is queued, so a refused or failed retune puts them back. A refusal's error status still clears the scan list.
 
 ### Round 3d: small follow-ups from round 3c's reviews
 
