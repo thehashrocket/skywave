@@ -13,12 +13,14 @@ import ipaddress
 import json
 import logging
 import time
+from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 
 from .config import Settings, is_local_origin, origin_allowed
 from .hostguard import is_public_address
 from .session import ClientGone, ListenSession, ScanCache, Slots, SweepTimes
+from .session import scan_stragglers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("skywave_radio")
@@ -34,11 +36,12 @@ TOO_MANY_SOCKETS_CODE = 4001
 # How long a close frame we start may take. A browser that stopped reading can
 # block it; past this, returning drops the connection without one.
 CLOSE_FRAME_TIMEOUT_S = 2.0
-# How long shutdown waits for socket cleanups still closing their Kiwis (each
-# is bounded on its own, about 4.5 s at worst). Past this, asyncio.run's exit
-# cancels what's left and waits for that teardown too; the container's stop
-# period (docker-compose.yml) covers uvicorn's 15 s, this and that.
-SHUTDOWN_CLEANUP_TIMEOUT_S = 5.0
+# How long shutdown waits for socket handlers and cleanups still closing their
+# Kiwis. A cancelled handler's teardown can take about 9 s at worst (its scan
+# stop and waterfall close, then the session's close). Past this, asyncio.run's
+# exit cancels what's left and waits for that too; the container's stop period
+# (docker-compose.yml) covers uvicorn's 15 s, this and that.
+SHUTDOWN_CLEANUP_TIMEOUT_S = 10.0
 # One "refused a socket" warning per address per this many seconds, so a page
 # reconnecting in a loop doesn't flood the log.
 REFUSAL_LOG_INTERVAL_S = 60.0
@@ -55,6 +58,22 @@ async def _close_bounded(ws: WebSocket, code: int, reason: str) -> None:
         # OSError into WebSocketDisconnect, or raises a RuntimeError once the
         # socket is closed); the socket is gone either way.
         log.info("socket already gone; no close frame sent")
+
+
+def _log_cleanup_failure(task: asyncio.Task[None]) -> None:
+    if not task.cancelled() and task.exception() is not None:
+        log.warning("a socket cleanup failed: %r", task.exception(), exc_info=task.exception())
+
+
+async def _await_cleanup(cleanup: asyncio.Task[None]) -> None:
+    """Wait out a socket's cleanup, shielded so cancelling the handler can't skip it."""
+    try:
+        await asyncio.shield(cleanup)
+    except asyncio.CancelledError:
+        # Cancelled again mid-cleanup: from here the shield drops the cleanup's
+        # error, so it must log its own (owner D5).
+        cleanup.add_done_callback(_log_cleanup_failure)
+        raise
 
 
 def socket_owner(host: str | None) -> str | None:
@@ -95,9 +114,20 @@ def check_settings(settings: Settings) -> None:
 def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
     settings = settings or Settings.from_env()
     check_settings(settings)
-    # Socket cleanups still running after their handler was cancelled; held
-    # here so they aren't garbage-collected before they finish.
+    # Every socket cleanup, from creation until it finishes (track_cleanup):
+    # held so it isn't garbage-collected mid-run, and so shutdown can wait on it.
     cleanups: set[asyncio.Task[None]] = set()
+    # Socket handlers still running. Shutdown waits on these too, so a handler
+    # that adds its cleanup after the wait starts still gets it awaited,
+    # whatever order the server shuts down in.
+    handlers: set[asyncio.Task[Any]] = set()
+
+    def track_cleanup(task: asyncio.Task[None], awaited: bool = False) -> None:
+        """Hold a cleanup until it ends. One nothing awaits logs its own failure."""
+        cleanups.add(task)
+        task.add_done_callback(cleanups.discard)
+        if not awaited:
+            task.add_done_callback(_log_cleanup_failure)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -106,20 +136,27 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
         # shutdown timeout (15 s in the Dockerfile), then cancels them; let their
         # cleanups close each Kiwi cleanly (bounded) rather than the process
         # exit cutting them off. The container's stop period covers both.
-        # Looped: a handler cancelled as this wait starts adds its cleanup late.
+        # Looped, and over handlers too: a handler still running (or cancelled
+        # as this wait starts) adds its cleanup late.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + SHUTDOWN_CLEANUP_TIMEOUT_S
-        while cleanups and (remaining := deadline - loop.time()) > 0:
-            done, _ = await asyncio.wait(set(cleanups), timeout=remaining)
-            for task in done:
-                if not task.cancelled() and task.exception() is not None:
-                    log.warning("a socket cleanup failed at shutdown: %r", task.exception(), exc_info=task.exception())
-        if cleanups:
-            log.warning("%d socket cleanup(s) still running at shutdown", len(cleanups))
+        # Scan tasks that outlived their stop may still hold a half-open
+        # waterfall: same deadline for them (owner D8). Re-checked as each ends.
+        # (Only this loop's: the set is shared by the whole process.)
+        def ours() -> set[asyncio.Task[None]]:
+            return {t for t in scan_stragglers if t.get_loop() is loop}
+
+        while (open_now := cleanups | handlers | ours()) and (remaining := deadline - loop.time()) > 0:
+            await asyncio.wait(open_now, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
+        left = (len(cleanups), len(handlers), len(ours()))  # read once: tasks may end meanwhile
+        if any(left):
+            log.warning("%d socket cleanup(s), %d handler(s) and %d scan task(s) still running at shutdown", *left)
 
     app = FastAPI(title="skywave radio service", lifespan=lifespan)
     app.state.settings = settings
     app.state.cleanups = cleanups
+    app.state.handlers = handlers
+    app.state.track_cleanup = track_cleanup
     # Caps live Kiwi connections, not browser sockets: a tab sitting on
     # "Stopped" or "Problem" holds no slot.
     slots = app.state.slots = Slots(settings.max_sessions)
@@ -140,16 +177,20 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
 
     @app.websocket("/ws")
     async def listen(ws: WebSocket) -> None:
+        handler = asyncio.current_task()
+        if handler is not None:
+            handlers.add(handler)
+            handler.add_done_callback(handlers.discard)
         origin = ws.headers.get("origin")
         if not origin_allowed(origin, settings.allowed_origins):
             log.warning("rejected origin %r", origin)
-            await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+            await _close_bounded(ws, status.WS_1008_POLICY_VIOLATION, "")
             return
         if settings.token:
             supplied = ws.query_params.get("token", "")
             # Compare bytes: compare_digest raises TypeError on non-ASCII str.
             if not hmac.compare_digest(supplied.encode(), settings.token.encode()):
-                await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+                await _close_bounded(ws, status.WS_1008_POLICY_VIOLATION, "")
                 return
 
         client_ip = ws.client.host if ws.client else None
@@ -280,9 +321,8 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
             # Its own task, shielded: cancelling this handler mid-cleanup can't
             # skip session.close() and leave a volunteer's channel open.
             cleanup = asyncio.create_task(finish())
-            cleanups.add(cleanup)
-            cleanup.add_done_callback(cleanups.discard)
-            await asyncio.shield(cleanup)
+            track_cleanup(cleanup, awaited=True)
+            await _await_cleanup(cleanup)
 
     return app
 

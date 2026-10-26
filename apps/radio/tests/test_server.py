@@ -305,14 +305,13 @@ def test_one_address_can_hold_only_so_many_sockets():
 
     app = create_app(settings(max_sockets_per_ip=2))
     client = TestClient(app, client=PUBLIC)
-    expected = EXPECTED
     with client.websocket_connect("/ws", headers=ORIGIN) as first:
         with client.websocket_connect("/ws", headers=ORIGIN) as second:
             with client.websocket_connect("/ws", headers=ORIGIN) as third:
                 refused = third.receive()
             assert refused["type"] == "websocket.close" and refused["code"] == TOO_MANY_SOCKETS_CODE
             second.send_text("not json")
-            assert json.loads(second.receive_text()) == expected  # the first two still work
+            assert json.loads(second.receive_text()) == EXPECTED  # the first two still work
         # Closing one frees room for another.
         started = time.monotonic()
         while app.state.open_sockets.get(PUBLIC[0], 0) > 1:
@@ -320,9 +319,9 @@ def test_one_address_can_hold_only_so_many_sockets():
             time.sleep(0.02)
         with client.websocket_connect("/ws", headers=ORIGIN) as again:
             again.send_text("not json")
-            assert json.loads(again.receive_text()) == expected
+            assert json.loads(again.receive_text()) == EXPECTED
         first.send_text("not json")
-        assert json.loads(first.receive_text()) == expected
+        assert json.loads(first.receive_text()) == EXPECTED
     until_released(app)
 
 
@@ -607,7 +606,7 @@ def test_messages_keep_an_idle_socket_open():
             # gstack-timing-ok: the sleep spaces the messages past the idle time; the assert checks the reply
             time.sleep(0.1)
             ws.send_text("not json")
-            assert json.loads(ws.receive_text()) == {"type": "status", "state": "error", "message": "Expected JSON."}
+            assert json.loads(ws.receive_text()) == EXPECTED
         closed, _ = until_closed(ws)
     assert closed["code"] == IDLE_CLOSE_CODE
 
@@ -1752,7 +1751,7 @@ async def test_a_scan_from_an_ended_connection_leaves_the_next_waterfall_alone()
     await session.close()
 
 
-# Value: protects=a sweep that finishes (or fails) after its connection ended sends no answer, caches nothing and starts no idle reader on the next connection; fails_when=_run_scan's connection checks are dropped, so it reports and idles against a receiver the listener left; why_new=the earlier test only reached _paired_waterfall's own check; seam=skywave_radio.session.sweep (blocked by hand) and ListenSession._client (swapped for the next connection); no_claim=real sweep timing
+# Value: protects=a sweep that finishes (or fails) after its connection ended sends no answer, caches nothing and starts no idle reader on the next connection; and the pump and scan tasks are named host:port (round 3c); fails_when=_run_scan's connection checks are dropped, so it reports and idles against a receiver the listener left, or the pump or scan task loses its name=; why_new=the earlier test only reached _paired_waterfall's own check; seam=skywave_radio.session.sweep (blocked by hand) and ListenSession._client (swapped for the next connection); no_claim=real sweep timing
 @pytest.mark.parametrize("outcome", ["done", "kiwi-error"])
 async def test_a_sweep_that_outlives_its_connection_answers_nothing(outcome, monkeypatch):
     from types import SimpleNamespace
@@ -1815,6 +1814,8 @@ async def test_a_sweep_that_outlives_its_connection_answers_nothing(outcome, mon
     old.host, old.port, old.connect_host, old.secure, old.timestamp = "a.example", 8073, "127.0.0.1", False, 1
     await session.handle({"type": "scan", "id": 3, "fresh": True})
     scan = session._scan
+    # Named after the receiver, so a straggler or leftover-error log says which Kiwi.
+    assert session._pump.get_name() == "a.example:8073" and scan.get_name() == "a.example:8073"
     try:
         await asyncio.wait_for(sweeping.wait(), timeout=5)
         session._client = object()  # the next connection
@@ -2216,7 +2217,7 @@ async def test_a_stale_scan_leaves_the_next_connections_waterfall_alone():
     await session.close()
 
 
-# Value: protects=a stale scan whose connection ends while its kept waterfall switches to fast mode gives up instead of handing back (and sweeping) the waterfall the next connection stored meanwhile; fails_when=_paired_waterfall returns self._waterfall after the fast() await without re-checking the connection; why_new=review (red team), within owner D9; seam=ListenSession._client and ._waterfall (swapped by hand during a held fast()); no_claim=how a real next connection builds its waterfall
+# Value: protects=a stale scan whose connection ends while its kept waterfall switches to fast mode gives up instead of sweeping that waterfall, whose connection (and maybe slot) is gone, and leaves alone the one the next connection stored meanwhile; fails_when=_paired_waterfall returns the kept waterfall after the fast() await without re-checking the connection; why_new=review (red team), within owner D9; seam=ListenSession._client and ._waterfall (swapped by hand during a held fast()); no_claim=how a real next connection builds its waterfall
 async def test_a_stale_scan_does_not_take_a_waterfall_stored_during_fast():
     from skywave_radio.kiwi import KiwiError
     from skywave_radio.session import ListenSession, Slots
@@ -4075,12 +4076,12 @@ async def test_a_scan_that_outlives_its_stop_timeout_is_tracked(monkeypatch, cap
     task = asyncio.create_task(stubborn())
     await asyncio.sleep(0)
     await ListenSession._stop_scan_tasks(task)
-    assert task in session_module._stragglers
+    assert task in session_module.scan_stragglers
     release.set()
     await asyncio.wait_for(asyncio.wait({task}), 2)
     await asyncio.sleep(0)
-    assert task not in session_module._stragglers
-    assert "finally stopped" in caplog.text
+    assert task not in session_module.scan_stragglers
+    assert "has stopped" in caplog.text
 
     # One that finally fails is a warning, with its error.
     release2 = asyncio.Event()
@@ -4254,19 +4255,41 @@ async def test_every_stopped_scan_error_is_read(caplog):
         await ListenSession._stop_scan_tasks(first, second)
     other = ({"scan one broke", "scan two broke"} - {str(e.value)}).pop()
     assert other in caplog.text and "also failed" in caplog.text
+    assert any("also failed" in r.getMessage() and r.exc_info for r in caplog.records)
 
 
-# Value: protects=a finished task's leftover error is logged under the task's name, so the log says which task failed; fails_when=_cancel logs an anonymous "a finished task had failed"; why_new=round 3b (TODO: _cancel's log line doesn't name the task); seam=none; no_claim=none beyond protects
+# Value: protects=a finished task's leftover error is logged under the task's name and receiver, with its traceback, so the log says which task failed where; fails_when=_cancel logs an anonymous "a finished task had failed", drops the receiver or the traceback; why_new=round 3b (TODO: _cancel's log line doesn't name the task), round 3c (receiver and exc_info); seam=none; no_claim=none beyond protects
 async def test_a_finished_tasks_error_is_logged_by_name(caplog):
     from skywave_radio.session import ListenSession
 
     async def broken_sweep():
         raise RuntimeError("boom")
 
-    task = asyncio.create_task(broken_sweep())
+    task = asyncio.create_task(broken_sweep(), name="kiwi.test:8073")
     await asyncio.wait({task})
     await ListenSession._cancel(task)
-    assert "broken_sweep" in caplog.text and "boom" in caplog.text
+    assert "broken_sweep (kiwi.test:8073)" in caplog.text and "boom" in caplog.text
+    assert any(r.exc_info and r.exc_info[1] is task.exception() for r in caplog.records)
+    caplog.clear()
+    unnamed = asyncio.create_task(broken_sweep())  # asyncio names it "Task-N": no suffix
+    await asyncio.wait({unnamed})
+    await ListenSession._cancel(unnamed)
+    assert "broken_sweep had failed" in caplog.text
+    caplog.clear()
+    sneaky = asyncio.create_task(broken_sweep(), name="evil\nINFO forged:8073")  # an unvalidated host
+    await asyncio.wait({sneaky})
+    await ListenSession._cancel(sneaky)
+    assert "\nINFO forged" not in caplog.text and "evil\\nINFO forged" in caplog.text
+    caplog.clear()
+    huge = asyncio.create_task(broken_sweep(), name="h" * 5000 + ":8073")  # an unvalidated host
+    await asyncio.wait({huge})
+    await ListenSession._cancel(huge)
+    assert "h" * 200 + "…" in caplog.text and "h" * 201 not in caplog.text
+    caplog.clear()
+    huge_and_odd = asyncio.create_task(broken_sweep(), name="\n" * 5000 + ":8073")  # clipped, then escaped
+    await asyncio.wait({huge_and_odd})
+    await ListenSession._cancel(huge_and_odd)
+    assert repr("\n" * 200) + "…" in caplog.text
 
 
 # Value: protects=shutdown waits (bounded) for socket cleanups still closing their Kiwis, so each closes cleanly instead of the process exit cutting it off; fails_when=the lifespan doesn't wait, or waits forever on a stuck one; why_new=owner D6 (round 3a adversarial review), shipped in round 3b; seam=app.state.cleanups filled by hand, SHUTDOWN_CLEANUP_TIMEOUT_S shortened; no_claim=uvicorn's own shutdown order
@@ -4293,7 +4316,7 @@ async def test_shutdown_waits_for_socket_cleanups(monkeypatch, caplog):
     async with app.router.lifespan_context(app):
         pass
     assert finished == [True]
-    assert "1 socket cleanup(s) still running at shutdown" in caplog.text
+    assert "1 socket cleanup(s), 0 handler(s) and 0 scan task(s) still running at shutdown" in caplog.text
     stuck.cancel()
 
 
@@ -4574,14 +4597,10 @@ async def test_shutdown_waits_for_late_cleanups_and_logs_failures(monkeypatch, c
 
     async def first_cleanup():
         await asyncio.sleep(0)  # gstack-timing-ok: lets the shutdown wait start first
-        late = asyncio.create_task(late_cleanup())
-        app.state.cleanups.add(late)
-        late.add_done_callback(app.state.cleanups.discard)
+        app.state.track_cleanup(asyncio.create_task(late_cleanup()))
         raise RuntimeError("cleanup broke")
 
-    first = asyncio.create_task(first_cleanup())
-    app.state.cleanups.add(first)
-    first.add_done_callback(app.state.cleanups.discard)
+    app.state.track_cleanup(asyncio.create_task(first_cleanup()))
     async with app.router.lifespan_context(app):
         pass
     assert finished == [True]
@@ -4614,7 +4633,7 @@ async def test_a_straggler_stopped_twice_is_logged_once(monkeypatch, caplog):
     release.set()
     await asyncio.wait_for(asyncio.wait({task}), 2)
     await asyncio.sleep(0)
-    assert caplog.text.count("finally stopped") == 1
+    assert caplog.text.count("has stopped") == 1
 
 
 # Value: protects=a Stop that lands while the receiver's address is still being looked up, where the lookup turns the cancel into a HostRejected, still answers "Stopped." with no error status, frees the slot and logs the lookup's error; fails_when=_run reports that HostRejected as the receiver failing; why_new=round 3b review (testing, state machines) and owner D1 of the fresh run; seam=a resolver that raises HostRejected when cancelled; no_claim=which real lookups convert cancels
@@ -4705,12 +4724,12 @@ async def test_the_scan_stop_backstop_reads_errors_and_tracks_stragglers(finishe
     with pytest.raises(asyncio.CancelledError):
         await ending
     if finishes == "after the wait":
-        assert scan in session_module._stragglers
+        assert scan in session_module.scan_stragglers
         release.set()
         await asyncio.wait_for(asyncio.wait({scan}), 2)
         await asyncio.sleep(0)
-        assert scan not in session_module._stragglers
-    assert any("scan broke late" in r.getMessage() and r.levelname == "WARNING" for r in caplog.records)
+        assert scan not in session_module.scan_stragglers
+    assert any("scan broke late" in r.getMessage() and r.levelname == "WARNING" and r.exc_info for r in caplog.records)
 
 
 # Value: protects=a Stop whose cancel lands as the browser leaves (a send raising ClientGone) is still treated as the cancel: the pump ends cancelled and a failing close is logged, not raised; fails_when=the ClientGone branch swallows the cancel, letting a teardown error replace it; why_new=round 3b adversarial review (Claude, third run); seam=a fake Kiwi whose blocks() raises ClientGone when cancelled and whose close() fails; no_claim=how often a browser leaves at that instant
@@ -4727,7 +4746,7 @@ async def test_a_stop_as_the_browser_leaves_is_still_a_cancel(caplog):
     assert "pump had failed" not in caplog.text
 
 
-# Value: protects=the shutdown budget: the cleanup wait outlasts one cleanup's worst case (scan stop plus Kiwi close), and uvicorn's graceful timeout, that wait and the last teardowns at exit fit inside the container's stop period; fails_when=someone raises CLOSE_TIMEOUT_S/SCAN_STOP_TIMEOUT_S, the Dockerfile timeout or the compose period without the others, so shutdown cuts a volunteer's Kiwi close short; why_new=round 3b review (testing, third run); seam=the constants plus the Dockerfile CMD and docker-compose.yml text; no_claim=how long a real Kiwi takes to close
+# Value: protects=the shutdown budget: the cleanup wait outlasts a cancelled handler's worst teardown (scan stop and waterfall close, then the session's close), and uvicorn's graceful timeout, that wait and a teardown still running at exit fit inside the container's stop period (owner D6, round 3c: 10 s and 40 s); fails_when=someone raises CLOSE_TIMEOUT_S/SCAN_STOP_TIMEOUT_S, the Dockerfile timeout or the compose period without the others, so shutdown cuts a volunteer's Kiwi close short; why_new=round 3b review (testing, third run); seam=the constants plus the Dockerfile CMD and docker-compose.yml text; no_claim=how long a real Kiwi takes to close
 def test_the_shutdown_budget_fits_the_stop_period():
     import pathlib
     import re
@@ -4737,10 +4756,680 @@ def test_the_shutdown_budget_fits_the_stop_period():
     from skywave_radio.session import SCAN_STOP_TIMEOUT_S
 
     one_cleanup = SCAN_STOP_TIMEOUT_S + CLOSE_TIMEOUT_S
-    assert server_module.SHUTDOWN_CLEANUP_TIMEOUT_S > one_cleanup
+    # A cancelled handler's teardown: its scan stop and waterfall close, then the session's.
+    assert server_module.SHUTDOWN_CLEANUP_TIMEOUT_S > 2 * one_cleanup
     root = pathlib.Path(__file__).resolve().parents[3]
     graceful = re.search(r'"--timeout-graceful-shutdown", "(\d+)"', (root / "apps/radio/Dockerfile").read_text())
     period = re.search(r"stop_grace_period: (\d+)s", (root / "docker-compose.yml").read_text())
     assert graceful and period
     # uvicorn's wait, the cleanup wait, then asyncio.run's exit waiting on what's left.
-    assert int(graceful[1]) + server_module.SHUTDOWN_CLEANUP_TIMEOUT_S + one_cleanup < int(period[1])
+    assert int(graceful[1]) + server_module.SHUTDOWN_CLEANUP_TIMEOUT_S + 2 * one_cleanup < int(period[1])
+
+
+# Value: protects=a socket with IDLE_SOCKET_MINUTES=inf is never idle-closed and its receive loop waits instead of spinning; fails_when=an infinite idle limit becomes a zero or negative wait (an instant close, or a loop that wakes without end); why_new=round 3a review gap; seam=asyncio.timeout wrapped to count the receive deadlines; no_claim=how long a real page stays idle
+@pytest.mark.timeout(15)
+def test_a_socket_with_no_idle_limit_stays_open_without_spinning(monkeypatch):
+    import math
+
+    from skywave_radio import server as server_module
+
+    real_timeout = asyncio.timeout
+    deadlines = []
+
+    def counted(delay):
+        deadlines.append(delay)
+        return real_timeout(delay)
+
+    monkeypatch.setattr(server_module.asyncio, "timeout", counted)
+    client = TestClient(create_app(settings(idle_socket_minutes=math.inf)))
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        time.sleep(0.3)  # gstack-timing-ok: idle time a spinning loop would fill with deadlines; the asserts check the count
+        ws.send_text("not json")
+        assert json.loads(ws.receive_text()) == EXPECTED
+    assert deadlines and all(d == math.inf for d in deadlines)
+    assert len(deadlines) <= 3  # one wait per message (and the first), not one per wakeup
+
+
+# Value: protects=a scan request that crashes is answered with a null id when its id isn't a whole number (a bool, a string, or missing), so the page never matches a reply to the wrong scan; fails_when=handle()'s catch-all echoes the raw id; why_new=round 2 review gap; seam=_start_scan replaced by one that raises; no_claim=what ids real pages send
+@pytest.mark.parametrize("message", [{"id": True}, {"id": "7"}, {}], ids=["bool", "string", "missing"])
+async def test_a_crashed_scan_request_with_a_bad_id_is_answered_with_none(message, monkeypatch):
+    from skywave_radio.session import ListenSession
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("broke")
+
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any)
+    monkeypatch.setattr(session, "_start_scan", broken)
+    await session.handle({"type": "scan", **message})
+    assert sent == [{"type": "scan", "id": None, "state": "error",
+                     "message": "The scan broke. Check the radio service's logs."}]
+
+
+# Value: protects=a sweep that crashes after its receiver connection ended sends no answer and doesn't idle a waterfall against the next connection; fails_when=_run_scan's crash branch skips its connection check, replying about a receiver the listener left and starting an idle reader on a channel the next connection owns; why_new=round 2 review gap; seam=the module's sweep replaced by one that ends the connection and raises; no_claim=which crashes happen live
+async def test_a_scan_that_crashes_after_its_connection_ended_stays_quiet(monkeypatch):
+    from skywave_radio import session as session_module
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    session = listening_session(send_text, waterfall_factory=lambda *a, **k: _ScanWaterfall())
+    client, target = session._client, session._target
+
+    async def crashes_after_the_connection_ended(*args, **kwargs):
+        session._client = None
+        raise RuntimeError("sweep broke")
+
+    monkeypatch.setattr(session_module, "sweep", crashes_after_the_connection_ended)
+    await asyncio.wait_for(session._run_scan(target, client, fresh=True), 2)
+    assert [p["state"] for p in sent] == ["scanning"]  # no answer after it
+    assert session._waterfall_idle is None
+    session._client = client
+    await session.close()
+
+
+# Value: protects=a minutes setting too large to count in seconds says so (and how to ask for no limit) instead of claiming it's under 1 minute, and the message fits both settings that use it; fails_when=the overflow and too-small cases share the "at least 1 minute" text again; why_new=round 2 review (wording); seam=none; no_claim=other settings
+@pytest.mark.parametrize("name", ["MAX_SESSION_MINUTES", "IDLE_SOCKET_MINUTES"])
+@pytest.mark.parametrize(("raw", "says"), [("1e308", "too large"), ("0.5", "at least 1")])
+def test_a_bad_minutes_setting_says_what_is_wrong(name, raw, says, monkeypatch):
+    monkeypatch.setenv(name, raw)
+    with pytest.raises(ValueError, match=name) as e:
+        Settings.from_env()
+    assert says in str(e.value)
+
+
+# Value: protects=a same-receiver retune whose new demodulator can't be built leaves mode and decoder in step (the old ones); fails_when=_tune sets _mode before building the Demodulator; why_new=round 3b adversarial review (Claude, fourth run); seam=session.Demodulator replaced by one that raises; no_claim=why a real Demodulator would fail
+async def test_a_retune_whose_demodulator_fails_keeps_mode_and_decoder_together(monkeypatch):
+    from skywave_radio import session as session_module
+    from skywave_radio.session import ListenSession
+
+    client = _streaming_client()
+    session = ListenSession(settings(), _ignore, _ignore, resolver=_resolve_any, client_factory=client)
+    await _start_listening(session, mode="usb")
+    demod = session._demod
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("no demodulator")
+
+    monkeypatch.setattr(session_module, "Demodulator", broken)
+    await session.handle({"type": "tune", "host": "a.example", "port": 8073, "freqKhz": 9535, "mode": "am"})
+    assert session._mode == "usb" and session._demod is demod
+    await session.close()
+
+
+# Value: protects=whichever task _end_scan's backstop is waiting on (the scan or the idle waterfall reader), each way it can end is handled: stopping cleanly inside the wait leaves nothing tracked and no warning, failing inside it logs the error with its traceback, outliving it keeps the task held until it ends, and a second cancel cutting the wait short still leaves it held and its error logged; fails_when=the backstop forgets the idle task, registers stragglers only after its wait, or warns about a clean stop; why_new=round 3c state machines (backstop cells for both task kinds); seam=SCAN_STOP_TIMEOUT_S set per row, a task that ignores its first cancel; no_claim=why a real task would ignore a cancel
+@pytest.mark.parametrize("outcome", ["clean inside", "fails inside", "outlives", "second cancel"])
+@pytest.mark.parametrize("kind", ["scan", "idle"])
+async def test_the_scan_stop_backstop_handles_each_task_each_way(kind, outcome, monkeypatch, caplog):
+    import logging
+
+    from skywave_radio import session as session_module
+
+    outlives = outcome == "outlives"
+    # Long until the backstop takes over; the cancels and the release end the waits.
+    monkeypatch.setattr(session_module, "SCAN_STOP_TIMEOUT_S", 5.0)
+    caplog.set_level(logging.INFO, logger="skywave_radio.session")
+    session = listening_session(_ignore)
+    release = asyncio.Event()
+    fails = outcome != "clean inside"
+
+    async def stubborn():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+            if fails:
+                raise RuntimeError(f"{kind} broke while stopping") from None
+
+    task = asyncio.create_task(stubborn())
+    if kind == "scan":
+        session._scan = task
+    else:
+        session._waterfall_idle = task
+    await asyncio.sleep(0)
+    ending = asyncio.create_task(session._end_scan())
+    await asyncio.sleep(0.05)  # gstack-timing-ok: lets _stop_scan_tasks start waiting
+    ending.cancel()  # the backstop takes over
+    if outlives:
+        # Only the backstop's own wait (which starts after this) runs out.
+        monkeypatch.setattr(session_module, "SCAN_STOP_TIMEOUT_S", 0.5)
+    await asyncio.sleep(0.05)  # gstack-timing-ok: lets the backstop start its wait
+    assert not ending.done()  # the backstop waits on the task before the channel can free
+    if outcome == "second cancel":
+        ending.cancel()
+    elif not outlives:
+        release.set()  # ends inside the wait
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(ending, 2)
+    if not release.is_set():
+        assert task in session_module.scan_stragglers  # held past the wait
+        release.set()
+    await asyncio.wait_for(asyncio.wait({task}), 2)
+    await asyncio.sleep(0)
+    assert task not in session_module.scan_stragglers
+    warnings = [r for r in caplog.records if r.levelname == "WARNING" and "broke while stopping" in r.getMessage()]
+    if fails:
+        assert warnings and warnings[0].exc_info
+    else:
+        assert not warnings and "has stopped" in caplog.text
+
+
+# Value: protects=shutdown also waits on socket handlers still running, so a cleanup a handler adds after the wait started is still awaited and its Kiwi closes cleanly, whatever order the server shuts down in (owner decision, round 3c); fails_when=the lifespan waits only on cleanups already registered, so an empty set ends the wait at once; why_new=round 3b Codex finding, owner D2 (round 3c); seam=app.state.handlers filled by hand with a stand-in handler; no_claim=uvicorn's own shutdown order
+async def test_shutdown_waits_for_a_handler_that_adds_its_cleanup_late(monkeypatch, caplog):
+    from skywave_radio import server as server_module
+
+    monkeypatch.setattr(server_module, "SHUTDOWN_CLEANUP_TIMEOUT_S", 2.0)
+    app = create_app(settings())
+    closed = []
+
+    async def cleanup():
+        await asyncio.sleep(0.05)  # gstack-timing-ok: still closing after its handler ends
+        closed.append(True)
+
+    async def handler():
+        await asyncio.sleep(0.05)  # gstack-timing-ok: no cleanup exists yet when the wait starts
+        task = asyncio.create_task(cleanup())
+        app.state.cleanups.add(task)
+        task.add_done_callback(app.state.cleanups.discard)
+
+    running = asyncio.create_task(handler())
+    app.state.handlers.add(running)
+    running.add_done_callback(app.state.handlers.discard)
+    assert not app.state.cleanups  # the wait starts with nothing to wait on but the handler
+    async with app.router.lifespan_context(app):
+        pass
+    assert closed == [True]
+    assert "still running at shutdown" not in caplog.text
+
+
+# Value: protects=a real socket handler is tracked while it runs and forgotten once it ends, so shutdown's wait sees it; fails_when=listen() doesn't register itself, or never unregisters (shutdown would wait out its full bound every time); why_new=owner D2 (round 3c); seam=TestClient; no_claim=uvicorn's task model
+@pytest.mark.timeout(15)
+def test_a_socket_handler_is_tracked_while_it_runs():
+    app = create_app(settings())
+    client = TestClient(app)
+    with client.websocket_connect("/ws", headers=ORIGIN) as ws:
+        ws.send_text("not json")
+        assert json.loads(ws.receive_text()) == EXPECTED
+        assert len(app.state.handlers) == 1
+    started = time.monotonic()
+    while app.state.handlers:
+        assert time.monotonic() - started < 5, "the ended handler was never forgotten"  # gstack-timing-ok: poll deadline
+        time.sleep(0.02)
+
+
+async def _shut_down(app):
+    async with app.router.lifespan_context(app):
+        pass
+
+
+# Value: protects=with nothing open, shutdown returns at once and warns about nothing; fails_when=the wait sits out its whole bound even when no cleanup or handler is open; why_new=round 3c state machines (owner D3); seam=SHUTDOWN_CLEANUP_TIMEOUT_S raised so a full wait would show; no_claim=uvicorn's own timing
+async def test_shutdown_with_nothing_open_returns_at_once(monkeypatch, caplog):
+    from skywave_radio import server as server_module
+
+    monkeypatch.setattr(server_module, "SHUTDOWN_CLEANUP_TIMEOUT_S", 3.0)
+    app = create_app(settings())
+    await asyncio.wait_for(_shut_down(app), 1)  # far under the 3 s bound
+    assert "still running at shutdown" not in caplog.text
+
+
+# Value: protects=a handler stuck past the bound ends the wait on time and is counted in the warning; fails_when=the wait ignores the bound for handlers or the warning drops the handler count; why_new=round 3c state machines (owner D3); seam=a never-ending stand-in handler, SHUTDOWN_CLEANUP_TIMEOUT_S shortened; no_claim=why a real handler would hang
+async def test_shutdown_stops_waiting_for_a_stuck_handler_at_the_bound(monkeypatch, caplog):
+    from skywave_radio import server as server_module
+
+    monkeypatch.setattr(server_module, "SHUTDOWN_CLEANUP_TIMEOUT_S", 0.3)
+    app = create_app(settings())
+    stuck = asyncio.create_task(asyncio.Event().wait())
+    app.state.handlers.add(stuck)
+    try:
+        await asyncio.wait_for(_shut_down(app), 2)
+        assert "0 socket cleanup(s), 1 handler(s) and 0 scan task(s) still running at shutdown" in caplog.text
+    finally:
+        stuck.cancel()
+
+
+# Value: protects=a handler that fails during the wait isn't reported as a cleanup failure, doesn't end the wait early, and doesn't make shutdown raise; fails_when=the loop reads handler errors as cleanup failures or stops at the first finished task; why_new=round 3c state machines (owner D3); seam=stand-in handler and cleanup; no_claim=how uvicorn logs a handler's error
+async def test_a_failing_handler_does_not_cut_the_shutdown_wait_short(monkeypatch, caplog):
+    from skywave_radio import server as server_module
+
+    monkeypatch.setattr(server_module, "SHUTDOWN_CLEANUP_TIMEOUT_S", 2.0)
+    app = create_app(settings())
+    closed = []
+
+    async def failing_handler():
+        await asyncio.sleep(0)
+        raise RuntimeError("handler broke")
+
+    async def slow_cleanup():
+        await asyncio.sleep(0.1)  # gstack-timing-ok: still closing after the handler fails
+        closed.append(True)
+
+    handler = asyncio.create_task(failing_handler())
+    app.state.handlers.add(handler)
+    handler.add_done_callback(app.state.handlers.discard)
+    app.state.track_cleanup(asyncio.create_task(slow_cleanup()))
+    await _shut_down(app)
+    assert closed == [True]
+    assert "cleanup failed" not in caplog.text
+    assert handler.exception() is not None  # read here, as uvicorn would
+
+
+# Value: protects=a cleanup a handler adds late that never ends doesn't push the deadline back: shutdown still ends at the original bound and counts it; fails_when=the bound restarts when the open set grows; why_new=round 3c state machines (owner D3); seam=stand-in handler, SHUTDOWN_CLEANUP_TIMEOUT_S shortened; no_claim=why a real cleanup would hang
+async def test_a_late_stuck_cleanup_does_not_extend_the_shutdown_bound(monkeypatch, caplog):
+    from skywave_radio import server as server_module
+
+    monkeypatch.setattr(server_module, "SHUTDOWN_CLEANUP_TIMEOUT_S", 1.0)
+    app = create_app(settings())
+    stuck = []
+
+    async def handler():
+        await asyncio.sleep(0.6)  # gstack-timing-ok: adds its cleanup late, inside the 1 s bound
+        stuck.append(asyncio.create_task(asyncio.Event().wait()))
+        app.state.track_cleanup(stuck[0])
+
+    running = asyncio.create_task(handler())
+    app.state.handlers.add(running)
+    running.add_done_callback(app.state.handlers.discard)
+    started = asyncio.get_running_loop().time()
+    try:
+        await asyncio.wait_for(_shut_down(app), 3)
+        # gstack-timing-ok: the bound ends at about 1 s; one restarted at the add would run to 1.6 s
+        assert asyncio.get_running_loop().time() - started < 1.3
+        assert "1 socket cleanup(s), 0 handler(s) and 0 scan task(s) still running at shutdown" in caplog.text
+    finally:
+        for task in stuck:
+            task.cancel()
+
+
+# Value: protects=once shutdown starts, a cleanup a handler adds late and that fails is still logged with its traceback, even if it ends between two passes of the wait (where a cancelled handler's shield would drop its error); fails_when=only cleanups the wait saw are logged; why_new=round 3c state machines, owner D4; seam=stand-in handler registering through app.state.track_cleanup, as listen() does; no_claim=uvicorn's own shutdown order
+async def test_a_late_cleanup_that_fails_at_shutdown_is_logged(monkeypatch, caplog):
+    from skywave_radio import server as server_module
+
+    monkeypatch.setattr(server_module, "SHUTDOWN_CLEANUP_TIMEOUT_S", 2.0)
+    app = create_app(settings())
+
+    async def failing_cleanup():
+        raise RuntimeError("late cleanup broke")
+
+    async def handler():
+        await asyncio.sleep(0.05)  # gstack-timing-ok: adds its cleanup after the wait starts
+        app.state.track_cleanup(asyncio.create_task(failing_cleanup()))
+
+    running = asyncio.create_task(handler())
+    app.state.handlers.add(running)
+    running.add_done_callback(app.state.handlers.discard)
+    await _shut_down(app)
+    await asyncio.sleep(0)
+    assert any(
+        r.name == "skywave_radio" and "cleanup failed" in r.getMessage() and "late cleanup broke" in r.getMessage()
+        and r.exc_info
+        for r in caplog.records
+    )
+
+
+# Value: protects=a cleanup already open when shutdown starts that then fails is logged once with its traceback, and one that is cancelled logs nothing and raises nothing in a callback; fails_when=track_cleanup attaches the failure log twice, or the logger loses its cancelled guard; why_new=round 3c moved the failure log into callbacks (owner D4, then D5); the late-cleanups test catches a missing log, not a double one or a cancel; seam=app.state.track_cleanup called by hand, as listen() does; loop exception handler captured; no_claim=uvicorn's own shutdown order
+@pytest.mark.parametrize("ends", ["fails", "cancelled"])
+async def test_a_cleanup_open_when_shutdown_starts_is_logged_once_if_it_fails(ends, monkeypatch, caplog):
+    from skywave_radio import server as server_module
+
+    monkeypatch.setattr(server_module, "SHUTDOWN_CLEANUP_TIMEOUT_S", 2.0)
+    app = create_app(settings())
+    loop = asyncio.get_running_loop()
+    loop_errors = []
+    loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
+
+    async def cleanup():
+        if ends == "fails":
+            await asyncio.sleep(0.05)  # gstack-timing-ok: fails inside the shutdown wait
+            raise RuntimeError("early cleanup broke")
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(cleanup())
+    app.state.track_cleanup(task)  # registered before shutdown starts
+    try:
+        if ends == "cancelled":
+            loop.call_later(0.05, task.cancel)
+        await asyncio.wait_for(_shut_down(app), 2)
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(None)
+    logged = [r for r in caplog.records if "cleanup failed" in r.getMessage()]
+    if ends == "fails":
+        assert len(logged) == 1 and "early cleanup broke" in logged[0].getMessage() and logged[0].exc_info
+    else:
+        assert logged == []
+    assert loop_errors == []
+    assert "still running at shutdown" not in caplog.text
+
+
+# Value: protects=the idle waterfall reader's task carries its receiver's host:port (so a straggler log says which Kiwi), and falls back to asyncio's own name with no target; fails_when=_idle_waterfall drops name=, or names a task after a missing target; why_new=round 3c naming was only tested through hand-named tasks; seam=ListenSession._waterfall set by hand; no_claim=the scan and pump names (see the sweep test)
+@pytest.mark.parametrize("target", [True, False])
+async def test_the_idle_waterfall_reader_is_named_after_its_receiver(target):
+    class Idling:
+        is_open = True
+
+        async def idle(self):
+            await asyncio.Event().wait()
+
+    session = listening_session(_ignore)
+    if not target:
+        session._target = None
+    session._waterfall = Idling()
+    session._idle_waterfall()
+    idle = session._waterfall_idle
+    try:
+        name = idle.get_name()
+        assert name == "kiwi.test:8073" if target else name.startswith("Task-")
+    finally:
+        idle.cancel()
+        await asyncio.wait({idle})
+
+
+# Value: protects=the production shutdown path: a handler cancelled while shutdown waits (as uvicorn does at its graceful timeout) still registers its cleanup, and the wait awaits it, so the volunteer's Kiwi closes cleanly with no warning; fails_when=the wait drops cancelled handlers before their cleanup lands, or a cancelled handler's cleanup goes unawaited; why_new=round 3c state machines (owner D2/D3); seam=a stand-in handler shaped like listen()'s finally (track_cleanup then shield), cancelled by call_later; no_claim=uvicorn's own cancel timing
+async def test_a_handler_cancelled_during_shutdown_still_gets_its_cleanup_awaited(monkeypatch, caplog):
+    from skywave_radio import server as server_module
+
+    monkeypatch.setattr(server_module, "SHUTDOWN_CLEANUP_TIMEOUT_S", 2.0)
+    app = create_app(settings())
+    closed = []
+
+    async def cleanup():
+        await asyncio.sleep(0.05)  # gstack-timing-ok: still closing its Kiwi after the handler is cancelled
+        closed.append(True)
+
+    async def handler():
+        try:
+            await asyncio.Event().wait()  # a live listener; the cancel lands here
+        finally:
+            task = asyncio.create_task(cleanup())
+            app.state.track_cleanup(task)
+            await asyncio.shield(task)  # as in listen(): registered, then awaited
+
+    running = asyncio.create_task(handler())
+    app.state.handlers.add(running)
+    running.add_done_callback(app.state.handlers.discard)
+    await asyncio.sleep(0)
+    asyncio.get_running_loop().call_later(0.05, running.cancel)
+    await asyncio.wait_for(_shut_down(app), 2)
+    assert closed == [True]
+    assert running.cancelled()
+    assert "still running at shutdown" not in caplog.text
+
+
+# Value: protects=a cleanup a handler registers after shutdown started that is then cancelled logs nothing and raises nothing from the failure-log callback track_cleanup attaches; fails_when=the failure logger track_cleanup attaches reads exception() on a cancelled task; why_new=round 3c state machines (owner D3/D4): only the up-front path's cancel was exercised; seam=stand-in handler registering through app.state.track_cleanup; loop exception handler captured; no_claim=why a real cleanup would be cancelled
+async def test_a_late_cleanup_cancelled_at_shutdown_logs_nothing(monkeypatch, caplog):
+    from skywave_radio import server as server_module
+
+    monkeypatch.setattr(server_module, "SHUTDOWN_CLEANUP_TIMEOUT_S", 2.0)
+    app = create_app(settings())
+    loop = asyncio.get_running_loop()
+    loop_errors = []
+    loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
+
+    async def handler():
+        await asyncio.sleep(0.05)  # gstack-timing-ok: registers after the wait starts
+        late = asyncio.create_task(asyncio.Event().wait())
+        app.state.track_cleanup(late)
+        loop.call_later(0.05, late.cancel)
+
+    running = asyncio.create_task(handler())
+    app.state.handlers.add(running)
+    running.add_done_callback(app.state.handlers.discard)
+    try:
+        await asyncio.wait_for(_shut_down(app), 2)
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(None)
+    assert not [r for r in caplog.records if "cleanup failed" in r.getMessage()]
+    assert loop_errors == []
+    assert "still running at shutdown" not in caplog.text
+
+
+# Value: protects=a cleanup whose handler stops waiting on it (cancelled again mid-cleanup, so the shield drops its error), before or during shutdown, still has its failure logged with a traceback, and one whose handler still awaits it is left to the handler (which raises it for the server to log), so nothing is logged twice (owner D5, round 3c); fails_when=listen() drops the error when cancelled during the shield, or also logs it while the handler will raise it; why_new=round 3c Codex review: a cleanup failing just before shutdown could lose its error; seam=a stand-in handler running listen()'s own _await_cleanup (TestClient is too coarse to cancel the real one twice); no_claim=uvicorn's own cancel timing
+@pytest.mark.parametrize("ends", ["fails", "cancelled"])
+@pytest.mark.parametrize("cancels", [1, 2])
+async def test_a_failed_cleanup_is_logged_only_when_its_handler_stops_waiting(cancels, ends, caplog):
+    from skywave_radio import server as server_module
+
+    app = create_app(settings())
+    in_cleanup = asyncio.Event()
+    cleanups = []
+    loop = asyncio.get_running_loop()
+    loop_errors = []
+    loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
+
+    async def failing_cleanup():
+        await asyncio.sleep(0.1)  # gstack-timing-ok: ends after the second cancel lands
+        if ends == "fails":
+            raise RuntimeError("cleanup broke early")
+        raise asyncio.CancelledError  # the cleanup itself is cancelled
+
+    async def handler():
+        try:
+            await asyncio.Event().wait()  # the first cancel lands here
+        finally:
+            task = asyncio.create_task(failing_cleanup())
+            cleanups.append(task)
+            app.state.track_cleanup(task, awaited=True)
+            in_cleanup.set()
+            await server_module._await_cleanup(task)  # as listen() does
+
+    running = asyncio.create_task(handler())
+    await asyncio.sleep(0)
+    running.cancel()
+    await asyncio.wait_for(in_cleanup.wait(), 2)
+    if cancels == 2:
+        running.cancel()  # cancelled again while it waits on the cleanup
+    try:
+        await asyncio.wait_for(asyncio.wait({running, *cleanups}), 2)
+        await asyncio.sleep(0)  # the cleanup's done callbacks run on the next step
+    finally:
+        loop.set_exception_handler(None)
+    logged = [r for r in caplog.records if r.name == "skywave_radio" and "cleanup failed" in r.getMessage()]
+    assert loop_errors == []
+    if ends == "cancelled":
+        assert running.cancelled()  # a cancelled cleanup ends its handler cancelled either way
+        assert logged == []
+    elif cancels == 2:
+        assert running.cancelled()
+        assert len(logged) == 1 and logged[0].exc_info
+    else:
+        assert isinstance(running.exception(), RuntimeError)  # the handler raises it for the server to log
+        assert logged == []
+
+
+# Value: protects=a scan task that had already failed when _end_scan's caller was cancelled (so the cut-short stop never read it) has its error logged with a traceback, not left for "Task exception was never retrieved"; fails_when=the backstop only looks at tasks still running; why_new=round 3c adversarial review (Claude); seam=ListenSession._scan set by hand to a finished failed task, with a stubborn idle task keeping the stop busy; no_claim=how a real scan fails
+@pytest.mark.parametrize("failed", ["scan", "idle"])
+async def test_the_scan_stop_backstop_reads_a_task_that_already_failed(failed, monkeypatch, caplog):
+    from skywave_radio import session as session_module
+
+    monkeypatch.setattr(session_module, "SCAN_STOP_TIMEOUT_S", 5.0)
+    session = listening_session(_ignore)
+    release = asyncio.Event()
+
+    async def failed_scan():
+        raise RuntimeError("scan had failed")
+
+    async def stubborn_idle():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    done_badly, stubborn = asyncio.create_task(failed_scan()), asyncio.create_task(stubborn_idle())
+    session._scan, session._waterfall_idle = (done_badly, stubborn) if failed == "scan" else (stubborn, done_badly)
+    await asyncio.sleep(0)  # the scan has failed, unread
+    ending = asyncio.create_task(session._end_scan())
+    await asyncio.sleep(0.05)  # gstack-timing-ok: lets _stop_scan_tasks start waiting on the idle task
+    ending.cancel()
+    await asyncio.sleep(0.05)  # gstack-timing-ok: lets the backstop run
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(ending, 2)
+    assert any("scan had failed" in r.getMessage() and r.exc_info for r in caplog.records)
+
+
+# Value: protects=listen() hands a failing cleanup's error to its own caller (the server logs the handler's exception) without also logging it as "a socket cleanup failed", so a session.close() failure is reported once (owner D5); fails_when=listen() registers its cleanup with track_cleanup's default (unawaited), so the same failure is logged twice; why_new=the D5 test drives a stand-in handler that passes awaited=True itself, so listen()'s own call site went unchecked; seam=ListenSession.close patched to raise, the ASGI app driven directly on this test's loop; no_claim=how uvicorn formats the handler's exception
+@pytest.mark.timeout(15)
+def test_a_cleanup_failure_in_a_real_handler_is_left_to_the_handler(monkeypatch, caplog):
+    from skywave_radio.session import ListenSession
+
+    async def broken_close(self):
+        raise RuntimeError("close broke in the handler")
+
+    monkeypatch.setattr(ListenSession, "close", broken_close)
+
+    async def main():
+        app = create_app(settings())
+        inbox: asyncio.Queue = asyncio.Queue()
+
+        async def send(message):
+            pass
+
+        scope = {
+            "type": "websocket", "path": "/ws", "raw_path": b"/ws", "root_path": "", "query_string": b"",
+            "headers": [(b"origin", ORIGIN["origin"].encode())], "scheme": "ws", "subprotocols": [],
+            "client": ("127.0.0.1", 50000), "server": ("testserver", 80),
+        }
+        await inbox.put({"type": "websocket.connect"})
+        await inbox.put({"type": "websocket.disconnect", "code": 1000})
+        with pytest.raises(RuntimeError, match="close broke in the handler"):
+            await asyncio.wait_for(app(scope, inbox.get, send), 5)
+        await asyncio.sleep(0)  # let any done callbacks on the cleanup run
+        assert not app.state.cleanups
+
+    asyncio.run(main())
+    assert not [r for r in caplog.records if r.name.startswith("skywave_radio") and "cleanup failed" in r.getMessage()]
+
+
+# Value: protects=shutdown also waits (within the same bound) for a scan task that outlived its own stop and may still be closing a half-open waterfall on a volunteer's Kiwi, however it ends: finished or cancelled inside the bound (awaited, no warning), failed (its own log, not a cleanup failure), or stuck past the bound (the wait ends on time and counts it) (owner D8, round 3c); fails_when=the lifespan ignores stragglers, drops them from the warning, or lets one stretch the bound; why_new=round 3c adversarial review (Claude), then state machines; seam=session.scan_stragglers given a stand-in task by hand; no_claim=why a real scan would outlive its stop
+@pytest.mark.parametrize("ends", ["clean", "fails", "cancelled", "stuck"])
+async def test_shutdown_waits_for_a_scan_task_that_outlived_its_stop(ends, monkeypatch, caplog):
+    import logging
+
+    from skywave_radio import server as server_module
+    from skywave_radio import session as session_module
+
+    monkeypatch.setattr(server_module, "SHUTDOWN_CLEANUP_TIMEOUT_S", 0.5 if ends == "stuck" else 2.0)
+    caplog.set_level(logging.INFO, logger="skywave_radio.session")
+    app = create_app(settings())
+    closed = []
+
+    async def stubborn_scan():
+        if ends == "stuck":
+            await asyncio.Event().wait()
+        await asyncio.sleep(0.1)  # gstack-timing-ok: still closing its waterfall as shutdown starts
+        if ends == "fails":
+            raise RuntimeError("straggler broke")
+        closed.append(True)
+
+    straggler = asyncio.create_task(stubborn_scan())
+    session_module.scan_stragglers.add(straggler)
+    straggler.add_done_callback(session_module._log_straggler)
+    if ends == "cancelled":
+        asyncio.get_running_loop().call_later(0.05, straggler.cancel)
+    try:
+        await asyncio.wait_for(_shut_down(app), 2)
+        if ends == "stuck":
+            assert "0 socket cleanup(s), 0 handler(s) and 1 scan task(s) still running at shutdown" in caplog.text
+        else:
+            assert straggler.done()
+            assert "still running at shutdown" not in caplog.text
+            assert "cleanup failed" not in caplog.text
+        if ends == "clean":
+            assert closed == [True]
+        if ends == "fails":
+            assert any("straggler broke" in r.getMessage() and r.exc_info for r in caplog.records)
+    finally:
+        straggler.cancel()
+        await asyncio.wait({straggler})
+
+
+# Value: protects=a stuck scan task left over from another event loop (the straggler set is shared by the whole process) doesn't hold up this loop's shutdown or show in its count; fails_when=the lifespan waits on every straggler regardless of loop; why_new=round 3c red team; seam=a stand-in whose get_loop() is another loop, added to session.scan_stragglers by hand; no_claim=real multi-loop processes
+async def test_shutdown_ignores_another_loops_stuck_scan_task(monkeypatch, caplog):
+    from skywave_radio import server as server_module
+    from skywave_radio import session as session_module
+
+    monkeypatch.setattr(server_module, "SHUTDOWN_CLEANUP_TIMEOUT_S", 3.0)
+    app = create_app(settings())
+
+    class OtherLoopsTask:
+        def get_loop(self):
+            return object()  # some other loop
+
+    leftover = OtherLoopsTask()
+    session_module.scan_stragglers.add(leftover)
+    try:
+        await asyncio.wait_for(_shut_down(app), 1)  # far under the 3 s bound
+        assert "still running at shutdown" not in caplog.text
+    finally:
+        session_module.scan_stragglers.discard(leftover)
+
+
+# Value: protects=a socket refused for its origin or token gets a bounded close, so a client that stops reading can't hold its handler (now tracked by shutdown) open; fails_when=the reject paths call ws.close() unbounded again; why_new=round 3c Codex review, owner D10; seam=server._close_bounded wrapped to record its calls; no_claim=a real non-reading client
+@pytest.mark.parametrize("reject", ["origin", "token"])
+def test_a_refused_socket_gets_a_bounded_close(reject, monkeypatch):
+    from skywave_radio import server as server_module
+
+    closes = []
+    real_close = server_module._close_bounded
+
+    async def recording(ws, code, reason):
+        closes.append(code)
+        await real_close(ws, code, reason)
+
+    monkeypatch.setattr(server_module, "_close_bounded", recording)
+    app = create_app(settings(token="right"))
+    headers = {"origin": "https://elsewhere.example"} if reject == "origin" else ORIGIN
+    with pytest.raises(WebSocketDisconnect):
+        with TestClient(app).websocket_connect("/ws?token=wrong" if reject == "token" else "/ws?token=right", headers=headers) as ws:
+            ws.receive_text()
+    assert closes == [status.WS_1008_POLICY_VIOLATION]
+
+
+# Value: protects=a host longer than any DNS name is refused before it becomes a task name, so one message can't pin megabytes in task metadata or asyncio's own logs; fails_when=_tune accepts any length; why_new=round 3c adversarial review (Claude and Codex); seam=none; no_claim=uvicorn's frame size limit
+async def test_a_tune_with_an_overlong_host_is_refused():
+    from skywave_radio.session import ListenSession
+
+    sent = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    session = ListenSession(settings(), send_text, _ignore, resolver=_resolve_any)
+    await session.handle({"type": "tune", "host": "a" * 254, "port": 8073, "freqKhz": 7200, "mode": "am"})
+    assert session._pump is None
+    assert sent and sent[-1]["state"] == "error" and "too long" in sent[-1]["message"]
+
+
+# Value: protects=the idle waterfall reader stops when cancelled even if the cancel comes back as an error (a Kiwi read turning it into KiwiError), instead of looping while the waterfall stays open and holding up a stop or the process exit (owner D11, round 3c); fails_when=_idle catches that error and keeps draining; why_new=round 3c adversarial review (Claude); seam=a stand-in waterfall whose idle() raises KiwiError when cancelled; no_claim=which real reads convert cancels
+@pytest.mark.parametrize("error", ["kiwi", "other"])
+async def test_a_cancelled_idle_reader_stops_even_if_the_cancel_becomes_an_error(error):
+    from skywave_radio.kiwi import KiwiError
+
+    session = listening_session(_ignore)
+    idling = asyncio.Event()
+
+    class Waterfall:
+        is_open = True
+
+        async def idle(self):
+            idling.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise (KiwiError("closed", "kiwi.test closed") if error == "kiwi" else RuntimeError("read broke")) from None
+
+        async def close(self):
+            pass
+
+    reader = asyncio.create_task(session._idle(Waterfall()))
+    await asyncio.wait_for(idling.wait(), 2)
+    reader.cancel()
+    await asyncio.wait_for(asyncio.wait({reader}), 2)
+    assert reader.cancelled()
