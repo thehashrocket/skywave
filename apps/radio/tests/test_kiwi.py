@@ -501,7 +501,7 @@ async def test_a_failed_tune_keeps_the_old_frequency(monkeypatch):
     assert client.freq_khz == 7200.0
 
 
-# Value: protects=a retune the Kiwi stops reading (the frame may still be queued) gives the connection up, and the reader then ends the session with "stopped reading" rather than going on with tuning the service can't know; fails_when=tune() rolls back and keeps the connection, or the reader reports a generic "closed", or _recv re-raises the stored error (rewriting its cause) or drops the stored error from the fresh one's cause; why_new=owner D1 (round 3b red team: a queued retune could be taken later and garble audio), round 3c (fresh error from _recv); seam=a stand-in socket whose send never finishes and whose recv ends once the transport is aborted; no_claim=real TCP buffering
+# Value: protects=a retune the Kiwi stops reading (the frame may still be queued) gives the connection up, and the reader then ends the session with "stopped reading" rather than going on with tuning the service can't know; fails_when=tune() rolls back and keeps the connection, or the reader reports a generic "closed", or _recv re-raises the stored error (rewriting its cause) or drops the stored error from the fresh one's cause or the note of the close that followed; why_new=owner D1 (round 3b red team: a queued retune could be taken later and garble audio), round 3c (fresh error from _recv); seam=a stand-in socket whose send never finishes and whose recv ends once the transport is aborted; no_claim=real TCP buffering
 async def test_a_retune_the_kiwi_stops_reading_ends_the_connection():
     from websockets.exceptions import ConnectionClosedError
 
@@ -530,6 +530,7 @@ async def test_a_retune_the_kiwi_stops_reading_ends_the_connection():
     assert read.value.code == "timeout" and "stopped reading" in str(read.value)
     assert read.value is not client._broken  # a fresh error: the stored one keeps its own cause
     assert read.value.__cause__ is client._broken  # and the traceback still shows why it was given up
+    assert any("connection closed" in note for note in getattr(read.value, "__notes__", []))  # and the close that followed (normally our own abort)
 
 
 # Value: protects=once a retune gave the connection up, a send (a keepalive, an MSG reply) that hits the dropped socket also raises "stopped reading", so the listener sees the reason whichever call the reader was in; fails_when=_send turns it into a generic "closed"; why_new=round 3b review pass 3 (four reviewers); seam=a stand-in socket whose send raises ConnectionClosed, _broken set by hand; no_claim=which call the reader is in
@@ -548,6 +549,7 @@ async def test_a_send_after_the_connection_was_given_up_says_why():
     assert e.value.code == "timeout" and "stopped reading" in str(e.value)
     assert e.value is not client._broken  # a fresh error: the stored one keeps its own cause
     assert e.value.__cause__ is client._broken  # and the traceback still shows why it was given up
+    assert any("connection closed" in note for note in getattr(e.value, "__notes__", []))  # and the close that followed (normally our own abort)
 
 
 # Value: protects=a retune cancelled while its send is in flight (the browser left) keeps the old frequency and doesn't give the connection up; fails_when=the cancel path takes the timeout branch or keeps the new frequency; why_new=round 3b state machines (send-cancelled x tune); seam=KiwiClient._send_mod held, _ws set by hand; no_claim=real cancel timing

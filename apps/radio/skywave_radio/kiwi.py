@@ -88,6 +88,13 @@ class KiwiError(Exception):
         self.code = code
 
 
+def _fresh_broken(broken: KiwiError, closed: BaseException) -> KiwiError:
+    """A new error with the given-up connection's code and message, noting the close that followed."""
+    error = KiwiError(broken.code, str(broken))
+    error.add_note(f"then the connection closed: {closed!r}")
+    return error
+
+
 @dataclass
 class IQBlock:
     seq: int
@@ -394,8 +401,9 @@ class KiwiConnection:
             if self._broken is not None:
                 # A fresh error each time (re-raising the stored one would grow
                 # its traceback on every raise), chained to it so a log shows why
-                # the connection was given up.
-                raise KiwiError(self._broken.code, str(self._broken)) from self._broken
+                # the connection was given up, with the close that followed noted
+                # (normally our own abort).
+                raise _fresh_broken(self._broken, e) from self._broken
             raise KiwiError("closed", f"{self.host} closed the connection") from e
         return msg if isinstance(msg, bytes) else msg.encode()
 
@@ -420,8 +428,9 @@ class KiwiConnection:
             if self._broken is not None:
                 # A fresh error each time (re-raising the stored one would grow
                 # its traceback on every raise), chained to it so a log shows why
-                # the connection was given up.
-                raise KiwiError(self._broken.code, str(self._broken)) from self._broken
+                # the connection was given up, with the close that followed noted
+                # (normally our own abort).
+                raise _fresh_broken(self._broken, e) from self._broken
             raise KiwiError("closed", f"{self.host} closed the connection") from e
 
     def abort(self) -> None:
