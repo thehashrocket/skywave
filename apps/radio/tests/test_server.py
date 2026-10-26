@@ -5248,7 +5248,7 @@ async def test_a_failed_cleanup_is_logged_only_when_its_handler_stops_waiting(ca
 async def test_the_scan_stop_backstop_reads_a_task_that_already_failed(failed, monkeypatch, caplog):
     from skywave_radio import session as session_module
 
-    monkeypatch.setattr(session_module, "SCAN_STOP_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(session_module, "SCAN_STOP_TIMEOUT_S", 6.0)
     session = listening_session(_ignore)
     release = asyncio.Event()
 
