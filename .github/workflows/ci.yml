@@ -24,11 +24,16 @@ jobs:
 
   radio:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor in pyproject.toml (requires-python) and the Dockerfile's image.
+        python: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: apps/radio/pyproject.toml
       # test:radio runs apps/radio/.venv/bin/python, so build the venv there.
