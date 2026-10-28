@@ -6,10 +6,13 @@ Browser -> service (JSON text frames):
     rather than one a person typed; those are only ever dialed on public
     addresses, even with ALLOW_PRIVATE_HOSTS on. "secure": true dials wss://.)
     {"type": "stop"}
-    {"type": "scan", "id": 3, "fresh": false}
+    {"type": "scan", "id": 3, "fresh": false, "ham": true}
     (scan the receiver being listened to for strong broadcast signals; "fresh"
-    skips the 10-minute cache. Send it only to a service whose status lists
-    "scan" in "features": an older one answers it with a status error.)
+    skips the caches (10 minutes for broadcast, 2 for amateur). Send it only
+    to a service whose status lists "scan" in "features": an older one
+    answers it with a status error.
+    "ham": true also scans the amateur bands; send it only when "features"
+    lists "scan-ham", and only from a page that tunes each row in its "mode".)
 
 Service -> browser:
     JSON text: {"type": "status", "state": "connecting|listening|stopped|error", "features": ["scan"], ...}
@@ -20,7 +23,14 @@ Service -> browser:
                "hidden" flat-topped signals left out, "bandsDone", "bandsTotal",
                "partial", "atMs"; error: "message". Scan failures never come as
                a status: listening goes on. id, host and port echo the request,
-               so a late reply for another receiver or request can be ignored.)
+               so a late reply for another receiver or request can be ignored.
+               With "ham": true a done reply carries "ham": first
+               {"state": "scanning"} with the broadcast part, then a second
+               done reply under the same id with {"state": "done", "voice",
+               "cw", "digital" ([{"freqKhz", "snrDb", "band", "mode",
+               "label"?}] strongest first), "bandsDone", "bandsTotal",
+               "partial", "atMs", "ageMs"} or {"state": "error", "message"}.
+               An amateur failure never turns the broadcast part into an error.)
     JSON text: {"type": "meter", "rssi": -73.1, "overflow": false}
     Binary:    0x03 + int16 LE mono audio at `sampleRate` (full scale = 32767)
     Binary:    0x04 + float32 LE base dB + uint8 bins spanning -sampleRate/2..+sampleRate/2,
@@ -42,7 +52,7 @@ from .config import Settings
 from .dsp import CW_PITCH_HZ, MODES, Demodulator, Spectrum, encode_audio, encode_spectrum
 from .hostguard import HostRejected, is_public_address, resolve_receiver
 from .kiwi import CLOSE_TIMEOUT_S, DEFAULT_PORT, KiwiClient, KiwiError
-from .scan import ScanResult, sweep
+from .scan import DEADLINE_S, HamResult, ScanResult, sweep, sweep_ham
 from .waterfall import WaterfallClient
 
 log = logging.getLogger(__name__)
@@ -57,9 +67,12 @@ METER_INTERVAL_S = 0.25
 SEND_TIMEOUT_S = 15.0
 
 # Statuses list what this service can do, so a newer web app knows whether to ask.
-FEATURES = ["scan"]
+FEATURES = ["scan", "scan-ham"]
 # How long a receiver's scan is reused before a new one is made.
 SCAN_CACHE_S = 600.0
+# The amateur part is reused far less: ham signals come and go in minutes.
+HAM_CACHE_S = 120.0
+OUT_OF_TIME = "The scan ran out of time before the amateur bands."
 # A receiver that refused a scan isn't asked again for this long. Only refusals
 # are kept: a dropped connection or a timeout says nothing about the next try.
 SCAN_REFUSAL_CACHE_S = 60.0
@@ -187,16 +200,17 @@ class ScanCache:
 
     def __init__(self, ttl_s: float = SCAN_CACHE_S):
         self.ttl_s = ttl_s
-        # key -> (expiry on the monotonic clock, result or refusal message)
-        self._entries: dict[Hashable, tuple[float, ScanResult | str]] = {}
+        # key -> (expiry on the monotonic clock, result or refusal message).
+        # A receiver's amateur part is kept under (receiver, "ham").
+        self._entries: dict[Hashable, tuple[float, ScanResult | HamResult | str]] = {}
 
-    def get(self, key: Hashable) -> ScanResult | str | None:
+    def get(self, key: Hashable) -> ScanResult | HamResult | str | None:
         entry = self._entries.get(key)
         if entry is None or time.monotonic() > entry[0]:
             return None
         return entry[1]
 
-    def put(self, key: Hashable, result: ScanResult | str, ttl_s: float | None = None) -> None:
+    def put(self, key: Hashable, result: ScanResult | HamResult | str, ttl_s: float | None = None) -> None:
         now = time.monotonic()
         # Pruned here so a long-running service doesn't keep every receiver it ever scanned.
         self._entries = {k: e for k, e in self._entries.items() if now <= e[0]}
@@ -313,6 +327,11 @@ class ListenSession:
         # connection lasts. A new connection waits out the interval instead
         # (SweepTimes) and sweeps again.
         self._last_sweep: tuple[float, Target, str, dict[str, Any]] | None = None
+        # Whether the newest scan request asked for the amateur bands too
+        # ("ham": true); replies to one that didn't never carry them.
+        self._scan_ham = False
+        # The last amateur sweep's answer, kept like _last_sweep.
+        self._last_ham: tuple[float, Target, HamResult | dict[str, Any]] | None = None
 
     @property
     def lookup_owner(self) -> Hashable:
@@ -759,6 +778,7 @@ class ListenSession:
             await self._scan_reply(scan_id, target, "error", message="Start listening to a receiver first.")
             return
         self._scan_id = scan_id
+        self._scan_ham = msg.get("ham") is True
         if self._scan is not None and not self._scan.done():
             # Already sweeping this receiver: that sweep answers this request.
             # Cancelling it could close a half-open paired waterfall, which
@@ -770,75 +790,185 @@ class ListenSession:
         )
 
     async def _run_scan(self, target: Target, client: KiwiClient, *, fresh: bool) -> None:
-        cached = None if fresh else self._scan_cache.get(target)
-        if isinstance(cached, str):
-            await self._finish(target, "error", message=cached)
+        answer = await self._broadcast_answer(target, client, fresh=fresh)
+        if answer is None:
+            return  # the connection ended; nothing to say about a receiver we left
+        state, extra, swept_s = answer
+        if state != "done" or not self._scan_ham:
+            await self._finish(target, state, **extra)
             return
-        if cached is not None:
-            await self._finish(target, "done", **scan_payload(cached))
+        # Broadcast first (owner D11): its rows show while the amateur bands
+        # are swept, and an amateur problem can't cost the broadcast list.
+        await self._scan_reply(self._scan_id, target, "done", **extra, ham={"state": "scanning"})
+        budget = None if swept_s is None else max(0.0, DEADLINE_S - swept_s)
+        ham = await self._ham_answer(target, client, fresh=fresh, budget_s=budget)
+        if ham is None:
             return
+        await self._finish(target, "done", **extra, ham=ham_payload(ham))
+
+    async def _broadcast_answer(
+        self, target: Target, client: KiwiClient, *, fresh: bool
+    ) -> tuple[str, dict[str, Any], float | None] | None:
+        """The broadcast part: (state, payload, seconds swept or None if reused), or None if the connection ended."""
+
+        def reuse() -> tuple[str, dict[str, Any], None] | None:
+            cached = None if fresh else self._scan_cache.get(target)
+            if isinstance(cached, str):
+                return "error", {"message": cached}, None
+            if isinstance(cached, ScanResult):
+                return "done", scan_payload(cached), None
+            return None
+
+        if (answer := reuse()) is not None:
+            return answer
         last = self._last_sweep
         if last is not None and last[1] == target and time.monotonic() - last[0] < SCAN_MIN_INTERVAL_S:
-            await self._finish(target, last[2], **last[3])
-            return
+            return last[2], last[3], None
         await self._scan_reply(self._scan_id, target, "scanning")
+        if not await self._take_sweep_slot(target, client, reuse):
+            return None
+        # Another listener's sweep (or refusal) may have filled the cache while this one waited.
+        if (answer := reuse()) is not None:
+            return answer
+        started = time.monotonic()
+        try:
+            waterfall = await self._paired_waterfall(client)
+            result = await sweep(waterfall.frame, waterfall.info.freq_offset_khz, waterfall.bandwidth_khz)
+        except KiwiError as e:
+            if self._client is not client:
+                return None  # this connection ended; its teardown owns the waterfall
+            await self._keep_waterfall_after_error()
+            message = f"Couldn't scan this receiver: {e}"
+            # Only while still on this receiver: a scan cut short by the
+            # listener leaving (or the receiver dropping them) proves nothing.
+            if e.code in SCAN_REFUSALS and self._target == target:
+                self._scan_cache.put(target, message, SCAN_REFUSAL_CACHE_S)
+            return self._swept(target, "error", message=message)
+        except Exception:
+            log.exception("scan crashed")
+            if self._client is not client:
+                return None
+            # Keep any waterfall drained: a dropped one takes the audio with it.
+            self._idle_waterfall()
+            return self._swept(target, "error", message="The scan broke. Check the radio service's logs.")
+        if self._client is not client:
+            # The connection ended mid-sweep: no answer about a receiver we
+            # left, and nothing cached or idled against the next one.
+            return None
+        self._idle_waterfall()
+        if result.bands_done == 0 and result.bands_total > 0:
+            # Not one frame came back: "no strong signals" would be a claim
+            # the scan can't make.
+            return self._swept(target, "error", message="Couldn't scan this receiver: it didn't send its waterfall.")
+        result = replace(result, at_ms=int(time.time() * 1000))
+        # A partial sweep (a stalled or slow receiver) isn't kept: shared for
+        # 10 minutes it would stand in for a full scan for every listener.
+        if not result.partial:
+            self._scan_cache.put(target, result)
+        state, extra, _ = self._swept(target, "done", **scan_payload(result))
+        return state, extra, time.monotonic() - started
+
+    async def _ham_answer(
+        self, target: Target, client: KiwiClient, *, fresh: bool, budget_s: float | None
+    ) -> HamResult | dict[str, Any] | None:
+        """The amateur part: a result, an error payload, or None if the connection ended.
+
+        budget_s is what's left of DEADLINE_S after a broadcast sweep in this
+        same scan, which also holds the listener's sweep slot; None means the
+        broadcast part was reused, so this pass takes a slot of its own.
+        """
+        key = (target, "ham")
+
+        def reuse() -> HamResult | None:
+            cached = None if fresh else self._scan_cache.get(key)
+            return cached if isinstance(cached, HamResult) else None
+
+        if (cached := reuse()) is not None:
+            return cached
+        last = self._last_ham
+        if last is not None and last[1] == target and time.monotonic() - last[0] < SCAN_MIN_INTERVAL_S:
+            return last[2]
+        if budget_s is None:
+            if not await self._take_sweep_slot(target, client, reuse):
+                return None
+            if (cached := reuse()) is not None:
+                return cached
+        elif budget_s <= 0:
+            # The broadcast sweep used the whole of DEADLINE_S (a very slow receiver).
+            return self._swept_ham(target, {"state": "error", "message": OUT_OF_TIME})
+        started = time.monotonic()
+        try:
+            waterfall = await self._paired_waterfall(client)
+            result = await sweep_ham(
+                waterfall.frame,
+                waterfall.hold,
+                waterfall.info.freq_offset_khz,
+                waterfall.bandwidth_khz,
+                deadline_s=DEADLINE_S if budget_s is None else budget_s,
+            )
+        except KiwiError as e:
+            if self._client is not client:
+                return None
+            await self._keep_waterfall_after_error()
+            return self._swept_ham(target, {"state": "error", "message": f"Couldn't scan the amateur bands: {e}"})
+        except Exception:
+            log.exception("amateur scan crashed")
+            if self._client is not client:
+                return None
+            self._idle_waterfall()
+            message = "The amateur scan broke. Check the radio service's logs."
+            return self._swept_ham(target, {"state": "error", "message": message})
+        if self._client is not client:
+            return None
+        self._idle_waterfall()
+        if result.bands_done == 0 and result.bands_total > 0:
+            # Not one band in: either the budget ran out first (after a slow
+            # broadcast sweep) or the waterfall stalled.
+            ran_out = budget_s is not None and time.monotonic() - started >= budget_s - 0.05
+            message = OUT_OF_TIME if ran_out else "The receiver didn't send its waterfall."
+            return self._swept_ham(target, {"state": "error", "message": message})
+        result = replace(result, at_ms=int(time.time() * 1000))
+        # Amateur signals come and go: kept HAM_CACHE_S, and only when complete.
+        if not result.partial:
+            self._scan_cache.put(key, result, HAM_CACHE_S)
+        return self._swept_ham(target, result)
+
+    async def _take_sweep_slot(self, target: Target, client: KiwiClient, cached: Callable[[], object]) -> bool:
+        """Wait out this listener's SCAN_MIN_INTERVAL_S for this receiver, then take it.
+
+        False if the connection ended meanwhile (the slot is left for the next
+        one). Not taken either when cached() finds an answer after the wait
+        (O5): the caller then reuses it instead of sweeping.
+        """
         # No await between the last check and start(), so listeners sharing
         # an IP queue up one sweep at a time.
         key = (self.lookup_owner, target)
         while (wait := self._sweep_times.wait_s(key)) > 0:
             await asyncio.sleep(wait)
         if self._client is not client:
-            return  # the connection ended while it waited: don't use up the sweep slot
-        self._sweep_times.start(key)
-        try:
-            waterfall = await self._paired_waterfall(client)
-            result = await sweep(waterfall.frame, waterfall.info.freq_offset_khz, waterfall.bandwidth_khz)
-        except KiwiError as e:
-            if self._client is not client:
-                return  # this connection ended; its teardown owns the waterfall
-            if self._waterfall is not None and self._waterfall.is_open:
-                # Still paired with the audio: closing it would end the
-                # listener's audio over a scan problem. Keep it drained; idle
-                # closes it if it turns out to be dead.
-                self._idle_waterfall()
-            else:
-                await self._drop_waterfall()
-            message = f"Couldn't scan this receiver: {e}"
-            # Only while still on this receiver: a scan cut short by the
-            # listener leaving (or the receiver dropping them) proves nothing.
-            if e.code in SCAN_REFUSALS and self._target == target:
-                self._scan_cache.put(target, message, SCAN_REFUSAL_CACHE_S)
-            await self._swept(target, "error", message=message)
-            return
-        except Exception:
-            log.exception("scan crashed")
-            if self._client is not client:
-                return
-            # Keep any waterfall drained: a dropped one takes the audio with it.
-            self._idle_waterfall()
-            await self._swept(target, "error", message="The scan broke. Check the radio service's logs.")
-            return
-        if self._client is not client:
-            # The connection ended mid-sweep: no answer about a receiver we
-            # left, and nothing cached or idled against the next one.
-            return
-        self._idle_waterfall()
-        if result.bands_done == 0 and result.bands_total > 0:
-            # Not one frame came back: "no strong signals" would be a claim
-            # the scan can't make.
-            await self._swept(target, "error", message="Couldn't scan this receiver: it didn't send its waterfall.")
-            return
-        result = replace(result, at_ms=int(time.time() * 1000))
-        # A partial sweep (a stalled or slow receiver) isn't kept: shared for
-        # 10 minutes it would stand in for a full scan for every listener.
-        if not result.partial:
-            self._scan_cache.put(target, result)
-        await self._swept(target, "done", **scan_payload(result))
+            return False
+        if cached() is None:
+            self._sweep_times.start(key)
+        return True
 
-    async def _swept(self, target: Target, state: str, **extra: Any) -> None:
-        """Answer a sweep that ran, remembering the answer for SCAN_MIN_INTERVAL_S."""
+    async def _keep_waterfall_after_error(self) -> None:
+        if self._waterfall is not None and self._waterfall.is_open:
+            # Still paired with the audio: closing it would end the
+            # listener's audio over a scan problem. Keep it drained; idle
+            # closes it if it turns out to be dead.
+            self._idle_waterfall()
+        else:
+            await self._drop_waterfall()
+
+    def _swept_ham(self, target: Target, answer: HamResult | dict[str, Any]) -> HamResult | dict[str, Any]:
+        """Remember an amateur sweep's answer for SCAN_MIN_INTERVAL_S, like _swept."""
+        self._last_ham = (time.monotonic(), target, answer)
+        return answer
+
+    def _swept(self, target: Target, state: str, **extra: Any) -> tuple[str, dict[str, Any], None]:
+        """Remember a broadcast sweep's answer for SCAN_MIN_INTERVAL_S."""
         self._last_sweep = (time.monotonic(), target, state, extra)
-        await self._finish(target, state, **extra)
+        return state, extra, None
 
     async def _finish(self, target: Target, state: str, **extra: Any) -> None:
         """The scan's last reply, under the newest request's id.
@@ -991,6 +1121,7 @@ class ListenSession:
             if self._waterfall_idle is idle:
                 self._waterfall_idle = None
             self._last_sweep = None
+            self._last_ham = None
             # Even when cancelled waiting on the scan: the waterfall shares the
             # Kiwi channel, and the pump that called us frees the slot next.
             # A scan that never stopped may still hold one mid-handshake (or
@@ -1054,11 +1185,34 @@ class ListenSession:
         if target is not None:
             payload["host"], payload["port"], _, _ = target
         payload.update(extra)
+        if not self._scan_ham:
+            # A request that didn't ask for the amateur bands (an older web
+            # app tunes every row in AM) never gets them, even from a scan
+            # that swept them for an earlier request.
+            payload.pop("ham", None)
         try:
             await self._send_text(payload)
         except Exception:
             # The browser went away; nothing useful to do.
             pass
+
+
+def ham_payload(answer: HamResult | dict[str, Any]) -> dict[str, Any]:
+    """The reply's "ham" object. ageMs is how old the sweep is now, so a reused
+    result never reads as fresh and the browser's clock doesn't matter."""
+    if isinstance(answer, dict):
+        return answer
+    return {
+        "state": "done",
+        "voice": answer.voice,
+        "cw": answer.cw,
+        "digital": answer.digital,
+        "bandsDone": answer.bands_done,
+        "bandsTotal": answer.bands_total,
+        "partial": answer.partial,
+        "atMs": answer.at_ms,
+        "ageMs": max(0, int(time.time() * 1000) - answer.at_ms),
+    }
 
 
 def scan_payload(result: ScanResult) -> dict[str, Any]:

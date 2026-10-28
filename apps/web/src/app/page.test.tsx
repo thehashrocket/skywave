@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Receiver } from "@/lib/kiwi-list";
-import type { RadioStatus, ScanState, Settled } from "@/lib/use-radio";
+import type { HamDone, RadioStatus, ScanState, Settled } from "@/lib/use-radio";
 
 const radio = {
   status: { state: "idle" } as RadioStatus,
@@ -11,7 +11,9 @@ const radio = {
   tuning: false,
   heardAudio: false,
   canScan: false,
+  canScanHam: false,
   scan: null as ScanState | null,
+  lastHam: null as HamDone | null,
   startScan: vi.fn(),
   tune: vi.fn(async () => {}),
   retune: vi.fn(),
@@ -134,7 +136,9 @@ beforeEach(() => {
   radio.tuning = false;
   radio.heardAudio = false;
   radio.canScan = false;
+  radio.canScanHam = false;
   radio.scan = null;
+  radio.lastHam = null;
   radio.startScan.mockClear();
   radio.tune.mockClear();
   radio.stop.mockClear();
@@ -1003,7 +1007,7 @@ describe("ListenPage", () => {
       expect(radio.startScan).not.toHaveBeenCalled();
       act(() => vi.advanceTimersByTime(1));
       expect(radio.startScan).toHaveBeenCalledTimes(1);
-      radio.scan = { state: "scanning", host: listed.host, port: listed.port };
+      radio.scan = { state: "scanning", id: 1, host: listed.host, port: listed.port };
       view.rerender(<ListenPage />);
       act(() => vi.advanceTimersByTime(60_000));
       expect(radio.startScan).toHaveBeenCalledTimes(1);
@@ -1051,6 +1055,7 @@ describe("ListenPage", () => {
       radio.canScan = true;
       radio.scan = {
         state: "done",
+        id: 1,
         host: listed.host,
         port: listed.port,
         signals: [{ freqKhz: 9_420, snrDb: 31, band: "31m" }],
@@ -1062,12 +1067,51 @@ describe("ListenPage", () => {
       const view = render(<ListenPage />);
       playing(view);
       expect(screen.getByText("Scanned 9 of 15 bands.", { exact: false })).toBeTruthy();
-      expect(screen.getByText("2 digital or noise signals aren't listed.", { exact: false })).toBeTruthy();
+      expect(
+        screen.getByText("2 flat-topped broadcast signals (digital or noise) aren't listed.", { exact: false }),
+      ).toBeTruthy();
       act(() => fireEvent.click(screen.getByRole("button", { name: /9,420\s*31m/ })));
       act(() => vi.advanceTimersByTime(200));
       expect(radio.retune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 9_420, mode: "am" }));
       act(() => fireEvent.click(screen.getByRole("button", { name: "Scan again" })));
       expect(radio.startScan).toHaveBeenLastCalledWith(true);
+    });
+
+    // Value: protects=an amateur row tunes in its own mode through the page, and a CW row at the signal itself (the radio service adds the 0.7 kHz pitch; the page must not) (design D16, corrected); fails_when=onTune drops the mode or subtracts CW_PITCH_KHZ again; why_new=amateur rows; seam=useRadio mocked; no_claim=the service's pitch offset (test_server)
+    it("tunes amateur rows in their mode, CW without a second pitch offset", () => {
+      radio.canScan = true;
+      radio.canScanHam = true;
+      radio.scan = {
+        state: "done",
+        id: 1,
+        host: listed.host,
+        port: listed.port,
+        signals: [],
+        hidden: 0,
+        bandsDone: 15,
+        bandsTotal: 15,
+        partial: false,
+        ham: "done",
+      };
+      radio.lastHam = {
+        host: listed.host,
+        port: listed.port,
+        voice: [{ freqKhz: 7_188, snrDb: 21, band: "40m", mode: "lsb" }],
+        cw: [{ freqKhz: 14_025.4, snrDb: 22, band: "20m", mode: "cw" }],
+        digital: [],
+        bandsDone: 9,
+        bandsTotal: 9,
+        partial: false,
+        heardAtMs: Date.now(),
+      };
+      const view = render(<ListenPage />);
+      playing(view);
+      act(() => fireEvent.click(screen.getByRole("button", { name: /14,025\.4\s*20m CW/ })));
+      act(() => vi.advanceTimersByTime(200));
+      expect(radio.retune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 14_025.4, mode: "cw" }));
+      act(() => fireEvent.click(screen.getByRole("button", { name: /7,188\.0\s*40m LSB/ })));
+      act(() => vi.advanceTimersByTime(200));
+      expect(radio.retune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 7_188, mode: "lsb" }));
     });
   });
   describe("design pass", () => {

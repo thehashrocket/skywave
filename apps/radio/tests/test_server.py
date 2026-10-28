@@ -3055,7 +3055,7 @@ def test_scan_lists_signals_and_audio_keeps_playing():
         return statuses, replies, listeners, playing, paths, wf_closed
 
     statuses, replies, listeners, playing, paths, wf_closed = run_with_fake(body, wf_bins=carrier_bins(9_420.0))
-    assert statuses[-1]["features"] == ["scan"]
+    assert statuses[-1]["features"] == ["scan", "scan-ham"]
     scan = [r for r in replies if r["type"] == "scan"]
     assert [r["state"] for r in scan] == ["scanning", "done"]
     done = scan[-1]
@@ -5910,4 +5910,340 @@ def test_json_nested_too_deep_is_bad_json_not_a_dropped_session():
         second = json.loads(ws.receive_text())
     assert first == {"type": "status", "state": "error", "message": "Expected JSON."}
     assert "between 0 and 32,000" in second["message"]
+
+
+
+# --- Amateur scan (eng review 2026-10-27: D6, D7, D11, D13; O5, O6) ---
+
+
+class _HamWaterfall(_ScanWaterfall):
+    """A stand-in paired waterfall that sweeps: quiet broadcast frames, and a
+    20m USB voice at 14,251.3 in held frames. hold() can fail, or block until gate is set."""
+
+    def __init__(self, *args, hold_error=None, hold_blocks=False, frame_delay=0.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.frame_delay = frame_delay
+        self.hold_error = hold_error
+        self.hold_blocks = hold_blocks
+        self.holding = asyncio.Event()
+        self.gate = asyncio.Event()
+        self.frames = 0
+        self.holds = 0
+
+    async def frame(self, zoom, cf):
+        from .test_scan import ham_frame
+
+        self.frames += 1
+        if self.frame_delay:
+            await asyncio.sleep(self.frame_delay)
+        span = 30_000 / 2**zoom
+        return ham_frame(cf - span / 2, span_khz=span)
+
+    async def hold(self, zoom, cf, seconds):
+        from .test_scan import ham_frame
+
+        self.holds += 1
+        self.holding.set()
+        if self.hold_error is not None:
+            raise self.hold_error
+        if self.hold_blocks:
+            await self.gate.wait()
+        span = 30_000 / 2**zoom
+        return ham_frame(cf - span / 2, voices=[(14_251.6, 14_254.0, 25)], span_khz=span)
+
+
+def ham_frame_counts() -> tuple[int, int, int]:
+    """(held phone frames, single-frame CW/digital frames, broadcast frames) a full scan takes."""
+    from skywave_radio.scan import HAM_SEGMENTS, plan_frames
+
+    ham = plan_frames(bands=HAM_SEGMENTS)
+    phone = sum(p.band.kind == "phone" for p in ham)
+    return phone, len(ham) - phone, len(plan_frames())
+
+
+async def wait_holding(made, timeout=5):
+    """Until the scan's waterfall is inside a hold (the amateur pass)."""
+
+    async def holding():
+        while not made or not made[0].holding.is_set():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(holding(), timeout)
+
+
+def ham_session(**wf_kwargs):
+    sent, made = [], []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    def factory(*args, **kwargs):
+        made.append(_HamWaterfall(**wf_kwargs))
+        return made[-1]
+
+    return listening_session(send_text, waterfall_factory=factory), sent, made
+
+
+async def scan_replies(sent, n, timeout=5):
+    async def enough():
+        while len([p for p in sent if p["type"] == "scan"]) < n:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(enough(), timeout)
+    return [p for p in sent if p["type"] == "scan"]
+
+
+# Value: protects=a ham scan answers broadcast first (ham "scanning"), then the amateur part under the same id with mode-tagged rows and ageMs (D11, D6); fails_when=one reply waits for both passes, the amateur part is dropped, or rows lose their mode; why_new=no amateur scan; seam=stand-in waterfall; no_claim=real Kiwi frames
+async def test_a_ham_scan_answers_broadcast_first_then_amateur():
+    session, sent, made = ham_session()
+    await session.handle({"type": "scan", "id": 4, "ham": True})
+    scan = await scan_replies(sent, 3)
+    assert [p["state"] for p in scan] == ["scanning", "done", "done"]
+    assert "ham" not in scan[0]
+    assert scan[1]["ham"] == {"state": "scanning"} and scan[1]["bandsTotal"] == 15
+    ham = scan[2]["ham"]
+    assert {p["id"] for p in scan} == {4}
+    assert ham["state"] == "done" and (ham["bandsDone"], ham["bandsTotal"], ham["partial"]) == (9, 9, False)
+    assert [(r["band"], r["mode"]) for r in ham["voice"]] == [("20m", "usb")]
+    assert ham["voice"][0]["freqKhz"] == pytest.approx(14_251.3, abs=0.3)
+    assert ham["cw"] == [] and ham["digital"] == []
+    assert ham["atMs"] > 0 and 0 <= ham["ageMs"] < 5_000
+    phone, other, broadcast_frames = ham_frame_counts()
+    assert len(made) == 1 and (made[0].holds, made[0].frames) == (phone, broadcast_frames + other)
+    await session.close()
+
+
+# Value: protects=a request that didn't ask for the amateur bands never gets them: not from the cache, and not when it joins a running ham scan (D7, O6); fails_when=ham leaks to an older web app, which tunes every row in AM; why_new=Codex O6; seam=stand-in waterfall; no_claim=none beyond protects
+@pytest.mark.usefixtures("no_scan_interval")
+async def test_a_scan_without_ham_never_carries_it():
+    session, sent, made = ham_session(hold_blocks=True)
+    await session.handle({"type": "scan", "id": 1, "ham": True})
+    await wait_holding(made)
+    # A broadcast-only request joins the running scan during its amateur pass.
+    await session.handle({"type": "scan", "id": 2})
+    made[0].gate.set()
+    joined = await scan_replies(sent, 4)
+    assert joined[-1]["id"] == 2 and joined[-1]["state"] == "done" and "ham" not in joined[-1]
+    # And one served from the cache, which holds both parts now.
+    await session.handle({"type": "scan", "id": 3})
+    cached = await scan_replies(sent, 5)
+    assert cached[-1]["id"] == 3 and cached[-1]["signals"] == [] and "ham" not in cached[-1]
+    await session.close()
+
+
+# Value: protects=an amateur failure leaves the broadcast list in place and cached, and says so only in the ham part (D11); fails_when=the KiwiError path replies a scan error or skips caching broadcast; why_new=Codex O3; seam=stand-in waterfall; no_claim=which errors real Kiwis send mid-sweep
+async def test_an_amateur_error_keeps_the_broadcast_list():
+    from skywave_radio.kiwi import KiwiError
+    from skywave_radio.scan import ScanResult
+
+    session, sent, made = ham_session(hold_error=KiwiError("timeout", "kiwi.test stopped sending its waterfall"))
+    await session.handle({"type": "scan", "id": 1, "ham": True})
+    scan = await scan_replies(sent, 3)
+    assert [p["state"] for p in scan] == ["scanning", "done", "done"]
+    assert scan[2]["ham"]["state"] == "error" and "amateur" in scan[2]["ham"]["message"]
+    assert scan[2]["bandsDone"] == 15
+    assert isinstance(session._scan_cache.get(session._target), ScanResult)
+    assert session._scan_cache.get((session._target, "ham")) is None
+    assert not made[0].closed  # still paired with the audio: kept, idling
+    await session.close()
+
+
+# Value: protects=a cached broadcast part with an expired amateur part sweeps only the amateur bands, in one done-then-done exchange (D6), and the reused broadcast part keeps its own age; fails_when=a stale amateur part re-sweeps broadcast too, or is served from a 10-minute cache; why_new=D6 split reuse; seam=stand-in waterfall, cache entries set by hand; no_claim=real cache expiry timing (ScanCache expiry is tested above)
+@pytest.mark.usefixtures("no_scan_interval")
+async def test_a_stale_amateur_part_sweeps_only_the_amateur_bands():
+    from skywave_radio.scan import ScanResult
+
+    session, sent, made = ham_session()
+    signals = [{"freqKhz": 9_420.0, "snrDb": 40, "band": "31m"}]
+    cached = ScanResult(signals=signals, bands_done=15, bands_total=15, at_ms=123)
+    session._scan_cache.put(session._target, cached)
+    await session.handle({"type": "scan", "id": 1, "ham": True})
+    scan = await scan_replies(sent, 2)
+    assert [p["state"] for p in scan] == ["done", "done"]
+    assert scan[0]["atMs"] == 123 and scan[0]["ham"] == {"state": "scanning"}
+    assert scan[1]["ham"]["state"] == "done" and scan[1]["ham"]["voice"]
+    phone, other, _ = ham_frame_counts()
+    assert (made[0].frames, made[0].holds) == (other, phone)  # amateur frames only
+    # Within HAM_CACHE_S the amateur part is reused too.
+    await session.handle({"type": "scan", "id": 2, "ham": True})
+    scan = await scan_replies(sent, 4)
+    assert scan[-1]["ham"]["voice"] == scan[1]["ham"]["voice"] and made[0].holds == phone
+    await session.close()
+
+
+# Value: protects=stopping or closing during the amateur pass closes the waterfall and leaves no scan behind, so no volunteer channel outlives the listener (prior learning: scan waterfall shares the slot); fails_when=the ham pass escapes _end_scan's cancel; why_new=the ham pass adds ~9 s of exposure; seam=stand-in waterfall; no_claim=real close timing
+@pytest.mark.parametrize("end", ["stop", "close"])
+async def test_ending_mid_amateur_pass_closes_the_waterfall(end):
+    session, sent, made = ham_session(hold_blocks=True)
+    await session.handle({"type": "scan", "id": 1, "ham": True})
+    await wait_holding(made)
+    if end == "stop":
+        await session.stop("Stopped.")
+    else:
+        await session.close()
+    assert made[0].closed
+    assert session._scan is None and session._waterfall is None and session._waterfall_idle is None
+    states = [(p["state"], p.get("ham", {}).get("state")) for p in sent if p["type"] == "scan"]
+    assert states == [("scanning", None), ("done", "scanning")]
+
+
+# Value: protects=a request that waited out the per-listener interval reuses a scan another listener cached meanwhile, instead of sweeping again and spending its slot (O5); fails_when=the cache isn't rechecked after SweepTimes; why_new=Codex O5; seam=stand-in waterfall, SweepTimes and cache set by hand; no_claim=two real browsers racing
+async def test_a_waiting_scan_reuses_what_another_listener_cached():
+    from skywave_radio.scan import ScanResult
+
+    session, sent, made = ham_session()
+    key = (session.lookup_owner, session._target)
+    session._sweep_times.start(key)  # this listener swept moments ago
+    session._sweep_times._starts[key] -= 29.8  # ...and may sweep again in 0.2 s
+
+    async def other_listener():
+        await asyncio.sleep(0.05)
+        session._scan_cache.put(session._target, ScanResult(bands_done=15, bands_total=15, at_ms=77))
+
+    asyncio.create_task(other_listener())
+    await session.handle({"type": "scan", "id": 1})
+    scan = await scan_replies(sent, 2)
+    assert [p["state"] for p in scan] == ["scanning", "done"] and scan[-1]["atMs"] == 77
+    assert made == []  # no waterfall opened, nothing swept
+    await session.close()
+
+
+# Value: protects=a complete amateur part is kept HAM_CACHE_S (2 min) while broadcast keeps SCAN_CACHE_S (10 min), and a partial amateur part isn't kept (D6); fails_when=the ham entry takes the default 600 s or partials are cached; why_new=review: reuse alone didn't pin the TTL; seam=stand-in waterfall, sweep_ham replaced for the partial case, cache expiry read directly; no_claim=wall-clock expiry (ScanCache expiry is tested above)
+@pytest.mark.parametrize("partial", [False, True])
+async def test_the_amateur_part_is_kept_two_minutes_and_only_when_complete(partial, monkeypatch):
+    import time
+
+    from skywave_radio.scan import HamResult
+    from skywave_radio.session import HAM_CACHE_S, SCAN_CACHE_S
+
+    if partial:
+
+        async def cut(*args, **kwargs):
+            return HamResult(voice=[{"freqKhz": 14_251.3, "snrDb": 24, "band": "20m", "mode": "usb"}], bands_done=4, bands_total=9)
+
+        monkeypatch.setattr("skywave_radio.session.sweep_ham", cut)
+    session, sent, made = ham_session()
+    await session.handle({"type": "scan", "id": 1, "ham": True})
+    scan = await scan_replies(sent, 3)
+    assert scan[-1]["ham"]["partial"] is partial
+    entries = session._scan_cache._entries
+    assert entries[session._target][0] - time.monotonic() > SCAN_CACHE_S - 5
+    if partial:
+        assert (session._target, "ham") not in entries
+    else:
+        assert HAM_CACHE_S - 5 < entries[(session._target, "ham")][0] - time.monotonic() <= HAM_CACHE_S
+    await session.close()
+
+
+# Value: protects=the amateur pass gets what's left of DEADLINE_S after a broadcast sweep in the same scan, the whole of it after a reused broadcast part, and a clear "ran out of time" when nothing is left (R10, review); fails_when=the budget isn't passed, a slow broadcast pass makes the total exceed 15 s on the volunteer's Kiwi, or no budget reads as a dead waterfall; why_new=review gap; seam=sweep_ham replaced to read its deadline, stand-in waterfall; no_claim=real sweep timing (the spike measures it)
+async def test_the_amateur_pass_gets_the_rest_of_the_deadline(monkeypatch):
+    from skywave_radio.scan import HamResult, ScanResult
+    from skywave_radio.session import DEADLINE_S, OUT_OF_TIME
+
+    deadlines = []
+
+    async def record(*args, deadline_s, **kwargs):
+        deadlines.append(deadline_s)
+        return HamResult(bands_done=9, bands_total=9)
+
+    monkeypatch.setattr("skywave_radio.session.sweep_ham", record)
+    session, sent, made = ham_session(frame_delay=0.01)
+    await session.handle({"type": "scan", "id": 1, "ham": True})
+    await scan_replies(sent, 3)
+    assert DEADLINE_S - 3 < deadlines[0] < DEADLINE_S - 0.1  # 19 frames at 10 ms came off it
+    await session.close()
+
+    session, sent, made = ham_session()
+    session._scan_cache.put(session._target, ScanResult(bands_done=15, bands_total=15, at_ms=1))
+    await session.handle({"type": "scan", "id": 1, "ham": True})
+    await scan_replies(sent, 2)
+    assert deadlines[1] == DEADLINE_S  # broadcast reused: the amateur pass is a sweep of its own
+    await session.close()
+
+    monkeypatch.setattr("skywave_radio.session.DEADLINE_S", 0.05)
+    session, sent, made = ham_session(frame_delay=0.01)
+    await session.handle({"type": "scan", "id": 1, "ham": True})
+    scan = await scan_replies(sent, 3)
+    assert scan[-1]["ham"] == {"state": "error", "message": OUT_OF_TIME}
+    assert scan[-1]["signals"] == [] and scan[-1]["bandsDone"] == 15  # the broadcast part stands
+    assert len(deadlines) == 2  # no sweep with nothing left
+    await session.close()
+
+
+# Value: protects=an amateur-only pass (broadcast reused) waits out and takes the listener's sweep slot like any sweep, sparing the volunteer's Kiwi (D6, SCAN_MIN_INTERVAL_S); fails_when=the ham-only path skips SweepTimes; why_new=review: only tested with no_scan_interval; seam=stand-in waterfall, SweepTimes set by hand; no_claim=two real browsers
+async def test_an_amateur_only_pass_waits_for_the_sweep_slot():
+    from skywave_radio.scan import ScanResult
+
+    session, sent, made = ham_session()
+    session._scan_cache.put(session._target, ScanResult(bands_done=15, bands_total=15, at_ms=1))
+    key = (session.lookup_owner, session._target)
+    session._sweep_times.start(key)
+    session._sweep_times._starts[key] -= 29.7  # the listener may sweep again in 0.3 s
+    before = session._sweep_times._starts[key]
+    await session.handle({"type": "scan", "id": 1, "ham": True})
+    await asyncio.sleep(0.15)
+    assert made == []  # still waiting
+    scan = await scan_replies(sent, 2)
+    assert scan[-1]["ham"]["state"] == "done" and len(made) == 1
+    assert session._sweep_times._starts[key] > before  # the slot was taken
+    await session.close()
+
+
+# Value: protects=the amateur pass's own failures are answered in the ham part and leave the waterfall drained and open, never ending the audio: a crash, and a pass where no band came in (D11); fails_when=a crash escapes, closes the waterfall, or a dead waterfall reads as "no strong signals"; why_new=review gap; seam=stand-in waterfall, sweep_ham replaced for the empty pass; no_claim=what a real Kiwi does when it stalls
+@pytest.mark.parametrize("failure", ["crash", "no bands"])
+async def test_amateur_failures_answer_in_the_ham_part(failure, monkeypatch):
+    from skywave_radio.scan import HamResult, ScanResult
+
+    if failure == "no bands":
+
+        async def nothing(*args, **kwargs):
+            return HamResult(bands_done=0, bands_total=9)
+
+        monkeypatch.setattr("skywave_radio.session.sweep_ham", nothing)
+        session, sent, made = ham_session()
+        session._scan_cache.put(session._target, ScanResult(bands_done=15, bands_total=15, at_ms=1))
+        expected = "The receiver didn't send its waterfall."
+        replies = 2
+    else:
+        session, sent, made = ham_session(hold_error=RuntimeError("bug"))
+        expected = "The amateur scan broke. Check the radio service's logs."
+        replies = 3
+    await session.handle({"type": "scan", "id": 1, "ham": True})
+    scan = await scan_replies(sent, replies)
+    assert scan[-1]["state"] == "done" and scan[-1]["ham"] == {"state": "error", "message": expected}
+    assert made and not made[0].closed
+    await asyncio.wait_for(made[0].idling.wait(), 2)  # kept drained, still paired with the audio
+    await session.close()
+
+
+# Value: protects=fresh skips the amateur cache, and a reused amateur part reports its real age so the page never shows it as new (D6, design D8); fails_when=fresh is ignored for ham, or ageMs is computed at sweep time only; why_new=review gap; seam=stand-in waterfall, cache entry set by hand; no_claim=browser clock
+@pytest.mark.usefixtures("no_scan_interval")
+async def test_fresh_skips_the_amateur_cache_and_reuse_reports_its_age():
+    import time
+
+    from skywave_radio.scan import HamResult
+
+    session, sent, made = ham_session()
+    old = HamResult(bands_done=9, bands_total=9, at_ms=int(time.time() * 1000) - 50_000)
+    session._scan_cache.put((session._target, "ham"), old, 120)
+    await session.handle({"type": "scan", "id": 1, "ham": True})
+    scan = await scan_replies(sent, 3)
+    assert scan[-1]["ham"]["ageMs"] >= 50_000 and made[0].holds == 0
+    await session.handle({"type": "scan", "id": 2, "ham": True, "fresh": True})
+    scan = await scan_replies(sent, 6)
+    assert made[0].holds > 0 and scan[-1]["ham"]["ageMs"] < 5_000
+    await session.close()
+
+
+# Value: protects=a new connection to the same receiver doesn't replay the old connection's amateur answer (an error that ending cut short), as for broadcast (review); fails_when=_end_scan keeps _last_ham; why_new=review found it; seam=ListenSession internals set by hand to stand in for a reconnect; no_claim=real reconnect timing
+async def test_a_new_connection_does_not_replay_the_old_amateur_answer():
+    from skywave_radio.kiwi import KiwiError
+
+    session, sent, made = ham_session(hold_error=KiwiError("timeout", "kiwi.test stopped"))
+    await session.handle({"type": "scan", "id": 1, "ham": True})
+    first = await scan_replies(sent, 3)
+    assert first[-1]["ham"]["state"] == "error"
+    await session.stop("Stopped.")
+    assert session._last_ham is None and session._last_sweep is None
+    await session.close()
 

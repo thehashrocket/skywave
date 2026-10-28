@@ -998,7 +998,7 @@ describe("useRadio", () => {
       expect(fresh.result.current.canScan).toBe(true);
       act(() => fresh.result.current.startScan(true));
       expect(fresh.ws.sent.at(-1)).toEqual({ type: "scan", id: expect.any(Number), fresh: true });
-      expect(fresh.result.current.scan).toEqual({ state: "scanning", ...at });
+      expect(fresh.result.current.scan).toEqual({ state: "scanning", id: expect.any(Number), ...at });
     });
 
     // Value: protects=the reply for the newest request and receiver fills the list; older or other-receiver replies are ignored (D16); fails_when=replies are applied without the id and host/port checks; why_new=Codex O6; seam=none; no_claim=network ordering
@@ -1015,7 +1015,7 @@ describe("useRadio", () => {
       act(() => scanReply(ws, done(second)));
       expect(result.current.scan).toMatchObject({ state: "done", hidden: 1, signals: [{ freqKhz: 9_420 }] });
       act(() => scanReply(ws, { id: second, state: "error", message: "nope" }));
-      expect(result.current.scan).toEqual({ state: "error", ...at, message: "nope" });
+      expect(result.current.scan).toEqual({ state: "error", id: second, ...at, message: "nope" });
     });
 
     // Value: protects=a done reply's malformed signal rows are dropped and missing counts default, and one with no signals list is ignored; fails_when=the row filter or defaults go, so the list renders undefined frequencies or NaN counts, or a bare done clears Scanning…; why_new=only well-formed replies were tested; seam=none; no_claim=what an older or buggy service actually sends
@@ -1024,7 +1024,7 @@ describe("useRadio", () => {
       act(() => result.current.startScan());
       const id = ws.sent.at(-1)!.id as number;
       act(() => scanReply(ws, { id, state: "done" }));
-      expect(result.current.scan).toEqual({ state: "scanning", ...at });
+      expect(result.current.scan).toEqual({ state: "scanning", id, ...at });
       act(() =>
         scanReply(ws, {
           id,
@@ -1034,6 +1034,7 @@ describe("useRadio", () => {
       );
       expect(result.current.scan).toEqual({
         state: "done",
+        id,
         ...at,
         signals: [{ freqKhz: 9_420, snrDb: 30, band: "31m" }],
         hidden: 0,
@@ -1041,6 +1042,78 @@ describe("useRadio", () => {
         bandsTotal: 0,
         partial: false,
       });
+    });
+
+    // Value: protects=the amateur bands are asked for only from a service that lists "scan-ham" (eng D7); fails_when=ham is sent to an older service or never sent; why_new=amateur scan; seam=none; no_claim=deploy timing
+    it("asks for the amateur bands only when the service offers them", async () => {
+      const { result, ws } = await listening(["scan", "scan-ham"]);
+      expect(result.current.canScanHam).toBe(true);
+      act(() => result.current.startScan());
+      expect(ws.sent.at(-1)).toEqual({ type: "scan", id: expect.any(Number), fresh: false, ham: true });
+    });
+
+    // Value: protects=the two replies of one ham scan land under one id: broadcast first with ham scanning, then the amateur rows with mode, an age from the service's ageMs, and malformed rows dropped (eng D11, design D8); fails_when=the second reply is ignored, the age starts at receipt, or rows without a valid mode get through; why_new=amateur scan; seam=none; no_claim=real clock skew
+    it("takes the amateur part from the second reply, aged by the service", async () => {
+      vi.useFakeTimers({ now: 1_000_000 });
+      try {
+        const { result, ws } = await listening(["scan", "scan-ham"]);
+        act(() => result.current.startScan());
+        const id = ws.sent.at(-1)!.id as number;
+        act(() => scanReply(ws, { ...done(id), ham: { state: "scanning" } }));
+        expect(result.current.scan).toMatchObject({ state: "done", id, ham: "scanning" });
+        expect(result.current.lastHam).toBeNull();
+        act(() =>
+          scanReply(ws, {
+            ...done(id),
+            ham: {
+              state: "done",
+              voice: [
+                { freqKhz: 14_251.3, snrDb: 24, band: "20m", mode: "usb" },
+                { freqKhz: 7_188, snrDb: 9, band: "40m", mode: "fm" },
+              ],
+              cw: [{ freqKhz: 14_025.4, snrDb: 22, band: "20m", mode: "cw" }],
+              digital: [{ freqKhz: 14_074, snrDb: 27, band: "20m", mode: "usb", label: "FT8" }],
+              bandsDone: 9,
+              bandsTotal: 9,
+              partial: false,
+              ageMs: 90_000,
+            },
+          }),
+        );
+        expect(result.current.scan).toMatchObject({ state: "done", id, ham: "done" });
+        expect(result.current.lastHam).toEqual({
+          ...at,
+          voice: [{ freqKhz: 14_251.3, snrDb: 24, band: "20m", mode: "usb" }],
+          cw: [{ freqKhz: 14_025.4, snrDb: 22, band: "20m", mode: "cw" }],
+          digital: [{ freqKhz: 14_074, snrDb: 27, band: "20m", mode: "usb", label: "FT8" }],
+          bandsDone: 9,
+          bandsTotal: 9,
+          partial: false,
+          heardAtMs: 1_000_000 - 90_000,
+        });
+        // Scan again keeps the last amateur list (with its age) until new results arrive.
+        act(() => result.current.startScan(true));
+        expect(result.current.lastHam?.heardAtMs).toBe(910_000);
+        // A failed refresh keeps it too, and says the amateur part failed.
+        const again = ws.sent.at(-1)!.id as number;
+        act(() => scanReply(ws, { ...done(again), ham: { state: "error", message: "nope" } }));
+        expect(result.current.scan).toMatchObject({ state: "done", id: again, ham: "error" });
+        expect(result.current.lastHam?.heardAtMs).toBe(910_000);
+        // A receiver switch clears it.
+        act(() => ws.status("connecting", { host: "other.example", port: 8073, features: ["scan", "scan-ham"] }));
+        expect(result.current.lastHam).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Value: protects=a dropped socket forgets that the service could scan the amateur bands, so the next service (maybe older) is asked only once it says so (eng D7); fails_when=canScanHam outlives the socket; why_new=review gap; seam=none; no_claim=reconnect timing
+    it("forgets the amateur feature when the socket closes", async () => {
+      const { result, ws } = await listening(["scan", "scan-ham"]);
+      expect(result.current.canScanHam).toBe(true);
+      act(() => ws.finishClose());
+      expect(result.current.canScanHam).toBe(false);
+      expect(result.current.lastHam).toBeNull();
     });
 
     // Value: protects=a scan error never touches the radio status (D5); fails_when=scan errors are routed into setStatus; why_new=D5; seam=none; no_claim=service behaviour
@@ -1118,7 +1191,14 @@ describe("useRadio", () => {
 
     // Value: protects=after a refused retune (an uncoded error, then the status still playing) or a failed one (just the status), the settled tuning is the one still playing, and after a retune it took it is the new one; a status nobody asked for settles nothing; fails_when=the hook settles before every tune is answered, resets on a refusal's error, or settles on the service's own start-up status; why_new=TODO "Revert the web dial when the service refuses a retune" and owner D1 (round 3d); seam=FakeSocket; no_claim=the service's answers (radio tests)
     it.each([
-      ["refused", [["error", { message: "Port must be between 1 and 65535." }], ["listening", { freqKhz: 10_000, mode: "am" }]], 10_000],
+      [
+        "refused",
+        [
+          ["error", { message: "Port must be between 1 and 65535." }],
+          ["listening", { freqKhz: 10_000, mode: "am" }],
+        ],
+        10_000,
+      ],
       ["failed", [["listening", { freqKhz: 10_000, mode: "am" }]], 10_000],
       ["taken", [["listening", { freqKhz: 9_535, mode: "am" }]], 9_535],
     ] as const)("settles on the service's tuning after a %s retune", async (_, answers, khz) => {
@@ -1186,10 +1266,13 @@ describe("useRadio", () => {
 
     // Value: protects=an uncoded error that nothing follows (an ending, or a refused Listen with nothing playing) and Stop both forget what was owed, so a later "listening" can't settle on it; only a status right after the error counts as a refusal's answer; fails_when=the count survives an uncoded error followed by something else, or Stop; why_new=round 3d web review pass 2 (Claude, Codex); seam=FakeSocket; no_claim=none beyond protects
     it.each([
-      ["an uncoded error nothing follows", (ws: FakeSocket) => {
-        ws.status("error", { message: "Something broke in the radio service. Check its logs." });
-        ws.status("error", { message: "The radio service is at its listener limit." });
-      }],
+      [
+        "an uncoded error nothing follows",
+        (ws: FakeSocket) => {
+          ws.status("error", { message: "Something broke in the radio service. Check its logs." });
+          ws.status("error", { message: "The radio service is at its listener limit." });
+        },
+      ],
       ["Stop", (_: FakeSocket, stop: () => void) => stop()],
     ])("owes nothing after %s", async (_, end) => {
       const { result, ws } = await playing();

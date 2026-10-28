@@ -440,7 +440,7 @@ export default function ListenPage() {
 
   // Scan each receiver once it has played for AUTO_SCAN_MS and Pick best is
   // done with it: not during its attempts, nor its watch for a late refusal.
-  const { canScan, scan, startScan } = radio;
+  const { canScan, canScanHam, scan, lastHam, startScan } = radio;
   const playingKey =
     status.state === "listening" && status.host
       ? receiverKey({ host: status.host, port: status.port ?? DEFAULT_KIWI_PORT })
@@ -680,12 +680,15 @@ export default function ListenPage() {
 
       <SignalList
         scan={scan}
+        lastHam={lastHam}
         canScan={canScan}
+        canScanHam={canScanHam}
         listening={status.state === "listening"}
         freqKhz={freqKhz}
+        mode={mode}
         scanDelayMs={pickBest.settled ? AUTO_SCAN_MS : WATCH_MS + AUTO_SCAN_MS}
         checking={!pickBest.settled}
-        onTune={(khz) => changeFreq(khz, "am")}
+        onTune={(khz, m) => changeFreq(khz, m)}
         onScanAgain={() => startScan(true)}
       />
 

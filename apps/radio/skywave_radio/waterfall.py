@@ -22,7 +22,9 @@ from __future__ import annotations
 import asyncio
 import math
 import struct
-from dataclasses import dataclass
+from collections.abc import AsyncIterator
+from contextlib import aclosing
+from dataclasses import dataclass, replace
 
 import numpy as np
 from websockets.protocol import State
@@ -150,6 +152,38 @@ class WaterfallClient(KiwiConnection):
         Frames still showing the previous position are skipped, and so is the
         first matching one, which can straddle the change.
         """
+        async with aclosing(self._settled(zoom, cf_khz)) as frames:
+            async for wf in frames:
+                return wf
+        raise AssertionError("unreachable: _settled never ends")
+
+    async def hold(self, zoom: int, cf_khz: float, seconds: float) -> WaterfallFrame:
+        """The per-bin maximum of the settled frames at this position over about `seconds`.
+
+        A ham talker pauses between words; one frame (about 40 ms) often
+        catches a gap, while the loudest reading of each bin over half a
+        second catches anyone who spoke in it.
+        """
+        held: WaterfallFrame | None = None
+        end = 0.0
+        async with aclosing(self._settled(zoom, cf_khz)) as frames:
+            async for wf in frames:
+                now = asyncio.get_running_loop().time()
+                if held is None:
+                    held, end = wf, now + seconds
+                else:
+                    held = replace(held, bins=np.maximum(held.bins, wf.bins))
+                if now >= end:
+                    return held
+        raise AssertionError("unreachable: _settled never ends")
+
+    async def _settled(self, zoom: int, cf_khz: float) -> AsyncIterator[WaterfallFrame]:
+        """Aim at this zoom and centre, then yield each settled frame there.
+
+        Each one must arrive within timeout_s of the last (or of aiming): the
+        per-read timeout alone resets on every frame, so a Kiwi that keeps
+        sending another position's (or malformed) frames would never time out.
+        """
         if not 0 <= zoom <= MAX_ZOOM:
             raise ValueError(f"zoom {zoom} out of range")
         span = self.bandwidth_khz / 2**zoom
@@ -158,18 +192,19 @@ class WaterfallClient(KiwiConnection):
         matched = 0
         while True:
             async with asyncio.timeout(self.timeout_s):
-                data = await self._next()
-            if data[:3] != b"W/F":
-                continue
-            try:
-                wf = parse_wf(data[3:], self.bandwidth_khz)
-            except ValueError:
-                continue  # one bad frame (a hostile Kiwi) is skipped, not the whole scan
-            if wf.zoom != zoom or abs(wf.start_khz - start) > span * START_TOLERANCE:
-                continue
+                while True:
+                    data = await self._next()
+                    if data[:3] != b"W/F":
+                        continue
+                    try:
+                        wf = parse_wf(data[3:], self.bandwidth_khz)
+                    except ValueError:
+                        continue  # one bad frame (a hostile Kiwi) is skipped, not the whole scan
+                    if wf.zoom == zoom and abs(wf.start_khz - start) <= span * START_TOLERANCE:
+                        break
             matched += 1
             if matched >= 2:
-                return wf
+                yield wf
 
     async def fast(self) -> None:
         """Back to sweep speed after idle().

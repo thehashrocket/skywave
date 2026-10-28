@@ -1051,14 +1051,79 @@ html,
   color: var(--muted);
 }
 
-/* Strong signals now: the presets' rows, widened for 5-digit frequencies and band names, plus a dB note. */
+/* Strong signals now: the presets' rows, widened for amateur dials to 0.1 kHz ("28,450.5")
+   and band-plus-mode tags ("20m USB"), plus a dB note. One grid for every row, so the
+   Broadcast and Amateur columns line up. */
 
 .signals .preset-tune {
-  grid-template-columns: 6ch 4.2ch 1fr;
+  grid-template-columns: 8ch 6ch 1fr;
+}
+
+.signals h3 {
+  margin: 4px 0 6px;
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 1.15rem;
+  color: var(--glass);
+}
+
+/* A small bar in the dial's band colors: brass for broadcast, ham teal for amateur.
+   Never --ham as text: it is 2.38:1 on --enamel. */
+.signals-section::before {
+  content: "";
+  display: inline-block;
+  width: 3px;
+  height: 1em;
+  margin-right: 8px;
+  vertical-align: -0.12em;
+  background: var(--brass-dim);
+}
+
+.signals-section-amateur::before {
+  background: var(--ham);
+}
+
+.signals h4 {
+  margin: 10px 0 2px;
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 1rem;
+  color: var(--glass);
+}
+
+.signals-group .presets-note {
+  margin-bottom: 4px;
+}
+
+/* The amateur list's age: muted, also once out of date (an old list isn't a failure). */
+.signals-age {
+  margin-left: 10px;
+  font-family: var(--font-ui);
+  font-weight: 400;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* Room for about three rows while the amateur bands are scanned, so nothing below jumps. */
+.signals-ham-body[data-scanning] {
+  min-height: 8.5rem;
 }
 
 .signals-again {
   margin-bottom: 12px;
+}
+
+/* The shared status line: the live summary, then "Amateur: N found below". */
+.signals-status {
+  margin-bottom: 6px;
+}
+
+.signals-jump {
+  white-space: nowrap;
+}
+
+.signals-group + .signals-group {
+  margin-top: 4px;
 }
 
 /* Phones only; see the 520px block. */
@@ -1467,6 +1532,10 @@ html,
   }
   /* SignalList marks the rows past PHONE_ROWS; Show all reveals them. */
   .signals-list:not(.signals-list-all) li[data-beyond] {
+    display: none;
+  }
+  /* An amateur group with none of the phone's 8 rows hides whole, heading and all. */
+  .signals-ham:not([data-all]) .signals-group[data-beyond] {
     display: none;
   }
   .signals-more {

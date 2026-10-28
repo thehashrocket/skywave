@@ -6,15 +6,21 @@ import numpy as np
 import pytest
 
 from skywave_radio.scan import (
+    HAM_CAPS,
+    HAM_SEGMENTS,
     MAX_SIGNALS,
     SCAN_BANDS,
     Band,
     FramePlan,
+    HamSignal,
+    find_ham,
     find_peaks,
     mw_grid,
     plan_frames,
     summarize,
+    summarize_ham,
     sweep,
+    sweep_ham,
 )
 from skywave_radio.waterfall import WaterfallFrame
 
@@ -223,3 +229,171 @@ def test_peaks_per_frame_are_capped():
     bins[::2] = 200  # 512 isolated peaks
     frame = WaterfallFrame(zoom=6, start_khz=9_416.0, span_khz=468.75, bins=bins)
     assert len(find_peaks(frame, plan())) == MAX_PEAKS_PER_FRAME
+
+
+# --- Amateur bands ---
+
+HAM_SPAN = 30_000 / 2**7  # 234.375 kHz at zoom 7
+
+
+def ham_frame(start_khz: float, *, voices=(), carriers=(), blocks=(), cw=(), span_khz=HAM_SPAN) -> WaterfallFrame:
+    """A zoom-7 frame of flat noise with amateur-shaped signals (RF kHz).
+
+    voices: (lo, hi, dB) SSB blocks, rippled like held speech; carriers: AM
+    stations (carrier plus sidebands +-4.5 kHz, 20 dB down); blocks: flat
+    (lo, hi, dB) runs; cw: (kHz, dB) one-bin tones."""
+    bins = np.full(1024, NOISE, dtype=np.int16)
+    kpb = span_khz / 1024
+
+    def at(khz):
+        return int((khz - start_khz) / kpb)
+
+    for lo, hi, db in voices:
+        for i in range(max(at(lo), 0), min(at(hi), 1024)):
+            bins[i] = NOISE + db - (i % 3) * 2  # speech under max-hold: uneven, no carrier
+    for lo, hi, db in blocks:
+        bins[max(at(lo), 0) : min(at(hi), 1024)] = NOISE + db
+    for khz, db in carriers:
+        for i in range(at(khz - 4.5), at(khz + 4.5)):
+            if 0 <= i < 1024:
+                bins[i] = max(bins[i], NOISE + db - 20)
+        bins[at(khz)] = NOISE + db
+    for khz, db in cw:
+        bins[at(khz)] = NOISE + db
+    return WaterfallFrame(zoom=7, start_khz=start_khz, span_khz=span_khz, bins=np.clip(bins, 0, 255).astype(np.uint8))
+
+
+def ham_plan(name: str, kind: str) -> FramePlan:
+    band = next(b for b in HAM_SEGMENTS if b.name == name and b.kind == kind)
+    return FramePlan(band, (band.start_khz + band.end_khz) / 2, band.start_khz, band.end_khz)
+
+
+# Value: protects=the amateur segments stay inside the dial's HAM_BANDS, split once per band at its CW/phone edge (D12 mirror); fails_when=either table changes alone or a segment drifts out of its band; why_new=two copies across languages; seam=none; no_claim=other regions' exact sub-band edges
+def test_ham_segments_tile_the_dials_ham_bands():
+    web = re.search(r"HAM_BANDS: Band\[\] = \[(.*?)\];", WEB_TYPES.read_text(), re.S)
+    assert web
+    rows = re.findall(r'name: "(\w+)", startKhz: (\d+), endKhz: (\d+)', web.group(1))
+    dial = {name: (int(lo), int(hi)) for name, lo, hi in rows}
+    by_band: dict[str, list[Band]] = {}
+    for seg in HAM_SEGMENTS:
+        by_band.setdefault(seg.name, []).append(seg)
+    assert set(by_band) == set(dial)
+    for name, segs in by_band.items():
+        lo, hi = dial[name]
+        assert segs[0].start_khz == lo and segs[0].kind == "cw", name
+        assert all(a.end_khz == b.start_khz for a, b in zip(segs, segs[1:])), name
+        # 10m phone stops at 29,000: above it is FM and satellites.
+        assert segs[-1].end_khz == (29_000 if name == "10m" else hi), name
+    assert [s.kind for s in by_band["30m"]] == ["cw"]
+    assert len(plan_frames(bands=HAM_SEGMENTS)) == 23  # 13 phone + 10 CW/digital (D13)
+
+
+# Value: protects=a USB voice tunes its dial (the block's low edge less 0.3 kHz) within 0.3 kHz and an LSB voice its high edge plus 0.3 (D5); fails_when=the edge sign, the offset or the mode by frequency flips; why_new=no ham detector; seam=none; no_claim=real speech or filter widths (spike fixtures cover it)
+@pytest.mark.parametrize(
+    "name,dial,mode,lo,hi",
+    [("20m", 14_251.3, "usb", 14_251.6, 14_254.0), ("40m", 7_188.0, "lsb", 7_185.3, 7_187.7)],
+)
+def test_ssb_voices_tune_their_dial(name, dial, mode, lo, hi):
+    band = next(b for b in HAM_SEGMENTS if b.name == name and b.kind == "phone")
+    start = band.start_khz
+    found = find_ham(ham_frame(start, voices=[(lo, hi, 25)]), ham_plan(name, "phone"))
+    assert len(found) == 1
+    sig = found[0]
+    assert (sig.kind, sig.mode, sig.band) == ("voice", mode, name)
+    assert sig.freq_khz == pytest.approx(dial, abs=0.3)
+
+
+# Value: protects=an AM broadcaster in a shared segment (Europe's 7.2-7.3 MHz) and blocks of the wrong width are not listed as voices (finding 8); fails_when=the carrier or width checks go; why_new=no ham detector; seam=none; no_claim=every broadcaster shape (synthetic AM)
+def test_carriers_and_wrong_widths_are_not_voices():
+    start = 7_060.0
+    frame = ham_frame(start, carriers=[(7_250.0, 40)], blocks=[(7_100.0, 7_106.0, 25), (7_150.0, 7_150.5, 25)])
+    assert [s for s in find_ham(frame, ham_plan("40m", "phone")) if s.kind == "voice"] == []
+
+
+# Value: protects=a narrow tone in a CW segment lists as Morse at its own frequency, tuned in cw (the service adds the pitch, session.kiwi_freq_khz); fails_when=CW is read as voice, or its frequency moves; why_new=D12; seam=none; no_claim=keying speed (one held snapshot)
+def test_cw_tones_list_at_their_frequency():
+    found = find_ham(ham_frame(14_000.0, cw=[(14_025.4, 22)]), ham_plan("20m", "cw"))
+    assert [(s.kind, s.mode) for s in found] == [("cw", "cw")]
+    assert found[0].freq_khz == pytest.approx(14_025.4, abs=0.25)
+
+
+# Value: protects=activity in an FT8/FT4 window is a digital row at the standard dial, even inside a phone segment (7074) (D12); fails_when=windows are checked after the segment kind, so 7074 lists as a voice; why_new=D12; seam=none; no_claim=decoding (none is done)
+@pytest.mark.parametrize(
+    "name,kind,start,dial", [("20m", "cw", 14_000.0, 14_074.0), ("40m", "phone", 7_060.0, 7_074.0)]
+)
+def test_digital_windows_win_over_the_segment(name, kind, start, dial):
+    frame = ham_frame(start, blocks=[(dial + 0.3, dial + 2.8, 27)])
+    found = find_ham(frame, ham_plan(name, kind))
+    assert [(s.kind, s.label, s.freq_khz, s.mode) for s in found] == [("digital", "FT8", dial, "usb")]
+
+
+# Value: protects=one voice seen by two overlapping frames is one row, groups are capped and strongest first (O4, D14); fails_when=duplicates fill the top 10 or a cap is missed; why_new=overlapping zoom-7 frames; seam=none; no_claim=none beyond protects
+def test_ham_summary_merges_caps_and_ranks():
+    voices = [HamSignal("voice", 14_200.0 + 4 * i, 10 + i, "20m", "usb") for i in range(14)]
+    dupe = HamSignal("voice", 14_200.2, 5, "20m", "usb")
+    cws = [HamSignal("cw", 14_010.0 + i, 12 + i, "20m", "cw") for i in range(8)]
+    ft8 = [HamSignal("digital", 14_074.0, snr, "20m", "usb", "FT8") for snr in (20, 27)]
+    result = summarize_ham(voices + [dupe] + cws + ft8, 9, 9)
+    assert len(result.voice) == HAM_CAPS["voice"] and len(result.cw) == HAM_CAPS["cw"]
+    assert [r["snrDb"] for r in result.voice] == sorted((r["snrDb"] for r in result.voice), reverse=True)
+    assert 14_200.2 not in [r["freqKhz"] for r in result.voice]
+    assert result.digital == [{"freqKhz": 14_074.0, "snrDb": 27, "band": "20m", "mode": "usb", "label": "FT8"}]
+    assert not result.partial
+
+
+# Value: protects=phone frames are held and CW/digital frames take one snapshot (D13), and a deadline in the ham pass returns the bands done, marked partial; fails_when=the hold/fetch split flips or the deadline drops results; why_new=no ham sweep; seam=deadline_s and hold_s (the sweep's own parameters); no_claim=real Kiwi timing (the spike measures it)
+async def test_ham_sweep_holds_phone_and_stops_at_the_deadline():
+    held, fetched = [], []
+
+    async def fetch(zoom, cf):
+        fetched.append(cf)
+        return ham_frame(cf - HAM_SPAN / 2)
+
+    async def hold(zoom, cf, seconds):
+        held.append((cf, seconds))
+        return ham_frame(cf - HAM_SPAN / 2)
+
+    full = await sweep_ham(fetch, hold, hold_s=0.5)
+    assert (len(held), len(fetched)) == (13, 10)
+    assert {s for _, s in held} == {0.5}
+    assert (full.bands_done, full.bands_total, full.partial) == (9, 9, False)
+
+    async def slow_hold(zoom, cf, seconds):
+        await asyncio.sleep(1)
+        return ham_frame(cf - HAM_SPAN / 2)
+
+    cut = await sweep_ham(fetch, slow_hold, deadline_s=0.2)
+    assert cut.partial and cut.bands_total == 9 and cut.bands_done < 9
+
+
+# Value: protects=the spike recorder saves each frame's band edges clipped to the receiver's coverage, as the service's plan_frames sees them, so eval_ham judges what the service would (review); fails_when=the recorder saves the full band edges again; why_new=review found the mismatch; seam=HOLD_S shortened for speed; no_claim=real receivers' coverage reports
+async def test_the_spike_recorder_saves_clipped_band_edges(tmp_path, monkeypatch):
+    import sys as _sys
+
+    from .fakekiwi import FakeKiwi
+
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    _sys.path.insert(0, str(scripts))
+    try:
+        import record_ham
+    finally:
+        _sys.path.remove(str(scripts))
+    from skywave_radio.kiwi import KiwiClient
+    from skywave_radio.waterfall import WaterfallClient
+
+    monkeypatch.setattr(record_ham, "HOLD_S", 0.01)
+    # Covers 0-28,500 kHz: 10m's CW segment is whole, its phone segment cut at 28,500.
+    async with FakeKiwi(bandwidth_khz=28_500.0) as kiwi:
+        snd = KiwiClient("127.0.0.1", kiwi.port, timeout_s=3)
+        await snd.tune(14_250.0)
+        await snd.connect()
+        wf = WaterfallClient("127.0.0.1", kiwi.port, timeout_s=3, timestamp=snd.timestamp)
+        await wf.connect()
+        try:
+            await record_ham.one_round(snd, wf, tmp_path, 1)
+        finally:
+            await wf.close()
+            await snd.close()
+    segs = [str(s).split("|") for s in np.load(tmp_path / "round-01.npz")["segment"]]
+    ten = [s for s in segs if s[0] == "10m" and s[1] == "phone"]
+    assert ten and all(float(s[3]) == 28_500.0 for s in ten)
