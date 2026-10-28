@@ -7,5 +7,7 @@ export default defineConfig({
   // Not env("DATABASE_URL"): that throws when the variable is unset, which
   // breaks `prisma generate` in postinstall on a fresh clone. Generate doesn't
   // need a database; migrate and seed still fail clearly without one.
-  datasource: { url: process.env.DATABASE_URL },
+  // Neon's Vercel integration also sets DATABASE_URL_UNPOOLED; migrate needs
+  // that direct connection, since its pooled URL goes through PgBouncer.
+  datasource: { url: process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL },
 });

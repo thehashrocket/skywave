@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { after } from "next/server";
 import { KIWI_LIST_URL, LIST_MAX_AGE_MS, LIST_RETRY_MS, parseKiwiList, type Receiver } from "@/lib/kiwi-list";
 import { publicProcedure, router } from "../trpc";
 
@@ -23,15 +24,28 @@ type ReceiverList = {
   stale: boolean;
 };
 
-type Options = { fetchImpl?: typeof fetch; now?: () => number };
+type Options = {
+  fetchImpl?: typeof fetch;
+  now?: () => number;
+  /** Keeps a background refresh running after the response is sent. */
+  defer?: (task: Promise<unknown>) => void;
+};
 
 /**
  * Fetches the public receiver list at most once per TTL and shares one
  * request between concurrent callers. Once a list is cached, callers never
  * wait on the mirror: an expired list is served while a refresh runs in the
  * background, and kept if that refresh fails.
+ *
+ * The background refresh goes to `defer` (Next's `after` by default): on
+ * Vercel an instance can be paused once the response is sent, which would
+ * stall a refresh nobody is waiting on. `after` only works inside a request.
  */
-export function receiverSource({ fetchImpl = (...args) => fetch(...args), now = () => Date.now() }: Options = {}) {
+export function receiverSource({
+  fetchImpl = (...args) => fetch(...args),
+  now = () => Date.now(),
+  defer = after,
+}: Options = {}) {
   let cached: ReceiverList | null = null;
   let inflight: Promise<ReceiverList> | null = null;
   let lastFailure: { at: number; error: unknown } | null = null;
@@ -75,7 +89,8 @@ export function receiverSource({ fetchImpl = (...args) => fetch(...args), now = 
     if (cached) {
       // Nobody awaits a background refresh, so say here when one fails;
       // otherwise a dying mirror stays silent until the cached list expires.
-      if (!backingOff) startRefresh().catch((error: unknown) => console.warn("receivers.list: refresh failed:", error));
+      if (!backingOff)
+        defer(startRefresh().catch((error: unknown) => console.warn("receivers.list: refresh failed:", error)));
       return now() - cached.fetchedAt >= STALE_AFTER_MS ? { ...cached, stale: true } : cached;
     }
     if (backingOff) throw lastFailure!.error;

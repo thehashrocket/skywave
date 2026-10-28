@@ -198,6 +198,18 @@
 **Priority:** P3
 **Depends on:** None
 
+### Share the last good receiver list across Vercel instances
+
+**What:** Keep the last good receiver list in Vercel Runtime Cache as well as in memory, so a Function instance that starts while the list mirror is down serves that list instead of "list failed", and instances don't each fetch the mirror on their own.
+
+**Why:** On Vercel each instance starts with an empty `receiverSource()` cache. An open page keeps its list through a failed refresh, so only a fresh page load on a cold instance during a mirror outage sees the error. Owner D5 (feat/vercel-deploy eng review, 2026-10-27): defer; revisit if logs show repeated mirror fetches or cold-instance list failures.
+
+**Context:** `apps/web/src/server/routers/receivers.ts` (`receiverSource`), `@vercel/functions` `getCache`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
 ## Completed
 
 ### Revert the web dial when the service refuses a retune
