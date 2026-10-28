@@ -74,18 +74,6 @@
 **Priority:** P4
 **Depends on:** A receiver that reproduces the failure
 
-### Scan the ham bands too
-
-**What:** Extend the band scan to the ham bands in `HAM_BANDS` (`apps/web/src/lib/radio-types.ts`), with results that suit hams: repeated sweeps instead of one snapshot, and a sideband guess for each signal.
-
-**Why:** The scan covers broadcast bands only. Ham voice signals come and go in seconds and sit off any channel grid, so a single snapshot ranks them badly and the list goes stale at once. Covering them would make the list useful on busy contest weekends.
-
-**Context:** Add the bands to `SCAN_BANDS` in `apps/radio/skywave_radio/scan.py` and reuse `find_peaks`; ham peaks need no AM-shape filter or channel snapping. Consider short repeated sweeps that keep only signals seen in most of them, and `guessMode` for the sideband. Keep the 15 s cap (`DEADLINE_S`); more sweeps mean the paired waterfall runs fast for longer.
-
-**Effort:** M
-**Priority:** P3
-**Depends on:** None
-
 ### Count listener slots across processes if the service ever scales out
 
 **What:** Move the listener count out of process memory (or document a single-worker requirement) before running more than one radio service process.
@@ -210,7 +198,56 @@
 **Priority:** P3
 **Depends on:** None
 
+### Quick-tune buttons for the ham bands
+
+**What:** Static band-plan shortcuts in the web app, for example "20m voice 14.200 USB", "40m voice 7.150 LSB" and "FT8 14.074 USB". Each tunes a frequency and mode with no scanning.
+
+**Why:** A cheap way into amateur radio after the ham scan was shelved. The mode and dial are always right and nothing is added to the scan time. It doesn't find active stations, though on a busy band it lands near them.
+
+**Context:** Pick dials from the US and Region 1 band plans; mind that 40m voice differs by region. Tuning goes through `changeFreq(khz, mode)` (`apps/web/src/app/page.tsx`). See "Amateur-band scan: shelved after the spike" under Completed.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None
+
+
+### Show live DX cluster spots for the ham bands
+
+**What:** List recent spots (SSB, CW, FT8) from a public DX cluster feed, which are frequencies hams typed in for stations they heard, with a button that tunes the receiver to each.
+
+**Why:** Gives real stations with correct dials, which the shelved ham scan couldn't. The catch is that someone else heard the station, not necessarily this receiver.
+
+**Context:** Needs an outside feed (a telnet cluster or a web API) and a server-side proxy with caching. Filter spots by mode and by distance or path to the receiver if possible. See "Amateur-band scan: shelved after the spike" under Completed.
+
+**Effort:** M
+**Priority:** P4
+**Depends on:** Picking a feed and checking its terms of use
+
+
 ## Completed
+
+### Amateur-band scan: shelved after the spike
+
+**What:** The amateur half of the band scan (branch `feat/ham-scan`, draft PR #33, labeled do-not-merge): voice, CW and digital rows found by sweeping the ham segments after the broadcast pass.
+
+**Why shelved:** Owner decision, 2026-10-28, after the spike. It fails the agreed pass bar (eng D9) by a wide margin, and every real scan ran 25-48 s against the 15 s cap. The fixes that would help detection (finer frames, holds, broadcaster filtering) each make the sweep slower. Revisiting means a redesign, such as a finer-zoom sweep in the background that doesn't hold up the broadcast list, plus a new spike. Threshold tuning won't get there. Lower-cost alternatives are under Web app: "Quick-tune buttons for the ham bands" and "Show live DX cluster spots for the ham bands".
+
+**Context:** The branch has the service, web, recorder (`record_ham.py --reference`), labeler (`auto_label.py`), scorer (`eval_ham.py`), dial estimator (`voice_dial.py`) and FT8 sync finder (`ft8_sync.py`). The plan and owner decisions are at `~/.gstack/projects/skywave/feat-vercel-deploy-eng-review-20261027-175826.md`.
+
+**Spike run 2026-10-28 (5 public Kiwis: DE, US-WV, US-CA, two in AU; 40 rounds; labels from `scripts/auto_label.py`, pending an ear check of 20 clips):**
+- Timing: every scan was over the 15 s cap. Median totals: 24.9 s (WV), 26.4 s (CA), 28.0 s (DE), 36-48 s (AU). Phone frames cost about 0.9 s each (0.4 s to settle plus the 0.5 s hold), CW frames about 0.4 s. In the service the ham pass would come back partial. D5/D13 need reopening.
+- Detector vs the bar (displayed rows): voice 15% found, 1.6 false/round; CW 2% found; digital 62% found (91% with the display caps removed). The threshold search never reached the bar, and on the held-out AU receivers it did worse for voice, so `scan.py` keeps its provisional numbers.
+- CW: one snapshot per CW frame misses most keyed CW, including stations 30-50 dB up. Replaying the reference frames at the same moment, a 0.5 s hold lifts CW recall from 25% to 40%.
+- Voice dial: `scripts/voice_dial.py` finds the true dial from speech harmonics, with no edge rule. 4 of 5 trustworthy USB voices (20m and 17m) tune 0.25-0.53 kHz too low and sound squeaky; the one LSB voice was right.
+- False voice rows: AM broadcasters in the shared segments (80m above 3900, 40m above 7200 outside the Americas).
+- Owner ear check (20 clips, blind dial versions): automatic voice labels 3/3 real. CW labels under 20 dB were all inaudible (4/4), so the labeler now drops them (`CW_AUDIBLE_DB`); rescored, CW is still 3% found. Digital: 2/4 rows heard as FT8 (it can be present but inaudible; decode the saved slots to settle it). Dial: on the 3 clean SSB voices the owner's clearest version matched `voice_dial.py` (0, +0.3, +0.6 against estimates of -0.04, +0.25, +0.50). Both USB rows tuned too low, one of them a row the labeler also tuned too low, so the shared edge rule is confirmed wrong for USB. Detector voice rows: 2/5 were real ham voices; the others were noise or an AM broadcaster.
+- Digital, checked independently: `scripts/ft8_sync.py` finds FT8 by its Costas sync in the saved 15 s slots (the decoder build was blocked). The labeler's digital calls matched the detector's in all 40 slots, so agreement proved nothing. Against sync: all 22 windows the detector called busy held FT8, 20 of them with 3+ signals at -10 dB or better; of the 18 it called quiet, only 1 had that many. Of the two "noise" clips in the ear check, 21074 (CA) really was weak (two faint tones). 7074 (WA) shows about eight clear FT8 tones for 3.5 s, then the gap between slots; worth a second listen.
+- Data: the recordings (5 receivers, 40 rounds, clips, FT8 slots), the ear-check answers and the analysis helpers (threshold search, same-moment replay) are in `~/.gstack/projects/skywave/ham-scan-spike-2026-10-28/` on the owner's machine (about 130 MB, outside git; its README explains the layout). To get a fresh set, re-record with `record_ham.py --reference`.
+
+**Effort:** (shelved)
+**Priority:** -
+**Depends on:** -
+
 
 ### Revert the web dial when the service refuses a retune
 
