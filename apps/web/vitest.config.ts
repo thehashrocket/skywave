@@ -5,6 +5,6 @@ export default defineConfig({
   // Mirrors the "@/*" path in tsconfig.json.
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   test: {
-    include: ["src/**/*.test.{ts,tsx}"],
+    include: ["src/**/*.test.{ts,tsx}", "*.test.ts"],
   },
 });

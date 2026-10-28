@@ -13,10 +13,13 @@ const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 function setup() {
   let clock = 1_000_000;
   const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(FIXTURE));
-  const get = receiverSource({ fetchImpl: fetchImpl as unknown as typeof fetch, now: () => clock });
+  // Next's `after` needs a request scope; these tests have none.
+  const defer = vi.fn((_task: Promise<unknown>) => {});
+  const get = receiverSource({ fetchImpl: fetchImpl as unknown as typeof fetch, now: () => clock, defer });
   return {
     get,
     fetchImpl,
+    defer,
     advance: (ms: number) => {
       clock += ms;
     },
@@ -96,6 +99,25 @@ describe("receiverSource", () => {
     finish(new Response(FIXTURE));
     await vi.waitFor(async () => expect(await get()).not.toBe(old));
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  // Value: protects=a background refresh outlives the response on Vercel; fails_when=the expired-list branch stops handing its refresh to defer, or hands over one that can reject; why_new=no test saw where the refresh promise went; seam=defer option (production passes Next's after); no_claim=Vercel's real suspend behavior
+  it("hands the background refresh to defer, and only that", async () => {
+    const { get, fetchImpl, defer, advance } = setup();
+    await get(); // a cold load is awaited, not deferred
+    advance(14 * MINUTE);
+    await get();
+    expect(defer).not.toHaveBeenCalled();
+
+    advance(2 * MINUTE);
+    fetchImpl.mockRejectedValueOnce(new TypeError("fetch failed"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await get();
+    expect(defer).toHaveBeenCalledTimes(1);
+    // The deferred task logs its failure instead of rejecting.
+    await expect(defer.mock.calls[0]![0]).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith("receivers.list: refresh failed:", expect.any(TypeError));
+    warn.mockRestore();
   });
 
   // Value: protects=a down mirror isn't hit on every page load during a cold start, yet "Try again" works soon; fails_when=the cold path ignores the retry window or uses the full minute; why_new=D5 shortened the cold window to 10 s; seam=none; no_claim=real network
