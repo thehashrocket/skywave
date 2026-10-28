@@ -193,3 +193,45 @@ async def test_a_malformed_frame_is_skipped():
         assert frame.bins.size == 1024
         await wf.close()
         await snd.close()
+
+
+# Value: protects=hold() keeps each bin's loudest reading across the frames it watches, so a talker silent in some frames is still seen (D4); fails_when=hold returns one frame, averages, or folds in the previous position's frames; why_new=hold is new; seam=none; no_claim=real speech cadence (the spike's labeled fixtures cover it)
+async def test_hold_keeps_the_loudest_reading_of_each_bin():
+    count = [0]
+
+    def talker(start: float, span: float) -> np.ndarray:
+        # Quiet except every third frame, where bin 500 speaks.
+        count[0] += 1
+        out = np.full(1024, 140, dtype=np.uint8)
+        if count[0] % 3 == 0:
+            out[500] = 190
+        return out
+
+    async with FakeKiwi(wf_bins=talker) as kiwi:
+        snd, wf = await paired(kiwi)
+        try:
+            snapshot = await wf.frame(zoom=7, cf_khz=14_200.0)
+            held = await wf.hold(zoom=7, cf_khz=14_250.0, seconds=0.1)
+        finally:
+            await wf.close()
+            await snd.close()
+    assert held.zoom == 7 and held.bins[500] == 190
+    assert int(held.bins.max()) == 190 and int(np.median(held.bins)) == 140
+    assert snapshot.bins.size == 1024
+
+
+# Value: protects=a Kiwi that keeps sending another position's frames can't stall a sweep: the time to a valid frame is bounded, not reset by each wrong frame (O7); fails_when=only the per-read timeout guards it; why_new=Codex O7; seam=none; no_claim=real Kiwi failure modes
+@pytest.mark.parametrize("call", ["frame", "hold"])
+async def test_frames_for_another_position_time_out(call):
+    async with FakeKiwi(wf_stale_frames=10**9) as kiwi:
+        snd, wf = await paired(kiwi)
+        wf.timeout_s = 0.3
+        try:
+            with pytest.raises(TimeoutError):
+                if call == "frame":
+                    await wf.frame(zoom=7, cf_khz=14_250.0)
+                else:
+                    await wf.hold(zoom=7, cf_khz=14_250.0, seconds=0.1)
+        finally:
+            await wf.close()
+            await snd.close()

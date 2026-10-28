@@ -75,14 +75,36 @@ export type Meter = { rssi: number; overflow: boolean };
 /** One strong broadcast signal from a band scan. */
 export type ScanSignal = { freqKhz: number; snrDb: number; band: string };
 
+/** One amateur signal: tune `freqKhz` in `mode` (for CW, the signal; the service adds the pitch). */
+export type HamSignal = { freqKhz: number; snrDb: number; band: string; mode: Mode; label?: string };
+
+/** A finished amateur part, kept for its receiver while later scans run. */
+export type HamDone = {
+  host: string;
+  port: number;
+  voice: HamSignal[];
+  cw: HamSignal[];
+  digital: HamSignal[];
+  bandsDone: number;
+  bandsTotal: number;
+  partial: boolean;
+  /** When the sweep was made, on this browser's clock (receipt time less the service's ageMs). */
+  heardAtMs: number;
+};
+
+/** Where the newest request's amateur part stands. */
+export type HamPhase = "scanning" | "done" | "error";
+
 /**
  * The band scan of the receiver being listened to (apps/radio's session.py,
  * "scan" messages). Only the newest request's reply for that receiver lands.
+ * `id` is that request; a scan with amateur bands answers it twice.
  */
 export type ScanState =
-  | { state: "scanning"; host: string; port: number }
+  | { state: "scanning"; id: number; host: string; port: number }
   | {
       state: "done";
+      id: number;
       host: string;
       port: number;
       signals: ScanSignal[];
@@ -92,8 +114,43 @@ export type ScanState =
       bandsTotal: number;
       /** Only some bands were scanned (the receiver was slow or stalled); not cached by the service. */
       partial: boolean;
+      /** The amateur part, when it was asked for. */
+      ham?: HamPhase;
     }
-  | { state: "error"; host: string; port: number; message: string };
+  | { state: "error"; id: number; host: string; port: number; message: string };
+
+/** A reply's "ham" object: where it stands, and the finished part if it's done. */
+function parseHam(value: unknown, host: string, port: number): { phase?: HamPhase; done?: HamDone } {
+  const ham = value as Record<string, unknown> | undefined;
+  if (ham?.state === "scanning" || ham?.state === "error") return { phase: ham.state };
+  if (ham?.state !== "done") return {};
+  return {
+    phase: "done",
+    done: {
+      host,
+      port,
+      voice: hamSignals(ham.voice),
+      cw: hamSignals(ham.cw),
+      digital: hamSignals(ham.digital),
+      bandsDone: Number(ham.bandsDone) || 0,
+      bandsTotal: Number(ham.bandsTotal) || 0,
+      partial: ham.partial === true,
+      heardAtMs: Date.now() - Math.max(0, Number(ham.ageMs) || 0),
+    },
+  };
+}
+
+function hamSignals(value: unknown): HamSignal[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (s): s is HamSignal =>
+      typeof s?.freqKhz === "number" &&
+      typeof s?.snrDb === "number" &&
+      typeof s?.band === "string" &&
+      isMode(s?.mode) &&
+      (s.label === undefined || typeof s.label === "string"),
+  );
+}
 
 type SpectrumListener = (row: Float32Array, sampleRate: number) => void;
 
@@ -194,7 +251,12 @@ export function useRadio() {
   // Band scan. canScan: the service said it can ("features" on its statuses);
   // an older one would answer a scan request with an error status.
   const [canScan, setCanScan] = useState(false);
+  // canScanHam: the service can scan the amateur bands too ("scan-ham").
+  const [canScanHam, setCanScanHam] = useState(false);
   const [scan, setScan] = useState<ScanState | null>(null);
+  // The last finished amateur part for the receiver being listened to. It
+  // stays through a refresh, or a failed one, with its age (owner D8).
+  const [lastHam, setLastHam] = useState<HamDone | null>(null);
   // The receiver being listened to, for scan requests and replies.
   const listeningRef = useRef<{ host: string; port: number } | null>(null);
   // The newest scan request; replies for any other are late and ignored.
@@ -203,6 +265,7 @@ export function useRadio() {
   const clearScan = useCallback(() => {
     scanRef.current = null;
     setScan(null);
+    setLastHam(null);
   }, []);
 
   const setTuningBoth = useCallback((v: boolean) => {
@@ -277,6 +340,7 @@ export function useRadio() {
           setHeardAudioBoth(false);
         }
         setCanScan(Array.isArray(msg.features) && msg.features.includes("scan"));
+        setCanScanHam(Array.isArray(msg.features) && msg.features.includes("scan-ham"));
         listeningRef.current =
           state === "listening" && host !== undefined && port !== undefined ? { host, port } : null;
         const freqKhz =
@@ -319,11 +383,14 @@ export function useRadio() {
         // A reply for an older request or another receiver arrives after a
         // switch or Scan again; it must not fill the current list.
         if (!asked || msg.id !== asked.id || msg.host !== asked.host || msg.port !== asked.port) return;
-        const { host, port } = asked;
-        if (msg.state === "scanning") setScan({ state: "scanning", host, port });
+        const { id, host, port } = asked;
+        if (msg.state === "scanning") setScan({ state: "scanning", id, host, port });
         else if (msg.state === "done" && Array.isArray(msg.signals)) {
+          const ham = parseHam(msg.ham, host, port);
+          if (ham.done) setLastHam(ham.done);
           setScan({
             state: "done",
+            id,
             host,
             port,
             signals: msg.signals.filter(
@@ -334,10 +401,11 @@ export function useRadio() {
             bandsDone: Number(msg.bandsDone) || 0,
             bandsTotal: Number(msg.bandsTotal) || 0,
             partial: msg.partial === true,
+            ...(ham.phase && { ham: ham.phase }),
           });
         } else if (msg.state === "error") {
           const message = typeof msg.message === "string" ? msg.message : "Couldn't scan this receiver.";
-          setScan({ state: "error", host, port, message });
+          setScan({ state: "error", id, host, port, message });
         }
       }
     },
@@ -432,6 +500,7 @@ export function useRadio() {
         listeningRef.current = null;
         forgetOwed();
         setCanScan(false);
+        setCanScanHam(false);
         clearScan();
         setMeter(null);
         setTuningBoth(false);
@@ -513,19 +582,22 @@ export function useRadio() {
    * Retune the receiver being listened to or tuned; never opens a connection
    * on its own. A tune still starting sends this instead of what it began with.
    */
-  const retune = useCallback((t: Tuning) => {
-    const pending = pendingRef.current;
-    const forPending = !!pending && pending.host === t.host && pending.port === t.port;
-    if (forPending) {
-      pendingRef.current = t;
-      latestRef.current = t;
-    }
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      sendTune(ws, t);
-      if (forPending) retunedRef.current = ws;
-    }
-  }, [sendTune]);
+  const retune = useCallback(
+    (t: Tuning) => {
+      const pending = pendingRef.current;
+      const forPending = !!pending && pending.host === t.host && pending.port === t.port;
+      if (forPending) {
+        pendingRef.current = t;
+        latestRef.current = t;
+      }
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        sendTune(ws, t);
+        if (forPending) retunedRef.current = ws;
+      }
+    },
+    [sendTune],
+  );
 
   const stop = useCallback(() => {
     generationRef.current++;
@@ -548,9 +620,9 @@ export function useRadio() {
   }, [setTuningBoth, setHeardAudioBoth, clearScan, forgetOwed]);
 
   /**
-   * Scan the receiver being listened to for strong broadcast signals. `fresh`
-   * skips the service's 10-minute cache. Does nothing unless the service
-   * supports it and a receiver is playing.
+   * Scan the receiver being listened to for strong broadcast signals, and the
+   * amateur bands when the service can. `fresh` skips the service's caches.
+   * Does nothing unless the service supports it and a receiver is playing.
    */
   const startScan = useCallback(
     (fresh = false) => {
@@ -559,10 +631,11 @@ export function useRadio() {
       if (!canScan || !playing || !ws || ws.readyState !== WebSocket.OPEN) return;
       const id = ++scanIdRef.current;
       scanRef.current = { id, ...playing };
-      setScan({ state: "scanning", ...playing });
-      ws.send(JSON.stringify({ type: "scan", id, fresh }));
+      setScan({ state: "scanning", id, ...playing });
+      // Only to a service that offers it: an older one never sees "ham".
+      ws.send(JSON.stringify(canScanHam ? { type: "scan", id, fresh, ham: true } : { type: "scan", id, fresh }));
     },
-    [canScan],
+    [canScan, canScanHam],
   );
 
   const setVolume = useCallback((v: number) => {
@@ -594,7 +667,9 @@ export function useRadio() {
     tuning,
     heardAudio,
     canScan,
+    canScanHam,
     scan,
+    lastHam,
     tune,
     retune,
     stop,
