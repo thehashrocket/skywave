@@ -143,6 +143,16 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("ListenPage", () => {
+  // Value: protects=the Receiver field is named by its label and described by the "blank picks the best" hint, which stays once a host is filled in; fails_when=the hint goes back to a placeholder (gone once typed) or aria-describedby is dropped or mispointed; why_new=tests only found the field by label; seam=none; no_claim=how the hint looks beside the label (jsdom applies no CSS)
+  it("describes the Receiver field with the pick-best hint, even with a host filled in", () => {
+    render(<ListenPage />);
+    const named = { name: "Receiver", description: "Blank picks the best receiver" };
+    const host = screen.getByRole("textbox", named) as HTMLInputElement;
+    fireEvent.change(host, { target: { value: "kiwi.example" } });
+    expect(screen.getByRole("textbox", named)).toBe(host);
+    expect(host.placeholder).toBe("");
+  });
+
   it("normalizes a pasted URL, tunes it, and remembers it once it plays", () => {
     const view = render(<ListenPage />);
     const host = screen.getByLabelText("Receiver") as HTMLInputElement;

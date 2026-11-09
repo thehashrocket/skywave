@@ -17,6 +17,7 @@
   /* Shades with one job each. */
   --brass-bright: #d3ad5e; /* Listen under the pointer */
   --brass-ink: #6b5226; /* broadcast band labels on the dial glass */
+  --ham-ink: #265a56; /* ham band labels on the dial glass: --ham is 3.65:1 at the glass's darker foot, this is 4.9:1 */
   --meter-mid: #6fb29e; /* the S-meter gradient's midpoint */
 
   /* Waterfall colormap, low to high: read by Waterfall.tsx (FALLBACK_STOPS keeps these values). */
@@ -145,7 +146,16 @@ html,
   gap: 4px;
 }
 
+.field-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 12px;
+}
+
 .field label,
+.field-hint,
 .volume label,
 .presets-save label {
   font-size: 0.85rem;
@@ -204,7 +214,7 @@ html,
   margin: 0;
   max-width: 70ch;
   color: var(--muted);
-  font-size: 0.92rem;
+  font-size: 1rem;
 }
 
 /* Public receiver list */
@@ -285,7 +295,7 @@ html,
   align-items: center;
   gap: 6px;
   padding-bottom: 8px;
-  font-size: 0.92rem;
+  font-size: 1rem;
 }
 
 .check input {
@@ -298,7 +308,7 @@ html,
   justify-self: start;
   padding: 0 0 8px;
   font: inherit;
-  font-size: 0.92rem;
+  font-size: 1rem;
   color: var(--lamp);
   background: none;
   border: 0;
@@ -514,6 +524,55 @@ html,
   gap: 6px;
 }
 
+/* The row labels sit in a gutter beside the glass, where the needle can't cross them
+   and they stay in view while a phone scrolls the strip sideways. */
+.dial-frame {
+  --gutter: 14px;
+  --gutter-gap: 12px;
+  --glass-min: 860px; /* .dial-glass's min-width */
+  display: grid;
+  grid-template-columns: var(--gutter) minmax(0, 1fr);
+  column-gap: var(--gutter-gap);
+  container-type: inline-size;
+}
+
+/* As tall as the glass (its 1000×160 viewBox at its width), not the grid row, which
+   also holds the strip's scrollbar where scrollbars take space: the labels' percentages
+   then track the band rows. */
+.dial-gutter {
+  position: relative;
+  align-self: start;
+  /* Without container units, the glass at its min-width: exact on phones, close elsewhere. */
+  height: calc(var(--glass-min) * 0.16);
+  height: calc(max(var(--glass-min), 100cqw - var(--gutter) - var(--gutter-gap)) * 0.16);
+  /* A drag that starts beside the glass mustn't select the labels. */
+  user-select: none;
+}
+
+.dial-row-label {
+  position: absolute;
+  left: 0;
+  width: var(--gutter);
+  line-height: var(--gutter);
+  white-space: nowrap;
+  /* Read bottom to top, like a spine label. */
+  writing-mode: vertical-rl;
+  transform: translateY(-50%) rotate(180deg);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-style: italic;
+  color: var(--muted);
+}
+
+/* Centered on each band row: broadcast spans y 17–54 and ham y 118–154 of the 160-unit glass. */
+.dial-row-label-broadcast {
+  top: 22%;
+}
+
+.dial-row-label-ham {
+  top: 85%;
+}
+
 .dial-scroll {
   overflow-x: auto;
   padding: 6px;
@@ -524,7 +583,7 @@ html,
 .dial-glass {
   display: block;
   width: 100%;
-  min-width: 860px;
+  min-width: var(--glass-min);
   height: auto;
   border-radius: var(--radius-dial);
   background:
@@ -568,13 +627,6 @@ html,
   fill: var(--ink);
 }
 
-.dial-row-label {
-  font-family: var(--font-ui);
-  font-size: 11px;
-  font-style: italic;
-  fill: rgba(27, 42, 47, 0.75);
-}
-
 .dial-band text {
   font-family: var(--font-instrument);
   font-size: 12px;
@@ -595,7 +647,7 @@ html,
 }
 
 .dial-band-ham text {
-  fill: var(--ham);
+  fill: var(--ham-ink);
 }
 
 .dial-needle line {
@@ -813,7 +865,7 @@ html,
   align-items: baseline;
   gap: 6px 10px;
   min-height: 1.5em;
-  font-size: 0.95rem;
+  font-size: 1rem;
 }
 
 .status-lamp {
@@ -943,7 +995,7 @@ html,
   place-items: center;
   margin: 0;
   color: var(--muted);
-  font-size: 0.95rem;
+  font-size: 1rem;
   padding-inline: 12px;
   text-align: center;
   pointer-events: none;
@@ -1055,6 +1107,18 @@ html,
 
 .signals .preset-tune {
   grid-template-columns: 6ch 4.2ch 1fr;
+}
+
+/* Strongest first, so the columns fill top to bottom (the presets' grid fills across). */
+.signals-list {
+  display: block;
+  /* A width, not a count: narrower than 300px, it's one column the box's width. */
+  columns: 300px;
+  column-gap: 24px;
+}
+
+.signals-list li {
+  break-inside: avoid;
 }
 
 .signals-again {
@@ -1412,6 +1476,22 @@ html,
   .readout,
   .modes {
     grid-column: auto;
+  }
+  /* The box is sized for "29,999.99", which leaves shorter frequencies a gap beside
+     the unit. Left-aligned, the gap at least sits after the number, not before it. */
+  .readout-input {
+    text-align: left;
+  }
+  /* Where the browser can, shrink the box to the digits. Without field-sizing,
+     width: auto would fall back to the input's default size, wider than a phone. */
+  @supports (field-sizing: content) {
+    .readout-input {
+      width: auto;
+      min-width: 4ch;
+      /* No wider than the box it replaces: a long or rejected entry scrolls inside. */
+      max-width: 9.4ch;
+      field-sizing: content;
+    }
   }
   .field-host input {
     width: 100%;
