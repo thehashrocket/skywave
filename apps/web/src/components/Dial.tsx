@@ -165,52 +165,54 @@ export function Dial({ freqKhz, onChange }: Props) {
 
   return (
     <div className="dial">
-      <div className="dial-scroll" ref={scrollRef}>
-        <svg
-          ref={svgRef}
-          className="dial-glass"
-          viewBox={`0 0 ${W} ${H}`}
-          role="slider"
-          tabIndex={0}
-          aria-label="Tuning dial"
-          aria-valuemin={DIAL_MIN_KHZ}
-          aria-valuemax={DIAL_MAX_KHZ}
-          aria-valuenow={freqKhz}
-          aria-valuetext={`${freqKhz.toLocaleString()} kilohertz`}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerCancel}
-          onLostPointerCapture={onPointerCancel}
-          onKeyDown={onKeyDown}
-        >
-          <text className="dial-row-label" x={PAD} y={14}>
-            Broadcast
-          </text>
-          <BandRow bands={BROADCAST_BANDS} y={32} labelY={[27, 54]} className="dial-band dial-band-broadcast" />
-          <text className="dial-row-label" x={PAD} y={154}>
-            Amateur
-          </text>
-          <path className="dial-ticks-minor" d={TICKS.minor} />
-          <path className="dial-ticks-major" d={TICKS.major} />
-          <line className="dial-baseline" x1={PAD} x2={W - PAD} y1={SCALE_Y} y2={SCALE_Y} />
-          {Array.from({ length: 31 }, (_, mhz) => (
-            <text
-              key={mhz}
-              className={mhz % 5 === 0 ? "dial-num dial-num-major" : "dial-num"}
-              x={x(mhz * 1000)}
-              y={SCALE_Y - 6}
-              textAnchor="middle"
-            >
-              {mhz}
-            </text>
-          ))}
-          <BandRow bands={HAM_BANDS} y={118} labelY={[141, 154]} className="dial-band dial-band-ham" />
-          <g className="dial-needle" transform={`translate(${needle.toFixed(2)} 0)`}>
-            <line x1={0} x2={0} y1={4} y2={H - 4} />
-            <circle cx={0} cy={4} r={3.5} />
-          </g>
-        </svg>
+      <div className="dial-frame">
+        {/* Outside the glass, so the needle never runs through them. A slider's contents
+          aren't read out anyway; the band names are on the glass. */}
+        <div className="dial-gutter" aria-hidden="true">
+          <span className="dial-row-label dial-row-label-broadcast">Broadcast</span>
+          <span className="dial-row-label dial-row-label-ham">Amateur</span>
+        </div>
+        <div className="dial-scroll" ref={scrollRef}>
+          <svg
+            ref={svgRef}
+            className="dial-glass"
+            viewBox={`0 0 ${W} ${H}`}
+            role="slider"
+            tabIndex={0}
+            aria-label="Tuning dial"
+            aria-valuemin={DIAL_MIN_KHZ}
+            aria-valuemax={DIAL_MAX_KHZ}
+            aria-valuenow={freqKhz}
+            aria-valuetext={`${freqKhz.toLocaleString()} kilohertz`}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerCancel}
+            onLostPointerCapture={onPointerCancel}
+            onKeyDown={onKeyDown}
+          >
+            <BandRow bands={BROADCAST_BANDS} y={32} labelY={[27, 54]} className="dial-band dial-band-broadcast" />
+            <path className="dial-ticks-minor" d={TICKS.minor} />
+            <path className="dial-ticks-major" d={TICKS.major} />
+            <line className="dial-baseline" x1={PAD} x2={W - PAD} y1={SCALE_Y} y2={SCALE_Y} />
+            {Array.from({ length: 31 }, (_, mhz) => (
+              <text
+                key={mhz}
+                className={mhz % 5 === 0 ? "dial-num dial-num-major" : "dial-num"}
+                x={x(mhz * 1000)}
+                y={SCALE_Y - 6}
+                textAnchor="middle"
+              >
+                {mhz}
+              </text>
+            ))}
+            <BandRow bands={HAM_BANDS} y={118} labelY={[141, 154]} className="dial-band dial-band-ham" />
+            <g className="dial-needle" transform={`translate(${needle.toFixed(2)} 0)`}>
+              <line x1={0} x2={0} y1={4} y2={H - 4} />
+              <circle cx={0} cy={4} r={3.5} />
+            </g>
+          </svg>
+        </div>
       </div>
       <p className="dial-hint">
         {/* Screen readers get the keyboard sentence; a touch screen shows the touch one instead. */}

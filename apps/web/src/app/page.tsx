@@ -539,9 +539,17 @@ export default function ListenPage() {
           }}
         >
           <div className="field field-host">
-            <label htmlFor="host">Receiver</label>
+            {/* The hint sits beside the label, not under the input, so the form's inputs stay
+                bottom-aligned; unlike a placeholder it stays put once a receiver is filled in. */}
+            <div className="field-head">
+              <label htmlFor="host">Receiver</label>
+              <span id="host-hint" className="field-hint">
+                Blank picks the best receiver
+              </span>
+            </div>
             <input
               id="host"
+              aria-describedby="host-hint"
               value={host}
               onChange={(e) => {
                 setHost(e.target.value);
@@ -549,7 +557,6 @@ export default function ListenPage() {
                 setSecure(false);
               }}
               onBlur={normalizeReceiver}
-              placeholder="Blank picks the best receiver"
               autoComplete="off"
               spellCheck={false}
               disabled={busy}
