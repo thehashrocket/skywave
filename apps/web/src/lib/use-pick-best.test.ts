@@ -75,18 +75,22 @@ describe("usePickBest", () => {
     beforeEach(() => vi.useFakeTimers());
     afterEach(() => vi.useRealTimers());
 
-    // Value: protects=a receiver that refuses apps ~10 s into audio sends the run on to the next one, with its note; fails_when=the run ends for good on listening; why_new=live probe 2026-10-21 (no_apps at 10.8 s); seam=none; no_claim=live Kiwi timing (status sequence)
-    it("moves on when the receiver refuses apps within the watch, looking finished until then", () => {
+    // Value: protects=a receiver that refuses on its own account within the watch (no apps ~10 s in, or full, as a live Kiwi did at 10 s, or a password) sends the run on to the next one, with its note; fails_when=the run ends for good on listening, or only no_apps moves on and a late "full" leaves the listener on an error; why_new=live probe 2026-10-21 (no_apps at 10.8 s); browser check 2026-11-10 (a Kiwi played, then said busy at 10.7 s, and Pick best stopped); seam=none; no_claim=live Kiwi timing (status sequence)
+    it.each<[RadioErrorCode, string]>([
+      ["no_apps", "A only takes listeners on its own web page; trying B…"],
+      ["busy", "A was full; trying B…"],
+      ["password", "A needs a password; trying B…"],
+    ])("moves on when the receiver refuses (%s) within the watch, looking finished until then", (code, note) => {
       const { hook, report, tuned } = setup();
       act(() => hook.result.current.start(candidates));
       report(listening("a"));
       expect(hook.result.current.running).toBe(false);
       expect(hook.result.current.note).toBeNull();
       act(() => vi.advanceTimersByTime(WATCH_MS - 1));
-      report(fail("a", "no_apps"));
+      report(fail("a", code));
       expect(tuned()).toEqual(["a", "b"]);
       expect(hook.result.current.running).toBe(true);
-      expect(hook.result.current.note).toBe("A only takes listeners on its own web page; trying B…");
+      expect(hook.result.current.note).toBe(note);
     });
 
     // Value: protects=settled stays false through the whole watch (a late refusal can still switch receivers) and turns true, re-rendering, when the watch runs out; fails_when=settled follows running, or the watch's expiry changes only a ref; why_new=band scan waits for it (eng review D14, Codex O4); seam=none; no_claim=live Kiwi timing

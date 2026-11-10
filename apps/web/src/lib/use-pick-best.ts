@@ -57,10 +57,11 @@ const refusedKey = (r: { host: string; port?: number }) =>
 const MAX_TOTAL = 6; // README "Using it" quotes this number too.
 
 /**
- * A receiver whose owner allows no apps (ext_api=0) plays for about 10 s
- * before it refuses. The list hides those, but an owner can change the
- * setting after the list was fetched, so a run keeps an eye on the receiver
- * it settled on for this long after it starts playing.
+ * Some receivers refuse only after playing for a while: one whose owner allows
+ * no apps (ext_api=0) refuses about 10 s in, and some say they're full about as
+ * late. The list hides the first kind, but an owner can change the setting after
+ * the list was fetched, so a run keeps an eye on the receiver it settled on for
+ * this long after it starts playing, and moves on if it refuses.
  */
 export const WATCH_MS = 15_000; // README "Using it" quotes this number too.
 
@@ -274,12 +275,13 @@ export function usePickBest(
     }
     const current = c.tried[c.tried.length - 1]!;
     if (c.watchTimer) {
-      // Dial and mode retunes of that receiver keep the watch; its refusal of
-      // apps picks the run up again, moving on as for any refusal. Anything
-      // else (another error, the radio stopping) ends the watch.
+      // Dial and mode retunes of that receiver keep the watch; its own refusal
+      // (full, no apps, password) picks the run up again, moving on as for any
+      // refusal. Anything else (a drop, another error, the radio stopping)
+      // ends the watch.
       const about = status.host === current.host && status.port === current.port;
       if (about && (status.state === "listening" || status.state === "connecting")) return;
-      if (!about || status.state !== "error" || status.code !== "no_apps") return finish();
+      if (!about || status.state !== "error" || !status.code || !REFUSALS.has(status.code)) return finish();
       clearTimeout(c.watchTimer);
       c.watchTimer = undefined;
       setRunning(true);
