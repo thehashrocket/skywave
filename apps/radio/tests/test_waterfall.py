@@ -193,3 +193,45 @@ async def test_a_malformed_frame_is_skipped():
         assert frame.bins.size == 1024
         await wf.close()
         await snd.close()
+
+
+# Value: protects=idle() streams the live view: it points the Kiwi there at live speed and hands on_frame only frames showing that view, never the stale ones from before a move, then show(None) slows it back to idling with no frames handed on; fails_when=stale frames reach the browser, the view isn't re-pointed when idle() starts (after a sweep), or None keeps streaming; why_new=the live view is new; seam=none; no_claim=real Kiwi settle time (fake sends 3 stale frames)
+async def test_idle_streams_the_view_and_skips_stale_frames():
+    from skywave_radio.waterfall import IDLE_SPEED, LIVE_SPEED, View
+
+    async with FakeKiwi(wf_bins=carrier_at(9_640.0), wf_stale_frames=3) as kiwi:
+        snd, wf = await paired(kiwi)
+        await wf.frame(zoom=6, cf_khz=9_650.0)  # a sweep left it here
+        got: list = []
+        wf.view = View(9, 9_650.0)
+        wf.on_frame = got.append
+        idle = asyncio.create_task(wf.idle())
+        for _ in range(200):
+            if len(got) >= 5:
+                break
+            await asyncio.sleep(0.01)
+        span = 30_000 / 2**9
+        assert len(got) >= 5
+        assert all(f.zoom == 9 and f.start_khz == pytest.approx(9_650.0 - span / 2, abs=0.01) for f in got)
+        assert f"SET wf_speed={LIVE_SPEED}" in kiwi.wf_commands and "SET zoom=9 cf=9650.000" in kiwi.wf_commands
+        await wf.show(None)
+        await asyncio.sleep(0.05)
+        count = len(got)
+        await asyncio.sleep(0.1)
+        assert len(got) == count
+        assert f"SET wf_speed={IDLE_SPEED}" in kiwi.wf_commands
+        idle.cancel()
+        await asyncio.gather(idle, return_exceptions=True)
+        await wf.close()
+        await snd.close()
+
+
+# Value: protects=centre() turns an RF frequency into the baseband cf the Kiwi takes and keeps the whole view inside the receiver's coverage; fails_when=the offset is ignored or an edge view hangs off the coverage (the Kiwi shifts it and no frame ever matches); why_new=the live view is new; seam=none; no_claim=none
+def test_centre_is_baseband_and_inside_the_coverage():
+    wf = WaterfallClient("127.0.0.1", 1)
+    wf.info.freq_offset_khz = 100.0
+    assert wf.centre(9, 9_650.0) == pytest.approx(9_550.0)
+    span = 30_000 / 2**7
+    assert wf.centre(7, 50.0) == pytest.approx(span / 2)
+    assert wf.centre(7, 31_000.0) == pytest.approx(30_000 - span / 2)
+    assert wf.centre(0, 9_650.0) == pytest.approx(15_000.0)

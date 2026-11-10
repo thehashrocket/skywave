@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { inTuneRange, isMode, type Mode } from "./radio-types";
+import type { WideView } from "./wide-view";
 
 export type RadioState = "idle" | "connecting" | "listening" | "stopped" | "error";
 
@@ -97,6 +98,10 @@ export type ScanState =
 
 type SpectrumListener = (row: Float32Array, sampleRate: number) => void;
 
+/** One row of the receiver's own waterfall: where it really landed (RF kHz), and one level per bin. */
+export type WideFrame = { startKhz: number; spanKhz: number; row: Float32Array };
+type WideListener = (frame: WideFrame) => void;
+
 // Frame tags: 3 is int16 audio, 4 is a float32 base dB then a uint8 per bin.
 // 1 and 2 (float32 audio and dB) are what a radio service from before the
 // switch sends; reading them lets the web app deploy first.
@@ -104,6 +109,11 @@ const AUDIO_TAG = 3;
 const SPECTRUM_TAG = 4;
 const AUDIO_F32_TAG = 1;
 const SPECTRUM_F32_TAG = 2;
+// 5 is the receiver's own waterfall: a uint32 view id, float32 start and span
+// in kHz, then a uint8 per bin (session.py, VIEW_TAG).
+const VIEW_TAG = 5;
+const VIEW_BINS = 1024;
+const VIEW_HEADER = 12;
 // Must match SPECTRUM_STEP_DB in apps/radio/skywave_radio/dsp.py.
 const SPECTRUM_STEP_DB = 0.5;
 // Must match Spectrum's bins in apps/radio/skywave_radio/dsp.py. A row of any
@@ -204,6 +214,22 @@ export function useRadio() {
     scanRef.current = null;
     setScan(null);
   }, []);
+  // The receiver's own waterfall. canView: the service can stream it. The
+  // view asked for is kept across receivers and sent again to each one; its
+  // id tells its frames and errors from those of the one before.
+  const [canView, setCanView] = useState(false);
+  const canViewRef = useRef(false);
+  const viewRef = useRef<(WideView & { id: number }) | null>(null);
+  const viewIdRef = useRef(0);
+  const [viewError, setViewError] = useState<string | null>(null);
+  const wideListenersRef = useRef(new Set<WideListener>());
+  const sendView = useCallback((ws: WebSocket | null) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !canViewRef.current || !listeningRef.current) return;
+    const v = viewRef.current;
+    ws.send(
+      JSON.stringify(v ? { type: "view", id: v.id, zoom: v.zoom, cfKhz: v.cfKhz } : { type: "view", zoom: null }),
+    );
+  }, []);
 
   const setTuningBoth = useCallback((v: boolean) => {
     tuningRef.current = v;
@@ -277,8 +303,21 @@ export function useRadio() {
           setHeardAudioBoth(false);
         }
         setCanScan(Array.isArray(msg.features) && msg.features.includes("scan"));
+        canViewRef.current = Array.isArray(msg.features) && msg.features.includes("view");
+        setCanView(canViewRef.current);
+        const before = listeningRef.current;
         listeningRef.current =
           state === "listening" && host !== undefined && port !== undefined ? { host, port } : null;
+        const now = listeningRef.current;
+        // A receiver that has just started playing gets the view asked for, or
+        // the "none" that replaced it (a retune of the same one already has it).
+        if (now && viewIdRef.current > 0 && (!before || before.host !== now.host || before.port !== now.port)) {
+          // Under a new id: a frame or error from the last receiver, still in
+          // flight, then can't land on this one's picture. Its error is moot.
+          if (viewRef.current && canViewRef.current) viewRef.current = { ...viewRef.current, id: ++viewIdRef.current };
+          setViewError(null);
+          sendView(wsRef.current);
+        }
         const freqKhz =
           typeof msg.freqKhz === "number" && Number.isFinite(msg.freqKhz) && inTuneRange(msg.freqKhz)
             ? msg.freqKhz
@@ -312,6 +351,11 @@ export function useRadio() {
           freqKhz,
           mode,
         });
+      } else if (msg.type === "view") {
+        // Only about the view asked for now: an older one's error is moot.
+        if (msg.state === "error" && viewRef.current && msg.id === viewRef.current.id) {
+          setViewError(typeof msg.message === "string" ? msg.message : "Couldn't show this receiver's waterfall.");
+        }
       } else if (msg.type === "meter") {
         setMeter({ rssi: Number(msg.rssi), overflow: Boolean(msg.overflow) });
       } else if (msg.type === "scan") {
@@ -341,13 +385,24 @@ export function useRadio() {
         }
       }
     },
-    [setTuningBoth, setHeardAudioBoth, clearScan, forgetOwed],
+    [setTuningBoth, setHeardAudioBoth, clearScan, forgetOwed, sendView],
   );
 
   const handleBinary = useCallback(
     (buf: ArrayBuffer) => {
       const tag = new Uint8Array(buf)[0]; // undefined for an empty frame, which is skipped
       const size = buf.byteLength - 1;
+      if (tag === VIEW_TAG && size === VIEW_HEADER + VIEW_BINS) {
+        const id = new Uint32Array(buf.slice(1, 5))[0]!;
+        const [startKhz, spanKhz] = new Float32Array(buf.slice(5, 13));
+        // Frames for a view since replaced are still in flight for a moment.
+        if (id !== viewRef.current?.id) return;
+        // A span past any receiver's coverage, or NaN, would draw nonsense.
+        if (!(spanKhz! > 0 && spanKhz! <= 64_000 && Math.abs(startKhz!) <= 1_000_000)) return;
+        const row = Float32Array.from(new Uint8Array(buf, 1 + VIEW_HEADER));
+        for (const fn of wideListenersRef.current) fn({ startKhz: startKhz!, spanKhz: spanKhz!, row });
+        return;
+      }
       let audio: Float32Array | null = null;
       let row: Float32Array | null = null;
       // Typed arrays need their element alignment, so copy past the 1-byte tag.
@@ -432,6 +487,9 @@ export function useRadio() {
         listeningRef.current = null;
         forgetOwed();
         setCanScan(false);
+        canViewRef.current = false;
+        setCanView(false);
+        setViewError(null);
         clearScan();
         setMeter(null);
         setTuningBoth(false);
@@ -513,19 +571,22 @@ export function useRadio() {
    * Retune the receiver being listened to or tuned; never opens a connection
    * on its own. A tune still starting sends this instead of what it began with.
    */
-  const retune = useCallback((t: Tuning) => {
-    const pending = pendingRef.current;
-    const forPending = !!pending && pending.host === t.host && pending.port === t.port;
-    if (forPending) {
-      pendingRef.current = t;
-      latestRef.current = t;
-    }
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      sendTune(ws, t);
-      if (forPending) retunedRef.current = ws;
-    }
-  }, [sendTune]);
+  const retune = useCallback(
+    (t: Tuning) => {
+      const pending = pendingRef.current;
+      const forPending = !!pending && pending.host === t.host && pending.port === t.port;
+      if (forPending) {
+        pendingRef.current = t;
+        latestRef.current = t;
+      }
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        sendTune(ws, t);
+        if (forPending) retunedRef.current = ws;
+      }
+    },
+    [sendTune],
+  );
 
   const stop = useCallback(() => {
     generationRef.current++;
@@ -541,6 +602,10 @@ export function useRadio() {
     listeningRef.current = null;
     forgetOwed();
     clearScan();
+    // The socket's close is ignored after a Stop, so reset what it would have.
+    canViewRef.current = false;
+    setCanView(false);
+    setViewError(null);
     setMeter(null);
     setTuningBoth(false);
     setHeardAudioBoth(false);
@@ -578,6 +643,29 @@ export function useRadio() {
     };
   }, []);
 
+  /**
+   * Ask for the receiver's own waterfall (or, with null, none). Kept and sent
+   * to every receiver that plays from now on; frames go to onWideFrame.
+   */
+  const showView = useCallback(
+    (v: WideView | null) => {
+      const old = viewRef.current;
+      if (v && old && old.zoom === v.zoom && old.cfKhz === v.cfKhz) return;
+      if (!v && !old) return;
+      viewRef.current = v ? { ...v, id: ++viewIdRef.current } : null;
+      setViewError(null);
+      sendView(wsRef.current);
+    },
+    [sendView],
+  );
+
+  const onWideFrame = useCallback((fn: WideListener) => {
+    wideListenersRef.current.add(fn);
+    return () => {
+      wideListenersRef.current.delete(fn);
+    };
+  }, []);
+
   useEffect(
     () => () => {
       stoppingRef.current = true;
@@ -595,11 +683,15 @@ export function useRadio() {
     heardAudio,
     canScan,
     scan,
+    canView,
+    viewError,
     tune,
     retune,
     stop,
     startScan,
     setVolume,
     onSpectrum,
+    showView,
+    onWideFrame,
   };
 }

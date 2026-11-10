@@ -3055,7 +3055,7 @@ def test_scan_lists_signals_and_audio_keeps_playing():
         return statuses, replies, listeners, playing, paths, wf_closed
 
     statuses, replies, listeners, playing, paths, wf_closed = run_with_fake(body, wf_bins=carrier_bins(9_420.0))
-    assert statuses[-1]["features"] == ["scan"]
+    assert statuses[-1]["features"] == ["scan", "view"]
     scan = [r for r in replies if r["type"] == "scan"]
     assert [r["state"] for r in scan] == ["scanning", "done"]
     done = scan[-1]

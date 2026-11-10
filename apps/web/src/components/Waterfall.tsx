@@ -3,7 +3,7 @@
 import { useEffect, useRef, type MouseEvent } from "react";
 import { PASSBANDS, type Mode } from "@/lib/radio-types";
 
-const ROWS = 220;
+export const ROWS = 220;
 // The waterfall shows FLOOR_OFFSET_DB below the noise floor up to RANGE_DB above
 // that. The radio service's uint8 rows (SPECTRUM_FLOOR_MARGIN_DB in
 // apps/radio/skywave_radio/dsp.py) must cover this window, so change both together.
@@ -55,6 +55,56 @@ function buildLut(colors: Rgb[]) {
   return lut;
 }
 
+export type Painter = {
+  /** Scrolls the picture down a row and draws this one at the top. */
+  paint: (row: Float32Array) => void;
+  /** Blanks the picture and starts the levels over (a new view). */
+  clear: () => void;
+};
+
+/**
+ * Draws rows of dB onto a canvas, newest at the top, auto-levelled to the
+ * noise floor. The canvas takes each row's width. Call once the stylesheet
+ * has applied: the colors come from its tokens.
+ */
+export function createPainter(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D): Painter {
+  const style = getComputedStyle(document.documentElement);
+  const colors = resolveStops((name) => style.getPropertyValue(name));
+  const lut = buildLut(colors);
+  const fill = `rgb(${colors[0]!.join(",")})`;
+  // The running noise floor, tracked slowly so the picture doesn't pump.
+  let level: number | null = null;
+  const clear = () => {
+    ctx.fillStyle = fill;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    level = null;
+  };
+  clear();
+  const paint = (row: Float32Array) => {
+    if (canvas.width !== row.length) {
+      canvas.width = row.length;
+      clear();
+    }
+    // Auto-level: track the noise floor (FLOOR_PERCENTILE of the row) slowly.
+    const sorted = Float32Array.from(row).sort();
+    const rowFloor = sorted[Math.floor(sorted.length * FLOOR_PERCENTILE)]!;
+    level = level === null ? rowFloor : level * 0.95 + rowFloor * 0.05;
+    const floor = level - FLOOR_OFFSET_DB;
+
+    ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height - 1, 0, 1, canvas.width, canvas.height - 1);
+    const img = ctx.createImageData(row.length, 1);
+    for (let i = 0; i < row.length; i++) {
+      const v = Math.max(0, Math.min(255, ((row[i]! - floor) / RANGE_DB) * 255)) | 0;
+      img.data[i * 4] = lut[v * 3]!;
+      img.data[i * 4 + 1] = lut[v * 3 + 1]!;
+      img.data[i * 4 + 2] = lut[v * 3 + 2]!;
+      img.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  };
+  return { paint, clear };
+}
+
 type Props = {
   mode: Mode;
   sampleRate: number;
@@ -70,43 +120,14 @@ type Props = {
 
 export function Waterfall({ mode, sampleRate, active, expanded, connecting, subscribe, onClickOffset }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const floorRef = useRef<number | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d", { alpha: false });
     if (!canvas || !ctx) return;
-    // Read on mount: the tokens only exist once the stylesheet applies.
-    const style = getComputedStyle(document.documentElement);
-    const colors = resolveStops((name) => style.getPropertyValue(name));
-    const lut = buildLut(colors);
-    const fill = `rgb(${colors[0]!.join(",")})`;
-    ctx.fillStyle = fill;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    return subscribe((row) => {
-      if (canvas.width !== row.length) {
-        canvas.width = row.length;
-        ctx.fillStyle = fill;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-      }
-      // Auto-level: track the noise floor (FLOOR_PERCENTILE of the row) slowly.
-      const sorted = Float32Array.from(row).sort();
-      const rowFloor = sorted[Math.floor(sorted.length * FLOOR_PERCENTILE)]!;
-      floorRef.current = floorRef.current === null ? rowFloor : floorRef.current * 0.95 + rowFloor * 0.05;
-      const floor = floorRef.current - FLOOR_OFFSET_DB;
-
-      ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height - 1, 0, 1, canvas.width, canvas.height - 1);
-      const img = ctx.createImageData(row.length, 1);
-      for (let i = 0; i < row.length; i++) {
-        const v = Math.max(0, Math.min(255, ((row[i]! - floor) / RANGE_DB) * 255)) | 0;
-        img.data[i * 4] = lut[v * 3]!;
-        img.data[i * 4 + 1] = lut[v * 3 + 1]!;
-        img.data[i * 4 + 2] = lut[v * 3 + 2]!;
-        img.data[i * 4 + 3] = 255;
-      }
-      ctx.putImageData(img, 0, 0);
-    });
+    // Made on mount: the tokens only exist once the stylesheet applies.
+    const painter = createPainter(canvas, ctx);
+    return subscribe((row) => painter.paint(row));
   }, [subscribe]);
 
   const span = sampleRate;

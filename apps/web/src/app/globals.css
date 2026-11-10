@@ -1131,6 +1131,69 @@ html,
   pointer-events: none;
 }
 
+/* Over a picture (the wide view, held still for a scan), the words need a ground. */
+.waterfall[data-wide] .waterfall-empty > span {
+  padding: 4px 12px;
+  border-radius: var(--radius-knob);
+  background: var(--enamel-deep);
+}
+
+/* The wide view's ticks are frequencies inside the picture, all centred on their mark. */
+.waterfall[data-wide] .waterfall-axis > span:first-child {
+  transform: translateX(-50%);
+}
+
+/* How wide the waterfall looks: one segmented row, like the modes, in UI type. */
+.span-picker {
+  display: flex;
+  flex-wrap: wrap;
+  /* Nearer the picture it sets than the page gap. */
+  margin-bottom: calc(var(--console-gap) / -2);
+}
+
+.span-step {
+  padding: 5px 12px;
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--rule);
+  margin-left: -1px;
+  cursor: pointer;
+}
+
+.span-step:first-child {
+  border-radius: var(--radius-knob) 0 0 var(--radius-knob);
+  margin-left: 0;
+}
+
+.span-step:last-child {
+  border-radius: 0 var(--radius-knob) var(--radius-knob) 0;
+}
+
+.span-step[aria-pressed="true"] {
+  background: var(--glass);
+  border-color: var(--glass);
+  color: var(--ink);
+}
+
+.span-step:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.span-note {
+  align-self: center;
+  margin-left: 12px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.span-step:focus-visible {
+  outline: 2px solid var(--lamp);
+  outline-offset: 2px;
+}
+
 .waterfall-axis {
   position: relative;
   /* Tick labels sit on the first line; the caption flows below them and can wrap. */
@@ -1704,6 +1767,7 @@ html,
   .power,
   .receiver-switch,
   .tuned-to-change,
+  .span-step,
   .presets-save button,
   .receiver-choose {
     min-height: 44px;

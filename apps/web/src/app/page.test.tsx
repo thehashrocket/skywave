@@ -13,6 +13,10 @@ const radio = {
   canScan: false,
   scan: null as ScanState | null,
   startScan: vi.fn(),
+  canView: false,
+  viewError: null as string | null,
+  showView: vi.fn(),
+  onWideFrame: () => () => {},
   tune: vi.fn(async () => {}),
   retune: vi.fn(),
   stop: vi.fn(),
@@ -34,6 +38,21 @@ vi.mock("@/components/Waterfall", () => ({
     return <output aria-label="waterfall">{expanded ? "open" : "strip"}</output>;
   },
 }));
+vi.mock("@/components/WideWaterfall", async () => {
+  const { useState } = await import("react");
+  return {
+    WideWaterfall: (props: WideProps) => {
+      // Which mount this is: a new receiver must get a new one (a blank picture).
+      const [mount] = useState(() => ++wide.mounts);
+      wide.current = { ...props, mount };
+      return (
+        <output aria-label="wide waterfall">
+          {props.view.zoom} {props.view.cfKhz} {props.frozen ? "frozen" : ""} {props.error ?? ""}
+        </output>
+      );
+    },
+  };
+});
 vi.mock("@/components/MapPanel", () => ({
   MapPanel: ({
     admitted,
@@ -76,6 +95,14 @@ const backup: Receiver = { ...listed, id: "backup", name: "Backup", host: "backu
 
 // The public list as the page sees it; tests swap in loading or failed.
 const waterfallClick: { current?: (hz: number) => void } = {};
+type WideProps = {
+  view: { zoom: number; cfKhz: number };
+  frozen: boolean;
+  error: string | null;
+  passband: [number, number];
+  onTune: (khz: number) => void;
+};
+const wide: { current?: WideProps & { mount: number }; mounts: number } = { mounts: 0 };
 const presetSelect: { current?: (p: { freqKhz: number; mode: "am" }) => void } = {};
 const receiverList: { data?: { receivers: Receiver[] }; errorUpdatedAt: number } = { errorUpdatedAt: 0 };
 vi.mock("@/lib/use-receiver-list", async (actual) => ({
@@ -140,6 +167,9 @@ beforeEach(() => {
   radio.heardAudio = false;
   radio.canScan = false;
   radio.scan = null;
+  radio.canView = false;
+  radio.viewError = null;
+  radio.showView.mockClear();
   radio.startScan.mockClear();
   radio.tune.mockClear();
   radio.stop.mockClear();
@@ -1881,6 +1911,146 @@ describe("ListenPage", () => {
       radio.heardAudio = false;
       view.rerender(<ListenPage />);
       expect(screen.getByLabelText("waterfall").textContent).toBe("open");
+    });
+  });
+
+  describe("wide waterfall", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+    const width = () => screen.getByRole("group", { name: "Waterfall width" });
+    const step = (name: string) => screen.getByRole("button", { name });
+
+    /** A receiver playing, then past the scan's wait, which the wide view shares. */
+    function playing(view: ReturnType<typeof render>, host = listed.host, port = listed.port) {
+      radio.status = { state: "listening", host, port };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(10_000));
+    }
+
+    // Value: protects=the receiver's own waterfall is asked for only once the receiver has played 10 s, as the scan is (owner: same wait as the scan), the picker saying so meanwhile, and a switch starts the wait over; fails_when=the view opens with the first audio (a stream on every receiver Pick best tries or a quick switch leaves), the wait isn't shared, or a new receiver inherits the last one's; why_new=owner decision on review: the wide view skipped the scan's wait; seam=useRadio mocked, fake timers; no_claim=Pick best's own settling (its tests)
+    it("waits as long as the scan before asking for the receiver's waterfall", () => {
+      radio.canView = true;
+      const view = render(<ListenPage />);
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(9_999));
+      expect(radio.showView).not.toHaveBeenCalledWith(expect.objectContaining({ zoom: 9 }));
+      expect(screen.getByLabelText("waterfall")).toBeTruthy();
+      expect(screen.getByText("The receiver's waterfall starts in a few seconds.")).toBeTruthy();
+      act(() => vi.advanceTimersByTime(1));
+      expect(radio.showView).toHaveBeenLastCalledWith(expect.objectContaining({ zoom: 9 }));
+      expect(screen.queryByText("The receiver's waterfall starts in a few seconds.")).toBeNull();
+      // Another receiver waits its own 10 s, back on the audio waterfall meanwhile.
+      radio.status = { state: "listening", host: backup.host, port: backup.port };
+      view.rerender(<ListenPage />);
+      expect(radio.showView).toHaveBeenLastCalledWith(null);
+      expect(screen.getByLabelText("waterfall")).toBeTruthy();
+      act(() => vi.advanceTimersByTime(10_000));
+      expect(radio.showView).toHaveBeenLastCalledWith(expect.objectContaining({ zoom: 9 }));
+    });
+
+    // Value: protects=once audio has played on a service that streams it, the receiver's own waterfall opens 60 kHz wide around the dial (owner: open at ~60 kHz) and Audio goes back to the audio one, telling the service each time; fails_when=the default width changes, the view isn't asked for (or is asked for before audio or without the feature), or Audio leaves the wide view up; why_new=wideband waterfall; seam=useRadio and both waterfalls mocked; no_claim=what the service streams (radio tests)
+    it("opens 60 kHz wide around the dial once audio plays, and Audio goes back", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_650, mode: "am" }));
+      radio.canView = true;
+      const view = render(<ListenPage />);
+      expect(screen.queryByRole("group", { name: "Waterfall width" })).toBeNull();
+      expect(radio.showView).not.toHaveBeenCalledWith(expect.objectContaining({ zoom: 9 }));
+      playing(view);
+      expect(step("60 kHz").getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByLabelText("wide waterfall").textContent).toContain("9 9650");
+      expect(radio.showView).toHaveBeenLastCalledWith({ zoom: 9, cfKhz: 9_650 });
+      expect(screen.queryByLabelText("waterfall")).toBeNull();
+      fireEvent.click(step("Audio"));
+      expect(screen.getByLabelText("waterfall")).toBeTruthy();
+      expect(screen.queryByLabelText("wide waterfall")).toBeNull();
+      expect(radio.showView).toHaveBeenLastCalledWith(null);
+      fireEvent.click(step("230 kHz"));
+      expect(radio.showView).toHaveBeenLastCalledWith({ zoom: 7, cfKhz: 9_650 });
+    });
+
+    // Value: protects=a service that can't stream the receiver's waterfall leaves only the audio view, the other widths disabled; fails_when=the wide view is asked for or shown without the feature; why_new=wideband waterfall; seam=useRadio mocked; no_claim=none
+    it("keeps the audio view on a service that can't stream the receiver's waterfall", () => {
+      const view = render(<ListenPage />);
+      playing(view);
+      expect(width()).toBeTruthy();
+      expect((step("60 kHz") as HTMLButtonElement).disabled).toBe(true);
+      expect((step("Audio") as HTMLButtonElement).disabled).toBe(false);
+      expect(screen.getByLabelText("waterfall")).toBeTruthy();
+      expect(radio.showView).not.toHaveBeenCalledWith(expect.objectContaining({ zoom: expect.any(Number) }));
+    });
+
+    // Value: protects=a click on the wide waterfall tunes to the nearest channel on the wheel's grid (5 kHz on shortwave AM) and the view holds still while the dial moves inside it, moving only near an edge; fails_when=clicks land between channels, or every tune repoints the receiver's waterfall; why_new=click-to-tune on the wide view; seam=useRadio and WideWaterfall mocked; no_claim=the pixel to frequency maths (WideWaterfall tests)
+    it("tunes a click to the nearest channel and moves the view only near its edge", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_650, mode: "am" }));
+      radio.canView = true;
+      const view = render(<ListenPage />);
+      playing(view);
+      act(() => wide.current!.onTune(9_662.4));
+      expect((screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement).value).toBe("9,660.00");
+      expect(radio.showView).toHaveBeenLastCalledWith({ zoom: 9, cfKhz: 9_650 });
+      // 60 kHz wide: 9,675 is past 40% of the span from the centre, so the view follows.
+      act(() => wide.current!.onTune(9_675));
+      expect(radio.showView).toHaveBeenLastCalledWith({ zoom: 9, cfKhz: 9_675 });
+    });
+
+    // Value: protects=the band width frames the dial's whole band (31m: 9,400 to 9,900 kHz) and falls back to 60 kHz when the dial leaves every band; fails_when=band picks a zoom that clips it, stays selected out of band, or names the wrong band; why_new=owner decision: a "Band" step for the meter band; seam=useRadio mocked; no_claim=the band table (radio-types)
+    it("shows the dial's whole band, and falls back when it leaves the band", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_650, mode: "am" }));
+      radio.canView = true;
+      const view = render(<ListenPage />);
+      playing(view);
+      fireEvent.click(step("31m band"));
+      // 30,000 / 2^5 = 937.5 kHz holds the band's 500; 2^6 (469) wouldn't.
+      expect(radio.showView).toHaveBeenLastCalledWith({ zoom: 5, cfKhz: 9_650 });
+      act(() => wide.current!.onTune(8_500));
+      expect((step("Band") as HTMLButtonElement).disabled).toBe(true);
+      expect(step("60 kHz").getAttribute("aria-pressed")).toBe("true");
+      expect(radio.showView).toHaveBeenLastCalledWith({ zoom: 9, cfKhz: 8_500 });
+    });
+
+    // Value: protects=while a band scan sweeps, the wide view says so and holds still (owner: freeze with "Scanning…"), and a view error reaches it; fails_when=frozen or error isn't passed; why_new=wideband waterfall; seam=useRadio and WideWaterfall mocked; no_claim=the overlay's words (WideWaterfall tests)
+    it("freezes for a scan and passes on a view error", () => {
+      radio.canView = true;
+      const view = render(<ListenPage />);
+      playing(view);
+      expect(wide.current!.frozen).toBe(false);
+      radio.scan = { state: "scanning", host: listed.host, port: listed.port };
+      radio.viewError = "Couldn't show this receiver's waterfall: busy";
+      view.rerender(<ListenPage />);
+      expect(wide.current!.frozen).toBe(true);
+      expect(wide.current!.error).toBe("Couldn't show this receiver's waterfall: busy");
+    });
+
+    // Value: protects=after Stop or an error the audio waterfall comes back (saying what it waits for) instead of a wide picture that looks live, and a service without the stream shows Audio as the pressed width; fails_when=the wide view outlives listening, or the picker presses a disabled width; why_new=web review; seam=useRadio mocked; no_claim=none
+    it("goes back to the audio waterfall when nothing plays", () => {
+      radio.canView = true;
+      const view = render(<ListenPage />);
+      playing(view);
+      expect(screen.getByLabelText("wide waterfall")).toBeTruthy();
+      radio.status = { state: "error", message: "gone" };
+      radio.heardAudio = false;
+      view.rerender(<ListenPage />);
+      expect(screen.queryByLabelText("wide waterfall")).toBeNull();
+      expect(screen.getByLabelText("waterfall")).toBeTruthy();
+      radio.canView = false;
+      view.rerender(<ListenPage />);
+      expect(step("Audio").getAttribute("aria-pressed")).toBe("true");
+      expect(step("60 kHz").getAttribute("aria-pressed")).toBe("false");
+    });
+
+    // Value: protects=a switch to another receiver starts the wide view over (a blank picture saying it's opening) rather than leaving the last receiver's picture up, looking live, while a retune of the same one keeps it; fails_when=the wide waterfall isn't keyed on the receiver playing, or is keyed on something a retune changes; why_new=web review: the old picture stayed for up to 20 s after a switch; seam=WideWaterfall mocked (mount count); no_claim=the blank canvas itself (WideWaterfall's own mount)
+    it("starts a new picture for a new receiver, not for a retune", () => {
+      radio.canView = true;
+      const view = render(<ListenPage />);
+      playing(view);
+      const first = wide.current!.mount;
+      act(() => wide.current!.onTune(10_005));
+      expect(wide.current!.mount).toBe(first);
+      playing(view, backup.host, backup.port);
+      expect(wide.current!.mount).toBeGreaterThan(first);
     });
   });
 });

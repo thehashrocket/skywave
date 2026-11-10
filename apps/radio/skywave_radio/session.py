@@ -10,6 +10,13 @@ Browser -> service (JSON text frames):
     (scan the receiver being listened to for strong broadcast signals; "fresh"
     skips the 10-minute cache. Send it only to a service whose status lists
     "scan" in "features": an older one answers it with a status error.)
+    {"type": "view", "id": 4, "zoom": 9, "cfKhz": 9650}
+    {"type": "view", "zoom": null}
+    (stream the receiver's own waterfall, bandwidth/2^zoom wide around cfKhz
+    (RF), as 0x05 frames; null goes back to none. It shares the audio's Kiwi
+    channel, pauses while a scan sweeps, and points again after it. Ask again
+    after each "listening" status for a new receiver. Needs "view" in
+    "features".)
 
 Service -> browser:
     JSON text: {"type": "status", "state": "connecting|listening|stopped|error", "features": ["scan"], ...}
@@ -22,9 +29,13 @@ Service -> browser:
                a status: listening goes on. id, host and port echo the request,
                so a late reply for another receiver or request can be ignored.)
     JSON text: {"type": "meter", "rssi": -73.1, "overflow": false}
+    JSON text: {"type": "view", "id": 4, "state": "error", "message": "..."}
+               (the view asked for can't be shown; the audio plays on)
     Binary:    0x03 + int16 LE mono audio at `sampleRate` (full scale = 32767)
     Binary:    0x04 + float32 LE base dB + uint8 bins spanning -sampleRate/2..+sampleRate/2,
                each bin base + v * 0.5 dB
+    Binary:    0x05 + uint32 LE view id + float32 LE start kHz (RF) + float32 LE span kHz
+               + 1024 uint8 bins across it, about 1 dB per step (the Kiwi's own scale)
     (0x01/0x02, the same with float32 samples and dB, are no longer sent; the
     browser still reads them so the web app can deploy before this service.)
 """
@@ -33,9 +44,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import struct
 import time
 from collections.abc import Awaitable, Callable, Hashable, Iterable
 from dataclasses import replace
+from functools import partial
 from typing import Any
 
 from .config import Settings
@@ -43,12 +56,15 @@ from .dsp import CW_PITCH_HZ, MODES, Demodulator, Spectrum, encode_audio, encode
 from .hostguard import HostRejected, is_public_address, resolve_receiver
 from .kiwi import CLOSE_TIMEOUT_S, DEFAULT_PORT, KiwiClient, KiwiError
 from .scan import ScanResult, sweep
-from .waterfall import WaterfallClient
+from .waterfall import MAX_ZOOM, View, WaterfallClient, WaterfallFrame
 
 log = logging.getLogger(__name__)
 
 AUDIO_TAG = b"\x03"
 SPECTRUM_TAG = b"\x04"
+VIEW_TAG = b"\x05"
+# View ids are the browser's, echoed in each frame's uint32.
+MAX_VIEW_ID = 2**32 - 1
 MAX_FREQ_KHZ = 32_000.0
 METER_INTERVAL_S = 0.25
 # A browser that stops reading (frozen tab, dead Wi-Fi) blocks our sends; past
@@ -57,7 +73,7 @@ METER_INTERVAL_S = 0.25
 SEND_TIMEOUT_S = 15.0
 
 # Statuses list what this service can do, so a newer web app knows whether to ask.
-FEATURES = ["scan"]
+FEATURES = ["scan", "view"]
 # How long a receiver's scan is reused before a new one is made.
 SCAN_CACHE_S = 600.0
 # A receiver that refused a scan isn't asked again for this long. Only refusals
@@ -306,6 +322,21 @@ class ListenSession:
         self._connecting: WaterfallClient | None = None
         self._waterfall_idle: asyncio.Task[None] | None = None
         self._scan: asyncio.Task[None] | None = None
+        # The live view the browser asked for, (id, zoom, RF centre in kHz), or
+        # None. Kept across receivers; the browser asks again for each one.
+        self._view: tuple[int, int, float] | None = None
+        # Opening the paired waterfall for the view (no scan has opened one).
+        self._view_open: asyncio.Task[None] | None = None
+        # The view frame on its way to the browser; frames that come while it
+        # is still going are dropped, so a slow browser never stalls the reader
+        # that keeps the waterfall (and with it the audio) alive.
+        self._view_send: asyncio.Task[None] | None = None
+        # A view change arrived while a sweep or the opener had the waterfall;
+        # it is applied when they finish.
+        self._view_deferred = False
+        # The scan is sweeping (or about to): it owns the waterfall. A scan
+        # still waiting for its turn (SCAN_MIN_INTERVAL_S) doesn't hold up a view.
+        self._sweeping = False
         # The newest scan request's id; a running scan answers under it.
         self._scan_id: int | None = None
         # The last sweep's answer, (monotonic time, target, state, payload),
@@ -351,6 +382,8 @@ class ListenSession:
                 await self.stop("Stopped.")
             elif kind == "scan":
                 await self._start_scan(msg)
+            elif kind == "view":
+                await self._set_view(msg)
             else:
                 # Echo only a short string type: never repr() a list or object whole.
                 shown = f" {kind[:40]!r}" if isinstance(kind, str) else ""
@@ -376,6 +409,8 @@ class ListenSession:
                 await self._scan_reply(
                     scan_id, self._target, "error", message="The scan broke. Check the radio service's logs."
                 )
+            elif kind == "view":
+                await self._view_reply("error", message="The waterfall broke. Check the radio service's logs.")
             elif self._pump is None or self._pump.done():
                 await self._status("error", message="Something broke in the radio service. Try again.")
             elif kind == "tune" and self._pump_owns_receiver():
@@ -790,6 +825,13 @@ class ListenSession:
         if self._client is not client:
             return  # the connection ended while it waited: don't use up the sweep slot
         self._sweep_times.start(key)
+        self._sweeping = True
+        opening = self._view_open
+        if opening is not None and not opening.done():
+            # The view is opening the paired waterfall: sweep on that one, not
+            # a second. Waited for, never cancelled: cancelling a half-open one
+            # closes it, which can end the audio.
+            await asyncio.wait({opening})
         try:
             waterfall = await self._paired_waterfall(client)
             result = await sweep(waterfall.frame, waterfall.info.freq_offset_khz, waterfall.bandwidth_khz)
@@ -848,14 +890,163 @@ class ListenSession:
         """
         if self._scan is asyncio.current_task():
             self._scan = None
+            self._sweeping = False
         await self._scan_reply(self._scan_id, target, state, **extra)
+        await self._apply_deferred_view()
 
     def _idle_waterfall(self) -> None:
         if self._waterfall is not None and (self._waterfall_idle is None or self._waterfall_idle.done()):
+            # The reader points the current view as it starts, so nothing waits.
+            self._point(self._waterfall)
+            self._view_deferred = False
             name = f"{self._target[0]}:{self._target[1]}" if self._target is not None else None
             self._waterfall_idle = asyncio.create_task(self._idle(self._waterfall), name=name)
 
-    async def _paired_waterfall(self, client: KiwiClient) -> WaterfallClient:
+    # --- Live wide view ---
+
+    async def _set_view(self, msg: dict[str, Any]) -> None:
+        zoom, view_id, cf = msg.get("zoom"), msg.get("id"), msg.get("cfKhz")
+        valid_id = isinstance(view_id, int) and not isinstance(view_id, bool) and 0 <= view_id <= MAX_VIEW_ID
+        if zoom is None:
+            self._view = None
+        elif (
+            not valid_id
+            or not isinstance(zoom, int)
+            or isinstance(zoom, bool)
+            or not 0 <= zoom <= MAX_ZOOM
+            or not isinstance(cf, (int, float))
+            or isinstance(cf, bool)
+            # Also refuses NaN and infinity, which Python's JSON reads.
+            or not 0 < cf <= MAX_FREQ_KHZ
+        ):
+            # Answered as a view error, never a status one: the audio is fine.
+            # Whatever streamed before stops: the browser has moved on from it.
+            self._view = None
+            await self._apply_view()
+            await self._view_reply(
+                "error",
+                view_id=view_id if valid_id else None,
+                message="That waterfall view isn't one this service can show.",
+            )
+            return
+        else:
+            self._view = (view_id, zoom, float(cf))
+        await self._apply_view()
+
+    async def _apply_view(self) -> None:
+        """Point the paired waterfall at the view asked for, opening it if need be."""
+        client = self._client
+        if not self._listening or client is None:
+            return  # the browser asks again once a receiver is playing
+        if self._sweep_owns_waterfall() or (self._view_open is not None and not self._view_open.done()):
+            # A sweep or the opener has the waterfall; applied when it's done.
+            self._view_deferred = True
+            return
+        waterfall = self._waterfall
+        if waterfall is None:
+            if self._view is not None:
+                name = f"{client.host}:{client.port}"
+                self._view_open = asyncio.create_task(self._open_view(client), name=name)
+            return
+        if waterfall.refusal is not None:
+            if self._view is not None:
+                await self._view_reply("error", message=f"Couldn't show this receiver's waterfall: {waterfall.refusal}")
+            return
+        if self._view is not None:
+            try:
+                await waterfall.ready()
+            except KiwiError as e:
+                await self._view_reply("error", message=f"Couldn't show this receiver's waterfall: {e}")
+                return
+            if self._client is not client or self._waterfall is not waterfall:
+                return  # the connection ended, or the waterfall went, meanwhile
+            if self._sweep_owns_waterfall():
+                self._view_deferred = True  # a sweep started meanwhile
+                return
+        if self._waterfall_idle is None or self._waterfall_idle.done():
+            self._idle_waterfall()  # its reader points the view as it starts
+            return
+        self._point(waterfall)
+        try:
+            await waterfall.show(waterfall.view)
+        except KiwiError:
+            pass  # gone: the reader sees it and the audio pump reports it
+
+    def _sweep_owns_waterfall(self) -> bool:
+        return self._sweeping and self._scan is not None and not self._scan.done()
+
+    async def _apply_deferred_view(self) -> None:
+        if self._view_deferred:
+            self._view_deferred = False
+            await self._apply_view()
+
+    def _point(self, waterfall: WaterfallClient) -> None:
+        """Set the waterfall's view to the one asked for, at its own offset and coverage."""
+        if self._view is None:
+            waterfall.view = None
+            return
+        view_id, zoom, rf_khz = self._view
+        waterfall.view = View(zoom, waterfall.centre(zoom, rf_khz))
+        waterfall.on_frame = partial(self._forward_view, waterfall, view_id)
+
+    def _forward_view(self, waterfall: WaterfallClient, view_id: int, frame: WaterfallFrame) -> None:
+        if self._view_send is not None and not self._view_send.done():
+            return  # the browser is still taking the last one
+        start_khz = waterfall.info.freq_offset_khz + frame.start_khz
+        data = VIEW_TAG + struct.pack("<Iff", view_id, start_khz, frame.span_khz) + frame.bins.tobytes()
+        self._view_send = asyncio.create_task(self._send_view(data))
+
+    async def _send_view(self, data: bytes) -> None:
+        try:
+            await self._send_bytes(data)
+        except Exception:
+            # The browser went away or stalled (the server closes it then).
+            pass
+
+    async def _open_view(self, client: KiwiClient) -> None:
+        try:
+            await self._open_view_waterfall(client)
+        finally:
+            if self._view_open is asyncio.current_task():
+                self._view_open = None
+        if self._client is client:
+            await self._apply_deferred_view()
+
+    async def _open_view_waterfall(self, client: KiwiClient) -> None:
+        try:
+            await self._paired_waterfall(client, fast=False)
+        except KiwiError as e:
+            if self._client is not client:
+                return  # this connection ended; its teardown owns the waterfall
+            # As after a failed sweep: one still open may carry the audio.
+            if self._waterfall is not None and self._waterfall.is_open:
+                self._idle_waterfall()
+            else:
+                await self._drop_waterfall()
+            if self._view is not None:
+                await self._view_reply("error", message=f"Couldn't show this receiver's waterfall: {e}")
+            return
+        except Exception:
+            log.exception("opening the view's waterfall crashed")
+            if self._client is not client:
+                return
+            self._idle_waterfall()
+            await self._view_reply("error", message="The waterfall broke. Check the radio service's logs.")
+            return
+        if self._client is client:
+            self._idle_waterfall()
+
+    async def _view_reply(self, state: str, *, view_id: int | None = None, **extra: Any) -> None:
+        if view_id is None and self._view is not None:
+            view_id = self._view[0]
+        payload: dict[str, Any] = {"type": "view", "id": view_id, "state": state}
+        payload.update(extra)
+        try:
+            await self._send_text(payload)
+        except Exception:
+            pass
+
+    async def _paired_waterfall(self, client: KiwiClient, *, fast: bool = True) -> WaterfallClient:
         if self._client is not client:
             # A scan from a connection that has ended: the session's waterfall
             # (if any) belongs to the next one.
@@ -875,6 +1066,8 @@ class ListenSession:
                 # Refused but kept open (it may carry the audio): it can't
                 # sweep, and the receiver's reason still stands.
                 raise refusal
+            if not fast:
+                return kept
             await kept.fast()
             if self._client is not client:
                 # Ended while switching speed: don't sweep this waterfall, whose
@@ -956,18 +1149,21 @@ class ListenSession:
 
     async def _end_scan(self) -> None:
         """Stop any scan and close its waterfall; the receiver connection has ended."""
-        scan, idle = self._scan, self._waterfall_idle
+        scan, idle, view_open = self._scan, self._waterfall_idle, self._view_open
+        if self._view_send is not None:
+            self._view_send.cancel()  # a frame for a connection that's ending
+            self._view_send = None
         try:
-            await self._stop_scan_tasks(scan, idle)
+            await self._stop_scan_tasks(scan, idle, view_open)
         except asyncio.CancelledError:
             # Backstop for a caller that cancels this while a scan stops (the
             # pump runs it as its own task and doesn't): that scan may still be
             # closing a half-open waterfall on this channel that only it holds.
             # Let it finish (bounded) before the slot can free.
             # Read any that had already failed: the cut-short stop never did.
-            for error in _failures(t for t in (scan, idle) if t is not None):
+            for error in _failures(t for t in (scan, idle, view_open) if t is not None):
                 log.warning("a stopped scan task failed: %r", error, exc_info=error)
-            stopping = {t for t in (scan, idle) if t is not None and not t.done()}
+            stopping = {t for t in (scan, idle, view_open) if t is not None and not t.done()}
             # Tracked before the wait, so a second cancel cutting it short
             # still leaves each held and its error logged when it ends.
             for task in stopping - scan_stragglers:
@@ -988,8 +1184,12 @@ class ListenSession:
             # error from a scan this ending cut short.
             if self._scan is scan:
                 self._scan = None
+            self._sweeping = False
             if self._waterfall_idle is idle:
                 self._waterfall_idle = None
+            if self._view_open is view_open:
+                self._view_open = None
+            self._view_deferred = False
             self._last_sweep = None
             # Even when cancelled waiting on the scan: the waterfall shares the
             # Kiwi channel, and the pump that called us frees the slot next.
