@@ -174,13 +174,13 @@
 **Priority:** P4
 **Depends on:** None
 
-### Refresh the bundled EiBi schedule each season
+### Check the EiBi snapshot workflow each March and October
 
-**What:** Run `pnpm --filter web eibi:snapshot` and commit `apps/web/src/server/eibi-snapshot.json` after each season switch: the last Sunday of March (next: 28 March 2027, season `a27`) and the last Sunday of October (next: 31 October 2027, `b27`). EiBi usually posts the new file a few days before; the command fetches the season it is when run, or pass one (`pnpm --filter web eibi:snapshot a27`).
+**What:** In late March and late October, before the 1 April and 1 November runs, open the Actions tab and make sure "Refresh EiBi snapshot" is still enabled; re-enable it if GitHub turned it off. If a run was missed or failed, run it by hand (with the season, like `a27`), or run `pnpm --filter web eibi:snapshot` locally and commit `apps/web/src/server/eibi-snapshot.json`.
 
-**Why:** The server only uses the bundled copy when eibispace.de can't be reached, but then it's what every listener gets. The committed copy is `b26`, good until 28 March 2027; after that, a failed download names stations from the wrong season (summer-only and winter-only services, changed frequencies).
+**Why:** skywave is a public repo, and GitHub disables scheduled workflows in public repos after 60 days without activity, silently: no run and no failure email. A quiet winter would let 1 April pass and leave the server's fallback schedule a season out of date.
 
-**Context:** `apps/web/scripts/eibi-snapshot.ts` checks the file parses before writing it. The server marks bundled answers (`bundled: true`) and the page asks again every 15 minutes while it has one.
+**Context:** `.github/workflows/eibi-snapshot.yml` (see Completed: "Refresh the bundled EiBi schedule each season"). It only runs once merged to `main`. Next dates: check around 21 March 2027 (season `a27` from 28 March), then around 24 October 2027 (`b27` from 31 October).
 
 **Effort:** S (twice a year)
 **Priority:** P2
@@ -237,6 +237,12 @@
 
 
 ## Completed
+
+### Refresh the bundled EiBi schedule each season
+
+**What:** The `Refresh EiBi snapshot` workflow (`.github/workflows/eibi-snapshot.yml`) runs on 1 April and 1 November, a few days after EiBi's season switches, fetches the new season's file with `pnpm --filter web eibi:snapshot`, and opens a PR if `apps/web/src/server/eibi-snapshot.json` changed. It can also be run by hand from the Actions tab, with or without a season (`a27`).
+
+**Watch for:** a failed run means EiBi hadn't posted the season's file yet; run it again once it has. A PR this workflow opens doesn't start CI by itself (GitHub's rule for its own token): close and reopen it to run the checks. The repo setting "Allow GitHub Actions to create and approve pull requests" must be on. GitHub can disable the schedule in a quiet public repo; see "Check the EiBi snapshot workflow each March and October" above.
 
 ### Name the stations in the scan list
 
