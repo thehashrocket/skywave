@@ -244,6 +244,17 @@ export function describe(b: Broadcast): string {
   return lang ? `${b.station} · ${lang}` : b.station;
 }
 
+/**
+ * A label short enough to sit over a waterfall: the first station's name and
+ * how many others share the frequency ("Voice of Turkey +1"), without the
+ * languages, which the readout gives for the tuned one. Null if nothing is.
+ */
+export function shortLabel(broadcasts: readonly Broadcast[]): string | null {
+  const first = broadcasts[0];
+  if (!first) return null;
+  return broadcasts.length > 1 ? `${first.station} +${broadcasts.length - 1}` : first.station;
+}
+
 /** What's scheduled on a frequency, as a line of text and, for a tooltip, every broadcast. */
 export type StationLine = { text: string; all: string };
 

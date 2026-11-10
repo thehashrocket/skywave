@@ -1176,7 +1176,7 @@ html,
   top: 10px;
   left: 0;
   transform: translateX(-50%);
-  max-width: 104px;
+  max-width: 150px;
   padding: 1px 6px;
   overflow: hidden;
   white-space: nowrap;
@@ -1400,9 +1400,21 @@ html,
 }
 
 .signal-station {
-  overflow: hidden;
+  display: flex;
+  min-width: 0;
   white-space: nowrap;
+}
+
+.signal-station-name {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.signal-station-more {
+  flex: none;
+  white-space: pre;
+  color: var(--muted);
 }
 
 .signal-strength {

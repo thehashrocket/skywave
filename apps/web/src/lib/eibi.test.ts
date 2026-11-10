@@ -9,6 +9,7 @@ import {
   scheduledBetween,
   scheduledOn,
   seasonFor,
+  shortLabel,
   stationLine,
 } from "./eibi";
 
@@ -161,8 +162,11 @@ describe("EiBi schedule", () => {
     ]);
   });
 
-  // Value: protects=a line names the first broadcast and its languages, counts the rest, lists all for the tooltip, and leaves out language codes it doesn't know; fails_when=a shared frequency hides that others share it, or a raw code like "M" shows; why_new=plan: "9,580 · Radio Australia · English"; seam=none; no_claim=none
+  // Value: protects=a line names the first broadcast and its languages, counts the rest, lists all for the tooltip, and leaves out language codes it doesn't know; the waterfall's short label is the name and a count only; fails_when=a shared frequency hides that others share it, or a raw code like "M" shows; why_new=plan: "9,580 · Radio Australia · English"; seam=none; no_claim=none
   it("words a frequency's line", () => {
+    expect(shortLabel([])).toBeNull();
+    expect(shortLabel([b({ station: "Voice of Turkey" })])).toBe("Voice of Turkey");
+    expect(shortLabel([b({ station: "Voice of Turkey" }), b({ station: "BBC" }), b({})])).toBe("Voice of Turkey +2");
     expect(languageNames("F,E")).toBe("French, English");
     expect(languageNames("-TS")).toBe("Time signal");
     expect(languageNames("ZZZ")).toBe("");

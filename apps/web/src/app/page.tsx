@@ -12,7 +12,7 @@ import { SpanPicker } from "@/components/SpanPicker";
 import { Waterfall } from "@/components/Waterfall";
 import { WideWaterfall } from "@/components/WideWaterfall";
 import { ReceiverChip } from "@/components/ReceiverChip";
-import { scheduledBetween, scheduledOn, stationLine } from "@/lib/eibi";
+import { scheduledBetween, scheduledOn, shortLabel, stationLine } from "@/lib/eibi";
 import { covers, findReceiver, placeName, rankReceivers, receiverKey, type Receiver } from "@/lib/kiwi-list";
 import {
   MODE_LABELS,
@@ -817,7 +817,7 @@ export default function ListenPage() {
     const span = spanKhz(wideView.zoom);
     return scheduledBetween(schedule, wideView.cfKhz - span, wideView.cfKhz + span, clock).map((c) => ({
       khz: c.khz,
-      line: stationLine(c.broadcasts)!,
+      label: shortLabel(c.broadcasts)!,
     }));
   }, [schedule, clock, wideView]);
 

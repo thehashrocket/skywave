@@ -111,13 +111,12 @@ describe("WideWaterfall", () => {
 
   // Value: protects=every scheduled station in view gets a mark at its frequency and only those in view; labels go nearest the tuned frequency first and only where they fit; fails_when=marks land at the wrong place, off-picture stations show, or crowded labels overlap; why_new=owner decision: names on the waterfall; seam=canvas context faked, width given directly; no_claim=the label's look (browser check)
   it("marks scheduled stations and names the ones that fit", () => {
-    const line = (text: string) => ({ text, all: text });
     const { frame, view } = show({
       stations: [
-        { khz: 9_500, line: line("Out of view") },
-        { khz: 9_635, line: line("Left") },
-        { khz: 9_650, line: line("Tuned") },
-        { khz: 9_652, line: line("Crowded") },
+        { khz: 9_500, label: "Out of view" },
+        { khz: 9_635, label: "Left" },
+        { khz: 9_650, label: "Tuned" },
+        { khz: 9_652, label: "Crowded" },
       ],
     });
     frame(9_620, 60);
