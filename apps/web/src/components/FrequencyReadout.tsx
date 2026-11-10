@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import type { StationLine } from "@/lib/eibi";
 import { DIAL_MAX_KHZ, inTuneRange, stepKhz, TUNE_MIN_KHZ } from "@/lib/radio-types";
 
 const RANGE_HINT = `Enter ${TUNE_MIN_KHZ.toLocaleString("en-US")} to ${DIAL_MAX_KHZ.toLocaleString("en-US")} kHz`;
@@ -52,11 +53,14 @@ export function FrequencyReadout({
   freqKhz,
   onChange,
   step,
+  station,
 }: {
   freqKhz: number;
   onChange: (khz: number) => void;
   /** One wheel notch or arrow key press in kHz (Shift: ten); none turns both off. */
   step?: number;
+  /** Who the schedule has on this frequency now, if anyone. */
+  station?: StationLine | null;
 }) {
   const [draft, setDraft] = useState(format(freqKhz));
   const [editing, setEditing] = useState(false);
@@ -161,6 +165,14 @@ export function FrequencyReadout({
     setInvalid(false);
   }, [freqKhz, editing, invalid]);
 
+  // Who's scheduled on the tuned frequency: not while an entry is refused, or
+  // while another frequency is being typed over it.
+  const stationShown = station != null && !invalid && !(editing && edited.current);
+  const listings = station?.all.split("\n") ?? [];
+  // The rest of a shared frequency's listings, opened for this set of them.
+  const [othersFor, setOthersFor] = useState<string | null>(null);
+  const othersOpen = station != null && othersFor === station.all;
+
   const commit = (e?: FormEvent) => {
     e?.preventDefault();
     const khz = parseFrequencyKhz(draft);
@@ -214,7 +226,7 @@ export function FrequencyReadout({
           }
         }}
         aria-invalid={invalid || undefined}
-        aria-describedby={invalid ? "freq-error" : undefined}
+        aria-describedby={invalid ? "freq-error" : stationShown ? "freq-station" : undefined}
         onKeyDown={(e) => {
           // Arrow keys step like the wheel, unless there's typed text to move the caret in.
           if ((e.key === "ArrowUp" || e.key === "ArrowDown") && nudge(e.key === "ArrowUp" ? 1 : -1, e.shiftKey)) {
@@ -230,10 +242,38 @@ export function FrequencyReadout({
         }}
       />
       <span className="readout-unit">kHz</span>
-      {/* Always present, so the alert is announced when its text appears. */}
-      <p id="freq-error" className="readout-error" role="alert">
-        {invalid && RANGE_HINT}
-      </p>
+      {/* One line under the number: who's scheduled there, or why an entry was refused. */}
+      <div className="readout-below">
+        {/* Always present, so the alert is announced when its text appears. */}
+        <p id="freq-error" className="readout-error" role="alert">
+          {invalid && RANGE_HINT}
+        </p>
+        {stationShown && (
+          <p id="freq-station" className="readout-station">
+            <span className="readout-station-name">{listings[0]}</span>
+            {listings.length > 1 && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  className="link-button inline"
+                  aria-expanded={othersOpen}
+                  onClick={() => setOthersFor(othersOpen ? null : listings.join("\n"))}
+                >
+                  +{listings.length - 1} more
+                </button>
+              </>
+            )}
+          </p>
+        )}
+        {stationShown && othersOpen && (
+          <ul className="readout-others" aria-label="Also scheduled now">
+            {listings.slice(1).map((l) => (
+              <li key={l}>{l}</li>
+            ))}
+          </ul>
+        )}
+      </div>
     </form>
   );
 }

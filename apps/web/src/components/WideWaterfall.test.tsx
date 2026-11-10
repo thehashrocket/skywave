@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { WideFrame } from "@/lib/use-radio";
-import { WideWaterfall } from "./WideWaterfall";
+import { placeLabels, WideWaterfall } from "./WideWaterfall";
 
 // jsdom has no canvas: a context that takes the calls, so frames reach the component.
 beforeAll(() => {
@@ -107,5 +107,26 @@ describe("WideWaterfall", () => {
     const band = view.container.querySelector<HTMLElement>(".waterfall-passband")!;
     expect(parseFloat(band.style.left)).toBeCloseTo((58 / 60) * 100);
     expect(parseFloat(band.style.left) + parseFloat(band.style.width)).toBeCloseTo(100);
+  });
+
+  // Value: protects=every scheduled station in view gets a mark at its frequency and only those in view; labels go nearest the tuned frequency first and only where they fit; fails_when=marks land at the wrong place, off-picture stations show, or crowded labels overlap; why_new=owner decision: names on the waterfall; seam=canvas context faked, width given directly; no_claim=the label's look (browser check)
+  it("marks scheduled stations and names the ones that fit", () => {
+    const line = (text: string) => ({ text, all: text });
+    const { frame, view } = show({
+      stations: [
+        { khz: 9_500, line: line("Out of view") },
+        { khz: 9_635, line: line("Left") },
+        { khz: 9_650, line: line("Tuned") },
+        { khz: 9_652, line: line("Crowded") },
+      ],
+    });
+    frame(9_620, 60);
+    const marks = Array.from(view.container.querySelectorAll<HTMLElement>(".waterfall-station"));
+    expect(marks.map((m) => parseFloat(m.style.left))).toEqual([25, 50, expect.closeTo(53.33, 1)]);
+    // jsdom has no layout, so it's the placement rule on its own here.
+    expect([...placeLabels([0.25, 0.5, 0.5333], 0.5, 1000)]).toEqual([1, 0]);
+    expect([...placeLabels([0.02, 0.5], 0.02, 1000)]).toEqual([1]);
+    // Before the width is known: one label, the tuned station's.
+    expect([...placeLabels([0.4, 0.5], 0.5, 0)]).toEqual([1]);
   });
 });

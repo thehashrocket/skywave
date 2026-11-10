@@ -822,13 +822,52 @@ html,
   gap: 6px;
 }
 
-.readout-error {
+/* The line under the number: the scheduled station, or a rejected entry's message in its place. */
+.readout-below {
   flex-basis: 100%;
-  /* Held even when empty, so a rejected entry's message doesn't move the page. */
+  display: grid;
+  /* Held even when empty, so a station or a message appearing doesn't move the page. */
   min-height: 1lh;
-  margin: 0;
   font-size: 0.85rem;
+  /* A long name doesn't widen the readout: it's cut short, whole in the tooltip. */
+  contain: inline-size;
+}
+
+.readout-error,
+.readout-station {
+  grid-area: 1 / 1;
+  margin: 0;
+}
+
+.readout-error {
   color: var(--muted);
+}
+
+/* The name is cut short; "+N more" after it always shows. */
+.readout-station {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4em;
+  color: var(--text);
+}
+
+.readout-station-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.readout-station .link-button {
+  flex: none;
+}
+
+/* A shared frequency's other listings, opened from "+N more". */
+.readout-others {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text);
 }
 
 .readout-input {
@@ -1118,6 +1157,36 @@ html,
   pointer-events: none;
 }
 
+/* Wide waterfall: a mark at the top for each scheduled station, its name under it where one fits. */
+.waterfall-stations {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.waterfall-station {
+  position: absolute;
+  top: 0;
+  height: 8px;
+  border-left: 1px solid var(--brass);
+}
+
+.waterfall-station-name {
+  position: absolute;
+  top: 10px;
+  left: 0;
+  transform: translateX(-50%);
+  max-width: 104px;
+  padding: 1px 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--enamel-deep);
+  border-radius: 4px;
+}
+
 .waterfall-empty {
   position: absolute;
   inset: 0;
@@ -1321,6 +1390,19 @@ html,
 /* Phones only; see the 520px block. */
 .signals-more {
   display: none;
+}
+
+/* The scheduled station over the strength, both cut short rather than wrapping the row. */
+.signal-what {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.signal-station {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .signal-strength {

@@ -174,13 +174,25 @@
 **Priority:** P4
 **Depends on:** None
 
-### Name the stations in the scan list
+### Refresh the bundled EiBi schedule each season
 
-**What:** Label "Strong signals now" rows with the station on that frequency now: match the public EiBi broadcast schedule by frequency and UTC time, and fall back to the receiver's own DX labels.
+**What:** Run `pnpm --filter web eibi:snapshot` and commit `apps/web/src/server/eibi-snapshot.json` after each season switch: the last Sunday of March (next: 28 March 2027, season `a27`) and the last Sunday of October (next: 31 October 2027, `b27`). EiBi usually posts the new file a few days before; the command fetches the season it is when run, or pass one (`pnpm --filter web eibi:snapshot a27`).
 
-**Why:** The list shows "9420 kHz, 31m, 30 dB above noise" but not who it is. Schedules also give language and often programme type, the closest the app can get to "voices, not just loud": the scan's shape filter can't tell talk from music.
+**Why:** The server only uses the bundled copy when eibispace.de can't be reached, but then it's what every listener gets. The committed copy is `b26`, good until 28 March 2027; after that, a failed download names stations from the wrong season (summer-only and winter-only services, changed frequencies).
 
-**Context:** EiBi publishes a free CSV each season (A and B schedules), so it needs refreshing twice a year, and shared frequencies need a matching rule. Kiwis expose owner DX labels (MSG keys `load_dxcfg` and `request_dx_update` arrive on the waterfall connection, `apps/radio/skywave_radio/waterfall.py`). Start by matching exact frequency plus the current UTC hour, and show nothing extra otherwise. The web side is `apps/web/src/components/SignalList.tsx`.
+**Context:** `apps/web/scripts/eibi-snapshot.ts` checks the file parses before writing it. The server marks bundled answers (`bundled: true`) and the page asks again every 15 minutes while it has one.
+
+**Effort:** S (twice a year)
+**Priority:** P2
+**Depends on:** None
+
+### Fall back to the receiver's own DX labels for station names
+
+**What:** Where the EiBi schedule lists nothing on a frequency, name it from the Kiwi owner's DX labels.
+
+**Why:** EiBi covers broadcasters well, but local medium wave stations, utilities and pirates are often only in the owner's labels.
+
+**Context:** EiBi names shipped (see Completed). Kiwis expose owner DX labels: MSG keys `load_dxcfg` and `request_dx_update` arrive on the waterfall connection, `apps/radio/skywave_radio/waterfall.py`. They'd need a new message to the browser, and `stationLine` in `apps/web/src/lib/eibi.ts` would take them as a second source.
 
 **Effort:** M
 **Priority:** P3
@@ -225,6 +237,12 @@
 
 
 ## Completed
+
+### Name the stations in the scan list
+
+**What:** Station names from the EiBi schedule, matched by frequency (within half a kHz), UTC time and day: under the readout, on each Strong signals row and as marks on the receiver's waterfall (UI critique PR 4).
+
+**How:** The web server fetches the season's file once a day (`apps/web/src/server/routers/stations.ts`) and falls back on a bundled copy (`eibi-snapshot.json`, refreshed with `pnpm --filter web eibi:snapshot`); the page matches it locally (`apps/web/src/lib/eibi.ts`). The owner's DX labels are still open, above.
 
 ### Amateur-band scan: shelved after the spike
 

@@ -61,6 +61,7 @@ The list comes from [rx.linkfanel.net](http://rx.linkfanel.net/), which mirrors 
 - **Strong signals now:** about 10 seconds after a receiver starts playing (and after Pick best's 15-second watch, if Pick best chose it), skywave scans that receiver's broadcast bands, medium wave plus the 14 shortwave bands on the dial, and lists the strongest signals it can hear right now, strongest first. Click one to tune it in AM. The list ranks by how far a signal stands above the noise, so it can't tell talk from music; flat-topped signals such as digital broadcasts and noise jammers are left out and counted instead. The scan rides on the receiver's existing channel (no extra listener slot on the volunteer's Kiwi), takes a few seconds, and stops at 15 seconds (or when the receiver stalls) with the bands it finished. A complete scan is kept for 10 minutes per receiver, for everyone listening there; a partial one is shown but not kept, and a receiver that refuses the scan isn't asked again for a minute. **Scan again** makes a new scan, at most one every 30 seconds per listener (per IP address) on a receiver: sooner on the same connection, it shows the last answer; on a new connection, the scan waits out the rest of the 30 seconds. A receiver that sends no waterfall at all is reported as an error, not as an empty list. Ham bands aren't scanned.
 - **Dial:** drag to tune coarsely (snaps to 5 kHz). Once the first audio of a visit arrives, the dial gets shorter so the waterfall has the room. Focus it and use arrow keys for 1 kHz steps, Shift for 10, Page Up/Down for 100. Crossing into a ham band switches to the conventional sideband automatically. On a touch screen, a finger tunes once it moves sideways (a scroll that starts on the dial doesn't), and a tap tunes where it lands; on a phone, a drag that ends near the edge of the visible dial scrolls the rest into reach.
 - **Readout:** rest the pointer on the big number for half a second (or click it) and scroll to fine-tune, or focus it and use the up and down arrow keys; a scroll that just passes over it scrolls the page and never retunes. One AM channel per notch (10 kHz on medium wave with a receiver in the Americas, 9 elsewhere, 5 on shortwave), 100 Hz in SSB, 10 Hz in CW; hold Shift for ten. Or click it and type an exact frequency, in kHz or with a unit (`7.2 MHz`, `7200k`). Anything else stays in the box, flagged, with the range to use; Escape puts the current frequency back. skywave remembers the last frequency and mode, a pinned receiver, and the last receiver you heard (for Back), for your next visit.
+- **Station names:** who's scheduled on the air now, from the free [EiBi](http://www.eibispace.de/) shortwave schedule: under the readout for the tuned frequency, on each Strong signals row ("KBS World Radio · English"), and as marks across the top of the receiver's waterfall, named where they fit (nearest the tuned frequency first). A shared frequency says "+2 more": under the readout, press it for the others; in the list, hover a name or tune the row. It's a schedule, not a log: a listed station may be off the air or not reach the receiver, and an unlisted one may be on. Listings within half a kHz count, by UTC time and day. The web server fetches the season's file once a day; if eibispace.de can't be reached, it uses a copy bundled with the app (refresh it with `pnpm --filter web eibi:snapshot` when the season changes, in late March and late October).
 - **Waterfall:** right under the status line. Until the first audio of a visit it's a short strip pointing at Listen. Then a row of widths appears above it:
   - **Audio** shows the ±6 kHz the Kiwi is sending for your audio.
   - **15 kHz**, **60 kHz** (the default) and **230 kHz** show the receiver's own waterfall around the dial, with the frequencies along the bottom. It stays put while you tune inside it and moves when you get near an edge.
@@ -109,7 +110,7 @@ apps/web/
   src/app/vendor/maplibre/           serves MapLibre's worker (which the bundler doesn't copy) at /vendor/maplibre/<version>/
   src/lib/use-pick-best.ts           Pick best's try-the-next-one logic
   src/lib/use-receiver-list.ts       the receiver list query the page and the Receivers section share
-  src/server/                        tRPC routers (presets, receivers) + Prisma client
+  src/server/                        tRPC routers (presets, receivers, stations) + Prisma client; eibi-snapshot.json, the bundled station schedule
   public/worklets/radio-player.js    jitter buffer + resampler
 ```
 
@@ -147,11 +148,11 @@ Only the web app runs on Vercel. The radio service holds one long-lived process 
 
 ```bash
 pnpm test:radio     # DSP math, a fake Kiwi for the protocol, end-to-end WebSocket sessions, the band scan and waterfall client, scripts/pregate-run.sh
-pnpm test:web       # password gate, preset + receiver APIs, receiver ranking and Pick best, sun position, the receiver map (logic, style, panel and adapter wiring, worker route), band/S-meter math, the audio worklet's buffer
+pnpm test:web       # password gate, preset + receiver APIs, the station schedule, receiver ranking and Pick best, sun position, the receiver map (logic, style, panel and adapter wiring, worker route), band/S-meter math, the audio worklet's buffer
 pnpm typecheck
 ```
 
 ## Next steps
 
-1. **Station lookup:** import the EiBi shortwave schedule CSV so tuning 9,535 kHz at 0300 UTC tells you who's probably on and pins the transmitter site. On the map, that would draw the path from the transmitter to each receiver.
+1. **Transmitter paths:** station names now come from EiBi, whose file also gives each broadcast's transmitter site; on the map, that could draw the path from the transmitter to each receiver.
 2. **Wider view on the dial:** the waterfall now shows up to a whole band; the Kiwi's `W/F` stream covers 0–30 MHz, so the dial itself could show where the activity is before you tune.

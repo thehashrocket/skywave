@@ -270,4 +270,28 @@ describe("FrequencyReadout stepping", () => {
     fireEvent.keyDown(input(), { key: "ArrowUp" });
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  // Value: protects=the scheduled station shows under the number and is read with the field (aria-describedby), a shared frequency's other listings open from "+N more" by keyboard or touch, and the line gives way to typing another frequency and to a rejected entry's message; fails_when=the name is missing or silent to a screen reader, the others are hover-only, the old name sits under a new frequency being typed, or it and the error both show; why_new=owner decision: a name under the readout, plus review (a11y); seam=none; no_claim=how far the name is cut short (CSS)
+  it("names the scheduled station under the number, readable and openable, until it's typed over", () => {
+    const station = { text: "KBS World Radio · English +1 more", all: "KBS World Radio · English\nRadio Y · Mandarin" };
+    const { rerender } = render(<FrequencyReadout freqKhz={9_580} onChange={() => {}} station={station} />);
+    const input = screen.getByRole("textbox", { name: "Frequency in kilohertz" });
+    expect(input.getAttribute("aria-describedby")).toBe("freq-station");
+    expect(document.getElementById("freq-station")!.textContent).toBe("KBS World Radio · English +1 more");
+    expect(screen.queryByText("Radio Y · Mandarin")).toBeNull();
+    const more = screen.getByRole("button", { name: "+1 more" });
+    fireEvent.click(more);
+    expect(more.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("list", { name: "Also scheduled now" }).textContent).toBe("Radio Y · Mandarin");
+    act(() => (input as HTMLInputElement).focus());
+    fireEvent.change(input, { target: { value: "7200" } });
+    expect(document.getElementById("freq-station")).toBeNull();
+    fireEvent.change(input, { target: { value: "abc" } });
+    fireEvent.submit((input as HTMLInputElement).form!);
+    expect(screen.getByRole("alert").textContent).toMatch(/Enter/);
+    expect(input.getAttribute("aria-describedby")).toBe("freq-error");
+    expect(document.getElementById("freq-station")).toBeNull();
+    rerender(<FrequencyReadout freqKhz={9_580} onChange={() => {}} station={null} />);
+    expect(document.querySelector(".readout-station")).toBeNull();
+  });
 });
