@@ -1006,22 +1006,150 @@ describe("ListenPage", () => {
     });
   });
 
-  // Value: protects=the instrument and its live output sit together, with the receiver chooser after them (design D3), and screen readers reach the instrument by heading (D19); fails_when=the picker moves back between the radio and the waterfall, or the hidden headings go; why_new=design review reordered the page; seam=picker, waterfall and presets mocked; no_claim=visual spacing (browser check)
-  it("puts the waterfall, signals and presets before the receivers", () => {
+  // Value: protects=the receiver choice sits at the top, collapsed into the header strip with its drawer right under it (UI critique), and the instrument and its live output still sit together after it, reached by heading (D19); fails_when=the drawer moves back below the waterfall, or between the radio and the waterfall, or the hidden headings go; why_new=the header strip replaced design D3's receivers-last order; seam=picker, waterfall and presets mocked; no_claim=visual spacing (browser check)
+  it("puts the receiver drawer under the strip, then the instrument, waterfall and presets", () => {
     render(<ListenPage />);
     const order = [
+      screen.getByRole("button", { name: "Change receiver" }),
+      screen.getByLabelText("browse"),
+      screen.getByText(/run by volunteers/),
       screen.getByRole("heading", { name: "Tuner" }),
       screen.getByRole("slider", { name: "Tuning dial" }),
       screen.getByText("Not listening"),
       screen.getByRole("heading", { name: "Waterfall" }),
       screen.getByLabelText("waterfall"),
       screen.getByLabelText("presets"),
-      screen.getByLabelText("browse"),
-      screen.getByText(/run by volunteers/),
     ];
     for (let i = 1; i < order.length; i++) {
       expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
+  });
+
+  describe("header strip and drawer", () => {
+    const change = () => screen.getByRole("button", { name: "Change receiver" });
+    const drawer = () => document.getElementById("receiver-drawer")!;
+
+    // Value: protects=the drawer opens on a first visit (something to pick from) and stays shut for a returning listener, with "change" saying which and the closed drawer out of reach (inert); fails_when=the first-visit open goes, aria-expanded drifts from the drawer, or a closed drawer stays reachable; why_new=header strip; seam=none; no_claim=the collapse itself (CSS, browser check)
+    it("opens on a first visit only, and change toggles it", () => {
+      render(<ListenPage />);
+      expect(change().getAttribute("aria-expanded")).toBe("true");
+      expect(drawer().hasAttribute("inert")).toBe(false);
+      expect(drawer().hasAttribute("inert")).toBe(false);
+      cleanup();
+
+      localStorage.setItem("skywave.receiver", JSON.stringify({ host: "old.example", port: "8073" }));
+      render(<ListenPage />);
+      expect(change().getAttribute("aria-expanded")).toBe("false");
+      expect(drawer().hasAttribute("inert")).toBe(true);
+      expect(drawer().hasAttribute("inert")).toBe(true);
+      fireEvent.click(change());
+      expect(change().getAttribute("aria-expanded")).toBe("true");
+      expect(drawer().hasAttribute("inert")).toBe(false);
+    });
+
+    // Value: protects=choosing a receiver in the drawer (table, map, typed + Switch/Enter, Pick best) closes it and puts focus on "change" rather than dropping it with the drawer; fails_when=a choice path skips closeDrawer or focus isn't moved; why_new=drawer; seam=picker and map mocked; no_claim=real focus rings
+    it("closes after a choice, leaving focus on change", () => {
+      render(<ListenPage />); // first visit: open
+      const choose = screen.getByRole("button", { name: "choose listed" });
+      act(() => choose.focus());
+      fireEvent.click(choose);
+      expect(drawer().hasAttribute("inert")).toBe(true);
+      expect(document.activeElement).toBe(change());
+
+      fireEvent.click(change());
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      expect(drawer().hasAttribute("inert")).toBe(true);
+
+      fireEvent.click(change());
+      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "typed.example" } });
+      fireEvent.keyDown(screen.getByLabelText("Receiver"), { key: "Enter" });
+      fireEvent.submit(document.getElementById("receiver-form")!);
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "typed.example" }));
+      expect(drawer().hasAttribute("inert")).toBe(true);
+    });
+
+    // Value: protects=a blank Listen that can't pick (the list still loading or failed) opens the drawer, since its message points at the Receiver field and Try again inside it; fails_when=the drawer stays shut over the controls the message names; why_new=review: the message pointed into a closed drawer; seam=list hook mocked; no_claim=the message text (design-pass tests)
+    it("opens the drawer when a blank Listen has no list to pick from", () => {
+      localStorage.setItem("skywave.receiver", JSON.stringify({ host: "old.example", port: "8073" }));
+      receiverList.data = undefined;
+      render(<ListenPage />);
+      expect(drawer().hasAttribute("inert")).toBe(true);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+      expect(radio.tune).not.toHaveBeenCalled();
+      expect(drawer().hasAttribute("inert")).toBe(false);
+    });
+
+    // Value: protects=the strip's Listen still submits the receiver form it sits outside of (form=), so a blank Listen runs Auto and a typed one tunes it; fails_when=the form attribute or the form's id drifts, so Listen does nothing; why_new=Listen moved out of the form into the strip; seam=list hook mocked; no_claim=browser implicit submission beyond jsdom
+    it("submits the drawer's form from the strip's Listen", () => {
+      receiverList.data = { receivers: [listed, { ...backup, snr: 10 }] };
+      render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: listed.host }));
+    });
+
+    // Value: protects=the map stays unloaded until the drawer has been opened once (a map loading unseen can't be checked for drawing), and stays admitted after it closes; fails_when=admission ignores the drawer or is lost on close; why_new=the map moved into the drawer; seam=MapPanel mocked, fake timers; no_claim=MapLibre's own sizing
+    it("admits the map once the drawer has been opened, and keeps it", () => {
+      vi.useFakeTimers();
+      try {
+        localStorage.setItem("skywave.receiver", JSON.stringify({ host: "old.example", port: "8073" }));
+        render(<ListenPage />);
+        act(() => vi.advanceTimersByTime(30_000));
+        expect(screen.getByLabelText("map admitted").textContent).toBe("no");
+        fireEvent.click(change());
+        expect(screen.getByLabelText("map admitted").textContent).toBe("yes");
+        fireEvent.click(change());
+        expect(screen.getByLabelText("map admitted").textContent).toBe("yes");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Value: protects=the dial goes compact with the waterfall's opening (the visit's first audio) and stays compact through Stop; fails_when=compact follows busy or heardAudio (a resize on every Listen/Stop) or isn't passed; why_new=compact dial; seam=none; no_claim=the compact geometry (globals.test, Dial.test)
+    it("makes the dial compact on first audio, and keeps it", () => {
+      const dial = () => document.querySelector(".dial")!;
+      const view = render(<ListenPage />);
+      expect(dial().hasAttribute("data-compact")).toBe(false);
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      expect(dial().hasAttribute("data-compact")).toBe(true);
+      radio.status = { state: "stopped" };
+      radio.heardAudio = false;
+      view.rerender(<ListenPage />);
+      expect(dial().hasAttribute("data-compact")).toBe(true);
+    });
+
+    // Value: protects=wheel tuning steps an AM medium wave channel by where the receiver playing is: 10 kHz in the Americas, 9 elsewhere or unknown; fails_when=the page passes no step, ignores the receiver's longitude, or the region test is inverted; why_new=wheel tuning; seam=list hook mocked, fake timers; no_claim=the step table itself (radio-types tests)
+    it("steps medium wave by the playing receiver's region", () => {
+      vi.useFakeTimers();
+      try {
+        localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 1_000, mode: "am" }));
+        receiverList.data = {
+          receivers: [
+            { ...listed, lon: -72.6 },
+            { ...backup, lon: 6.5 },
+          ],
+        };
+        savePin({ host: listed.host, port: listed.port, fromList: true });
+        radio.status = { state: "listening", host: listed.host, port: listed.port };
+        const view = render(<ListenPage />);
+        const readout = screen.getByLabelText("Frequency in kilohertz");
+        radio.retune.mockClear();
+        fireEvent.pointerEnter(readout);
+        act(() => vi.advanceTimersByTime(500)); // the pointer rests on the number
+        fireEvent.wheel(readout, { deltaY: -100 });
+        act(() => vi.advanceTimersByTime(200));
+        expect(radio.retune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 1_010 }));
+
+        radio.status = { state: "listening", host: backup.host, port: backup.port };
+        view.rerender(<ListenPage />);
+        fireEvent.wheel(readout, { deltaY: -100 });
+        act(() => vi.advanceTimersByTime(200));
+        expect((readout as HTMLInputElement).value).toBe("1,017.00"); // 1,010 is off the 9 kHz grid: next channel up is 1,017
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe("Auto and pinned receivers", () => {
@@ -1672,15 +1800,19 @@ describe("ListenPage", () => {
       expect(tone()).toBeNull();
     });
 
-    // Value: protects=the status names where a listed receiver is, and falls back to the host when the list doesn't know it (design D9); fails_when=the place lookup misses or prints nothing useful; why_new=status showed the host only; seam=list hook mocked; no_claim=how volunteers write locations (placeName tests)
+    // Value: protects=the header strip names where a listed receiver is (then its host), and falls back to the host when the list doesn't know it (design D9, moved up from the status row), and the status live region says where too so a switch is announced; fails_when=the place lookup misses or prints nothing useful; why_new=the strip replaced the status detail; seam=list hook mocked; no_claim=how volunteers write locations (placeName tests)
     it("says where a listed receiver is", () => {
+      const strip = () => document.querySelector(".tuned-to-text");
       const view = render(<ListenPage />);
+      expect(strip()).toBeNull(); // nothing playing: the strip shows the receiver choice instead
       radio.status = { state: "listening", host: listed.host, port: listed.port };
       view.rerender(<ListenPage />);
-      expect(document.querySelector(".status-detail")!.textContent).toBe(`from Vermont · ${listed.host}`);
+      expect(strip()!.textContent).toBe(`Listening via Vermont · ${listed.host}`);
+      // The strip isn't a live region; the status row says where too, so a switch is heard.
+      expect(document.querySelector('div.status[role="status"]')!.textContent).toContain("Listening via Vermont");
       radio.status = { state: "listening", host: "typed.example", port: 8073 };
       view.rerender(<ListenPage />);
-      expect(document.querySelector(".status-detail")!.textContent).toBe("on typed.example");
+      expect(strip()!.textContent).toBe("Listening via typed.example");
       // A status with no port means the Kiwi default, 8073.
       receiverList.data = {
         receivers: [
@@ -1690,11 +1822,11 @@ describe("ListenPage", () => {
       };
       radio.status = { state: "listening", host: backup.host };
       view.rerender(<ListenPage />);
-      expect(document.querySelector(".status-detail")!.textContent).toBe(`from Ohio · ${backup.host}`);
+      expect(strip()!.textContent).toBe(`Listening via Ohio · ${backup.host}`);
       // A listed receiver that gives no location reads like an unlisted one.
       radio.status = { state: "listening", host: "quiet.example", port: listed.port };
       view.rerender(<ListenPage />);
-      expect(document.querySelector(".status-detail")!.textContent).toBe("on quiet.example");
+      expect(strip()!.textContent).toBe("Listening via quiet.example");
     });
 
     // Value: protects=a return visit comes back on the last frequency and mode, a bad stored value falls back, and the default never overwrites the saved value on load (design D10, eng review S6); fails_when=the restore is dropped or either field's check is skipped (each bad row breaks one field); no test can see the tuningRestored guard, since the restore's rerender clears the default's pending save; why_new=frequency wasn't stored; seam=none; no_claim=private-mode storage quirks

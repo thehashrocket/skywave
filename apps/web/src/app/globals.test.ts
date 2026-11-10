@@ -62,28 +62,55 @@ describe("globals.css", () => {
     expect(contrast(token("--ham"), token("--glass-shade"))).toBeLessThan(4.5);
   });
 
-  // Value: protects=the gutter is as tall as the glass and its row labels sit on their band rows; fails_when=Dial.tsx's viewBox or a BandRow y changes, or .dial-glass min-width stops reading --glass-min, and the gutter is not updated; why_new=nothing tied the CSS to Dial.tsx geometry; seam=none; no_claim=real layout (jsdom has no container queries; source text only)
+  // Value: protects=the gutter is as tall as the glass and its row labels sit on their band rows, for the full dial and the compact one; fails_when=a Dial.tsx layout's H or band rows change, or .dial-glass min-width stops reading --glass-min, and the gutter's --dial-aspect or label positions are not updated; why_new=nothing tied the CSS to Dial.tsx geometry (the compact layout added a second one); seam=none; no_claim=real layout (jsdom has no container queries; source text only)
   it("sizes the dial gutter and places its labels from Dial.tsx's geometry", () => {
-    const dial = readFileSync(new URL("../components/Dial.tsx", import.meta.url), "utf8");
-    const num = (name: string) => Number(new RegExp(`const ${name} = (\\d+);`).exec(dial)?.[1]);
-    const [W, H] = [num("W"), num("H")];
+    const dial = readFileSync(new URL("../components/Dial.tsx", import.meta.url), "utf8").replace(/\s+/g, "");
+    const W = Number(/constW=(\d+);/.exec(dial)?.[1]);
     expect(W).toBeGreaterThan(0);
-    expect(H).toBeGreaterThan(0);
+    const layout = (name: string) => {
+      const m = new RegExp(
+        `const${name}:Layout=\\{H:(\\d+),broadcast:\\{y:(\\d+),labelY:\\[(\\d+),(\\d+)\\]\\},.*?ham:\\{y:(\\d+),labelY:\\[(\\d+),(\\d+)\\]\\}`,
+      ).exec(dial);
+      expect(m, `${name} layout`).not.toBeNull();
+      const [H, by, b0, b1, hy, h0, h1] = m!.slice(1).map(Number) as [number, ...number[]];
+      return { H, broadcast: [by!, b0!, b1!], ham: [hy!, h0!, h1!] };
+    };
+    // Both band rows draw from the active layout.
+    expect(dial).toContain("<BandRowbands={BROADCAST_BANDS}{...layout.broadcast}");
+    expect(dial).toContain("<BandRowbands={HAM_BANDS}{...layout.ham}");
 
-    // Height = glass width × H/W, with the glass never narrower than its min-width.
-    const height = /height:\s*calc\(max\(var\(--glass-min\),.*\)\s*\*\s*([\d.]+)\)\s*;/.exec(ruleBody(".dial-gutter"));
-    expect(height, ".dial-gutter height formula").not.toBeNull();
-    expect(Number(height![1])).toBeCloseTo(H / W, 4);
+    // Height = glass width × --dial-aspect, with the glass never narrower than its min-width.
+    expect(ruleBody(".dial-gutter")).toMatch(
+      /height:\s*calc\(max\(var\(--glass-min\),.*\)\s*\*\s*var\(--dial-aspect\)\)\s*;/,
+    );
     expect(ruleBody(".dial-glass")).toMatch(/min-width:\s*var\(--glass-min\)\s*;/);
 
-    // Each label's center falls inside its band row: from the higher of bar top and first label, to the second label.
-    const rows = [...dial.matchAll(/<BandRow[^>]*\by=\{(\d+)\}\s*labelY=\{\[(\d+),\s*(\d+)\]\}[^>]*dial-band-(\w+)"/g)];
-    expect(rows.map((r) => r[4])).toEqual(["broadcast", "ham"]);
-    for (const [, y, l0, l1, row] of rows) {
-      const top = Number(/top:\s*([\d.]+)%/.exec(ruleBody(`.dial-row-label-${row}`))?.[1]);
-      const center = (top / 100) * H;
-      expect(center, `${row} label center`).toBeGreaterThanOrEqual(Math.min(Number(y), Number(l0)));
-      expect(center, `${row} label center`).toBeLessThanOrEqual(Number(l1));
+    const cases = [
+      { name: "FULL", frame: ".dial-frame", label: (row: string) => `.dial-row-label-${row}` },
+      {
+        name: "COMPACT",
+        frame: ".dial[data-compact] .dial-frame",
+        label: (row: string) => `.dial[data-compact] .dial-row-label-${row}`,
+      },
+    ];
+    for (const c of cases) {
+      const g = layout(c.name);
+      const aspect = Number(/--dial-aspect:\s*([\d.]+)\s*;/.exec(ruleBody(c.frame))?.[1]);
+      expect(aspect, `${c.name} --dial-aspect`).toBeCloseTo(g.H / W, 3);
+      // Each label's center falls inside its band row: from the higher of bar top and first label, to the second label.
+      for (const row of ["broadcast", "ham"] as const) {
+        const [y, l0, l1] = g[row];
+        let body: string;
+        try {
+          body = ruleBody(c.label(row));
+        } catch {
+          body = ruleBody(`.dial-row-label-${row}`); // the compact dial keeps the full one's position
+        }
+        const top = Number(/top:\s*([\d.]+)%/.exec(body)?.[1]);
+        const center = (top / 100) * g.H;
+        expect(center, `${c.name} ${row} label center`).toBeGreaterThanOrEqual(Math.min(y!, l0!));
+        expect(center, `${c.name} ${row} label center`).toBeLessThanOrEqual(l1!);
+      }
     }
   });
 

@@ -7,17 +7,18 @@ export const AUTO_LABEL = "Auto (best for this frequency)";
  * that goes back to Auto. Unpinning changes only the next choice; whatever is
  * playing keeps playing.
  *
- * `id` names the text, so a field can point aria-describedby at it.
+ * `id` names the text, so a field can point aria-describedby at it. Without
+ * `onUnpin` it only shows the choice (the header strip; the ✕ is in the drawer).
  */
 export function ReceiverChip({
   id,
   pinned,
   onUnpin,
 }: {
-  id: string;
+  id?: string;
   /** The pinned receiver's name, or null for Auto. */
   pinned: string | null;
-  onUnpin: () => void;
+  onUnpin?: () => void;
 }) {
   const auto = pinned === null;
   return (
@@ -25,7 +26,7 @@ export function ReceiverChip({
       <span id={id} className={auto ? undefined : "chip-label"} title={pinned ?? undefined}>
         {pinned ?? AUTO_LABEL}
       </span>
-      {!auto && (
+      {!auto && onUnpin && (
         <button type="button" className="chip-unpin" aria-label={`Unpin ${pinned} and use Auto`} onClick={onUnpin}>
           <span aria-hidden="true">✕</span>
         </button>

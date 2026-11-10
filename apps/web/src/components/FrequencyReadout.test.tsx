@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { FrequencyReadout, parseFrequencyKhz } from "./FrequencyReadout";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FrequencyReadout, parseFrequencyKhz, WHEEL_REST_MS } from "./FrequencyReadout";
 
 afterEach(cleanup);
 
@@ -153,5 +153,121 @@ describe("FrequencyReadout", () => {
     fireEvent.keyDown(input, { key: "Escape" });
     expect(onChange).not.toHaveBeenCalled();
     expect(input.value).toBe("10,000.00");
+  });
+});
+
+describe("FrequencyReadout stepping", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+  const input = () => screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement;
+  /** The pointer comes to rest on the number. */
+  const rest = () => {
+    fireEvent.pointerEnter(input());
+    act(() => vi.advanceTimersByTime(WHEEL_REST_MS));
+  };
+  const wheel = (init: WheelEventInit) => {
+    const e = new WheelEvent("wheel", { cancelable: true, bubbles: true, ...init });
+    act(() => {
+      input().dispatchEvent(e);
+    });
+    return e;
+  };
+
+  // Value: protects=a page scroll that passes over the number keeps scrolling and never retunes (losing the station), however long it goes on, while a pointer that has rested there tunes; fails_when=the wheel tunes on any pointer over the number, or a wheel during the wait doesn't restart it; why_new=user flag on wheel tuning (scrolling past the readout changed the station); seam=fake timers; no_claim=real pointer and momentum-scroll timing
+  it("lets a page scroll pass over the number, and tunes once the pointer rests", () => {
+    const onChange = vi.fn();
+    render(<FrequencyReadout freqKhz={9_580} onChange={onChange} step={5} />);
+    fireEvent.pointerEnter(input());
+    for (let i = 0; i < 5; i++) {
+      expect(wheel({ deltaY: 100 }).defaultPrevented).toBe(false);
+      act(() => vi.advanceTimersByTime(WHEEL_REST_MS - 1)); // still scrolling: each wheel restarts the wait
+    }
+    expect(onChange).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1));
+    expect(wheel({ deltaY: -100 }).defaultPrevented).toBe(true);
+    expect(onChange).toHaveBeenLastCalledWith(9_585);
+    fireEvent.pointerLeave(input());
+    fireEvent.pointerEnter(input());
+    expect(wheel({ deltaY: -100 }).defaultPrevented).toBe(false); // left and came back: wait again
+  });
+
+  // Value: protects=a notch tunes one step (up is up) without scrolling the page, Shift takes ten (also sideways), several notches before a re-render count on from each other, and a focused box (clicked or tabbed into) tunes at once and shows the new number; fails_when=the listener is passive, the direction is inverted, Shift is ignored, a notch re-reads the stale prop, focus doesn't arm it, or the focused box keeps the old number; why_new=wheel tuning (and the review's stale-number bug); seam=fake timers; no_claim=real wheel hardware
+  it("steps by notch, ten with Shift, and tunes at once when focused", () => {
+    const onChange = vi.fn();
+    const view = render(<FrequencyReadout freqKhz={9_580} onChange={onChange} step={5} />);
+    rest();
+    wheel({ deltaY: -100 });
+    expect(onChange).toHaveBeenLastCalledWith(9_585);
+    wheel({ deltaY: -100 }); // before any re-render
+    expect(onChange).toHaveBeenLastCalledWith(9_590);
+    wheel({ deltaY: 100, shiftKey: true });
+    expect(onChange).toHaveBeenLastCalledWith(9_550);
+    wheel({ deltaX: -100, shiftKey: true }); // Shift turns some mice sideways
+    expect(onChange).toHaveBeenLastCalledWith(9_600);
+    cleanup();
+
+    const tuned = vi.fn();
+    const focused = render(<FrequencyReadout freqKhz={9_580} onChange={tuned} step={5} />);
+    act(() => input().focus());
+    expect(wheel({ deltaY: -100 }).defaultPrevented).toBe(true);
+    expect(tuned).toHaveBeenLastCalledWith(9_585);
+    focused.rerender(<FrequencyReadout freqKhz={9_585} onChange={tuned} step={5} />);
+    expect(input().value).toBe("9,585.00");
+    view.unmount();
+  });
+
+  // Value: protects=a trackpad's small deltas add up to a notch rather than each tuning a step, and a reversal starts the count again; fails_when=every pixel delta steps (a flick races across the band) or the total survives a reversal; why_new=wheel tuning; seam=fake timers; no_claim=any particular trackpad's deltas
+  it("adds up a trackpad's small deltas to one notch", () => {
+    const onChange = vi.fn();
+    render(<FrequencyReadout freqKhz={9_580} onChange={onChange} step={5} />);
+    rest();
+    for (const d of [-20, -20]) wheel({ deltaY: d });
+    expect(onChange).not.toHaveBeenCalled();
+    wheel({ deltaY: 30 }); // reversal: the count starts again at +30
+    wheel({ deltaY: -20 }); // and again at -20
+    expect(onChange).not.toHaveBeenCalled();
+    wheel({ deltaY: -30 });
+    expect(onChange).toHaveBeenLastCalledWith(9_585);
+  });
+
+  // Value: protects=the arrow keys step like the wheel (Shift ten) for keyboard users, but move the caret over typed text; fails_when=arrows don't step, step over typed text, or don't stop the caret moving; why_new=review: no keyboard fine-tuning in the readout; seam=none; no_claim=none beyond protects
+  it("steps with the arrow keys, except over typed text", () => {
+    const onChange = vi.fn();
+    render(<FrequencyReadout freqKhz={9_580} onChange={onChange} step={5} />);
+    act(() => input().focus());
+    const up = fireEvent.keyDown(input(), { key: "ArrowUp" });
+    expect(up).toBe(false); // default prevented
+    expect(onChange).toHaveBeenLastCalledWith(9_585);
+    fireEvent.keyDown(input(), { key: "ArrowDown", shiftKey: true });
+    expect(onChange).toHaveBeenLastCalledWith(9_550); // ten steps: snaps to the 50 kHz grid below
+    onChange.mockClear();
+    fireEvent.change(input(), { target: { value: "95" } });
+    expect(fireEvent.keyDown(input(), { key: "ArrowUp" })).toBe(true);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=stepping leaves typed text alone (the page scrolls) and comes back after Escape throws the text away; fails_when=the wheel overwrites what's being typed, or Escape leaves stepping off until the next focus; why_new=wheel tuning (and the review's Escape bug); seam=fake timers; no_claim=none beyond protects
+  it("leaves typed text alone, and steps again after Escape", () => {
+    const onChange = vi.fn();
+    render(<FrequencyReadout freqKhz={9_580} onChange={onChange} step={5} />);
+    act(() => input().focus());
+    fireEvent.change(input(), { target: { value: "95" } });
+    expect(wheel({ deltaY: -100 }).defaultPrevented).toBe(false);
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(input(), { key: "Escape" });
+    expect(input().value).toBe("9,580.00");
+    rest();
+    wheel({ deltaY: -100 });
+    expect(onChange).toHaveBeenLastCalledWith(9_585);
+  });
+
+  // Value: protects=without a step nothing steps and the page scrolls; fails_when=a missing step steps by NaN or swallows the wheel; why_new=wheel tuning; seam=fake timers; no_claim=none beyond protects
+  it("does nothing without a step", () => {
+    const onChange = vi.fn();
+    render(<FrequencyReadout freqKhz={9_580} onChange={onChange} />);
+    rest();
+    expect(wheel({ deltaY: -100 }).defaultPrevented).toBe(false);
+    fireEvent.keyDown(input(), { key: "ArrowUp" });
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
