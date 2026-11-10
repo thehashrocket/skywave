@@ -108,7 +108,7 @@ function clearTimers(c: Chain | null) {
  * also happens to be listed must come back as typed. The matching candidate,
  * if any, only lends its name.
  */
-function playing(status: RadioStatus, candidates: Receiver[], provenance: Provenance): Fallback | null {
+function playing(status: RadioStatus, candidates: readonly Receiver[], provenance: Provenance): Fallback | null {
   if ((status.state !== "listening" && status.state !== "connecting") || !status.host || !status.port) return null;
   const key = receiverKey({ host: status.host, port: status.port });
   const details = candidates.find((r) => receiverKey(r) === key) ?? {
@@ -156,6 +156,11 @@ export function usePickBest(
   provenanceRef.current = provenance;
   // When each receiver last refused, by refusedKey.
   const refused = useRef(new Map<string, number>());
+  /** Whether this receiver refused within REFUSED_MS, so neither a run nor a suggestion should offer it. */
+  const isRefused = useCallback(
+    (r: { host: string; port?: number }) => Date.now() - (refused.current.get(refusedKey(r)) ?? -Infinity) < REFUSED_MS,
+    [],
+  );
 
   /** End the chain, optionally leaving a note about why. */
   const finish = useCallback((why: string | null = null) => {
@@ -187,17 +192,18 @@ export function usePickBest(
     [tune],
   );
 
-  /** Starts a run; false when none began (nothing covers, or everything refused). */
+  /**
+   * Starts a run; false when none began (nothing covers, or everything refused).
+   * `known` lends the receiver playing now its listed name for the way back,
+   * when the candidates leave it out.
+   */
   const start = useCallback(
-    (covering: Receiver[]): boolean => {
+    (covering: Receiver[], known: readonly Receiver[] = covering): boolean => {
       if (!covering.length) {
         finish("No listed receiver covers this frequency.");
         return false;
       }
-      const now = Date.now();
-      const candidates = covering.filter(
-        (r) => !(now - (refused.current.get(refusedKey(r)) ?? -Infinity) < REFUSED_MS),
-      );
+      const candidates = covering.filter((r) => !isRefused(r));
       const first = candidates[0];
       if (!first) {
         finish(
@@ -214,7 +220,7 @@ export function usePickBest(
         tried: [first],
         strikes: 0,
         before,
-        fallback: playing(before, covering, provenanceRef.current),
+        fallback: playing(before, known, provenanceRef.current),
         retried: false,
       };
       setRunning(true);
@@ -223,7 +229,7 @@ export function usePickBest(
       tune(first, true);
       return true;
     },
-    [finish, tune],
+    [finish, tune, isRefused],
   );
 
   /** The user chose something else (a row, Listen): just stop following. */
@@ -326,5 +332,5 @@ export function usePickBest(
     tune(next, true);
   }, [status, tune, finish, goBack]);
 
-  return { start, cancel, stop, note, running, settled };
+  return { start, cancel, stop, note, running, settled, isRefused };
 }

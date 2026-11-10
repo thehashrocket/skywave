@@ -319,6 +319,12 @@ export function receiverKey(r: { host: string; port: number }) {
   return `${r.host}:${r.port}`;
 }
 
+/** The listed receiver at host:port, if any. Hostnames match case-insensitively. */
+export function findReceiver(list: readonly Receiver[] | undefined, host: string, port: number): Receiver | undefined {
+  const h = host.toLowerCase();
+  return list?.find((r) => r.host.toLowerCase() === h && r.port === port);
+}
+
 // Fixed for the page's lifetime, so the table doesn't reshuffle on every
 // refetch, but different for each listener.
 const TIE_SEED = Math.floor(Math.random() * 2 ** 32);

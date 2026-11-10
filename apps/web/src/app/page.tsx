@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Dial } from "@/components/Dial";
 import { FrequencyReadout } from "@/components/FrequencyReadout";
 import { MapPanel } from "@/components/MapPanel";
@@ -9,16 +9,23 @@ import { ReceiverPicker, type Playing } from "@/components/ReceiverPicker";
 import { SignalList } from "@/components/SignalList";
 import { SMeter } from "@/components/SMeter";
 import { Waterfall } from "@/components/Waterfall";
-import { covers, placeName, rankReceivers, receiverKey, type Receiver } from "@/lib/kiwi-list";
+import { ReceiverChip } from "@/components/ReceiverChip";
+import { covers, findReceiver, placeName, rankReceivers, receiverKey, type Receiver } from "@/lib/kiwi-list";
 import { MODE_LABELS, MODES, clampKhz, guessMode, inTuneRange, isMode, type Mode } from "@/lib/radio-types";
 import { DEFAULT_KIWI_PORT, parseReceiver } from "@/lib/receiver";
 import { usePickBest, WATCH_MS } from "@/lib/use-pick-best";
 import { LIST_FAILED_TEXT, listFailed, useReceiverList } from "@/lib/use-receiver-list";
+import { useBetterReceiver } from "@/lib/use-better-receiver";
 import { useMapAdmission } from "@/lib/use-map-admission";
 import { useRadio } from "@/lib/use-radio";
 import { useSolarClock } from "@/lib/use-solar-clock";
 
+// The last receiver that played, however it was reached. It seeds Back on the
+// next visit; it no longer picks the receiver (Auto does, unless one is pinned).
 const STORAGE_KEY = "skywave.receiver";
+// The receiver the listener pinned, saved once it plays. Its own key, so a
+// save from before pins existed never reads as one.
+const PIN_KEY = "skywave.pin";
 const TUNING_KEY = "skywave.tuning";
 const DEFAULT_TUNING = { freqKhz: 10_000, mode: "am" as Mode };
 // How long the dial rests before the frequency is saved.
@@ -39,6 +46,19 @@ type Heard = { host: string; port: number; fromList: boolean; secure: boolean; l
 
 /** The last two receivers that played, for Back. */
 type History = { last: Heard | null; previous: Heard | null };
+
+/**
+ * What the Receiver and Port fields hold. Separate from the receiver the page
+ * is tuned to, so typing while listening never changes where dial moves go;
+ * only Listen, Enter or Switch commits it.
+ */
+type Draft = { host: string; port: string; fromList: boolean; secure: boolean };
+
+const BLANK_DRAFT: Draft = { host: "", port: String(DEFAULT_KIWI_PORT), fromList: false, secure: false };
+
+function draftOf(r: Heard): Draft {
+  return { host: r.host, port: String(r.port), fromList: r.fromList, secure: r.secure };
+}
 
 /** The newest receiver in the history that isn't the one with this key. */
 function otherThan(h: History, key: string | undefined): Heard | null {
@@ -102,6 +122,54 @@ function forgetReceiver() {
   }
 }
 
+/** The pinned receiver, or null (Auto) for none or anything we didn't write. */
+function loadPin(): Heard | null {
+  try {
+    const raw = localStorage.getItem(PIN_KEY);
+    const p: unknown = raw ? JSON.parse(raw) : null;
+    if (p && typeof p === "object") {
+      const { host, port, label, fromList, secure } = p as Record<string, unknown>;
+      if (typeof host === "string" && host.trim() && typeof port === "number" && validPort(port) === String(port)) {
+        return {
+          host,
+          port,
+          fromList: fromList === true,
+          secure: secure === true,
+          label: typeof label === "string" && label.trim() ? label : host,
+        };
+      }
+    }
+  } catch {
+    /* storage unavailable or unreadable; fall through */
+  }
+  return null;
+}
+
+function savePin(p: Heard) {
+  try {
+    localStorage.setItem(
+      PIN_KEY,
+      JSON.stringify({
+        host: p.host,
+        port: p.port,
+        label: p.label,
+        ...(p.fromList && { fromList: true }),
+        ...(p.secure && { secure: true }),
+      }),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+function forgetPin() {
+  try {
+    localStorage.removeItem(PIN_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
  * A port the service can dial, as typed; anything else (0, 70000, empty) is the
  * Kiwi default. Digits only: Number() would also read a stored "0x1F90" or "1e3".
@@ -110,6 +178,17 @@ function validPort(raw: string | number): string {
   const text = String(raw).trim();
   const p = /^\d+$/.test(text) ? Number(text) : NaN;
   return p >= 1 && p <= 65_535 ? String(p) : String(DEFAULT_KIWI_PORT);
+}
+
+/** The draft with a pasted URL split into host and port; a bare hostname keeps the scheme it had. */
+function parseDraft(d: Draft): Draft {
+  const parsed = parseReceiver(d.host);
+  return {
+    host: parsed.host,
+    port: validPort(parsed.port ?? d.port.trim()),
+    fromList: d.fromList,
+    secure: parsed.secure ?? d.secure,
+  };
 }
 
 function listSource(fromList: boolean) {
@@ -139,13 +218,26 @@ export default function ListenPage() {
   const radio = useRadio();
   const { status, meter, tune } = radio;
   const sun = useSolarClock();
+  // The receiver the page is tuned to (or last was): where dial retunes go.
+  // Only a tune sets it; the fields edit `draft`.
   const [host, setHost] = useState("");
   const [port, setPort] = useState(String(DEFAULT_KIWI_PORT));
-  // Whether host/port came from the public list. Typing in either field clears it.
+  // Whether that receiver came from the public list (the service dials it public-only).
   const [fromList, setFromList] = useState(false);
-  // Whether the receiver serves https only. Set from a pasted https:// URL or a
-  // list entry; typing a new host clears it.
+  // Whether that receiver serves https only, dialed over wss://.
   const [secure, setSecure] = useState(false);
+  // The Receiver and Port fields. Typing a host clears fromList and secure, typing a port clears fromList.
+  const [draft, setDraft] = useState<Draft>(BLANK_DRAFT);
+  // The receiver the listener chose; null is Auto (Listen picks the best for the frequency).
+  const [pin, setPin] = useState<Heard | null>(null);
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  // The Back history. It changes only when a different receiver starts
+  // playing, so retunes and errors keep it. Pick best reads it too, to return
+  // to a receiver the page has moved on from.
+  const [heard, setHeard] = useState<History>({ last: null, previous: null });
+  const heardRef = useRef(heard);
+  heardRef.current = heard;
   const [freqKhz, setFreqKhz] = useState(DEFAULT_TUNING.freqKhz);
   const [mode, setMode] = useState<Mode>(DEFAULT_TUNING.mode);
   // Not until the saved tuning is restored: saving first would overwrite it with the default.
@@ -161,13 +253,32 @@ export default function ListenPage() {
   const statusRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const r = loadReceiver();
-    setHost(r.host);
-    setPort(r.port);
-    setFromList(r.fromList === true);
-    setSecure(r.secure === true);
+    const p = loadPin();
+    if (p) {
+      setHost(p.host);
+      setPort(String(p.port));
+      setFromList(p.fromList);
+      setSecure(p.secure);
+      setPin(p);
+      setDraft(draftOf(p));
+    }
+    // The last receiver heard doesn't pin anything; Back offers it.
+    const last = loadReceiver();
+    if (last.host) {
+      const port = Number(validPort(last.port));
+      setHeard({
+        last: {
+          host: last.host,
+          port,
+          fromList: last.fromList === true,
+          secure: last.secure === true,
+          label: last.host,
+        },
+        previous: null,
+      });
+    }
     // First visit: show the list so there's something to pick from.
-    setBrowseOpen(!r.host);
+    setBrowseOpen(!p && !last.host);
     const t = loadTuning();
     setFreqKhz(t.freqKhz);
     setMode(t.mode);
@@ -206,7 +317,8 @@ export default function ListenPage() {
         timer.current = null;
         const p = pending.current;
         // The attempt may have failed while we waited; a retune now would dial it again.
-        if (!p || !busyRef.current) return;
+        // A retune with no receiver would only be refused.
+        if (!p || !busyRef.current || !tuning.current.host.trim()) return;
         radio.retune({
           host: tuning.current.host.trim(),
           port: Number(tuning.current.port) || DEFAULT_KIWI_PORT,
@@ -235,24 +347,10 @@ export default function ListenPage() {
   };
 
   // Pull a host and port out of a pasted URL like http://f4kiy.ddns.net:8073/.
-  const normalizeReceiver = () => {
-    const parsed = parseReceiver(host);
-    const r = {
-      host: parsed.host,
-      port: validPort(parsed.port ?? port.trim()),
-      // A bare hostname (including one we already took out of a URL) keeps the scheme it had.
-      secure: parsed.secure ?? secure,
-    };
-    setHost(r.host);
-    setPort(r.port);
-    setSecure(r.secure);
+  const normalizeDraft = () => {
+    const r = parseDraft(draft);
+    setDraft(r);
     return r;
-  };
-
-  const listen = () => {
-    setPageMessage(null);
-    const r = normalizeReceiver();
-    void tune({ host: r.host, port: Number(r.port), freqKhz, mode, ...listSource(fromList), ...wss(r.secure) });
   };
 
   // Stable so Pick best's retry effect doesn't re-run on every frequency change.
@@ -297,12 +395,6 @@ export default function ListenPage() {
     const t = tuning.current;
     return t.host === h && Number(t.port) === p;
   }, []);
-  // The Back history. It changes only when a different receiver starts
-  // playing, so retunes and errors keep it. Pick best reads it too, to return
-  // to a receiver the page has moved on from.
-  const [heard, setHeard] = useState<History>({ last: null, previous: null });
-  const heardRef = useRef(heard);
-  heardRef.current = heard;
   const provenance = useCallback(
     (h: string, p: number) => {
       const t = tuning.current;
@@ -318,12 +410,27 @@ export default function ListenPage() {
   const list = useReceiverList();
   const receivers = list.data?.receivers;
   const listGone = listFailed(list);
+  const lastSavedPin = useRef<Heard | null>(null);
+  /**
+   * Back to Auto. Only the choice changes: nothing is tuned or stopped, and
+   * dial retunes keep going to the receiver that plays.
+   */
+  const clearPin = useCallback(() => {
+    setPin(null);
+    setDraft(BLANK_DRAFT);
+    forgetPin();
+    lastSavedPin.current = null;
+  }, []);
+  // Asking skywave to choose (Pick best, blank Listen, the error link, the
+  // better-receiver offer) is Auto, so a run that starts ends any pin.
   const pickFrom = useCallback(
-    (ranked: Receiver[]) => {
+    (ranked: Receiver[], known?: readonly Receiver[]) => {
       setPageMessage(null);
-      return startPicking(ranked);
+      const started = startPicking(ranked, known);
+      if (started) clearPin();
+      return started;
     },
-    [startPicking],
+    [startPicking, clearPin],
   );
   /**
    * Pick best from outside the Receivers section (a blank Listen, the error
@@ -346,7 +453,7 @@ export default function ListenPage() {
   const stopPicking = useCallback(() => {
     if (!stopPickBest()) radio.stop();
   }, [stopPickBest, radio]);
-  /** Switches receiver from the table or Back: ends any Pick best run, then tunes. */
+  /** Ends any Pick best run, then tunes. Leaves the pin as it is (pinTo sets it). */
   const switchTo = useCallback(
     (r: Target, fromList: boolean) => {
       cancelPickBest();
@@ -354,7 +461,30 @@ export default function ListenPage() {
     },
     [cancelPickBest, tuneReceiver],
   );
-  const chooseReceiver = useCallback((r: Receiver) => switchTo(r, true), [switchTo]);
+  /** The listener chose this receiver (the table, the map, a typed address): pin it and switch. */
+  const pinTo = useCallback(
+    (r: Target, fromList: boolean) => {
+      const p: Heard = {
+        host: r.host,
+        port: r.port,
+        fromList,
+        secure: r.secure === true,
+        label: r.name ?? names.current.get(receiverKey(r)) ?? r.host,
+      };
+      setPin(p);
+      setDraft(draftOf(p));
+      switchTo(r, fromList);
+    },
+    [switchTo],
+  );
+  const chooseReceiver = useCallback((r: Receiver) => pinTo(r, true), [pinTo]);
+  /** Pins and tunes what the fields say. Unchanged fields keep the pin's name. */
+  const commitDraft = () => {
+    const d = normalizeDraft();
+    const port = Number(d.port);
+    const same = pin && receiverKey(pin) === receiverKey({ host: d.host, port });
+    pinTo({ host: d.host, port, secure: d.secure, ...(same && { name: pin.label }) }, d.fromList);
+  };
   // The table's dot marks what's playing (or connecting), not what the fields
   // say. From the click until the service answers, that's the receiver being
   // tuned: the status still names the old one.
@@ -396,6 +526,12 @@ export default function ListenPage() {
       // With no last (a refused one was dropped), the previous one stays, unless it's this one.
       return { last: playing, previous: otherThan(h, key) };
     });
+    // The pin too, once it plays: a typo or a receiver that refuses is never saved as one.
+    const p = pinRef.current;
+    if (p && p !== lastSavedPin.current && receiverKey(p) === receiverKey(target)) {
+      lastSavedPin.current = p;
+      savePin(p);
+    }
     const saved = JSON.stringify({
       host: t.host,
       port: t.port,
@@ -417,11 +553,23 @@ export default function ListenPage() {
     const refused = receiverKey({ host: status.host, port: status.port ?? DEFAULT_KIWI_PORT });
     const keep = (r: Heard | null) => (r && receiverKey(r) === refused ? null : r);
     setHeard((h) => ({ last: keep(h.last), previous: keep(h.previous) }));
+    // A pin on it goes back to Auto: it would refuse every Listen.
+    const pinned = pinRef.current ?? loadPin();
+    if (pinned && receiverKey(pinned) === refused) clearPin();
     const saved = loadReceiver();
     if (saved.host !== status.host || Number(saved.port) !== (status.port ?? DEFAULT_KIWI_PORT)) return;
     forgetReceiver();
     lastSaved.current = null;
-  }, [status]);
+  }, [status, clearPin]);
+
+  // The receiver playing now, as the service names it.
+  const playingNow = useMemo(
+    () =>
+      status.state === "listening" && status.host
+        ? { host: status.host, port: status.port ?? DEFAULT_KIWI_PORT }
+        : null,
+    [status.state, status.host, status.port],
+  );
 
   // Back goes to the last receiver that played, unless the page is showing
   // that one; then to the one before. "Showing" is the receiver playing or
@@ -441,10 +589,7 @@ export default function ListenPage() {
   // Scan each receiver once it has played for AUTO_SCAN_MS and Pick best is
   // done with it: not during its attempts, nor its watch for a late refusal.
   const { canScan, scan, startScan } = radio;
-  const playingKey =
-    status.state === "listening" && status.host
-      ? receiverKey({ host: status.host, port: status.port ?? DEFAULT_KIWI_PORT })
-      : null;
+  const playingKey = playingNow && receiverKey(playingNow);
   const scannedKey = scan ? receiverKey(scan) : null;
   useEffect(() => {
     if (!playingKey || !radio.heardAudio || !pickBest.settled || !canScan || scannedKey === playingKey) return;
@@ -472,6 +617,47 @@ export default function ListenPage() {
   const onWaterfallClick = (hz: number) => {
     const base = mode === "cw" ? freqKhz - CW_PITCH_KHZ : freqKhz;
     changeFreq(clampKhz(Math.round((base + hz / 1000) * 100) / 100));
+  };
+
+  // "Switch to a better receiver?" once the dial rests somewhere the receiver
+  // playing can't tune, or after a big move with a much stronger one listed.
+  // Only offered; the button switches, and through Pick best, so a switch that
+  // fails goes back to this receiver.
+  const {
+    offer,
+    dismiss: dismissOffer,
+    excluded,
+  } = useBetterReceiver({
+    enabled: playingNow !== null && !radio.tuning && pickBest.settled,
+    receivers,
+    playing: playingNow,
+    freqKhz,
+    isRefused: pickBest.isRefused,
+  });
+  // The offered receiver first, then the rest that cover the dial, minus the
+  // one playing and any it would leave out; the whole list names the way back.
+  const switchToBetter = () => {
+    if (!offer || !receivers) return;
+    const skip = new Set([receiverKey(offer.playing), receiverKey(offer.target)]);
+    const rest = rankReceivers(receivers, latest.current.freqKhz).filter(
+      (r) => !skip.has(receiverKey(r)) && !excluded(r),
+    );
+    dismissOffer();
+    pickFrom([offer.target, ...rest], receivers);
+    // The prompt (and the button) goes away; the status row reports the switch.
+    statusRef.current?.focus();
+  };
+
+  // A typed address that isn't what's tuned can be switched to while listening.
+  const typed = draft.host.trim() ? parseDraft(draft) : null;
+  const canSwitch = busy && typed !== null && !isTarget(typed.host, Number(typed.port));
+
+  // While listening, Enter in a field switches to what it says (or does
+  // nothing); it never means Stop, which is the button's job.
+  const onFieldKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter" || !busy) return;
+    e.preventDefault();
+    if (canSwitch) commitDraft();
   };
 
   // The status row shows whichever message is newest: Pick best's note, the
@@ -509,12 +695,9 @@ export default function ListenPage() {
 
   // Where the receiver playing is, from the list, when it says.
   const listedPlace = useMemo(() => {
-    if (status.state !== "listening" || !status.host) return "";
-    const port = status.port ?? DEFAULT_KIWI_PORT;
-    const host = status.host.toLowerCase();
-    const r = receivers?.find((x) => x.host.toLowerCase() === host && x.port === port);
+    const r = playingNow && findReceiver(receivers, playingNow.host, playingNow.port);
     return r ? placeName(r.location) : "";
-  }, [receivers, status.state, status.host, status.port]);
+  }, [receivers, playingNow]);
 
   // The waterfall opens on the visit's first audio and stays open, so Stop and
   // Listen never resize it again.
@@ -533,48 +716,62 @@ export default function ListenPage() {
             e.preventDefault();
             cancelPickBest();
             if (busy) radio.stop();
-            // A blank receiver asks skywave to pick one.
-            else if (!host.trim()) startPickBest("listen");
-            else listen();
+            // A blank receiver is Auto: skywave picks one.
+            else if (!draft.host.trim()) startPickBest("listen");
+            else commitDraft();
           }}
         >
           <div className="field field-host">
-            {/* The hint sits beside the label, not under the input, so the form's inputs stay
-                bottom-aligned; unlike a placeholder it stays put once a receiver is filled in. */}
+            {/* The choice and the hint sit on the label row (wrapping when narrow), not under the
+                input, so the form's inputs stay bottom-aligned; unlike a placeholder, the hint stays
+                visible once an address is typed. */}
             <div className="field-head">
               <label htmlFor="host">Receiver</label>
+              <ReceiverChip
+                id="host-choice"
+                pinned={pin?.label ?? null}
+                onUnpin={() => {
+                  clearPin();
+                  // The ✕ goes away with the pin; leave focus where an address is typed.
+                  document.getElementById("host")?.focus();
+                }}
+              />
               <span id="host-hint" className="field-hint">
-                Blank picks the best receiver
+                or type an address
               </span>
             </div>
             <input
               id="host"
-              aria-describedby="host-hint"
-              value={host}
-              onChange={(e) => {
-                setHost(e.target.value);
-                setFromList(false);
-                setSecure(false);
-              }}
-              onBlur={normalizeReceiver}
+              aria-describedby="host-choice host-hint"
+              value={draft.host}
+              onChange={(e) => setDraft((d) => ({ ...d, host: e.target.value, fromList: false, secure: false }))}
+              onBlur={normalizeDraft}
+              onKeyDown={onFieldKey}
               autoComplete="off"
               spellCheck={false}
-              disabled={busy}
             />
           </div>
           <div className="field field-port">
             <label htmlFor="port">Port</label>
             <input
               id="port"
-              value={port}
-              onChange={(e) => {
-                setPort(e.target.value.replace(/\D/g, ""));
-                setFromList(false);
-              }}
+              value={draft.port}
+              onChange={(e) => setDraft((d) => ({ ...d, port: e.target.value.replace(/\D/g, ""), fromList: false }))}
+              onKeyDown={onFieldKey}
               inputMode="numeric"
-              disabled={busy}
             />
           </div>
+          {canSwitch && (
+            <button
+              type="button"
+              className="receiver-switch"
+              onClick={(e) => {
+                if (e.detail <= 1) commitDraft();
+              }}
+            >
+              Switch
+            </button>
+          )}
           <button
             type="submit"
             className={busy ? "power power-on" : "power"}
@@ -651,7 +848,10 @@ export default function ListenPage() {
             className="link-button status-back"
             onClick={(e) => {
               // The button flips to the receiver just left; a double-click would switch straight back.
-              if (e.detail <= 1) switchTo(backTo, backTo.fromList);
+              if (e.detail > 1) return;
+              // Back is undo, not a new choice: a pin moves with it, Auto stays Auto.
+              if (pin) pinTo({ ...backTo, name: backTo.label }, backTo.fromList);
+              else switchTo(backTo, backTo.fromList);
             }}
           >
             Back to {backTo.label}
@@ -671,6 +871,40 @@ export default function ListenPage() {
           >
             Pick best receiver
           </button>
+        )}
+      </div>
+
+      {/* Always rendered, so a screen reader hears the offer when it appears; its line is reserved so nothing moves. */}
+      <div className="switch-prompt" role="status">
+        {offer && (
+          <>
+            <span>
+              {offer.reason === "uncovered"
+                ? `${offer.playing.name} can't tune ${freqKhz.toLocaleString("en-US", { maximumFractionDigits: 2 })} kHz.`
+                : `${offer.target.name} is listed ${offer.gapDb} dB stronger.`}{" "}
+              Switch to a better receiver?
+            </span>
+            <button
+              type="button"
+              className="link-button inline"
+              onClick={(e) => {
+                if (e.detail <= 1) switchToBetter();
+              }}
+            >
+              Switch to {offer.target.name}
+            </button>
+            <button
+              type="button"
+              className="link-button inline"
+              onClick={() => {
+                dismissOffer();
+                // The button goes away with the offer; leave focus on the status row beside it.
+                statusRef.current?.focus();
+              }}
+            >
+              Not now
+            </button>
+          </>
         )}
       </div>
 

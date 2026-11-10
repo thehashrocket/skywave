@@ -173,10 +173,6 @@ html,
   min-width: 0;
 }
 
-.field input:disabled {
-  color: var(--muted);
-}
-
 .field-host input {
   width: min(320px, 60vw);
 }
@@ -208,6 +204,80 @@ html,
 
 .power-on:hover {
   background: rgba(193, 154, 75, 0.12);
+}
+
+/* Switch: a typed address while listening. Quieter than Listen/Stop. */
+.receiver-switch {
+  font: inherit;
+  padding: 8px 14px;
+  border-radius: var(--radius-knob);
+  border: 1px solid var(--rule);
+  background: var(--enamel-deep);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.receiver-switch:hover {
+  border-color: var(--brass);
+}
+
+/* The receiver choice on the Receiver label row: Auto, or the pinned receiver with a ✕. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  /* The ✕ (22px) plus padding and border, so Auto and a pin are the same height. */
+  min-height: 26px;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 1px 4px 1px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--enamel-deep);
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.chip-auto {
+  padding-right: 10px;
+  color: var(--muted);
+}
+
+.chip-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  max-width: 24ch;
+}
+
+.chip-unpin {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chip-unpin:hover {
+  color: var(--text);
+  background: var(--rule);
+}
+
+/* "Switch to a better receiver?" under the status row. Its line is always
+   reserved, so an offer appearing never moves the waterfall under a click. */
+.switch-prompt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+  min-height: 1lh;
+  margin-top: -10px;
 }
 
 .receiver-help {
@@ -1568,9 +1638,19 @@ html,
 /* Fingers, at any width (a tablet, a touch laptop): map controls at 44px. */
 @media (max-width: 520px), (pointer: coarse) {
   .power,
+  .receiver-switch,
   .presets-save button,
   .receiver-choose {
     min-height: 44px;
+  }
+  /* The chip's ✕ keeps its size; its hit area grows around it. */
+  .chip-unpin {
+    position: relative;
+  }
+  .chip-unpin::before {
+    content: "";
+    position: absolute;
+    inset: -11px;
   }
   .mode span {
     padding-block: 10px;

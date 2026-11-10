@@ -125,6 +125,11 @@ vi.mock("@/components/ReceiverPicker", () => ({
 
 const { default: ListenPage } = await import("./page");
 
+/** A receiver the listener pinned on an earlier visit, as the page saves it. */
+function savePin(p: { host: string; port: number; fromList?: boolean; secure?: boolean; label?: string }) {
+  localStorage.setItem("skywave.pin", JSON.stringify({ label: p.host, ...p }));
+}
+
 beforeEach(() => {
   localStorage.clear();
   receiverList.data = { receivers: [listed, backup] };
@@ -143,14 +148,20 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("ListenPage", () => {
-  // Value: protects=the Receiver field is named by its label and described by the "blank picks the best" hint, which stays once a host is filled in; fails_when=the hint goes back to a placeholder (gone once typed) or aria-describedby is dropped or mispointed; why_new=tests only found the field by label; seam=none; no_claim=how the hint looks beside the label (jsdom applies no CSS)
-  it("describes the Receiver field with the pick-best hint, even with a host filled in", () => {
+  // Value: protects=the Receiver field is named by its label and described by the choice (Auto or the pinned receiver) plus the visible typing hint (PR #36: visible, and kept once a host is typed), which stay once a host is typed; fails_when=the hint goes back to a placeholder (gone once typed), is hidden, or aria-describedby is dropped or mispointed; why_new=Auto chip replaced the "blank picks the best" hint; seam=none; no_claim=how the chip looks beside the label (jsdom applies no CSS)
+  it("describes the Receiver field with the receiver choice and the typing hint", () => {
     render(<ListenPage />);
-    const named = { name: "Receiver", description: "Blank picks the best receiver" };
-    const host = screen.getByRole("textbox", named) as HTMLInputElement;
+    const auto = {
+      name: "Receiver",
+      description: "Auto (best for this frequency) or type an address",
+    };
+    const host = screen.getByRole("textbox", auto) as HTMLInputElement;
     fireEvent.change(host, { target: { value: "kiwi.example" } });
-    expect(screen.getByRole("textbox", named)).toBe(host);
+    expect(screen.getByRole("textbox", auto)).toBe(host);
     expect(host.placeholder).toBe("");
+    expect(document.getElementById("host-hint")!.className).not.toContain("visually-hidden");
+    fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+    expect(screen.getByRole("textbox", { name: "Receiver", description: "K1VL or type an address" })).toBe(host);
   });
 
   it("normalizes a pasted URL, tunes it, and remembers it once it plays", () => {
@@ -382,11 +393,11 @@ describe("ListenPage", () => {
     expect(radio.stop).toHaveBeenCalledTimes(1);
   });
 
-  // Value: protects=a list receiver stays public-only through Listen, a reload and dial retunes; fails_when=fromList isn't carried in state, storage or retune; why_new=adversarial review: the tag was lost through the host field; seam=none; no_claim=server enforcement (radio tests)
+  // Value: protects=a pinned list receiver stays public-only through Listen, a reload and dial retunes; fails_when=fromList isn't carried in the pin, the draft, storage or retune; why_new=adversarial review: the tag was lost through the host field; seam=none; no_claim=server enforcement (radio tests)
   it("keeps a list receiver tagged through Listen, reloads and retunes, until it's edited", () => {
     vi.useFakeTimers();
     try {
-      localStorage.setItem("skywave.receiver", JSON.stringify({ host: "sdr.k1vl.com", port: "8076", fromList: true }));
+      savePin({ host: "sdr.k1vl.com", port: 8076, fromList: true, label: "K1VL" });
       const view = render(<ListenPage />);
       fireEvent.click(screen.getByRole("button", { name: "Listen" }));
       expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "sdr.k1vl.com", source: "list" }));
@@ -476,7 +487,7 @@ describe("ListenPage", () => {
   it("retunes a typed receiver without the list tag", () => {
     vi.useFakeTimers();
     try {
-      localStorage.setItem("skywave.receiver", JSON.stringify({ host: "f4kiy.ddns.net", port: "8073" }));
+      savePin({ host: "f4kiy.ddns.net", port: 8073 });
       radio.status = { state: "listening", host: "f4kiy.ddns.net", port: 8073 };
       render(<ListenPage />);
       radio.retune.mockClear();
@@ -554,12 +565,29 @@ describe("ListenPage", () => {
     expect(screen.getByLabelText("phase").textContent).toBe("connecting");
   });
 
-  // Value: protects=the fields can't change under a tune that's still connecting; fails_when=the fields unlock while tuning, so the ring and saving follow what was typed instead; why_new=red team R3; seam=none; no_claim=none beyond protects
-  it("locks the receiver fields while a tune is in progress", () => {
-    radio.tuning = true;
-    render(<ListenPage />);
-    expect((screen.getByLabelText("Receiver") as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText("Port") as HTMLInputElement).disabled).toBe(true);
+  // Value: protects=the fields stay open while a tune connects or plays, yet typing in them changes nothing until it's committed: dial retunes, the table's ring and saving follow the receiver tuned (red team R3, why the fields used to lock); fails_when=the inputs bind to the tuned receiver again, or lock again; why_new=switching receivers while listening; seam=none; no_claim=none beyond protects
+  it("keeps the receiver fields open while busy, without moving where retunes go", () => {
+    vi.useFakeTimers();
+    try {
+      savePin({ host: "kiwi.example", port: 8073 });
+      radio.tuning = true;
+      const view = render(<ListenPage />);
+      const host = screen.getByLabelText("Receiver") as HTMLInputElement;
+      expect(host.disabled).toBe(false);
+      expect((screen.getByLabelText("Port") as HTMLInputElement).disabled).toBe(false);
+      radio.tuning = false;
+      radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      fireEvent.change(host, { target: { value: "half.typ" } });
+      radio.retune.mockClear();
+      fireEvent.keyDown(screen.getByRole("slider", { name: "Tuning dial" }), { key: "ArrowUp" });
+      act(() => vi.advanceTimersByTime(500));
+      expect(radio.retune).toHaveBeenCalledWith(expect.objectContaining({ host: "kiwi.example", freqKhz: 10_001 }));
+      expect(screen.getByLabelText("tuned").textContent).toBe("kiwi.example:8073");
+      expect(radio.tune).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Value: protects=a double-click on Listen starts listening and doesn't stop it again; fails_when=the submit button ignores the second click now that Listen turns into Stop at once; why_new=red team; seam=none; no_claim=real double-click timing
@@ -586,11 +614,11 @@ describe("ListenPage", () => {
     expect((screen.getByLabelText("Port") as HTMLInputElement).value).toBe("8073");
   });
 
-  // Value: protects=a saved port that isn't plain digits is dialed as the default, not read as hex or an exponent; fails_when=validPort parses with Number(); why_new=PR 2a review; the field strips non-digits, so only a stored value can carry these (Codex, eng review 2026-10-21); seam=none; no_claim=none beyond protects
+  // Value: protects=a saved port that isn't plain digits is dialed as the default, not read as hex or an exponent; fails_when=validPort is skipped when the last receiver seeds Back; why_new=PR 2a review; the field strips non-digits, so only a stored value can carry these (Codex, eng review 2026-10-21); seam=none; no_claim=none beyond protects
   it.each(["0x1F90", "1e3"])("dials the default port for a saved port %s", (stored) => {
     localStorage.setItem("skywave.receiver", JSON.stringify({ host: "kiwi.example", port: stored }));
     render(<ListenPage />);
-    fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to kiwi.example" }));
     expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "kiwi.example", port: 8073 }));
   });
 
@@ -599,7 +627,7 @@ describe("ListenPage", () => {
     vi.useFakeTimers();
     try {
       radio.tuning = true;
-      localStorage.setItem("skywave.receiver", JSON.stringify({ host: "kiwi.example", port: "8073" }));
+      savePin({ host: "kiwi.example", port: 8073 });
       render(<ListenPage />);
       radio.retune.mockClear();
       fireEvent.keyDown(screen.getByRole("slider", { name: "Tuning dial" }), { key: "ArrowUp" });
@@ -663,7 +691,7 @@ describe("ListenPage", () => {
   it("writes the saved receiver once, not on every listening status", () => {
     const setItem = vi.spyOn(Storage.prototype, "setItem");
     try {
-      localStorage.setItem("skywave.receiver", JSON.stringify({ host: "f4kiy.ddns.net", port: "8073" }));
+      savePin({ host: "f4kiy.ddns.net", port: 8073 });
       setItem.mockClear();
       const view = render(<ListenPage />);
       for (const freqKhz of [10_000, 10_001, 10_002]) {
@@ -676,7 +704,9 @@ describe("ListenPage", () => {
         } as RadioStatus;
         view.rerender(<ListenPage />);
       }
-      expect(setItem).toHaveBeenCalledTimes(1);
+      const keys = setItem.mock.calls.map(([key]) => key);
+      expect(keys.filter((k) => k === "skywave.receiver")).toHaveLength(1);
+      expect(keys.filter((k) => k === "skywave.pin")).toHaveLength(1);
     } finally {
       setItem.mockRestore();
     }
@@ -994,6 +1024,254 @@ describe("ListenPage", () => {
     }
   });
 
+  describe("Auto and pinned receivers", () => {
+    // Rankable without a tie: equal receivers rank in a per-browser random order.
+    beforeEach(() => {
+      receiverList.data = { receivers: [listed, { ...backup, snr: 10 }] };
+    });
+    const chip = () => document.getElementById("host-choice")!.textContent;
+    const field = () => screen.getByLabelText("Receiver") as HTMLInputElement;
+    const listening = (view: ReturnType<typeof render>, host: string, port: number) => {
+      radio.status = { state: "listening", host, port };
+      view.rerender(<ListenPage />);
+    };
+
+    // Value: protects=a receiver saved before pins existed doesn't pin (owner: start in Auto); it's only offered by Back, and Listen picks the best instead of redialing it; fails_when=loadReceiver fills the fields or the tuned receiver again; why_new=Auto default; seam=list hook mocked; no_claim=none beyond protects
+    it("starts in Auto with an old saved receiver, offering it only through Back", () => {
+      localStorage.setItem("skywave.receiver", JSON.stringify({ host: "old.example", port: "8073" }));
+      render(<ListenPage />);
+      expect(chip()).toBe("Auto (best for this frequency)");
+      expect(field().value).toBe("");
+      expect(screen.getByRole("button", { name: "Back to old.example" })).toBeTruthy();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+      expect(radio.tune).toHaveBeenCalledTimes(1);
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: listed.host, source: "list" }));
+    });
+
+    // Value: protects=a pin survives a reload: the chip names it, the fields hold it, Listen redials it as it was dialed, and the list stays closed; fails_when=loadPin is dropped, mis-validated, or loses fromList; why_new=pins; seam=none; no_claim=none beyond protects
+    it("restores a saved pin, and Listen redials it", () => {
+      savePin({ host: listed.host, port: listed.port, fromList: true, label: "K1VL" });
+      render(<ListenPage />);
+      expect(chip()).toBe("K1VL");
+      expect(field().value).toBe(listed.host);
+      expect(screen.getByLabelText("browse").textContent).toBe("closed");
+      fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+      expect(radio.tune).toHaveBeenLastCalledWith({
+        host: listed.host,
+        port: listed.port,
+        freqKhz: 10_000,
+        mode: "am",
+        source: "list",
+      });
+    });
+
+    // Value: protects=a pin from a version we didn't write (or a bad value) reads as Auto, not a crash or a half pin; fails_when=loadPin trusts storage; why_new=pins; seam=none; no_claim=none beyond protects
+    it.each([
+      '{"host":"a.example","port":"8073"}',
+      '{"host":"a.example","port":0}',
+      '{"host":"a.example","port":80.5}',
+      '{"host":"","port":8073}',
+      '"a.example"',
+      "{not json",
+    ])("treats a saved pin %s as Auto", (raw) => {
+      localStorage.setItem("skywave.pin", raw);
+      render(<ListenPage />);
+      expect(chip()).toBe("Auto (best for this frequency)");
+      expect(field().value).toBe("");
+    });
+
+    // Value: protects=Auto landing on a receiver keeps Auto (the field stays blank, no pin is saved), while the last-heard receiver is still saved for Back; fails_when=tuneReceiver writes the fields or pickFrom pins; why_new=owner: only an explicit choice pins; seam=list hook mocked; no_claim=none beyond protects
+    it("stays in Auto when Pick best lands on a receiver", () => {
+      const view = render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+      listening(view, listed.host, listed.port);
+      expect(chip()).toBe("Auto (best for this frequency)");
+      expect(field().value).toBe("");
+      expect(localStorage.getItem("skywave.pin")).toBeNull();
+      expect(localStorage.getItem("skywave.receiver")).not.toBeNull();
+    });
+
+    // Value: protects=choosing from the table or map pins that receiver, but the pin is saved only once it plays, and a no_apps refusal drops it to Auto; fails_when=the pin is saved on click (a dead receiver would come back next visit) or survives no_apps in storage or on the chip; why_new=pins; seam=none; no_claim=none beyond protects
+    it("pins a chosen receiver, saving it once it plays and dropping it to Auto on no_apps", () => {
+      const view = render(<ListenPage />);
+      fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+      expect(chip()).toBe("K1VL");
+      expect(localStorage.getItem("skywave.pin")).toBeNull();
+      listening(view, listed.host, listed.port);
+      expect(JSON.parse(localStorage.getItem("skywave.pin")!)).toEqual({
+        host: listed.host,
+        port: listed.port,
+        label: "K1VL",
+        fromList: true,
+      });
+      radio.status = { state: "error", code: "no_apps", message: "own page", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(localStorage.getItem("skywave.pin")).toBeNull();
+      // It would refuse every Listen, so the choice goes back to Auto too.
+      expect(chip()).toBe("Auto (best for this frequency)");
+    });
+
+    // Value: protects=while listening, a typed address switches by Enter or Switch with no Stop in between (the service hands the slot over), Enter with nothing new does nothing rather than Stop, and Stop still stops; fails_when=submit-while-busy means Stop for Enter again, or Switch shows when nothing changed; why_new=switching receivers while listening; seam=none; no_claim=the service's handover (radio tests)
+    it("switches to a typed address while listening, by Enter or Switch, without stopping", () => {
+      savePin({ host: "kiwi.example", port: 8073 });
+      radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
+      const view = render(<ListenPage />);
+      expect(screen.queryByRole("button", { name: "Switch" })).toBeNull();
+      fireEvent.keyDown(field(), { key: "Enter" });
+      expect(radio.stop).not.toHaveBeenCalled();
+      expect(radio.tune).not.toHaveBeenCalled();
+
+      fireEvent.change(field(), { target: { value: "http://other.example:8074/" } });
+      fireEvent.keyDown(field(), { key: "Enter" });
+      expect(radio.tune).toHaveBeenLastCalledWith({ host: "other.example", port: 8074, freqKhz: 10_000, mode: "am" });
+      expect(chip()).toBe("other.example");
+      listening(view, "other.example", 8074);
+
+      fireEvent.change(field(), { target: { value: "third.example" } });
+      fireEvent.click(screen.getByRole("button", { name: "Switch" }));
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "third.example", port: 8074 }));
+      expect(radio.stop).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+      expect(radio.stop).toHaveBeenCalledTimes(1);
+    });
+
+    // Value: protects=unpinning while listening keeps the audio (no stop, no tune), keeps dial retunes on the receiver playing, forgets the saved pin and leaves focus in the field; fails_when=clearPin touches the tuned receiver, sends anything, or drops focus to the page; why_new=pins; seam=fake timers; no_claim=none beyond protects
+    it("unpins without touching what plays", () => {
+      vi.useFakeTimers();
+      try {
+        savePin({ host: "kiwi.example", port: 8073 });
+        radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
+        render(<ListenPage />);
+        fireEvent.click(screen.getByRole("button", { name: "Unpin kiwi.example and use Auto" }));
+        expect(chip()).toBe("Auto (best for this frequency)");
+        expect(field().value).toBe("");
+        expect(document.activeElement).toBe(field());
+        expect(localStorage.getItem("skywave.pin")).toBeNull();
+        expect(radio.stop).not.toHaveBeenCalled();
+        expect(radio.tune).not.toHaveBeenCalled();
+        radio.retune.mockClear();
+        fireEvent.keyDown(screen.getByRole("slider", { name: "Tuning dial" }), { key: "ArrowUp" });
+        act(() => vi.advanceTimersByTime(500));
+        expect(radio.retune).toHaveBeenCalledWith({ host: "kiwi.example", port: 8073, freqKhz: 10_001, mode: "am" });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Value: protects=asking skywave to choose ends a pin (owner: drop to Auto), but only when a run starts; fails_when=pickFrom doesn't clear the pin, or clears it when nothing could be tried; why_new=owner decision on pin vs Pick best; seam=list hook mocked; no_claim=none beyond protects
+    it("drops a pin to Auto when Pick best starts a run", () => {
+      savePin({ host: "kiwi.example", port: 8073 });
+      receiverList.data = { receivers: [] };
+      const view = render(<ListenPage />);
+      // A blank Listen with nothing that covers the frequency starts no run: the pin stays.
+      fireEvent.change(field(), { target: { value: "" } });
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+      expect(radio.tune).not.toHaveBeenCalled();
+      expect(chip()).toBe("kiwi.example");
+      view.rerender(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      expect(chip()).toBe("Auto (best for this frequency)");
+      expect(localStorage.getItem("skywave.pin")).toBeNull();
+    });
+
+    // Value: protects=Back is undo, not a choice (owner): in Auto it stays Auto, and with a pin the pin moves to where Back goes; fails_when=Back always pins or never moves a pin; why_new=owner decision on Back; seam=none; no_claim=none beyond protects
+    it("keeps the mode on Back: Auto stays Auto, a pin moves", () => {
+      const view = render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" }))); // Auto lands on K1VL
+      listening(view, listed.host, listed.port);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      radio.status = { state: "error", code: "busy", message: "full", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      listening(view, backup.host, backup.port);
+      fireEvent.click(screen.getByRole("button", { name: "Back to K1VL" }));
+      expect(chip()).toBe("Auto (best for this frequency)");
+      cleanup();
+
+      radio.status = { state: "idle" };
+      const pinned = render(<ListenPage />);
+      fireEvent.change(field(), { target: { value: "kiwi.example" } });
+      fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+      listening(pinned, "kiwi.example", 8073);
+      fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+      listening(pinned, listed.host, listed.port);
+      fireEvent.click(screen.getByRole("button", { name: "Back to kiwi.example" }));
+      expect(chip()).toBe("kiwi.example");
+    });
+  });
+
+  describe("Switch to a better receiver?", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    // K1VL tunes only up to 10 MHz here, so the dial above that is out of its range.
+    const narrow = { ...listed, maxKhz: 10_000 };
+    const prompt = () => document.querySelector(".switch-prompt")!;
+
+    function playingNarrow() {
+      receiverList.data = { receivers: [narrow, backup] };
+      savePin({ host: listed.host, port: listed.port, fromList: true, label: "K1VL" });
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      const view = render(<ListenPage />);
+      const readout = screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement;
+      act(() => readout.focus());
+      fireEvent.change(readout, { target: { value: "15000" } });
+      fireEvent.submit(readout.form!);
+      return view;
+    }
+
+    // Value: protects=the offer comes only once the dial rests, never tunes by itself, and its button switches through Pick best (leaving out the receiver playing) and drops the pin to Auto; fails_when=the prompt auto-switches, shows mid-move, or its button dials directly or keeps the pin; why_new=switch prompt (owner: ask, don't switch); seam=fake timers, list hook mocked; no_claim=the rule's thresholds (better-receiver tests)
+    it("asks once the dial rests, and switches only on a click", () => {
+      playingNarrow();
+      expect(prompt().textContent).toBe("");
+      act(() => vi.advanceTimersByTime(1_500));
+      expect(prompt().textContent).toContain("K1VL can't tune 15,000 kHz. Switch to a better receiver?");
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(radio.tune).not.toHaveBeenCalled();
+
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Switch to Backup" })));
+      expect(radio.tune).toHaveBeenCalledTimes(1);
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: backup.host, freqKhz: 15_000 }));
+      expect(document.getElementById("host-choice")!.textContent).toBe("Auto (best for this frequency)");
+      expect(prompt().textContent).toBe("");
+    });
+
+    // Value: protects=the button tunes the receiver it names, never a better-ranked one the listener already declined; fails_when=the switch passes Pick best the plain ranking, whose first entry is the declined receiver (Claude review: a switch to a receiver the listener said no to, cutting audio); why_new=switch prompt; seam=fake timers, list hook mocked; no_claim=Pick best's later candidates
+    it("switches to the receiver it names, past one already declined", () => {
+      receiverList.data = {
+        receivers: [narrow, backup, { ...backup, id: "third", name: "Third", host: "third.example", snr: 20 }],
+      };
+      savePin({ host: listed.host, port: listed.port, fromList: true, label: "K1VL" });
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      render(<ListenPage />);
+      const readout = screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement;
+      act(() => readout.focus());
+      fireEvent.change(readout, { target: { value: "15000" } });
+      fireEvent.submit(readout.form!);
+      act(() => vi.advanceTimersByTime(1_500));
+      fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+      fireEvent.keyDown(screen.getByRole("slider", { name: "Tuning dial" }), { key: "ArrowUp" });
+      act(() => vi.advanceTimersByTime(1_500));
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Switch to Third" })));
+      expect(radio.tune).toHaveBeenCalledTimes(1);
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "third.example" }));
+      expect(document.activeElement).toBe(document.querySelector("div.status"));
+    });
+
+    // Value: protects=Not now hides the offer, keeps focus on the page (status row), and the offer doesn't come back for the same receiver on the next rest; fails_when=dismiss isn't remembered or focus drops to the body; why_new=switch prompt; seam=fake timers; no_claim=none beyond protects
+    it("stays away after Not now", () => {
+      playingNarrow();
+      act(() => vi.advanceTimersByTime(1_500));
+      fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+      expect(prompt().textContent).toBe("");
+      // The button went away; focus waits on the status row rather than dropping to the page.
+      expect(document.activeElement).toBe(document.querySelector("div.status"));
+      fireEvent.keyDown(screen.getByRole("slider", { name: "Tuning dial" }), { key: "ArrowUp" });
+      act(() => vi.advanceTimersByTime(5_000));
+      expect(prompt().textContent).toBe("");
+      expect(radio.tune).not.toHaveBeenCalled();
+    });
+  });
+
   describe("band scan", () => {
     beforeEach(() => vi.useFakeTimers());
     afterEach(() => vi.useRealTimers());
@@ -1069,6 +1347,7 @@ describe("ListenPage", () => {
         bandsTotal: 15,
         partial: true,
       };
+      savePin({ host: listed.host, port: listed.port, fromList: true });
       const view = render(<ListenPage />);
       playing(view);
       expect(screen.getByText("Scanned 9 of 15 bands.", { exact: false })).toBeTruthy();
