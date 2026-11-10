@@ -1219,4 +1219,114 @@ describe("useRadio", () => {
       expect(result.current.settled).toEqual({ freqKhz: 10_000, mode: "am" });
     });
   });
+
+  describe("wide view", () => {
+    const on = { host: "kiwi.example", port: 8073, features: ["scan", "view"] };
+    const views = (ws: FakeSocket) => ws.sent.filter((m) => m.type === "view");
+    function wideFrame(id: number, start: number, span: number, level = 7) {
+      const payload = new Uint8Array(12 + 1024).fill(level);
+      const view = new DataView(payload.buffer);
+      view.setUint32(0, id, true);
+      view.setFloat32(4, start, true);
+      view.setFloat32(8, span, true);
+      return payload;
+    }
+
+    // Value: protects=a view is asked for only while a receiver plays on a service that streams it, then goes again (or its "none") to each new receiver but not on a retune of the same one; fails_when=it's sent before listening or without the feature (an older service answers with a status error), dropped after a switch, or resent on every status; why_new=wideband waterfall; seam=FakeSocket; no_claim=what the service does with it (radio tests)
+    it("asks for the view while playing, and again for each new receiver", async () => {
+      const { result } = renderHook(() => useRadio());
+      act(() => result.current.showView({ zoom: 9, cfKhz: 9_650 }));
+      await act(() => result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      expect(views(ws)).toEqual([]);
+      act(() => ws.status("listening", { ...on, features: ["scan"] }));
+      expect(result.current.canView).toBe(false);
+      expect(views(ws)).toEqual([]);
+      act(() => ws.status("listening", on));
+      expect(result.current.canView).toBe(true);
+      // The first status with the feature came for a receiver already playing; asking now sends it.
+      act(() => result.current.showView({ zoom: 7, cfKhz: 9_650 }));
+      const asked = views(ws);
+      expect(asked.at(-1)).toEqual({ type: "view", id: 2, zoom: 7, cfKhz: 9_650 });
+      act(() => ws.status("listening", on)); // a retune's answer
+      expect(views(ws)).toHaveLength(asked.length);
+      act(() => ws.status("connecting", { ...on, host: "other.example" }));
+      act(() => ws.status("listening", { ...on, host: "other.example" }));
+      // Under a new id, so the last receiver's late frames can't land on this one.
+      expect(views(ws).at(-1)).toEqual({ type: "view", id: 3, zoom: 7, cfKhz: 9_650 });
+      act(() => result.current.showView(null));
+      expect(views(ws).at(-1)).toEqual({ type: "view", zoom: null });
+      act(() => ws.status("listening", { ...on, host: "third.example" }));
+      expect(views(ws).at(-1)).toEqual({ type: "view", zoom: null });
+      // Asking for the same view again sends nothing.
+      act(() => result.current.showView(null));
+      expect(views(ws).at(-1)).toEqual({ type: "view", zoom: null });
+    });
+
+    // Value: protects=wide frames decode to where they landed and their levels, and only the current view's frames are drawn (an older view's are still in flight after a move); fails_when=the header is misread, the id isn't checked, or a nonsense span is drawn; why_new=wideband waterfall; seam=FakeSocket; no_claim=the drawing (WideWaterfall)
+    it("hands on the current view's frames and drops the rest", async () => {
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.status("listening", on));
+      act(() => result.current.showView({ zoom: 9, cfKhz: 9_650 }));
+      const got: { startKhz: number; spanKhz: number; row: Float32Array }[] = [];
+      result.current.onWideFrame((f) => got.push(f));
+      act(() => ws.frame(5, wideFrame(1, 9_620.5, 58.59375, 140)));
+      act(() => result.current.showView({ zoom: 7, cfKhz: 9_650 }));
+      act(() => ws.frame(5, wideFrame(1, 9_620.5, 58.59375))); // the old view's, late
+      act(() => ws.frame(5, wideFrame(2, 9_532.8125, 234.375)));
+      act(() => ws.frame(5, wideFrame(2, 9_532.8125, Number.NaN)));
+      act(() => ws.frame(5, wideFrame(2, 9_532.8125, 100_000)));
+      expect(got.map((f) => [f.startKhz, f.spanKhz])).toEqual([
+        [9_620.5, 58.59375],
+        [9_532.8125, 234.375],
+      ]);
+      expect(got[0]!.row).toHaveLength(1024);
+      expect(got[0]!.row[0]).toBe(140);
+    });
+
+    // Value: protects=a switch drops the last receiver's late frames and its view error, and Stop (whose socket close is ignored) turns the wide view off; fails_when=the view keeps its id across receivers, an error sticks to the next receiver, or canView outlives Stop (the wide picture stays up and clickable); why_new=web review; seam=FakeSocket; no_claim=what the service sends
+    it("starts each receiver's view afresh, and Stop ends it", async () => {
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.status("listening", on));
+      act(() => result.current.showView({ zoom: 9, cfKhz: 9_650 }));
+      const got: number[] = [];
+      result.current.onWideFrame((f) => got.push(f.startKhz));
+      act(() => ws.onmessage?.({ data: JSON.stringify({ type: "view", id: 1, state: "error", message: "busy" }) }));
+      expect(result.current.viewError).toBe("busy");
+      act(() => ws.status("connecting", { ...on, host: "other.example" }));
+      act(() => ws.status("listening", { ...on, host: "other.example" }));
+      expect(result.current.viewError).toBeNull();
+      act(() => ws.frame(5, wideFrame(1, 1, 58))); // the last receiver's, late
+      act(() => ws.frame(5, wideFrame(2, 2, 58)));
+      expect(got).toEqual([2]);
+      act(() => result.current.stop());
+      expect(result.current.canView).toBe(false);
+    });
+
+    // Value: protects=a view error is shown only for the view asked for now, and clears with the next ask or the socket closing; fails_when=an older view's error sticks, or the error never clears; why_new=wideband waterfall; seam=FakeSocket; no_claim=the service's wording
+    it("keeps only the current view's error", async () => {
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.status("listening", on));
+      act(() => result.current.showView({ zoom: 9, cfKhz: 9_650 }));
+      const reply = (id: number) =>
+        ws.onmessage?.({ data: JSON.stringify({ type: "view", id, state: "error", message: `no ${id}` }) });
+      act(() => reply(0));
+      expect(result.current.viewError).toBeNull();
+      act(() => reply(1));
+      expect(result.current.viewError).toBe("no 1");
+      act(() => result.current.showView({ zoom: 7, cfKhz: 9_650 }));
+      expect(result.current.viewError).toBeNull();
+      act(() => reply(2));
+      act(() => ws.finishClose());
+      expect(result.current.viewError).toBeNull();
+      expect(result.current.canView).toBe(false);
+    });
+  });
 });
+

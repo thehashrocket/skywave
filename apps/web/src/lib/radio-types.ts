@@ -102,3 +102,9 @@ export function stepKhz(freqKhz: number, size: number, dir: 1 | -1): number {
   const next = at % unit === 0 ? at + dir * unit : (dir > 0 ? Math.ceil(at / unit) : Math.floor(at / unit)) * unit;
   return clampKhz(next / 100);
 }
+
+/** The nearest frequency on a grid of `size` kHz (a click on the waterfall lands on a channel). */
+export function nearestKhz(freqKhz: number, size: number): number {
+  const unit = Math.round(size * 100);
+  return clampKhz((Math.round(Math.round(freqKhz * 100) / unit) * unit) / 100);
+}

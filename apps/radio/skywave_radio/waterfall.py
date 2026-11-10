@@ -1,4 +1,5 @@
-"""Async client for a KiwiSDR's waterfall (W/F) stream, used by the band scan.
+"""Async client for a KiwiSDR's waterfall (W/F) stream: the band scan's sweeps,
+and the live wide view a listener watches between them.
 
 Protocol notes, cross-checked against jks-prv/kiwiclient and live Kiwis
 (2026-10-22):
@@ -22,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import math
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -34,6 +36,7 @@ MAX_ZOOM = 14
 HEADER_BYTES = 12
 FAST_SPEED = 4  # about 23 frames a second while sweeping
 IDLE_SPEED = 1  # about 1 a second while held open after a sweep
+LIVE_SPEED = 3  # about 10 a second while a listener watches the wide view
 # A frame counts as the one asked for when its start is within this share of its span.
 START_TOLERANCE = 0.02
 # How often idle() sends a keepalive when no frame arrives.
@@ -51,6 +54,14 @@ class WaterfallFrame:
     start_khz: float  # baseband, like cf
     span_khz: float
     bins: np.ndarray  # uint8, about 1 dB per step
+
+
+@dataclass(frozen=True)
+class View:
+    """Where the live wide view looks: a zoom and its centre (baseband kHz, like cf)."""
+
+    zoom: int
+    cf_khz: float
 
 
 def parse_wf(body: bytes, bandwidth_khz: float) -> WaterfallFrame:
@@ -98,6 +109,10 @@ class WaterfallClient(KiwiConnection):
         # Why the Kiwi refused this stream while it was kept open (the session
         # keeps it, as closing it may end the audio); later scans repeat it.
         self.refusal: KiwiError | None = None
+        # The live view idle() streams, and where its frames go. Set by the
+        # session while no sweep runs (a sweep moves the waterfall itself).
+        self.view: View | None = None
+        self.on_frame: Callable[[WaterfallFrame], None] | None = None
 
     @property
     def is_open(self) -> bool:
@@ -144,6 +159,28 @@ class WaterfallClient(KiwiConnection):
             elif len(self.info.extra) < MAX_EXTRA_KEYS:
                 self.info.extra[name] = value
 
+    def centre(self, zoom: int, rf_khz: float) -> float:
+        """The baseband cf showing rf_khz at this zoom, kept inside the coverage.
+
+        A Kiwi shows the nearest slice it can, so a frame hanging off an edge
+        would never match the view asked for.
+        """
+        span = self.bandwidth_khz / 2**zoom
+        return min(max(rf_khz - self.info.freq_offset_khz, span / 2), self.bandwidth_khz - span / 2)
+
+    async def show(self, view: View | None) -> None:
+        """Point the live view there and speed up, or (None) slow back to idling."""
+        self.view = view
+        if view is None:
+            await self._send(f"SET wf_speed={IDLE_SPEED}")
+            return
+        await self._send(f"SET zoom={view.zoom} cf={view.cf_khz:.3f}")
+        await self._send(f"SET wf_speed={LIVE_SPEED}")
+
+    def _matches(self, wf: WaterfallFrame, zoom: int, cf_khz: float) -> bool:
+        span = self.bandwidth_khz / 2**zoom
+        return wf.zoom == zoom and abs(wf.start_khz - (cf_khz - span / 2)) <= span * START_TOLERANCE
+
     async def frame(self, zoom: int, cf_khz: float) -> WaterfallFrame:
         """The first settled frame at this zoom and centre (baseband kHz).
 
@@ -152,8 +189,6 @@ class WaterfallClient(KiwiConnection):
         """
         if not 0 <= zoom <= MAX_ZOOM:
             raise ValueError(f"zoom {zoom} out of range")
-        span = self.bandwidth_khz / 2**zoom
-        start = cf_khz - span / 2
         await self._send(f"SET zoom={zoom} cf={cf_khz:.3f}")
         matched = 0
         while True:
@@ -165,41 +200,59 @@ class WaterfallClient(KiwiConnection):
                 wf = parse_wf(data[3:], self.bandwidth_khz)
             except ValueError:
                 continue  # one bad frame (a hostile Kiwi) is skipped, not the whole scan
-            if wf.zoom != zoom or abs(wf.start_khz - start) > span * START_TOLERANCE:
+            if not self._matches(wf, zoom, cf_khz):
                 continue
             matched += 1
             if matched >= 2:
                 return wf
 
-    async def fast(self) -> None:
-        """Back to sweep speed after idle().
+    async def ready(self) -> None:
+        """Make sure it has its settings, which uncompressed frames need.
 
         A waterfall whose handshake timed out may have sent its setup since,
         while idling; it gets the settings then. One that still hasn't can't
-        sweep, and raises KiwiError (it stays open: closing ends the audio).
+        be used, and raises KiwiError (it stays open: closing ends the audio).
         """
+        if self._configured:
+            return
+        if not self._setup:
+            raise KiwiError("timeout", f"{self.host} never sent {self.HANDSHAKE_WANTS}")
+        await self._configure()
+
+    async def fast(self) -> None:
+        """Back to sweep speed after idle(), settings first if it never had them (see ready())."""
         if not self._configured:
-            if not self._setup:
-                raise KiwiError("timeout", f"{self.host} never sent {self.HANDSHAKE_WANTS}")
-            await self._configure()
+            await self.ready()  # its settings include sweep speed
             return
         await self._send(f"SET wf_speed={FAST_SPEED}")
 
     async def idle(self) -> None:
-        """Keep the stream open and drained at about a frame a second.
+        """Keep the stream open and drained: about a frame a second, or the
+        live view's frames, handed to on_frame, while `view` is set.
 
         Never returns while the Kiwi keeps it open; raises KiwiError when it
         closes. Run it as a task and cancel it when the listener stops.
         """
-        await self._send(f"SET wf_speed={IDLE_SPEED}")
+        # Points the view again: a sweep since may have moved the waterfall.
+        await self.show(self.view)
         while True:
             # Keepalives go out even if frames stop: a W/F the Kiwi drops for
             # silence takes the paired audio with it.
             try:
                 async with asyncio.timeout(KEEPALIVE_S):
-                    await self._next()
+                    data = await self._next()
             except TimeoutError:
                 continue
+            view, on_frame = self.view, self.on_frame
+            if view is None or on_frame is None or data[:3] != b"W/F":
+                continue
+            try:
+                wf = parse_wf(data[3:], self.bandwidth_khz)
+            except ValueError:
+                continue  # one bad frame (a hostile Kiwi) is skipped, not the stream
+            # Frames for the previous position keep coming for a moment after a move.
+            if self._matches(wf, view.zoom, view.cf_khz):
+                on_frame(wf)
 
     async def _next(self) -> bytes:
         """The next frame, with keepalives sent and MSG refusals raised."""

@@ -8,7 +8,9 @@ import { Presets } from "@/components/Presets";
 import { ReceiverPicker, type Playing } from "@/components/ReceiverPicker";
 import { SignalList } from "@/components/SignalList";
 import { SMeter } from "@/components/SMeter";
+import { SpanPicker } from "@/components/SpanPicker";
 import { Waterfall } from "@/components/Waterfall";
+import { WideWaterfall } from "@/components/WideWaterfall";
 import { ReceiverChip } from "@/components/ReceiverChip";
 import { covers, findReceiver, placeName, rankReceivers, receiverKey, type Receiver } from "@/lib/kiwi-list";
 import {
@@ -19,6 +21,8 @@ import {
   inAmericas,
   inTuneRange,
   isMode,
+  nearestKhz,
+  PASSBANDS,
   tuningStepKhz,
   type Mode,
 } from "@/lib/radio-types";
@@ -29,6 +33,7 @@ import { useBetterReceiver } from "@/lib/use-better-receiver";
 import { useMapAdmission } from "@/lib/use-map-admission";
 import { useRadio } from "@/lib/use-radio";
 import { useSolarClock } from "@/lib/use-solar-clock";
+import { bandAt, DEFAULT_SPAN, nextView, type SpanStep, type WideView } from "@/lib/wide-view";
 
 // The last receiver that played, however it was reached. It seeds Back on the
 // next visit; it no longer picks the receiver (Auto does, unless one is pinned).
@@ -217,6 +222,18 @@ function useLatch(on: boolean): boolean {
   return latched || on;
 }
 
+/**
+ * Where the receiver's own waterfall looks for this width and frequency. It
+ * holds still while the frequency moves inside it (the same object), so only
+ * a move near an edge, or another width, asks the receiver for a new view.
+ */
+function useWideView(step: SpanStep, freqKhz: number): WideView | null {
+  const [view, setView] = useState<WideView | null>(null);
+  const next = nextView(step, freqKhz, view);
+  if (next !== view) setView(next);
+  return next;
+}
+
 const STATE_TEXT = {
   idle: "Not listening",
   connecting: "Connecting…",
@@ -226,8 +243,9 @@ const STATE_TEXT = {
 } as const;
 
 /**
- * How long a receiver plays before its band scan starts: long enough that a
- * quick switch or a receiver refusing apps (about 10 s in) doesn't scan for
+ * How long a receiver plays before its band scan starts and its own waterfall
+ * is asked for (both are streams on the volunteer's Kiwi): long enough that a
+ * quick switch or a receiver refusing apps (about 10 s in) isn't asked for
  * nothing. The radio service caches each receiver's scan.
  */
 const AUTO_SCAN_MS = 10_000;
@@ -627,16 +645,23 @@ export default function ListenPage() {
     return otherThan(heard, shown ? receiverKey(shown) : undefined);
   }, [heard, current, status.host, status.port, fieldsHost, fieldsPort]);
 
-  // Scan each receiver once it has played for AUTO_SCAN_MS and Pick best is
-  // done with it: not during its attempts, nor its watch for a late refusal.
+  // A receiver earns its scan and its own waterfall once it has played for
+  // AUTO_SCAN_MS and Pick best is done with it: not during its attempts, nor
+  // its watch for a late refusal. Any other receiver, or none, starts over.
   const { canScan, scan, startScan } = radio;
   const playingKey = playingNow && receiverKey(playingNow);
   const scannedKey = scan ? receiverKey(scan) : null;
+  const [settledKey, setSettledKey] = useState<string | null>(null);
+  if (settledKey !== null && settledKey !== playingKey) setSettledKey(null);
+  const settledHere = settledKey !== null && settledKey === playingKey;
   useEffect(() => {
-    if (!playingKey || !radio.heardAudio || !pickBest.settled || !canScan || scannedKey === playingKey) return;
-    const timer = setTimeout(() => startScan(), AUTO_SCAN_MS);
+    if (!playingKey || !radio.heardAudio || !pickBest.settled || settledKey === playingKey) return;
+    const timer = setTimeout(() => setSettledKey(playingKey), AUTO_SCAN_MS);
     return () => clearTimeout(timer);
-  }, [playingKey, scannedKey, radio.heardAudio, pickBest.settled, canScan, startScan]);
+  }, [playingKey, settledKey, radio.heardAudio, pickBest.settled]);
+  useEffect(() => {
+    if (settledHere && canScan && scannedKey !== playingKey) startScan();
+  }, [settledHere, canScan, scannedKey, playingKey, startScan]);
 
   // The map waits for the radio: the session's first audio, or 5 s with nothing to wait for.
   const mapAdmitted = useMapAdmission({ heardAudio: radio.heardAudio, busy });
@@ -751,6 +776,26 @@ export default function ListenPage() {
   // The waterfall opens on the visit's first audio and stays open, so Stop and
   // Listen never resize it again.
   const waterfallOpen = useLatch(radio.heardAudio);
+
+  // How wide the waterfall looks. The receiver's own waterfall needs a radio
+  // service that streams it; "band" needs the dial in a band, and falls back
+  // to the default width when it leaves one.
+  const [spanStep, setSpanStep] = useState<SpanStep>(DEFAULT_SPAN);
+  const dialBand = bandAt(freqKhz);
+  if (spanStep === "band" && !dialBand) setSpanStep(DEFAULT_SPAN);
+  const wideView = useWideView(spanStep, freqKhz);
+  // Only once the receiver playing has earned it (the scan's wait, above);
+  // until then, and after an error or Stop, the audio waterfall shows.
+  const showWide = waterfallOpen && radio.canView && wideView !== null && settledHere;
+  // Waiting for that, with a wide width chosen: the picker says so.
+  const wideWaiting = radio.canView && wideView !== null && !settledHere && (busy || playingNow !== null);
+  const { showView } = radio;
+  useEffect(() => {
+    showView(showWide ? wideView : null);
+  }, [showView, showWide, wideView]);
+  // Where the Kiwi is tuned (CW sits below the signal, at its pitch) and what it passes, in RF.
+  const kiwiKhz = mode === "cw" ? freqKhz - CW_PITCH_KHZ : freqKhz;
+  const passband: [number, number] = [kiwiKhz + PASSBANDS[mode][0] / 1000, kiwiKhz + PASSBANDS[mode][1] / 1000];
 
   return (
     <main className="console">
@@ -1017,15 +1062,39 @@ export default function ListenPage() {
       </div>
 
       <h2 className="visually-hidden">Waterfall</h2>
-      <Waterfall
-        expanded={waterfallOpen}
-        connecting={busy}
-        mode={mode}
-        sampleRate={status.sampleRate ?? 12000}
-        active={status.state === "listening"}
-        subscribe={radio.onSpectrum}
-        onClickOffset={onWaterfallClick}
-      />
+      {waterfallOpen && (
+        <SpanPicker
+          step={radio.canView ? spanStep : "audio"}
+          waiting={wideWaiting}
+          band={dialBand}
+          canView={radio.canView}
+          onChange={setSpanStep}
+        />
+      )}
+      {showWide ? (
+        <WideWaterfall
+          // A receiver of its own: a switch starts a blank picture, not the last one's.
+          key={playingKey ?? "none"}
+          view={wideView}
+          freqKhz={freqKhz}
+          passband={passband}
+          frozen={scan?.state === "scanning"}
+          error={radio.viewError}
+          subscribe={radio.onWideFrame}
+          // On the channel grid the wheel steps on, so a click lands on the station.
+          onTune={(khz) => changeFreq(nearestKhz(khz, wheelStep))}
+        />
+      ) : (
+        <Waterfall
+          expanded={waterfallOpen}
+          connecting={busy}
+          mode={mode}
+          sampleRate={status.sampleRate ?? 12000}
+          active={status.state === "listening"}
+          subscribe={radio.onSpectrum}
+          onClickOffset={onWaterfallClick}
+        />
+      )}
 
       <SignalList
         scan={scan}
