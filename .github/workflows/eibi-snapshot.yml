@@ -1,0 +1,77 @@
+name: Refresh EiBi snapshot
+
+# The bundled station schedule (apps/web/src/server/eibi-snapshot.json) is what
+# the server falls back on when eibispace.de can't be reached. EiBi's seasons
+# switch on the last Sundays of March and October; a few days after each, this
+# fetches the new season's file and opens a PR if it changed. A season file
+# that isn't up yet fails the run (and GitHub emails about it): run it again by
+# hand from the Actions tab once EiBi has posted it.
+on:
+  schedule:
+    - cron: "0 6 1 4 *" # 1 April
+    - cron: "0 6 1 11 *" # 1 November
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season to fetch, like a27 or b27 (blank: the season it is now)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: eibi-snapshot
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Same pnpm pin as ci.yml, for the same reason.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.14.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Fetch the season's schedule
+        env:
+          SEASON: ${{ inputs.season }}
+        run: |
+          if [ -n "$SEASON" ] && ! [[ "$SEASON" =~ ^[ab][0-9]{2}$ ]]; then
+            echo "::error::Season must look like a27 or b27, not '$SEASON'."
+            exit 1
+          fi
+          pnpm --filter web eibi:snapshot $SEASON
+
+      - name: Open a PR if it changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          file=apps/web/src/server/eibi-snapshot.json
+          if git diff --quiet -- "$file"; then
+            echo "The bundled schedule is already current."
+            exit 0
+          fi
+          season=$(node -p "require('./$file').season")
+          branch="chore/eibi-snapshot-$season"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$branch"
+          git add "$file"
+          git commit -m "chore(web): refresh the bundled EiBi schedule ($season)"
+          git push --force origin "$branch"
+          if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            gh pr create --head "$branch" --base "$BASE" \
+              --title "chore(web): refresh the bundled EiBi schedule ($season)" \
+              --body "The station schedule the server falls back on when eibispace.de can't be reached, refreshed for season $season by the \`Refresh EiBi snapshot\` workflow. \`pnpm --filter web eibi:snapshot\` checked that it parses before saving it.
+
+          A PR opened by this workflow doesn't start CI on its own: close and reopen it, or push to it, to run the checks."
+          fi

@@ -174,18 +174,6 @@
 **Priority:** P4
 **Depends on:** None
 
-### Refresh the bundled EiBi schedule each season
-
-**What:** Run `pnpm --filter web eibi:snapshot` and commit `apps/web/src/server/eibi-snapshot.json` after each season switch: the last Sunday of March (next: 28 March 2027, season `a27`) and the last Sunday of October (next: 31 October 2027, `b27`). EiBi usually posts the new file a few days before; the command fetches the season it is when run, or pass one (`pnpm --filter web eibi:snapshot a27`).
-
-**Why:** The server only uses the bundled copy when eibispace.de can't be reached, but then it's what every listener gets. The committed copy is `b26`, good until 28 March 2027; after that, a failed download names stations from the wrong season (summer-only and winter-only services, changed frequencies).
-
-**Context:** `apps/web/scripts/eibi-snapshot.ts` checks the file parses before writing it. The server marks bundled answers (`bundled: true`) and the page asks again every 15 minutes while it has one.
-
-**Effort:** S (twice a year)
-**Priority:** P2
-**Depends on:** None
-
 ### Fall back to the receiver's own DX labels for station names
 
 **What:** Where the EiBi schedule lists nothing on a frequency, name it from the Kiwi owner's DX labels.
@@ -237,6 +225,12 @@
 
 
 ## Completed
+
+### Refresh the bundled EiBi schedule each season
+
+**What:** The `Refresh EiBi snapshot` workflow (`.github/workflows/eibi-snapshot.yml`) runs on 1 April and 1 November, a few days after EiBi's season switches, fetches the new season's file with `pnpm --filter web eibi:snapshot`, and opens a PR if `apps/web/src/server/eibi-snapshot.json` changed. It can also be run by hand from the Actions tab, with or without a season (`a27`).
+
+**Watch for:** a failed run means EiBi hadn't posted the season's file yet; run it again once it has. A PR this workflow opens doesn't start CI by itself (GitHub's rule for its own token): close and reopen it to run the checks. The repo setting "Allow GitHub Actions to create and approve pull requests" must be on.
 
 ### Name the stations in the scan list
 

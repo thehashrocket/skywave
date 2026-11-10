@@ -1,7 +1,8 @@
 /**
  * Refreshes the bundled EiBi schedule (src/server/eibi-snapshot.json), the
  * copy the server falls back on when eibispace.de can't be reached. Run it
- * once each season changes (late March and late October):
+ * once each season changes (late March and late October; the
+ * `Refresh EiBi snapshot` workflow does this on 1 April and 1 November):
  *
  *   pnpm eibi:snapshot          # the season it is now
  *   pnpm eibi:snapshot b26      # a given season
