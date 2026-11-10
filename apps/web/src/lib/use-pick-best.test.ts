@@ -362,6 +362,35 @@ describe("usePickBest", () => {
     }
   });
 
+  // Value: protects=isRefused, which the better-receiver offer reads, answers from the same memory as a run: a recent refusal (any case, default port) until REFUSED_MS or until it plays; fails_when=it keeps a second definition that drifts from start's filter; why_new=the switch prompt must not offer a receiver that just refused; seam=fake timers; no_claim=the run's own filtering (test above)
+  it("reports recent refusals through isRefused", () => {
+    vi.useFakeTimers();
+    try {
+      const { hook, report } = setup();
+      const refused = (host: string) => hook.result.current.isRefused({ host, port: 8073 });
+      report({ state: "error", host: "A", code: "busy", message: "x" });
+      expect(refused("a")).toBe(true);
+      expect(refused("b")).toBe(false);
+      act(() => vi.advanceTimersByTime(REFUSED_MS));
+      expect(refused("a")).toBe(false);
+      report(fail("b", "no_apps"));
+      expect(refused("b")).toBe(true);
+      report({ state: "listening", host: "b", port: 8073 });
+      expect(refused("b")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=a run whose candidates leave out the receiver playing (the better-receiver switch) still names it by its listed name on the way back; fails_when=start looks the fallback up only among the candidates, so the note and Back say the bare host; why_new=Claude review of the switch prompt; seam=none; no_claim=none beyond protects
+  it("names the way back from the list it's given", () => {
+    const { hook, report } = setup();
+    report({ state: "listening", host: "home", port: 8073 });
+    act(() => hook.result.current.start([rx("a")], [rx("home"), rx("a")]));
+    report(fail("a", "busy"));
+    expect(hook.result.current.note).toBe("Tried 1 receiver and it didn't work. Going back to HOME…");
+  });
+
   // Value: protects=a failed Pick best during a live session doesn't leave the listener in silence; fails_when=the fallback tune is removed; why_new=red team found switching drops the working receiver; seam=none; no_claim=the old receiver still having a free slot
   it("goes back to the receiver that was playing when every try fails", () => {
     const { hook, report, tuned } = setup();

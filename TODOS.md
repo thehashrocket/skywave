@@ -26,13 +26,13 @@
 **Priority:** P4
 **Depends on:** None
 
-### Restore the address after a refused receiver switch
+### Restore the receiver after a refused switch
 
-**What:** When the service refuses a switch to another receiver (for example a bad list entry) and the old station keeps playing, put the page's host and port fields back to the receiver still playing.
+**What:** When the service refuses a switch to another receiver (for example a bad list entry) and the old station keeps playing, put the page's tuned receiver (`host`/`port`/`fromList`/`secure`, where dial retunes go) back to the receiver still playing, and decide whether the pin and the Receiver field (`pin`, `draft`) follow it or keep naming the receiver the listener chose.
 
-**Why:** Today the fields keep naming the refused receiver, so every dial move goes there and is refused while the old station plays on. Already true before the dial revert. Owner D6 (fix/web-dial-revert review, 2026-10-26): its own fix.
+**Why:** Today the tuned receiver stays on the refused one, so every dial move goes there and is refused while the old station plays on. Already true before the dial revert. Since Auto/pins (feat/auto-receiver), a refused table, map or typed choice also leaves the chip naming a receiver that never played (it isn't saved: pins are saved only once they play). The better-receiver offer isn't affected: it switches through Pick best, which goes back on failure. Owner D6 (fix/web-dial-revert review, 2026-10-26): its own fix.
 
-**Context:** `apps/web/src/app/page.tsx` (`tuneReceiver`, `tuning`), `apps/web/src/lib/use-radio.ts` (uncoded error handling).
+**Context:** `apps/web/src/app/page.tsx` (`tuneReceiver`, `pinTo`, `tuning`, `pin`, `draft`), `apps/web/src/lib/use-radio.ts` (uncoded error handling).
 
 **Effort:** S
 **Priority:** P3
