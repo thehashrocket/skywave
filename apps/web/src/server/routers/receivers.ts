@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { after } from "next/server";
 import { KIWI_LIST_URL, LIST_MAX_AGE_MS, LIST_RETRY_MS, parseKiwiList, type Receiver } from "@/lib/kiwi-list";
+import { readCapped } from "../read-capped";
 import { publicProcedure, router } from "../trpc";
 
 const TTL_MS = LIST_MAX_AGE_MS;
@@ -60,7 +61,11 @@ export function receiverSource({
       cache: "no-store",
     });
     if (!res.ok) throw new Error(`Receiver list request failed: HTTP ${res.status}`);
-    return { receivers: parseKiwiList(await readCapped(res)), fetchedAt: now(), stale: false };
+    return {
+      receivers: parseKiwiList((await readCapped(res, MAX_BYTES, "Receiver list")).toString("utf8")),
+      fetchedAt: now(),
+      stale: false,
+    };
   }
 
   function startRefresh(): Promise<ReceiverList> {
@@ -96,24 +101,6 @@ export function receiverSource({
     if (backingOff) throw lastFailure!.error;
     return startRefresh();
   };
-}
-
-async function readCapped(res: Response): Promise<string> {
-  if (!res.body) return "";
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > MAX_BYTES) {
-      await reader.cancel();
-      throw new Error("Receiver list is larger than expected.");
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks).toString("utf8");
 }
 
 const getReceivers = receiverSource();

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import type { StationLine } from "@/lib/eibi";
 import type { ScanState } from "@/lib/use-radio";
 
 type Props = {
@@ -16,6 +17,8 @@ type Props = {
   checking: boolean;
   onTune: (freqKhz: number) => void;
   onScanAgain: () => void;
+  /** Who the schedule has on a frequency now, if anyone. */
+  stationAt?: (freqKhz: number) => StationLine | null;
 };
 
 const khz = (f: number) => f.toLocaleString("en-US", { maximumFractionDigits: 2 });
@@ -28,7 +31,17 @@ export const PHONE_ROWS = 8;
  * service's band scan. Ranked by how far each stands above the noise, which
  * says nothing about what's on: talk, music or a carrier with dead air.
  */
-export function SignalList({ scan, canScan, listening, freqKhz, scanDelayMs, checking, onTune, onScanAgain }: Props) {
+export function SignalList({
+  scan,
+  canScan,
+  listening,
+  freqKhz,
+  scanDelayMs,
+  checking,
+  onTune,
+  onScanAgain,
+  stationAt,
+}: Props) {
   // The scan whose whole list a phone asked for; a new scan starts short again.
   const [allFor, setAllFor] = useState<ScanState | null>(null);
   // "Show all" goes away when pressed; focus moves to the first row it revealed.
@@ -91,19 +104,29 @@ export function SignalList({ scan, canScan, listening, freqKhz, scanDelayMs, che
           ref={listRef}
           className={allFor === scan ? "presets-list signals-list signals-list-all" : "presets-list signals-list"}
         >
-          {scan.signals.map((s, i) => (
-            <li
-              key={s.freqKhz}
-              data-current={Math.abs(s.freqKhz - freqKhz) < 0.005 || undefined}
-              data-beyond={i >= PHONE_ROWS || undefined}
-            >
-              <button type="button" className="preset-tune" onClick={() => onTune(s.freqKhz)}>
-                <span className="preset-freq">{khz(s.freqKhz)}</span>
-                <span className="preset-mode">{s.band}</span>
-                <span className="signal-strength">{s.snrDb} dB above noise</span>
-              </button>
-            </li>
-          ))}
+          {scan.signals.map((s, i) => {
+            const station = stationAt?.(s.freqKhz);
+            return (
+              <li
+                key={s.freqKhz}
+                data-current={Math.abs(s.freqKhz - freqKhz) < 0.005 || undefined}
+                data-beyond={i >= PHONE_ROWS || undefined}
+              >
+                <button type="button" className="preset-tune" onClick={() => onTune(s.freqKhz)}>
+                  <span className="preset-freq">{khz(s.freqKhz)}</span>
+                  <span className="preset-mode">{s.band}</span>
+                  <span className="signal-what">
+                    {station && (
+                      <span className="signal-station" title={station.all}>
+                        {station.text}
+                      </span>
+                    )}
+                    <span className="signal-strength">{s.snrDb} dB above noise</span>
+                  </span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
       {scan?.state === "done" && scan.signals.length > PHONE_ROWS && allFor !== scan && (

@@ -178,4 +178,29 @@ describe("SignalList", () => {
     });
     expect(screen.queryByRole("button", { name: /^Show all/ })).toBeNull();
   });
+
+  // Value: protects=each row names who the schedule has on its frequency, and a row with nobody listed keeps just its strength; fails_when=names are missing, land on the wrong row, or an empty name line shows; why_new=plan: "9,580 · Radio Australia · English"; seam=none; no_claim=the schedule lookup (eibi tests)
+  it("names the scheduled station on each row", () => {
+    show(
+      {
+        state: "done",
+        ...at,
+        signals: [
+          { freqKhz: 9_580, snrDb: 40, band: "31m" },
+          { freqKhz: 9_600, snrDb: 30, band: "31m" },
+        ],
+        hidden: 0,
+        bandsDone: 1,
+        bandsTotal: 1,
+        partial: false,
+      },
+      {
+        stationAt: (khz) =>
+          khz === 9_580 ? { text: "KBS World Radio · English", all: "KBS World Radio · English" } : null,
+      },
+    );
+    const [first, second] = screen.getAllByRole("button", { name: /dB above noise/ });
+    expect(first!.textContent).toContain("KBS World Radio · English");
+    expect(second!.querySelector(".signal-station")).toBeNull();
+  });
 });

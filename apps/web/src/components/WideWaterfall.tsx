@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type MouseEvent } from "react";
+import type { StationLine } from "@/lib/eibi";
 import type { WideFrame } from "@/lib/use-radio";
 import { spanKhz, tickStepKhz, type WideView } from "@/lib/wide-view";
 import { createPainter, ROWS, type Painter } from "./Waterfall";
@@ -30,15 +31,53 @@ type Props = {
   subscribe: (fn: (frame: WideFrame) => void) => () => void;
   /** Called with the RF frequency (kHz) under a click. */
   onTune: (khz: number) => void;
+  /** Who the schedule has on the air around here now, by frequency. */
+  stations?: readonly ScheduledHere[];
 };
+
+export type ScheduledHere = { khz: number; line: StationLine };
+
+/** Room a station label takes, in pixels: names past it are cut short. */
+const LABEL_PX = 112;
+
+/**
+ * Which stations get a label, as fractions of the width: the one nearest the
+ * tuned frequency first, then outwards, each only where it clears the ones
+ * already placed. The rest keep just their mark.
+ */
+export function placeLabels(at: readonly number[], tuned: number, widthPx: number): Set<number> {
+  const gap = widthPx > 0 ? LABEL_PX / widthPx : 1;
+  const placed: number[] = [];
+  const order = at.map((x, i) => i).sort((a, b) => Math.abs(at[a]! - tuned) - Math.abs(at[b]! - tuned));
+  const out = new Set<number>();
+  for (const i of order) {
+    const x = at[i]!;
+    // Not where a label would hang off the picture.
+    if (x < gap / 2 || x > 1 - gap / 2) continue;
+    if (placed.some((p) => Math.abs(p - x) < gap)) continue;
+    placed.push(x);
+    out.add(i);
+  }
+  return out;
+}
 
 /**
  * The receiver's own waterfall, kilohertz wide: where the stations are around
  * the one playing. Frames say where they landed (a receiver keeps a view
  * inside what it covers), and the marks and axis follow them.
  */
-export function WideWaterfall({ view, freqKhz, passband, frozen, error, subscribe, onTune }: Props) {
+export function WideWaterfall({ view, freqKhz, passband, frozen, error, subscribe, onTune, stations = [] }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const screenRef = useRef<HTMLDivElement>(null);
+  // The picture's width, for how many station labels fit.
+  const [widthPx, setWidthPx] = useState(0);
+  useEffect(() => {
+    const screen = screenRef.current;
+    if (!screen || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => setWidthPx(entry!.contentRect.width));
+    observer.observe(screen);
+    return () => observer.disconnect();
+  }, []);
   const painterRef = useRef<Painter | null>(null);
   const [shown, setShown] = useState<Shown>(() => nominal(view));
   const shownRef = useRef(shown);
@@ -101,6 +140,12 @@ export function WideWaterfall({ view, freqKhz, passband, frozen, error, subscrib
     if (pct(k) >= 6 && pct(k) <= 94) ticks.push(k);
   }
   const clickable = placed && !frozen && !error;
+  const here = stations.filter((s) => s.khz >= startKhz && s.khz <= endKhz);
+  const labelled = placeLabels(
+    here.map((s) => pct(s.khz) / 100),
+    pct(freqKhz) / 100,
+    widthPx,
+  );
   const message =
     error ??
     (frozen
@@ -118,6 +163,7 @@ export function WideWaterfall({ view, freqKhz, passband, frozen, error, subscrib
   return (
     <figure className="waterfall" data-open data-wide>
       <div
+        ref={screenRef}
         className="waterfall-screen"
         onClick={handleClick}
         title={clickable ? "Click a signal to tune to it" : undefined}
@@ -132,6 +178,16 @@ export function WideWaterfall({ view, freqKhz, passband, frozen, error, subscrib
         )}
         {freqKhz >= startKhz && freqKhz <= endKhz && (
           <div className="waterfall-center" style={{ left: `${pct(freqKhz)}%` }} />
+        )}
+        {/* What the schedule has on: a mark on each frequency, a name where one fits. The readout says it in words. */}
+        {here.length > 0 && !message && (
+          <div className="waterfall-stations" aria-hidden="true">
+            {here.map((s, i) => (
+              <span key={s.khz} className="waterfall-station" style={{ left: `${pct(s.khz)}%` }}>
+                {labelled.has(i) && <span className="waterfall-station-name">{s.line.text}</span>}
+              </span>
+            ))}
+          </div>
         )}
         {message && (
           <p className="waterfall-empty" role={error ? "alert" : undefined}>

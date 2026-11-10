@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Broadcast } from "@/lib/eibi";
 import type { Receiver } from "@/lib/kiwi-list";
 import type { RadioStatus, ScanState, Settled } from "@/lib/use-radio";
 
@@ -97,6 +98,7 @@ const backup: Receiver = { ...listed, id: "backup", name: "Backup", host: "backu
 const waterfallClick: { current?: (hz: number) => void } = {};
 type WideProps = {
   view: { zoom: number; cfKhz: number };
+  stations?: { khz: number; line: { text: string } }[];
   frozen: boolean;
   error: string | null;
   passband: [number, number];
@@ -105,6 +107,8 @@ type WideProps = {
 const wide: { current?: WideProps & { mount: number }; mounts: number } = { mounts: 0 };
 const presetSelect: { current?: (p: { freqKhz: number; mode: "am" }) => void } = {};
 const receiverList: { data?: { receivers: Receiver[] }; errorUpdatedAt: number } = { errorUpdatedAt: 0 };
+const schedule: { data?: { season: string; bundled: boolean; broadcasts: Broadcast[] } } = {};
+vi.mock("@/lib/use-schedule", () => ({ useSchedule: () => schedule }));
 vi.mock("@/lib/use-receiver-list", async (actual) => ({
   ...(await actual<typeof import("@/lib/use-receiver-list")>()),
   useReceiverList: () => receiverList,
@@ -169,6 +173,7 @@ beforeEach(() => {
   radio.scan = null;
   radio.canView = false;
   radio.viewError = null;
+  schedule.data = undefined;
   radio.showView.mockClear();
   radio.startScan.mockClear();
   radio.tune.mockClear();
@@ -1949,6 +1954,52 @@ describe("ListenPage", () => {
       expect(screen.getByLabelText("waterfall")).toBeTruthy();
       act(() => vi.advanceTimersByTime(10_000));
       expect(radio.showView).toHaveBeenLastCalledWith(expect.objectContaining({ zoom: 9 }));
+    });
+
+    // Value: protects=the EiBi schedule names stations in all three owner-chosen places: under the readout for the tuned frequency, on each Strong signals row, and to the wide waterfall for the frequencies around the view (and not ones far outside it); and nothing until the schedule has loaded; fails_when=a spot is left unwired, gets another frequency's name, or the wide view is handed the whole season; why_new=owner decision: names in three places; seam=useRadio, useSchedule and both waterfalls mocked; no_claim=the matching rules (eibi tests)
+    it("names scheduled stations under the readout, in the signals and on the wide waterfall", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_650, mode: "am" }));
+      const daily = (khz: number, station: string) => ({
+        khz,
+        start: 0,
+        end: 1440,
+        days: "",
+        station,
+        lang: "E",
+        target: "Eu",
+      });
+      radio.canView = true;
+      radio.canScan = true;
+      radio.scan = {
+        state: "done",
+        host: listed.host,
+        port: listed.port,
+        signals: [{ freqKhz: 9_580, snrDb: 31, band: "31m" }],
+        hidden: 0,
+        bandsDone: 1,
+        bandsTotal: 1,
+        partial: false,
+      };
+      const view = render(<ListenPage />);
+      expect(document.querySelector(".readout-station")).toBeNull();
+      schedule.data = {
+        season: "b26",
+        bundled: false,
+        broadcasts: [
+          daily(5_000, "Far away"),
+          daily(9_580, "KBS World Radio"),
+          daily(9_620, "Nearby"),
+          daily(9_650, "Radio Here"),
+        ],
+      };
+      playing(view);
+      expect(document.querySelector(".readout-station")!.textContent).toBe("Radio Here · English");
+      expect(screen.getByRole("button", { name: /9,580\s*31m/ }).textContent).toContain("KBS World Radio · English");
+      expect(wide.current!.stations!.map((x) => [x.khz, x.line.text])).toEqual([
+        // Twice the ~59 kHz view around 9,650: 9,580 is past it.
+        [9_620, "Nearby · English"],
+        [9_650, "Radio Here · English"],
+      ]);
     });
 
     // Value: protects=once audio has played on a service that streams it, the receiver's own waterfall opens 60 kHz wide around the dial (owner: open at ~60 kHz) and Audio goes back to the audio one, telling the service each time; fails_when=the default width changes, the view isn't asked for (or is asked for before audio or without the feature), or Audio leaves the wide view up; why_new=wideband waterfall; seam=useRadio and both waterfalls mocked; no_claim=what the service streams (radio tests)

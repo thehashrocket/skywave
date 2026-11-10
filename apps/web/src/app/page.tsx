@@ -12,6 +12,7 @@ import { SpanPicker } from "@/components/SpanPicker";
 import { Waterfall } from "@/components/Waterfall";
 import { WideWaterfall } from "@/components/WideWaterfall";
 import { ReceiverChip } from "@/components/ReceiverChip";
+import { scheduledBetween, scheduledOn, stationLine } from "@/lib/eibi";
 import { covers, findReceiver, placeName, rankReceivers, receiverKey, type Receiver } from "@/lib/kiwi-list";
 import {
   MODE_LABELS,
@@ -32,8 +33,9 @@ import { LIST_FAILED_TEXT, listFailed, useReceiverList } from "@/lib/use-receive
 import { useBetterReceiver } from "@/lib/use-better-receiver";
 import { useMapAdmission } from "@/lib/use-map-admission";
 import { useRadio } from "@/lib/use-radio";
+import { useSchedule } from "@/lib/use-schedule";
 import { useSolarClock } from "@/lib/use-solar-clock";
-import { bandAt, DEFAULT_SPAN, nextView, type SpanStep, type WideView } from "@/lib/wide-view";
+import { bandAt, DEFAULT_SPAN, nextView, spanKhz, type SpanStep, type WideView } from "@/lib/wide-view";
 
 // The last receiver that played, however it was reached. It seeds Back on the
 // next visit; it no longer picks the receiver (Auto does, unless one is pinned).
@@ -797,6 +799,28 @@ export default function ListenPage() {
   const kiwiKhz = mode === "cw" ? freqKhz - CW_PITCH_KHZ : freqKhz;
   const passband: [number, number] = [kiwiKhz + PASSBANDS[mode][0] / 1000, kiwiKhz + PASSBANDS[mode][1] / 1000];
 
+  // Station names from the EiBi schedule, by the minute: nothing until the page
+  // has the schedule and its own clock (the server's time isn't the viewer's).
+  const schedule = useSchedule().data?.broadcasts;
+  const clock = sun?.at ?? null;
+  const stationNow = useMemo(
+    () => (schedule && clock !== null ? stationLine(scheduledOn(schedule, freqKhz, clock)) : null),
+    [schedule, clock, freqKhz],
+  );
+  const stationAt = useCallback(
+    (khz: number) => (schedule && clock !== null ? stationLine(scheduledOn(schedule, khz, clock)) : null),
+    [schedule, clock],
+  );
+  const wideStations = useMemo(() => {
+    if (!schedule || clock === null || !wideView) return [];
+    // Twice the view's width: a receiver can show a view off-centre, near the edge of what it covers.
+    const span = spanKhz(wideView.zoom);
+    return scheduledBetween(schedule, wideView.cfKhz - span, wideView.cfKhz + span, clock).map((c) => ({
+      khz: c.khz,
+      line: stationLine(c.broadcasts)!,
+    }));
+  }, [schedule, clock, wideView]);
+
   return (
     <main className="console">
       <header className="console-header">
@@ -950,7 +974,7 @@ export default function ListenPage() {
       <Dial freqKhz={freqKhz} onChange={onDial} compact={waterfallOpen} />
 
       <section className="controls" aria-label="Tuning">
-        <FrequencyReadout freqKhz={freqKhz} onChange={(k) => changeFreq(k)} step={wheelStep} />
+        <FrequencyReadout freqKhz={freqKhz} onChange={(k) => changeFreq(k)} step={wheelStep} station={stationNow} />
 
         <fieldset className="modes">
           <legend className="visually-hidden">Mode</legend>
@@ -1083,6 +1107,7 @@ export default function ListenPage() {
           subscribe={radio.onWideFrame}
           // On the channel grid the wheel steps on, so a click lands on the station.
           onTune={(khz) => changeFreq(nearestKhz(khz, wheelStep))}
+          stations={wideStations}
         />
       ) : (
         <Waterfall
@@ -1105,6 +1130,7 @@ export default function ListenPage() {
         checking={!pickBest.settled}
         onTune={(khz) => changeFreq(khz, "am")}
         onScanAgain={() => startScan(true)}
+        stationAt={stationAt}
       />
 
       <Presets freqKhz={freqKhz} mode={mode} onSelect={(p) => changeFreq(clampKhz(p.freqKhz), p.mode)} />
