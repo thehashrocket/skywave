@@ -69,3 +69,36 @@ export function inTuneRange(khz: number): boolean {
 export function clampKhz(khz: number): number {
   return Math.min(DIAL_MAX_KHZ, Math.max(TUNE_MIN_KHZ, khz));
 }
+
+/** Medium wave's edges. Its AM channels are 9 or 10 kHz apart (long wave's 9); shortwave's 5. */
+const MW_MIN_KHZ = 520;
+const MW_MAX_KHZ = 1_710;
+
+/** Whether a longitude is in the Americas (ITU Region 2), where medium wave channels are 10 kHz apart. Unknown is no. */
+export function inAmericas(lon: number | undefined): boolean {
+  return lon !== undefined && lon >= -170 && lon <= -25;
+}
+
+/**
+ * One notch of fine tuning (the readout's wheel), in kHz: an AM channel (10 kHz
+ * on medium wave in the Americas, 9 elsewhere and on long wave, 5 on shortwave),
+ * 100 Hz for SSB, 10 Hz for CW.
+ */
+export function tuningStepKhz(freqKhz: number, mode: Mode, americas: boolean): number {
+  if (mode === "cw") return 0.01;
+  if (mode !== "am") return 0.1;
+  if (freqKhz > MW_MAX_KHZ) return 5;
+  return americas && freqKhz >= MW_MIN_KHZ ? 10 : 9;
+}
+
+/**
+ * The next frequency on a grid of `size` kHz in direction `dir` (+1 or -1): off
+ * the grid, the nearest channel that way; on it, the next one. Works in 10 Hz
+ * units, so 0.1 and 0.01 kHz steps don't drift.
+ */
+export function stepKhz(freqKhz: number, size: number, dir: 1 | -1): number {
+  const at = Math.round(freqKhz * 100);
+  const unit = Math.round(size * 100);
+  const next = at % unit === 0 ? at + dir * unit : (dir > 0 ? Math.ceil(at / unit) : Math.floor(at / unit)) * unit;
+  return clampKhz(next / 100);
+}

@@ -4,9 +4,38 @@ import { useCallback, useEffect, useRef, type KeyboardEvent, type PointerEvent }
 import { BROADCAST_BANDS, clampKhz, DIAL_MAX_KHZ, DIAL_MIN_KHZ, HAM_BANDS, type Band } from "@/lib/radio-types";
 
 const W = 1000;
-const H = 160;
 const PAD = 20;
-const SCALE_Y = 92;
+
+/**
+ * Where everything sits on the glass, in viewBox units. Full is the resting
+ * dial; compact (about two thirds as tall) is the dial once the visit's first
+ * audio opens the waterfall, so the waterfall gets the room. globals.css's
+ * --dial-aspect and gutter label positions follow these (globals.test.ts checks).
+ */
+type Layout = {
+  H: number;
+  broadcast: { y: number; labelY: [number, number] };
+  /** The MHz scale's baseline; numerals sit just above it. */
+  scaleY: number;
+  /** Tick lengths: every 250 kHz, every MHz, every 5 MHz. */
+  tickLen: [number, number, number];
+  ham: { y: number; labelY: [number, number] };
+};
+
+const FULL: Layout = {
+  H: 160,
+  broadcast: { y: 32, labelY: [27, 54] },
+  scaleY: 92,
+  tickLen: [6, 12, 18],
+  ham: { y: 118, labelY: [141, 154] },
+};
+const COMPACT: Layout = {
+  H: 106,
+  broadcast: { y: 16, labelY: [12, 35] },
+  scaleY: 57,
+  tickLen: [4, 8, 12],
+  ham: { y: 72, labelY: [92, 103] },
+};
 
 // How far a finger moves sideways, more than up or down, before a touch counts as tuning.
 const TOUCH_SLOP_PX = 8;
@@ -15,17 +44,17 @@ const EDGE_PX = 40;
 
 const x = (khz: number) => PAD + ((khz - DIAL_MIN_KHZ) / (DIAL_MAX_KHZ - DIAL_MIN_KHZ)) * (W - PAD * 2);
 
-function ticks() {
+function tickPaths({ scaleY, tickLen: [small, mhz, five] }: Layout) {
   const minor: string[] = [];
   const major: string[] = [];
   for (let khz = DIAL_MIN_KHZ; khz <= DIAL_MAX_KHZ; khz += 250) {
     const px = x(khz).toFixed(2);
-    if (khz % 1000 === 0) major.push(`M${px} ${SCALE_Y}v${khz % 5000 === 0 ? 18 : 12}`);
-    else minor.push(`M${px} ${SCALE_Y}v6`);
+    if (khz % 1000 === 0) major.push(`M${px} ${scaleY}v${khz % 5000 === 0 ? five : mhz}`);
+    else minor.push(`M${px} ${scaleY}v${small}`);
   }
   return { minor: minor.join(""), major: major.join("") };
 }
-const TICKS = ticks();
+const TICKS = new Map([FULL, COMPACT].map((l) => [l, tickPaths(l)]));
 
 function BandRow({
   bands,
@@ -60,9 +89,14 @@ function BandRow({
 type Props = {
   freqKhz: number;
   onChange: (khz: number) => void;
+  /** The shorter glass, once the waterfall has opened. */
+  compact?: boolean;
 };
 
-export function Dial({ freqKhz, onChange }: Props) {
+export function Dial({ freqKhz, onChange, compact = false }: Props) {
+  const layout = compact ? COMPACT : FULL;
+  const { H } = layout;
+  const ticks = TICKS.get(layout)!;
   const svgRef = useRef<SVGSVGElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -164,7 +198,7 @@ export function Dial({ freqKhz, onChange }: Props) {
   }, [needle, keepInView]);
 
   return (
-    <div className="dial">
+    <div className="dial" data-compact={compact || undefined}>
       <div className="dial-frame">
         {/* Outside the glass, so the needle never runs through them. A slider's contents
           aren't read out anyway; the band names are on the glass. */}
@@ -191,22 +225,22 @@ export function Dial({ freqKhz, onChange }: Props) {
             onLostPointerCapture={onPointerCancel}
             onKeyDown={onKeyDown}
           >
-            <BandRow bands={BROADCAST_BANDS} y={32} labelY={[27, 54]} className="dial-band dial-band-broadcast" />
-            <path className="dial-ticks-minor" d={TICKS.minor} />
-            <path className="dial-ticks-major" d={TICKS.major} />
-            <line className="dial-baseline" x1={PAD} x2={W - PAD} y1={SCALE_Y} y2={SCALE_Y} />
+            <BandRow bands={BROADCAST_BANDS} {...layout.broadcast} className="dial-band dial-band-broadcast" />
+            <path className="dial-ticks-minor" d={ticks.minor} />
+            <path className="dial-ticks-major" d={ticks.major} />
+            <line className="dial-baseline" x1={PAD} x2={W - PAD} y1={layout.scaleY} y2={layout.scaleY} />
             {Array.from({ length: 31 }, (_, mhz) => (
               <text
                 key={mhz}
                 className={mhz % 5 === 0 ? "dial-num dial-num-major" : "dial-num"}
                 x={x(mhz * 1000)}
-                y={SCALE_Y - 6}
+                y={layout.scaleY - 6}
                 textAnchor="middle"
               >
                 {mhz}
               </text>
             ))}
-            <BandRow bands={HAM_BANDS} y={118} labelY={[141, 154]} className="dial-band dial-band-ham" />
+            <BandRow bands={HAM_BANDS} {...layout.ham} className="dial-band dial-band-ham" />
             <g className="dial-needle" transform={`translate(${needle.toFixed(2)} 0)`}>
               <line x1={0} x2={0} y1={4} y2={H - 4} />
               <circle cx={0} cy={4} r={3.5} />

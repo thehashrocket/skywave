@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { DIAL_MAX_KHZ, inTuneRange, TUNE_MIN_KHZ } from "@/lib/radio-types";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { DIAL_MAX_KHZ, inTuneRange, stepKhz, TUNE_MIN_KHZ } from "@/lib/radio-types";
 
 const RANGE_HINT = `Enter ${TUNE_MIN_KHZ.toLocaleString("en-US")} to ${DIAL_MAX_KHZ.toLocaleString("en-US")} kHz`;
 
@@ -34,7 +34,30 @@ export function parseFrequencyKhz(text: string): number | null {
   return Math.round(value * 100) / 100;
 }
 
-export function FrequencyReadout({ freqKhz, onChange }: { freqKhz: number; onChange: (khz: number) => void }) {
+/**
+ * Wheel movement that makes one notch. A mouse wheel's notch (or any line- or
+ * page-based delta) is one notch on its own; a trackpad's small pixel deltas
+ * add up to one.
+ */
+const NOTCH_PX = 50;
+
+/**
+ * How long the pointer must rest on the number, with no wheel movement, before
+ * the wheel tunes. A page scroll that passes over the readout keeps scrolling
+ * instead of changing the station; focus (a click, Tab) arms it at once.
+ */
+export const WHEEL_REST_MS = 500;
+
+export function FrequencyReadout({
+  freqKhz,
+  onChange,
+  step,
+}: {
+  freqKhz: number;
+  onChange: (khz: number) => void;
+  /** One wheel notch or arrow key press in kHz (Shift: ten); none turns both off. */
+  step?: number;
+}) {
   const [draft, setDraft] = useState(format(freqKhz));
   const [editing, setEditing] = useState(false);
   // A typed value that isn't a tunable frequency: it stays in the box, flagged, until fixed or Escape.
@@ -45,11 +68,91 @@ export function FrequencyReadout({ freqKhz, onChange }: { freqKhz: number; onCha
   const edited = useRef(false);
   // The frequency the box last showed, so a rejected entry survives until a tune from elsewhere.
   const shown = useRef(freqKhz);
+  const inputRef = useRef<HTMLInputElement>(null);
+  // What stepping reads. `step` and `onChange` are the latest props; `freqKhz`
+  // runs ahead of them, set to each step as it's sent, so several steps before
+  // the page re-renders count on from one another. `total` is a trackpad's
+  // running wheel delta.
+  const tuner = useRef({ freqKhz, step, onChange, total: 0 });
+  tuner.current.step = step;
+  tuner.current.onChange = onChange;
+  useEffect(() => {
+    tuner.current.freqKhz = freqKhz;
+  }, [freqKhz]);
+
+  /**
+   * One step up or down (ten with `coarse`). False when stepping is off: no
+   * step given, or typed text in the box (being typed, or rejected and still
+   * showing), which a step would throw away.
+   */
+  const nudge = useCallback((dir: 1 | -1, coarse: boolean): boolean => {
+    const t = tuner.current;
+    if (!t.step || edited.current) return false;
+    const next = stepKhz(t.freqKhz, t.step * (coarse ? 10 : 1), dir);
+    if (next !== t.freqKhz) {
+      t.freqKhz = next;
+      t.onChange(next);
+    }
+    return true;
+  }, []);
+
+  // A wheel over the number tunes in steps instead of scrolling the page, once
+  // the pointer has rested there or the box has focus. It needs a listener that
+  // isn't passive, which React's onWheel is.
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    // Armed once the pointer has rested on the number for WHEEL_REST_MS.
+    let rested = false;
+    let rest: ReturnType<typeof setTimeout> | undefined;
+    const restart = () => {
+      clearTimeout(rest);
+      rested = false;
+      rest = setTimeout(() => (rested = true), WHEEL_REST_MS);
+    };
+    const leave = () => {
+      clearTimeout(rest);
+      rested = false;
+    };
+    const onWheel = (e: WheelEvent) => {
+      const t = tuner.current;
+      // Shift turns a mouse wheel sideways on some systems.
+      const delta = e.deltaY || (e.shiftKey ? e.deltaX : 0);
+      if (!delta || !t.step || edited.current) return; // the page scrolls as usual
+      if (!rested && document.activeElement !== input) {
+        // Passing over the number mid-scroll: keep scrolling, and wait for a rest.
+        restart();
+        return;
+      }
+      e.preventDefault();
+      let sum = delta;
+      if (e.deltaMode === WheelEvent.DOM_DELTA_PIXEL && Math.abs(delta) < NOTCH_PX) {
+        // A change of direction starts the count again.
+        t.total = Math.sign(t.total) === Math.sign(delta) ? t.total + delta : delta;
+        if (Math.abs(t.total) < NOTCH_PX) return;
+        sum = t.total;
+      }
+      t.total = 0;
+      // Wheel up (a negative delta) tunes up.
+      nudge(sum < 0 ? 1 : -1, e.shiftKey);
+    };
+    input.addEventListener("wheel", onWheel, { passive: false });
+    input.addEventListener("pointerenter", restart);
+    input.addEventListener("pointerleave", leave);
+    return () => {
+      clearTimeout(rest);
+      input.removeEventListener("wheel", onWheel);
+      input.removeEventListener("pointerenter", restart);
+      input.removeEventListener("pointerleave", leave);
+    };
+  }, [nudge]);
 
   useEffect(() => {
     // A tune from elsewhere mid-edit still counts, so a rejected entry left afterwards keeps its flag.
     if (editing) {
       shown.current = freqKhz;
+      // Focused but nothing typed (the wheel or arrows tuning it): show the new frequency.
+      if (!edited.current) setDraft(format(freqKhz));
       return;
     }
     if (invalid && shown.current === freqKhz) return;
@@ -79,8 +182,10 @@ export function FrequencyReadout({ freqKhz, onChange }: { freqKhz: number; onCha
         Frequency in kilohertz
       </label>
       <input
+        ref={inputRef}
         id="freq"
         className="readout-input"
+        title={step ? "Rest the pointer here and scroll, or use the up and down arrow keys, to fine-tune" : undefined}
         inputMode="decimal"
         maxLength={MAX_INPUT}
         autoComplete="off"
@@ -98,6 +203,7 @@ export function FrequencyReadout({ freqKhz, onChange }: { freqKhz: number; onCha
         onBlur={() => {
           if (cancelling.current) {
             cancelling.current = false;
+            edited.current = false; // what was typed is gone, so stepping works again
             setDraft(format(freqKhz));
             setInvalid(false);
             setEditing(false);
@@ -110,6 +216,11 @@ export function FrequencyReadout({ freqKhz, onChange }: { freqKhz: number; onCha
         aria-invalid={invalid || undefined}
         aria-describedby={invalid ? "freq-error" : undefined}
         onKeyDown={(e) => {
+          // Arrow keys step like the wheel, unless there's typed text to move the caret in.
+          if ((e.key === "ArrowUp" || e.key === "ArrowDown") && nudge(e.key === "ArrowUp" ? 1 : -1, e.shiftKey)) {
+            e.preventDefault();
+            return;
+          }
           if (e.key === "Escape") {
             // blur() runs onBlur right away, while `draft` still holds the
             // typed text, so tell it to discard rather than commit.

@@ -11,7 +11,17 @@ import { SMeter } from "@/components/SMeter";
 import { Waterfall } from "@/components/Waterfall";
 import { ReceiverChip } from "@/components/ReceiverChip";
 import { covers, findReceiver, placeName, rankReceivers, receiverKey, type Receiver } from "@/lib/kiwi-list";
-import { MODE_LABELS, MODES, clampKhz, guessMode, inTuneRange, isMode, type Mode } from "@/lib/radio-types";
+import {
+  MODE_LABELS,
+  MODES,
+  clampKhz,
+  guessMode,
+  inAmericas,
+  inTuneRange,
+  isMode,
+  tuningStepKhz,
+  type Mode,
+} from "@/lib/radio-types";
 import { DEFAULT_KIWI_PORT, parseReceiver } from "@/lib/receiver";
 import { usePickBest, WATCH_MS } from "@/lib/use-pick-best";
 import { LIST_FAILED_TEXT, listFailed, useReceiverList } from "@/lib/use-receiver-list";
@@ -199,6 +209,14 @@ function wss(secure: boolean) {
   return secure ? { secure: true as const } : {};
 }
 
+/** False until `on` is first true, then true for good. */
+function useLatch(on: boolean): boolean {
+  const [latched, setLatched] = useState(false);
+  // Set during render (React re-renders at once), so there's no frame with it still false.
+  if (on && !latched) setLatched(true);
+  return latched || on;
+}
+
 const STATE_TEXT = {
   idle: "Not listening",
   connecting: "Connecting…",
@@ -244,6 +262,10 @@ export default function ListenPage() {
   const [tuningRestored, setTuningRestored] = useState(false);
   const [volume, setVolume] = useState(0.8);
   const [browseOpen, setBrowseOpen] = useState(false);
+  // The receiver drawer under the header strip: the Receiver field, Pick best, the map and the table.
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerRef = useRef<HTMLElement>(null);
+  const changeRef = useRef<HTMLButtonElement>(null);
   // Set when Pick best had no list to rank, shown in the status row. A fresh
   // object each press, so it's the newest message again; the text follows the
   // list as it loads or fails. `from` names the control to press again: after
@@ -277,8 +299,10 @@ export default function ListenPage() {
         previous: null,
       });
     }
-    // First visit: show the list so there's something to pick from.
-    setBrowseOpen(!p && !last.host);
+    // First visit: show the drawer and the list so there's something to pick from.
+    const firstVisit = !p && !last.host;
+    setBrowseOpen(firstVisit);
+    setDrawerOpen(firstVisit);
     const t = loadTuning();
     setFreqKhz(t.freqKhz);
     setMode(t.mode);
@@ -441,6 +465,8 @@ export default function ListenPage() {
     (from: "listen" | "link"): boolean => {
       if (receivers) return pickFrom(rankReceivers(receivers, latest.current.freqKhz));
       setPageMessage({ from });
+      // The message points at the Receiver field and Try again, which are in the drawer.
+      setDrawerOpen(true);
       return false;
     },
     [receivers, pickFrom],
@@ -477,13 +503,28 @@ export default function ListenPage() {
     },
     [switchTo],
   );
-  const chooseReceiver = useCallback((r: Receiver) => pinTo(r, true), [pinTo]);
+  /**
+   * A choice made in the drawer closes it. Focus inside it would vanish with
+   * it, so it goes to "change", which opens it again.
+   */
+  const closeDrawer = useCallback(() => {
+    setDrawerOpen(false);
+    if (drawerRef.current?.contains(document.activeElement)) changeRef.current?.focus();
+  }, []);
+  const chooseReceiver = useCallback(
+    (r: Receiver) => {
+      pinTo(r, true);
+      closeDrawer();
+    },
+    [pinTo, closeDrawer],
+  );
   /** Pins and tunes what the fields say. Unchanged fields keep the pin's name. */
   const commitDraft = () => {
     const d = normalizeDraft();
     const port = Number(d.port);
     const same = pin && receiverKey(pin) === receiverKey({ host: d.host, port });
     pinTo({ host: d.host, port, secure: d.secure, ...(same && { name: pin.label }) }, d.fromList);
+    closeDrawer();
   };
   // The table's dot marks what's playing (or connecting), not what the fields
   // say. From the click until the service answers, that's the receiver being
@@ -599,6 +640,9 @@ export default function ListenPage() {
 
   // The map waits for the radio: the session's first audio, or 5 s with nothing to wait for.
   const mapAdmitted = useMapAdmission({ heardAudio: radio.heardAudio, busy });
+  // Nor before the drawer has opened once: a map that loads unseen can't be
+  // checked for drawing. Once loaded it stays, closed or not.
+  const drawerSeen = useLatch(drawerOpen);
   const lastPlace = useMemo(() => backTo && { host: backTo.host, port: backTo.port }, [backTo]);
   const openBrowse = useCallback(() => {
     setBrowseOpen(true);
@@ -693,24 +737,70 @@ export default function ListenPage() {
       : // A note reads as a failure only once nothing plays or connects (not while going back).
         source === "note" && !pickBest.running && !busy;
 
-  // Where the receiver playing is, from the list, when it says.
-  const listedPlace = useMemo(() => {
-    const r = playingNow && findReceiver(receivers, playingNow.host, playingNow.port);
-    return r ? placeName(r.location) : "";
-  }, [receivers, playingNow]);
+  // The receiver playing, as the list knows it (none for a typed one).
+  const playingListed = useMemo(
+    () => (playingNow ? findReceiver(receivers, playingNow.host, playingNow.port) : undefined),
+    [receivers, playingNow],
+  );
+  // Where it is, when the list says.
+  const listedPlace = playingListed ? placeName(playingListed.location) : "";
+  // One wheel notch over the readout. Medium wave channels are 10 kHz apart in
+  // the Americas, 9 elsewhere: go by where the receiver playing is, 9 if unknown.
+  const wheelStep = tuningStepKhz(freqKhz, mode, inAmericas(playingListed?.lon));
 
   // The waterfall opens on the visit's first audio and stays open, so Stop and
   // Listen never resize it again.
-  const [waterfallOpen, setWaterfallOpen] = useState(false);
-  useEffect(() => {
-    if (radio.heardAudio) setWaterfallOpen(true);
-  }, [radio.heardAudio]);
+  const waterfallOpen = useLatch(radio.heardAudio);
 
   return (
     <main className="console">
       <header className="console-header">
         <h1 className="wordmark">skywave</h1>
+        <div className="tuned-to">
+          {playingNow ? (
+            <span className="tuned-to-text">
+              Listening via <span className="tuned-to-place">{listedPlace || playingNow.host}</span>
+              {listedPlace && <span className="tuned-to-host"> · {playingNow.host}</span>}
+            </span>
+          ) : (
+            <ReceiverChip pinned={pin?.label ?? null} />
+          )}
+          <button
+            ref={changeRef}
+            type="button"
+            className="link-button inline tuned-to-change"
+            aria-label="Change receiver"
+            aria-expanded={drawerOpen}
+            aria-controls="receiver-drawer"
+            onClick={() => setDrawerOpen((o) => !o)}
+          >
+            change
+          </button>
+        </div>
+        {/* The receiver form's submit button, kept in the strip so it's always in reach. */}
+        <button
+          type="submit"
+          form="receiver-form"
+          className={busy ? "power power-on" : "power"}
+          onClick={(e) => {
+            // Listen turns into Stop at once; the second click of a
+            // double-click mustn't stop what the first one started.
+            if (e.detail > 1) e.preventDefault();
+          }}
+        >
+          {busy ? "Stop" : "Listen"}
+        </button>
+      </header>
+
+      <section
+        id="receiver-drawer"
+        ref={drawerRef}
+        className="drawer"
+        aria-label="Choose a receiver"
+        inert={!drawerOpen}
+      >
         <form
+          id="receiver-form"
           className="receiver"
           onSubmit={(e) => {
             e.preventDefault();
@@ -723,8 +813,8 @@ export default function ListenPage() {
         >
           <div className="field field-host">
             {/* The choice and the hint sit on the label row (wrapping when narrow), not under the
-                input, so the form's inputs stay bottom-aligned; unlike a placeholder, the hint stays
-                visible once an address is typed. */}
+                  input, so the form's inputs stay bottom-aligned; unlike a placeholder, the hint stays
+                  visible once an address is typed. */}
             <div className="field-head">
               <label htmlFor="host">Receiver</label>
               <ReceiverChip
@@ -772,25 +862,50 @@ export default function ListenPage() {
               Switch
             </button>
           )}
-          <button
-            type="submit"
-            className={busy ? "power power-on" : "power"}
-            onClick={(e) => {
-              // Listen turns into Stop at once; the second click of a
-              // double-click mustn't stop what the first one started.
-              if (e.detail > 1) e.preventDefault();
-            }}
-          >
-            {busy ? "Stop" : "Listen"}
-          </button>
         </form>
-      </header>
+        <ReceiverPicker
+          freqKhz={freqKhz}
+          current={current}
+          sun={sun}
+          open={browseOpen}
+          onOpenChange={setBrowseOpen}
+          onChoose={chooseReceiver}
+          onPickBest={(ranked) => {
+            const started = pickFrom(ranked);
+            if (started) closeDrawer();
+            return started;
+          }}
+          picking={pickBest.running}
+          onStopPicking={stopPicking}
+          map={(list) => (
+            <MapPanel
+              admitted={mapAdmitted && drawerSeen}
+              list={list}
+              freqKhz={freqKhz}
+              sun={sun}
+              playing={current}
+              last={lastPlace}
+              onListen={chooseReceiver}
+              onBrowse={openBrowse}
+            />
+          )}
+        >
+          <p className="receiver-help">
+            Let skywave pick a receiver, choose one from the list, or paste any address from{" "}
+            <a href="http://kiwisdr.com/public/" target="_blank" rel="noreferrer">
+              kiwisdr.com/public
+            </a>
+            . They're run by volunteers and most allow only a handful of listeners, so stop when you're done.
+          </p>
+        </ReceiverPicker>
+      </section>
 
       <h2 className="visually-hidden">Tuner</h2>
-      <Dial freqKhz={freqKhz} onChange={onDial} />
+      {/* Compact from the visit's first audio, with the waterfall opening: one change, then it stays. */}
+      <Dial freqKhz={freqKhz} onChange={onDial} compact={waterfallOpen} />
 
       <section className="controls" aria-label="Tuning">
-        <FrequencyReadout freqKhz={freqKhz} onChange={(k) => changeFreq(k)} />
+        <FrequencyReadout freqKhz={freqKhz} onChange={(k) => changeFreq(k)} step={wheelStep} />
 
         <fieldset className="modes">
           <legend className="visually-hidden">Mode</legend>
@@ -826,15 +941,8 @@ export default function ListenPage() {
         <div className="status" role="status" data-state={shownState} ref={statusRef} tabIndex={-1}>
           <span className="status-lamp" aria-hidden="true" />
           <span className="status-state">{STATE_TEXT[shownState]}</span>
-          {status.state === "listening" &&
-            status.host &&
-            (listedPlace ? (
-              <span className="status-detail">
-                from <span className="status-place">{listedPlace}</span> · {status.host}
-              </span>
-            ) : (
-              <span className="status-detail">on {status.host}</span>
-            ))}
+          {/* The strip shows where; this live region says it too, so a switch is heard. */}
+          {playingNow && <span className="visually-hidden"> via {listedPlace || playingNow.host}</span>}
           {message && (
             <span className="status-message" data-tone={messageTone ? "danger" : undefined}>
               {message}
@@ -931,38 +1039,6 @@ export default function ListenPage() {
       />
 
       <Presets freqKhz={freqKhz} mode={mode} onSelect={(p) => changeFreq(clampKhz(p.freqKhz), p.mode)} />
-
-      <ReceiverPicker
-        freqKhz={freqKhz}
-        current={current}
-        sun={sun}
-        open={browseOpen}
-        onOpenChange={setBrowseOpen}
-        onChoose={chooseReceiver}
-        onPickBest={pickFrom}
-        picking={pickBest.running}
-        onStopPicking={stopPicking}
-        map={(list) => (
-          <MapPanel
-            admitted={mapAdmitted}
-            list={list}
-            freqKhz={freqKhz}
-            sun={sun}
-            playing={current}
-            last={lastPlace}
-            onListen={chooseReceiver}
-            onBrowse={openBrowse}
-          />
-        )}
-      >
-        <p className="receiver-help">
-          Let skywave pick a receiver, choose one from the list, or paste any address from{" "}
-          <a href="http://kiwisdr.com/public/" target="_blank" rel="noreferrer">
-            kiwisdr.com/public
-          </a>
-          . They're run by volunteers and most allow only a handful of listeners, so stop when you're done.
-        </p>
-      </ReceiverPicker>
     </main>
   );
 }

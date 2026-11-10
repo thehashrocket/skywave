@@ -107,19 +107,72 @@ html,
 /* Page frame */
 
 .console {
+  --console-gap: 20px;
   max-width: 1120px;
   margin: 0 auto;
   padding: 24px 16px 64px;
   display: grid;
-  gap: 20px;
+  gap: var(--console-gap);
 }
 
 .console-header {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
+  align-items: center;
+  gap: 12px 20px;
+}
+
+/* The strip: what's playing (or the receiver choice), and "change" for the drawer. */
+.tuned-to {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.tuned-to-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+.tuned-to-place {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.tuned-to-host {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.tuned-to-change {
+  white-space: nowrap;
+}
+
+/* The receiver drawer under the strip. Closed, it collapses (and is inert)
+   instead of unmounting, so a loaded map keeps its size and isn't reloaded. */
+.drawer {
+  display: grid;
   gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-panel);
+  background: var(--enamel-raised);
+}
+
+.drawer[inert] {
+  height: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  visibility: hidden;
+  /* Takes no room, not even the page grid's gap above it. */
+  margin-top: calc(-1 * var(--console-gap));
 }
 
 .wordmark {
@@ -600,21 +653,26 @@ html,
   --gutter: 14px;
   --gutter-gap: 12px;
   --glass-min: 860px; /* .dial-glass's min-width */
+  --dial-aspect: 0.16; /* Dial.tsx's FULL.H / W */
   display: grid;
   grid-template-columns: var(--gutter) minmax(0, 1fr);
   column-gap: var(--gutter-gap);
   container-type: inline-size;
 }
 
-/* As tall as the glass (its 1000×160 viewBox at its width), not the grid row, which
+.dial[data-compact] .dial-frame {
+  --dial-aspect: 0.106; /* Dial.tsx's COMPACT.H / W */
+}
+
+/* As tall as the glass (its viewBox at its width), not the grid row, which
    also holds the strip's scrollbar where scrollbars take space: the labels' percentages
    then track the band rows. */
 .dial-gutter {
   position: relative;
   align-self: start;
   /* Without container units, the glass at its min-width: exact on phones, close elsewhere. */
-  height: calc(var(--glass-min) * 0.16);
-  height: calc(max(var(--glass-min), 100cqw - var(--gutter) - var(--gutter-gap)) * 0.16);
+  height: calc(var(--glass-min) * var(--dial-aspect));
+  height: calc(max(var(--glass-min), 100cqw - var(--gutter) - var(--gutter-gap)) * var(--dial-aspect));
   /* A drag that starts beside the glass mustn't select the labels. */
   user-select: none;
 }
@@ -634,13 +692,23 @@ html,
   color: var(--muted);
 }
 
-/* Centered on each band row: broadcast spans y 17–54 and ham y 118–154 of the 160-unit glass. */
+/* Centered on each band row: broadcast spans y 17–54 and ham y 118–154 of the full
+   160-unit glass; 12–35 (same 22%) and 72–103 of the compact 106. */
 .dial-row-label-broadcast {
   top: 22%;
 }
 
 .dial-row-label-ham {
   top: 85%;
+}
+
+.dial[data-compact] .dial-row-label-ham {
+  top: 82%;
+}
+
+/* Smaller 5 MHz numerals, so they clear the broadcast labels on the shorter glass. */
+.dial[data-compact] .dial-num-major {
+  font-size: 18px;
 }
 
 .dial-scroll {
@@ -964,10 +1032,6 @@ html,
   font-weight: 700;
 }
 
-.status-detail {
-  color: var(--muted);
-}
-
 .status-message {
   flex-basis: 100%;
   color: var(--muted);
@@ -976,10 +1040,6 @@ html,
 
 .status-message[data-tone="danger"] {
   color: var(--danger);
-}
-
-.status-place {
-  color: var(--text);
 }
 
 .status-row {
@@ -1566,6 +1626,10 @@ html,
   .field-host input {
     width: 100%;
   }
+  /* The strip keeps to the place on a phone; the drawer's table still has the host. */
+  .tuned-to-host {
+    display: none;
+  }
   .field-host {
     flex: 1 1 100%;
   }
@@ -1639,6 +1703,7 @@ html,
 @media (max-width: 520px), (pointer: coarse) {
   .power,
   .receiver-switch,
+  .tuned-to-change,
   .presets-save button,
   .receiver-choose {
     min-height: 44px;

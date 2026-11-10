@@ -193,3 +193,19 @@ describe("Dial", () => {
     expect(onChange).toHaveBeenLastCalledWith(8_000); // the second finger lifting didn't end the first's drag
   });
 });
+
+describe("Dial compact", () => {
+  // Value: protects=the compact dial is a shorter glass (its viewBox, not a squashed one) marked for the CSS, and still tunes the same frequencies across its width; fails_when=compact stretches the full drawing, or the data attribute the gutter CSS reads goes; why_new=compact dial; seam=none; no_claim=the geometry's fit (globals.test) or how it looks
+  it("draws a shorter glass that tunes the same", () => {
+    const onChange = vi.fn();
+    const view = render(<Dial freqKhz={9_000} onChange={onChange} />);
+    const slider = () => screen.getByRole("slider", { name: "Tuning dial" });
+    expect(slider().getAttribute("viewBox")).toBe("0 0 1000 160");
+    expect(document.querySelector(".dial")!.hasAttribute("data-compact")).toBe(false);
+    view.rerender(<Dial freqKhz={9_000} onChange={onChange} compact />);
+    expect(slider().getAttribute("viewBox")).toBe("0 0 1000 106");
+    expect(document.querySelector(".dial")!.hasAttribute("data-compact")).toBe(true);
+    fireEvent.pointerDown(slider(), { pointerType: "mouse", clientX: at(15_000), pointerId: 1 });
+    expect(onChange).toHaveBeenLastCalledWith(15_000);
+  });
+});
