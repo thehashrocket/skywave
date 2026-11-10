@@ -179,7 +179,7 @@ describe("SignalList", () => {
     expect(screen.queryByRole("button", { name: /^Show all/ })).toBeNull();
   });
 
-  // Value: protects=each row names who the schedule has on its frequency, and a row with nobody listed keeps just its strength; fails_when=names are missing, land on the wrong row, or an empty name line shows; why_new=plan: "9,580 · Radio Australia · English"; seam=none; no_claim=the schedule lookup (eibi tests)
+  // Value: protects=each row names who the schedule has on its frequency, a shared one keeps its "+N more" outside the part that is cut short, and a row with nobody listed keeps just its strength; fails_when=names are missing, land on the wrong row, an empty name line shows, or a long name hides the count (browser check); why_new=plan: "9,580 · Radio Australia · English"; seam=none; no_claim=the schedule lookup (eibi tests)
   it("names the scheduled station on each row", () => {
     show(
       {
@@ -188,6 +188,7 @@ describe("SignalList", () => {
         signals: [
           { freqKhz: 9_580, snrDb: 40, band: "31m" },
           { freqKhz: 9_600, snrDb: 30, band: "31m" },
+          { freqKhz: 6_070, snrDb: 20, band: "49m" },
         ],
         hidden: 0,
         bandsDone: 1,
@@ -196,11 +197,23 @@ describe("SignalList", () => {
       },
       {
         stationAt: (khz) =>
-          khz === 9_580 ? { text: "KBS World Radio · English", all: "KBS World Radio · English" } : null,
+          khz === 9_580
+            ? { text: "KBS World Radio · English", all: "KBS World Radio · English" }
+            : khz === 6_070
+              ? {
+                  text: "CFRX · English +2 more",
+                  all: "CFRX · English\nChina Radio Int. · Russian\nChannel 292 · German",
+                }
+              : null,
       },
     );
-    const [first, second] = screen.getAllByRole("button", { name: /dB above noise/ });
+    const [first, second, shared] = screen.getAllByRole("button", { name: /dB above noise/ });
     expect(first!.textContent).toContain("KBS World Radio · English");
+    expect(first!.querySelector(".signal-station-more")).toBeNull();
     expect(second!.querySelector(".signal-station")).toBeNull();
+    // The count sits apart from the name, so cutting a long name short never hides it.
+    expect(shared!.querySelector(".signal-station-name")!.textContent).toBe("CFRX · English");
+    expect(shared!.querySelector(".signal-station-more")!.textContent).toBe(" +2 more");
+    expect(shared!.querySelector<HTMLElement>(".signal-station")!.title).toContain("Channel 292 · German");
   });
 });

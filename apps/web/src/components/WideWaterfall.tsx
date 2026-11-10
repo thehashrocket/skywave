@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState, type MouseEvent } from "react";
-import type { StationLine } from "@/lib/eibi";
 import type { WideFrame } from "@/lib/use-radio";
 import { spanKhz, tickStepKhz, type WideView } from "@/lib/wide-view";
 import { createPainter, ROWS, type Painter } from "./Waterfall";
@@ -35,10 +34,11 @@ type Props = {
   stations?: readonly ScheduledHere[];
 };
 
-export type ScheduledHere = { khz: number; line: StationLine };
+/** A scheduled frequency and its short label ("Voice of Turkey +1"). */
+export type ScheduledHere = { khz: number; label: string };
 
 /** Room a station label takes, in pixels: names past it are cut short. */
-const LABEL_PX = 112;
+const LABEL_PX = 158;
 
 /**
  * Which stations get a label, as fractions of the width: the one nearest the
@@ -184,7 +184,7 @@ export function WideWaterfall({ view, freqKhz, passband, frozen, error, subscrib
           <div className="waterfall-stations" aria-hidden="true">
             {here.map((s, i) => (
               <span key={s.khz} className="waterfall-station" style={{ left: `${pct(s.khz)}%` }}>
-                {labelled.has(i) && <span className="waterfall-station-name">{s.line.text}</span>}
+                {labelled.has(i) && <span className="waterfall-station-name">{s.label}</span>}
               </span>
             ))}
           </div>

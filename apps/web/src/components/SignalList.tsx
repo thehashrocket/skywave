@@ -106,6 +106,7 @@ export function SignalList({
         >
           {scan.signals.map((s, i) => {
             const station = stationAt?.(s.freqKhz);
+            const others = station?.all.split("\n");
             return (
               <li
                 key={s.freqKhz}
@@ -116,9 +117,11 @@ export function SignalList({
                   <span className="preset-freq">{khz(s.freqKhz)}</span>
                   <span className="preset-mode">{s.band}</span>
                   <span className="signal-what">
-                    {station && (
-                      <span className="signal-station" title={station.all}>
-                        {station.text}
+                    {others && (
+                      // The name is cut short; how many share the frequency always shows.
+                      <span className="signal-station" title={station!.all}>
+                        <span className="signal-station-name">{others[0]}</span>
+                        {others.length > 1 && <span className="signal-station-more"> +{others.length - 1} more</span>}
                       </span>
                     )}
                     <span className="signal-strength">{s.snrDb} dB above noise</span>

@@ -98,7 +98,7 @@ const backup: Receiver = { ...listed, id: "backup", name: "Backup", host: "backu
 const waterfallClick: { current?: (hz: number) => void } = {};
 type WideProps = {
   view: { zoom: number; cfKhz: number };
-  stations?: { khz: number; line: { text: string } }[];
+  stations?: { khz: number; label: string }[];
   frozen: boolean;
   error: string | null;
   passband: [number, number];
@@ -1995,10 +1995,10 @@ describe("ListenPage", () => {
       playing(view);
       expect(document.querySelector(".readout-station")!.textContent).toBe("Radio Here · English");
       expect(screen.getByRole("button", { name: /9,580\s*31m/ }).textContent).toContain("KBS World Radio · English");
-      expect(wide.current!.stations!.map((x) => [x.khz, x.line.text])).toEqual([
+      expect(wide.current!.stations!.map((x) => [x.khz, x.label])).toEqual([
         // Twice the ~59 kHz view around 9,650: 9,580 is past it.
-        [9_620, "Nearby · English"],
-        [9_650, "Radio Here · English"],
+        [9_620, "Nearby"],
+        [9_650, "Radio Here"],
       ]);
     });
 
