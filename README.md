@@ -120,7 +120,7 @@ The web app's design system (colors, fonts, spacing, components, and where the c
 
 ## Deploying the radio service
 
-Run it on one of your EC2 boxes or the home server (`docker compose --profile radio up -d radio`). Five things matter:
+The ready-made setup is a small DigitalOcean Droplet running `docker-compose.prod.yml` (the service behind Caddy, which handles TLS), deployed by GitHub Actions on every push to `main`; see [deploy/README.md](deploy/README.md). On any other box, the dev compose file works too (`docker compose --profile radio up -d radio`). Five things matter either way (the prod compose file already covers 1, 3 and 5):
 
 1. **TLS.** A web app served over `https` can only open `wss://` sockets, so put the service behind your usual reverse proxy (Caddy, nginx) and set `NEXT_PUBLIC_RADIO_WS_URL=wss://radio.example.com/ws`. This is also why the service exists at all: most Kiwis only speak plain `ws://`, which browsers block from secure pages.
 2. **Lock it down.** Set `ALLOWED_ORIGINS` to your web app's origin. Any script can fake an Origin header, so the service refuses to start without `RADIO_TOKEN` once any non-localhost origin is allowed. The token ships to the browser in the web app's JavaScript, so set `APP_PASSWORD` on the web app (see below) to keep the token behind a password. `ALLOW_PRIVATE_HOSTS` stays off so the service can't be pointed at your internal network or tailnet.
