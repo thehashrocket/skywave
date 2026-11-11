@@ -1,0 +1,58 @@
+name: Deploy radio
+
+# Redeploys the radio service on the Droplet after CI passes on main, or by
+# hand (Actions → Deploy radio → Run workflow, with any branch).
+#
+# The Droplet only lets this workflow's key run deploy/forced-command.sh, which
+# pulls the given branch and runs deploy/deploy.sh; see deploy/README.md for the
+# one-time setup (secrets DROPLET_SSH_KEY and DROPLET_KNOWN_HOSTS, variable
+# DROPLET_HOST).
+#
+# A push that doesn't change apps/radio rebuilds an identical image, so compose
+# leaves the running container (and its listeners) alone.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to deploy
+        default: main
+        required: true
+
+# One deploy at a time; a queued one waits rather than cutting another off.
+concurrency:
+  group: deploy-radio
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DROPLET_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          HOST: ${{ vars.DROPLET_HOST }}
+          BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || 'main' }}
+        run: |
+          # StrictHostKeyChecking=yes: only the pinned host key in DROPLET_KNOWN_HOSTS.
+          # The remote side ignores everything but the branch name.
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes "deploy@${HOST}" "$BRANCH"

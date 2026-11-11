@@ -1,0 +1,70 @@
+# Production: the radio service behind Caddy on a single host (a DigitalOcean
+# Droplet; see deploy/README.md). Dev keeps using docker-compose.yml.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Needs RADIO_DOMAIN in the root .env (gitignored) and apps/radio/.env.
+
+services:
+  radio:
+    build: ./apps/radio
+    env_file:
+      - path: ./apps/radio/.env
+        required: true
+    environment:
+      # Caddy's fixed address on the network below, and nothing else: only it
+      # may set X-Forwarded-For, so per-IP limits see real users.
+      FORWARDED_ALLOW_IPS: 172.30.0.2
+    # No ports: the service is reachable only through Caddy on this network.
+    expose:
+      - "8765"
+    networks:
+      edge:
+        ipv4_address: 172.30.0.3
+    restart: unless-stopped
+    # Above uvicorn's 15 s graceful shutdown, the 10 s cleanup wait and the last
+    # teardowns at exit (see apps/radio/Dockerfile), so volunteers' Kiwis get a
+    # clean close on restart.
+    stop_grace_period: 40s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+      start_interval: 3s
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2
+    environment:
+      RADIO_DOMAIN: ${RADIO_DOMAIN:?set RADIO_DOMAIN in the root .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      edge:
+        ipv4_address: 172.30.0.2
+    depends_on:
+      - radio
+    restart: unless-stopped
+    logging: *logging
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  caddy_data:
+  caddy_config:
