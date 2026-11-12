@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { createContext } from "@/server/trpc";
 
 // The real module opens a Prisma client at import; every test injects its own db.
@@ -53,5 +53,19 @@ describe("presets.create", () => {
       code: "BAD_REQUEST",
     });
     expect(preset.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("on a public site", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  // Value: protects=strangers can't rewrite or fill the shared presets once the site is public; fails_when=the writable guard is dropped; why_new=going public; seam=none; no_claim=none beyond protects
+  it("refuses creates and deletes", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SITE_PUBLIC", "1");
+    const { caller, preset } = setup(["a"]);
+    await expect(caller.presets.create({ name: "x", freqKhz: 9700, mode: "am" })).rejects.toThrow(/read-only/);
+    await expect(caller.presets.delete({ id: "a" })).rejects.toThrow(/read-only/);
+    expect(preset.create).not.toHaveBeenCalled();
+    expect(preset.deleteMany).not.toHaveBeenCalled();
   });
 });

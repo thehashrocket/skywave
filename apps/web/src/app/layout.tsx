@@ -1,11 +1,21 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { Analytics } from "@vercel/analytics/next";
 import { Providers } from "@/lib/trpc";
 import "./globals.css";
 
+const description =
+  "Listen to shortwave and ham radio through public KiwiSDR receivers around the world, right in your browser.";
+
+// Vercel sets the production hostname; link previews need absolute image URLs.
+const host = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+
 export const metadata: Metadata = {
-  title: "skywave",
-  description: "Listen to shortwave and amateur radio through public KiwiSDR receivers.",
+  metadataBase: new URL(host ? `https://${host}` : "http://localhost:3000"),
+  title: "skywave: listen to shortwave radio in your browser",
+  description,
+  openGraph: { title: "skywave", description, type: "website", siteName: "skywave" },
+  twitter: { card: "summary_large_image", title: "skywave", description },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
@@ -21,6 +31,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       </head>
       <body>
         <Providers>{children}</Providers>
+        <Analytics />
       </body>
     </html>
   );
