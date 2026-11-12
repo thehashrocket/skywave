@@ -17,7 +17,11 @@ vi.mock("@/lib/trpc", () => ({
 vi.mock("@tanstack/react-query", () => ({
   useQuery: () => ({ data: shared, isPending: false, isError: false }),
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
-  useMutation: (o: { kind: string }) => ({ mutate: (...a: unknown[]) => mutate(o.kind, ...a), isPending: false, isError: false }),
+  useMutation: (o: { kind: string }) => ({
+    mutate: (...a: unknown[]) => mutate(o.kind, ...a),
+    isPending: false,
+    isError: false,
+  }),
 }));
 
 const { Presets } = await import("./Presets");
@@ -41,7 +45,10 @@ describe("Presets", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(mutate).not.toHaveBeenCalled();
     expect(screen.getByRole("list", { name: "Yours" }).textContent).toContain("Radio Australia");
-    expect(JSON.parse(localStorage.getItem("skywave.presets")!)[0]).toMatchObject({ name: "Radio Australia", freqKhz: 9580 });
+    expect(JSON.parse(localStorage.getItem("skywave.presets")!)[0]).toMatchObject({
+      name: "Radio Australia",
+      freqKhz: 9580,
+    });
     fireEvent.click(screen.getByRole("button", { name: "Delete Radio Australia" }));
     expect(localStorage.getItem("skywave.presets")).toBe("[]");
   });
@@ -52,6 +59,10 @@ describe("Presets", () => {
     expect(mutate).toHaveBeenCalledWith("delete", { id: "s1" });
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Radio Australia" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(mutate).toHaveBeenCalledWith("create", { name: "Radio Australia", freqKhz: 9580, mode: "am" }, expect.anything());
+    expect(mutate).toHaveBeenCalledWith(
+      "create",
+      { name: "Radio Australia", freqKhz: 9580, mode: "am" },
+      expect.anything(),
+    );
   });
 });

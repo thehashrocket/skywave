@@ -35,6 +35,34 @@ def _minutes(name: str, default: str) -> float:
     return value
 
 
+def parse_blocked(raw: str) -> frozenset[tuple[str, int | None]]:
+    """BLOCKED_RECEIVERS: comma-separated host or host:port ([v6]:port for IPv6).
+
+    A bare host blocks every port on it. Hosts are matched as the browser
+    names them (lowercased, trailing dot dropped), not by address.
+    """
+    out: set[tuple[str, int | None]] = set()
+    for item in raw.split(","):
+        item = item.strip().lower()
+        if not item:
+            continue
+        port: int | None = None
+        if item.startswith("["):
+            host, _, rest = item[1:].partition("]")
+            if rest.startswith(":"):
+                port = int(rest[1:])
+        elif item.count(":") == 1:
+            host, _, p = item.partition(":")
+            port = int(p)
+        else:
+            host = item  # a bare name or a bare IPv6 address
+        host = host.rstrip(".")
+        if not host or (port is not None and not 1 <= port <= 65535):
+            raise ValueError(f"BLOCKED_RECEIVERS has a bad entry: {item!r}")
+        out.add((host, port))
+    return frozenset(out)
+
+
 def _count(name: str, default: str) -> int:
     raw = os.environ.get(name, default)
     try:
@@ -116,6 +144,8 @@ class Settings:
     # so a script can't exhaust the service by opening sockets and keeping them
     # alive. Private and unknown addresses aren't counted (see socket_owner).
     max_sockets_per_ip: int
+    # Receivers whose owners asked not to be used: (host, port), None for any port.
+    blocked_receivers: frozenset[tuple[str, int | None]] = frozenset()
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -132,4 +162,5 @@ class Settings:
             kiwi_agc=_bool("KIWI_AGC", True),
             idle_socket_minutes=_minutes("IDLE_SOCKET_MINUTES", "10"),
             max_sockets_per_ip=_count("MAX_SOCKETS_PER_IP", "8"),
+            blocked_receivers=parse_blocked(os.environ.get("BLOCKED_RECEIVERS", "")),
         )

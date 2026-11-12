@@ -172,3 +172,54 @@ async def test_a_dial_retune_for_another_receiver_reports_what_plays():
     assert (sent[-1]["state"], sent[-1]["host"]) == ("listening", "now.example")
     assert slots.active == 1
     await s.close()
+
+
+# --- Receivers whose owners opted out ---
+
+
+def test_parse_blocked():
+    import pytest
+
+    from skywave_radio.config import parse_blocked
+
+    assert parse_blocked(" Kiwi.Example. , other.example:8074, [2001:db8::1]:8073, 2001:db8::2 ,") == {
+        ("kiwi.example", None),
+        ("other.example", 8074),
+        ("2001:db8::1", 8073),
+        ("2001:db8::2", None),
+    }
+    assert parse_blocked("") == frozenset()
+    with pytest.raises(ValueError):
+        parse_blocked("kiwi.example:0")
+
+
+async def test_a_blocked_receiver_is_refused_with_a_coded_error():
+    from dataclasses import replace
+
+    sent: list[dict] = []
+
+    async def send_text(payload):
+        sent.append(payload)
+
+    async def nothing(_):
+        pass
+
+    slots = Slots(10)
+    s = ListenSession(
+        replace(settings(), blocked_receivers=frozenset({("kiwi.example", None), ("other.example", 8074)})),
+        send_text,
+        nothing,
+        slots=slots,
+        resolver=resolver,
+        client_factory=QuietClient,
+    )
+    await s.handle(tune("KIWI.example"))
+    assert (sent[-1]["state"], sent[-1]["code"], sent[-1]["host"]) == ("error", "blocked", "kiwi.example")
+    assert slots.active == 0
+    # Only the listed port of other.example is blocked.
+    await s.handle({**tune("other.example"), "port": 8073})
+    await listening(s)
+    # Switching onto a blocked receiver frees the slot.
+    await s.handle({**tune("other.example"), "port": 8074})
+    assert sent[-1]["code"] == "blocked"
+    assert slots.active == 0
