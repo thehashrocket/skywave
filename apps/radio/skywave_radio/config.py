@@ -94,6 +94,12 @@ class Settings:
     # Hard cap on simultaneous listeners. Each one occupies a channel on
     # somebody's volunteer-run Kiwi, so keep this small.
     max_sessions: int
+    # Of those, how many may be on any one receiver: a crowd on one popular
+    # Kiwi would fill a volunteer's 4-8 channels.
+    max_sessions_per_receiver: int
+    # Of those, how many one public address (IPv6 by /64) may hold, so one
+    # person or script with a few tabs can't take every slot.
+    max_sessions_per_ip: int
     # Disconnect from the Kiwi after this long even if the tab is still open.
     max_session_minutes: float
     # Allow Kiwis on private/LAN addresses. Off by default so this service
@@ -118,6 +124,8 @@ class Settings:
             allowed_origins=tuple(o.strip() for o in origins.split(",") if o.strip()),
             token=os.environ.get("RADIO_TOKEN") or None,
             max_sessions=int(os.environ.get("MAX_SESSIONS", "2")),
+            max_sessions_per_receiver=_count("MAX_SESSIONS_PER_RECEIVER", "1"),
+            max_sessions_per_ip=_count("MAX_SESSIONS_PER_IP", "2"),
             max_session_minutes=_minutes("MAX_SESSION_MINUTES", "60"),
             allow_private_hosts=_bool("ALLOW_PRIVATE_HOSTS", False),
             ident=os.environ.get("KIWI_IDENT", "skywave"),

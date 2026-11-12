@@ -346,6 +346,25 @@ describe("useRadio", () => {
     expect(FakeSocket.instances[1]!.sent.at(-1)).toEqual({ type: "tune", ...tuning, freqKhz: tuning.freqKhz + 5 });
   });
 
+  // Value: protects=a dial move on a playing receiver is marked as a retune, so a service whose session just ended opens no Kiwi channel for it; fails_when=retune() sends a plain tune; why_new=TODOS "Dial retunes never open a Kiwi channel"; seam=none; no_claim=the service's handling (radio tests)
+  it("marks a dial move on a playing receiver as a retune", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => ws!.status("listening", { host: tuning.host, port: tuning.port }));
+    act(() => result.current.retune({ ...tuning, freqKhz: tuning.freqKhz + 5 }));
+    expect(ws!.sent.at(-1)).toEqual({ type: "tune", ...tuning, freqKhz: tuning.freqKhz + 5, retune: true });
+  });
+
+  // Value: protects=a dial move standing in for a Listen still waiting on its answer can start the session; fails_when=it carries retune and the service, with nothing playing yet, ignores it; why_new=TODOS "Dial retunes never open a Kiwi channel"; seam=none; no_claim=none beyond protects
+  it("doesn't mark a dial move for a Listen still in flight", async () => {
+    const { result } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => result.current.retune({ ...tuning, freqKhz: tuning.freqKhz + 5 }));
+    expect(ws!.sent.at(-1)).toEqual({ type: "tune", ...tuning, freqKhz: tuning.freqKhz + 5 });
+  });
+
   // Value: protects=a Listen followed by Stop, then the idle hang-up, opens no new socket and stays stopped: the retry never restarts audio the listener just stopped; fails_when=stop() leaves the crossed tune pending for onclose; why_new=review (testing, state matrix closing x idle-close); seam=none; no_claim=none beyond protects
   it("does not resend a tune the listener stopped before the idle hang-up", async () => {
     const { result } = renderHook(() => useRadio());
