@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { after } from "next/server";
+import { isBlocked, parseBlocked } from "@/lib/blocklist";
 import { KIWI_LIST_URL, LIST_MAX_AGE_MS, LIST_RETRY_MS, parseKiwiList, type Receiver } from "@/lib/kiwi-list";
 import { readCapped } from "../read-capped";
 import { publicProcedure, router } from "../trpc";
@@ -109,9 +110,14 @@ export const receiversRouter = router({
   list: publicProcedure.query(async () => {
     try {
       const list = await getReceivers();
+      // Receivers whose owners opted out (lib/blocklist) never reach the page.
+      const blocked = parseBlocked(process.env.BLOCKED_RECEIVERS);
+      const receivers = blocked.length
+        ? list.receivers.filter((r) => !isBlocked(blocked, r.host, r.port))
+        : list.receivers;
       // The copy's age by this server's clock, so the browser can time its next
       // poll without comparing two clocks.
-      return { ...list, ageMs: Math.max(0, Date.now() - list.fetchedAt) };
+      return { ...list, receivers, ageMs: Math.max(0, Date.now() - list.fetchedAt) };
     } catch (cause) {
       console.error("receivers.list:", cause);
       throw new TRPCError({ code: "BAD_GATEWAY", message: "Couldn't load the public receiver list.", cause });

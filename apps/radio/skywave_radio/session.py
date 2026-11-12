@@ -651,6 +651,17 @@ class ListenSession:
             raise
         # Checked once the old pump has closed its Kiwi, like the overall limit:
         # a refusal ends the old session too, the same as a busy Kiwi would.
+        blocked = self.settings.blocked_receivers
+        if (host.rstrip("."), port) in blocked or (host.rstrip("."), None) in blocked:
+            if handing_over:
+                self._slots.release(lease)
+            # Coded, so Pick best moves on to another receiver.
+            raise BadRequest(
+                f"{host}'s owner has asked Skywave not to use it. Try another receiver.",
+                code="blocked",
+                host=host,
+                port=port,
+            )
         if handing_over:
             if not self._slots.move(lease, receiver):
                 self._slots.release(lease)
