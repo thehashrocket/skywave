@@ -28,6 +28,7 @@ import {
   type Mode,
 } from "@/lib/radio-types";
 import { DEFAULT_KIWI_PORT, parseReceiver } from "@/lib/receiver";
+import { buildShareLink, parseShareLink } from "@/lib/share-link";
 import { usePickBest, WATCH_MS } from "@/lib/use-pick-best";
 import { LIST_FAILED_TEXT, listFailed, useReceiverList } from "@/lib/use-receiver-list";
 import { useBetterReceiver } from "@/lib/use-better-receiver";
@@ -319,14 +320,38 @@ export default function ListenPage() {
         previous: null,
       });
     }
+    // A shared link (lib/share-link) says where to tune: it wins over what
+    // this browser saved, and over a first visit's open drawer, so Listen is
+    // the next click. Nothing plays until then.
+    const shared = parseShareLink(window.location.search);
+    const linked = shared?.receiver;
+    if (linked) {
+      // Pinned like a receiver chosen from the table, and saved only once it
+      // plays. Dialed public-only, like the list: the link came from someone else.
+      const h: Heard = { ...linked, fromList: true, label: linked.host };
+      setHost(h.host);
+      setPort(String(h.port));
+      setFromList(true);
+      setSecure(h.secure);
+      setPin(h);
+      setDraft(draftOf(h));
+    }
     // First visit: show the drawer and the list so there's something to pick from.
-    const firstVisit = !p && !last.host;
+    const firstVisit = !p && !last.host && !shared;
     setBrowseOpen(firstVisit);
     setDrawerOpen(firstVisit);
     const t = loadTuning();
-    setFreqKhz(t.freqKhz);
-    setMode(t.mode);
+    setFreqKhz(shared?.freqKhz ?? t.freqKhz);
+    setMode(shared?.mode ?? t.mode);
     setTuningRestored(true);
+    if (shared) {
+      // Applied once: a reload then keeps whatever the listener tunes to next.
+      try {
+        window.history.replaceState(window.history.state, "", window.location.pathname);
+      } catch {
+        /* ignore */
+      }
+    }
   }, []);
 
   // Remember where the dial rests, listening or not, for the next visit.
@@ -384,6 +409,22 @@ export default function ListenPage() {
     },
     [mode, sendRetune],
   );
+
+  // Copy link: where the dial is and, once a receiver has been tuned, which one.
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(t);
+  }, [copied]);
+  const copyLink = () => {
+    const rx = host.trim() ? { host: host.trim(), port: Number(port) || DEFAULT_KIWI_PORT, secure } : null;
+    const url = buildShareLink(`${window.location.origin}${window.location.pathname}`, { freqKhz, mode, receiver: rx });
+    navigator.clipboard?.writeText(url).then(
+      () => setCopied(true),
+      () => window.prompt("Copy this link:", url),
+    );
+  };
 
   const changeMode = (m: Mode) => {
     setMode(m);
@@ -1004,6 +1045,10 @@ export default function ListenPage() {
             }}
           />
         </div>
+
+        <button type="button" className="link-button" onClick={copyLink}>
+          {copied ? "Link copied" : "Copy link"}
+        </button>
       </section>
 
       <div className="status-row">
