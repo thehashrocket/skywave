@@ -1,0 +1,25 @@
+# TLS for the radio service. Caddy gets and renews the certificate itself
+# (point RADIO_DOMAIN's A/AAAA records at the Droplet first, DNS-only if the
+# zone is on Cloudflare). Caddy proxies WebSockets with no idle timeout of its
+# own; the service pings every 20 s anyway.
+#
+# Caddy replaces any X-Forwarded-For a client sends with the client's real
+# address (no trusted_proxies here), which is what FORWARDED_ALLOW_IPS relies on.
+
+{$RADIO_DOMAIN} {
+	handle /ws {
+		reverse_proxy radio:8765 {
+			# On a Caddy config reload, give open listeners this long before
+			# their sockets are cut, instead of cutting them at once.
+			stream_close_delay 5m
+		}
+	}
+
+	handle /healthz {
+		reverse_proxy radio:8765
+	}
+
+	handle {
+		respond 404
+	}
+}
