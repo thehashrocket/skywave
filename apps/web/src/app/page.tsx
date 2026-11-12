@@ -1006,6 +1006,12 @@ export default function ListenPage() {
               kiwisdr.com/public
             </a>
             . They're run by volunteers and most allow only a handful of listeners, so stop when you're done.
+            Run a Kiwi?{" "}
+            {/* A new tab: leaving this page would stop what's playing. */}
+            <a href="/owners" target="_blank" rel="noopener">
+              How skywave uses it
+            </a>
+            .
           </p>
         </ReceiverPicker>
       </section>

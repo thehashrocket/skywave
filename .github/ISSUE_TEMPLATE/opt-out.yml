@@ -1,0 +1,23 @@
+name: Keep skywave off my KiwiSDR
+description: For receiver owners. skywave will stop listing your Kiwi and its server will stop connecting to it.
+title: "Opt out: "
+labels: ["opt-out"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for running a public receiver. Give its address below and it goes on skywave's blocklist (`BLOCKED_RECEIVERS`), which hides it from the list and map and stops skywave's server from connecting to it.
+
+        You can also turn skywave away yourself right now: set your Kiwi's allowed connections from non-Kiwi apps to 0. See https://www.skywavehf.com/owners.
+  - type: input
+    id: address
+    attributes:
+      label: Receiver address
+      description: As in the public list, for example `myradio.example.net:8073`. Leave out the port to cover every port on that host.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else (optional)
+      description: Other receivers you run, or anything skywave did that you'd like us to know about.
