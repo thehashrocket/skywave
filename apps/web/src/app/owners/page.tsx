@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { SiteFooter } from "@/components/SiteFooter";
 
 // Each Kiwi shows the radio service as KIWI_IDENT (skywavehf.com in production)
 // in its user list; this is the page that name leads an owner to.
@@ -113,6 +114,8 @@ export default function OwnersPage() {
           </p>
         </section>
       </article>
+
+      <SiteFooter />
     </main>
   );
 }

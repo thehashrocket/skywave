@@ -7,6 +7,7 @@ import { MapPanel } from "@/components/MapPanel";
 import { Presets } from "@/components/Presets";
 import { ReceiverPicker, type Playing } from "@/components/ReceiverPicker";
 import { SignalList } from "@/components/SignalList";
+import { SiteFooter } from "@/components/SiteFooter";
 import { SMeter } from "@/components/SMeter";
 import { SpanPicker } from "@/components/SpanPicker";
 import { Waterfall } from "@/components/Waterfall";
@@ -1185,6 +1186,8 @@ export default function ListenPage() {
       />
 
       <Presets freqKhz={freqKhz} mode={mode} onSelect={(p) => changeFreq(clampKhz(p.freqKhz), p.mode)} />
+
+      <SiteFooter onPlayer />
     </main>
   );
 }
