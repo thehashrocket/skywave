@@ -4,7 +4,9 @@ Browser -> service (JSON text frames):
     {"type": "tune", "host": "...", "port": 8073, "freqKhz": 9535, "mode": "am", "source": "list", "secure": true}
     ("source": "list" marks a receiver the browser picked from the public list
     rather than one a person typed; those are only ever dialed on public
-    addresses, even with ALLOW_PRIVATE_HOSTS on. "secure": true dials wss://.)
+    addresses, even with ALLOW_PRIVATE_HOSTS on. "secure": true dials wss://.
+    "retune": true marks a dial move: it only retunes the session playing that
+    receiver and never starts one.)
     {"type": "stop"}
     {"type": "scan", "id": 3, "fresh": false}
     (scan the receiver being listened to for strong broadcast signals; "fresh"
@@ -158,25 +160,53 @@ SendBytes = Callable[[bytes], Awaitable[None]]
 
 
 class BadRequest(Exception):
-    pass
+    """A message we refuse. `code`, when set, is about the receiver named by
+    `host`/`port` (like a KiwiError's), so the browser can move on to another
+    one; uncoded means the request or this service, and Pick best stops."""
+
+    def __init__(self, message: str, *, code: str | None = None, host: str | None = None, port: int | None = None):
+        super().__init__(message)
+        self.code = code
+        self.host = host
+        self.port = port
 
 
 class ClientGone(Exception):
     """The browser disconnected; stop quietly."""
 
 
+class Lease:
+    """One listener slot taken through Slots.acquire: who holds it and where."""
+
+    __slots__ = ("receiver", "owner", "released")
+
+    def __init__(self, receiver: Hashable, owner: Hashable | None):
+        self.receiver = receiver
+        self.owner = owner
+        self.released = False
+
+
 class Slots:
     """Caps live Kiwi connections across every browser session.
 
     Each one occupies a channel on a volunteer's receiver, so that's what we
-    count. No lock: acquire and release never await, and everything runs on
-    one event loop. release() refuses to go below zero, which catches a double
-    release only once nothing else is held; it can't tell whose slot it is.
+    count: in all (`limit`), on any one receiver (`per_receiver`), so a crowd
+    can't fill one volunteer's Kiwi, and per listener (`per_owner`, a public
+    address as server.socket_owner groups it), so one person with a few tabs
+    can't hold every slot. None means no cap of that kind.
+
+    No lock: acquire, move and release never await, and everything runs on
+    one event loop. try_acquire()/release() take and free a slot counted only
+    against `limit`; a Lease is released at most once, however often asked.
     """
 
-    def __init__(self, limit: int):
+    def __init__(self, limit: int, *, per_receiver: int | None = None, per_owner: int | None = None):
         self.limit = limit
+        self.per_receiver = per_receiver
+        self.per_owner = per_owner
         self.active = 0
+        self._receivers: dict[Hashable, int] = {}
+        self._owners: dict[Hashable, int] = {}
 
     def try_acquire(self) -> bool:
         if self.active >= self.limit:
@@ -184,7 +214,14 @@ class Slots:
         self.active += 1
         return True
 
-    def release(self) -> None:
+    def release(self, lease: Lease | None = None) -> None:
+        if lease is not None:
+            if lease.released:
+                return
+            lease.released = True
+            self._drop(self._receivers, lease.receiver)
+            if lease.owner is not None:
+                self._drop(self._owners, lease.owner)
         # Below zero the cap would admit extra listeners. Never end anyone's
         # audio over the bookkeeping; say so loudly instead.
         if self.active <= 0:
@@ -192,6 +229,62 @@ class Slots:
             self.active = 0
             return
         self.active -= 1
+
+    def refusal(self, receiver: Hashable, owner: Hashable | None) -> str | None:
+        """Why a new slot on `receiver` for `owner` would be refused, or None.
+
+        "receiver", "owner" or "full" (the overall limit), checked in that
+        order: a full receiver is the one answer another receiver can fix.
+        """
+        if self.receiver_full(receiver):
+            return "receiver"
+        if owner is not None and self.per_owner is not None and self._owners.get(owner, 0) >= self.per_owner:
+            return "owner"
+        if self.active >= self.limit:
+            return "full"
+        return None
+
+    def receiver_full(self, receiver: Hashable) -> bool:
+        return self.per_receiver is not None and self._receivers.get(receiver, 0) >= self.per_receiver
+
+    def acquire(self, receiver: Hashable, owner: Hashable | None) -> Lease | str:
+        """A Lease, or the refusal() reason when there's no room."""
+        reason = self.refusal(receiver, owner)
+        if reason is not None:
+            return reason
+        self.active += 1
+        self._receivers[receiver] = self._receivers.get(receiver, 0) + 1
+        if owner is not None:
+            self._owners[owner] = self._owners.get(owner, 0) + 1
+        return Lease(receiver, owner)
+
+    def move(self, lease: Lease, receiver: Hashable) -> bool:
+        """Point a held lease at another receiver, if that one has room.
+
+        A switch keeps its slot this way rather than releasing and re-taking
+        it, which another listener could win in between.
+        """
+        if lease.released:
+            return False
+        if receiver == lease.receiver:
+            return True
+        if self.receiver_full(receiver):
+            return False
+        self._drop(self._receivers, lease.receiver)
+        self._receivers[receiver] = self._receivers.get(receiver, 0) + 1
+        lease.receiver = receiver
+        return True
+
+    def on_receiver(self, receiver: Hashable) -> int:
+        return self._receivers.get(receiver, 0)
+
+    @staticmethod
+    def _drop(counts: dict[Hashable, int], key: Hashable) -> None:
+        left = counts.get(key, 0) - 1
+        if left > 0:
+            counts[key] = left
+        else:
+            counts.pop(key, None)
 
 
 class ScanCache:
@@ -279,12 +372,20 @@ class ListenSession:
         client_factory: Callable[..., KiwiClient] = KiwiClient,
         waterfall_factory: Callable[..., WaterfallClient] = WaterfallClient,
         client_ip: str | None = None,
+        owner: Hashable | None = None,
         on_stalled: Callable[[], None] | None = None,
     ):
         self.settings = settings
         self._raw_send_text = send_text
         self._raw_send_bytes = send_bytes
-        self._slots = slots or Slots(settings.max_sessions)
+        self._slots = slots or Slots(
+            settings.max_sessions,
+            per_receiver=settings.max_sessions_per_receiver,
+            per_owner=settings.max_sessions_per_ip,
+        )
+        # Who MAX_SESSIONS_PER_IP counts this session against (server.socket_owner),
+        # or None for no one.
+        self._owner = owner
         self._scan_cache = scan_cache or ScanCache()
         self._sweep_times = sweep_times or SweepTimes()
         self._resolver = resolver
@@ -302,6 +403,8 @@ class ListenSession:
         # hands the slot to the new pump instead of releasing and re-taking it,
         # which another listener could win in between.
         self._slot_holder: asyncio.Task[None] | None = None
+        # The slot that holder's end releases.
+        self._lease: Lease | None = None
         self._demod: Demodulator | None = None
         self._spectrum: Spectrum | None = None
         self._mode = "am"
@@ -389,7 +492,7 @@ class ListenSession:
                 shown = f" {kind[:40]!r}" if isinstance(kind, str) else ""
                 raise BadRequest(f"Unknown message type{shown}.")
         except BadRequest as e:
-            await self._status("error", message=str(e))
+            await self._status("error", message=str(e), code=e.code, host=e.host, port=e.port)
             if self._pump_owns_receiver():
                 # Refused before anything changed: the session still plays. The
                 # browser reads "error" as the radio having stopped, so say where
@@ -487,6 +590,15 @@ class ListenSession:
             # that may just have refused us, and hide that answer.
             return
         same_receiver = self._target == target and pump_running
+        if msg.get("retune") is True and not same_receiver:
+            # A dial move only ever retunes what plays: one that arrives after
+            # its session ended (the time limit, a receiver drop) must not open
+            # a new Kiwi channel nobody clicked Listen for. That ending's status
+            # already went out and settled the page, so nothing more is owed,
+            # unless another receiver plays now: then say where that stands.
+            if self._pump_owns_receiver():
+                await self._status("listening" if self._listening else "connecting")
+            return
         if same_receiver:
             # Still resolving: _run reads _freq_khz/_mode when it builds the client.
             # Otherwise change them only once the retune is sent, so a failed send
@@ -518,10 +630,13 @@ class ListenSession:
 
         self._freq_khz = freq
 
+        receiver = (host, port)
         # Keep the slot the old pump holds: its done callback then releases nothing.
         old_holder = self._slot_holder
-        handing_over = old_holder is not None
+        lease = self._lease
+        handing_over = old_holder is not None and lease is not None
         self._slot_holder = None
+        self._lease = None
         try:
             await self.stop(None)
         except BaseException:
@@ -532,10 +647,31 @@ class ListenSession:
             # has already ended, asyncio runs the callback on the next loop pass.
             # handle() reports a failure; a cancel keeps propagating.
             if old_holder is not None:
-                old_holder.add_done_callback(lambda _: self._slots.release())
+                old_holder.add_done_callback(lambda _: self._slots.release(lease))
             raise
-        if not handing_over and not self._slots.try_acquire():
-            raise BadRequest("The radio service is at its listener limit. Try again in a bit.")
+        # Checked once the old pump has closed its Kiwi, like the overall limit:
+        # a refusal ends the old session too, the same as a busy Kiwi would.
+        if handing_over:
+            if not self._slots.move(lease, receiver):
+                self._slots.release(lease)
+                raise self._receiver_full(host, port)
+        else:
+            taken = self._slots.acquire(receiver, self._owner)
+            if taken == "receiver":
+                raise self._receiver_full(host, port)
+            if taken == "owner":
+                n = self._slots.per_owner
+                raise BadRequest(
+                    f"You already have {n} radio{'' if n == 1 else 's'} playing (another tab?), "
+                    "the most Skywave plays for one connection. Stop one to listen here."
+                )
+            if isinstance(taken, str):
+                raise BadRequest(
+                    "Skywave is at its listener limit right now. Each listener takes a channel "
+                    "on a volunteer's receiver, so it keeps the number small. Try again in a few minutes."
+                )
+            lease = taken
+        self._lease = lease
         self._mode = mode
         self._target = target
         self._ending_target = None
@@ -548,10 +684,22 @@ class ListenSession:
         self._pump.add_done_callback(self._pump_done)
         self._pump.add_done_callback(self._mark_idle)
 
+    def _receiver_full(self, host: str, port: int) -> BadRequest:
+        # Coded "busy", like a full Kiwi: another receiver may well have room.
+        n = self._slots.per_receiver
+        return BadRequest(
+            f"{host} already has {n} Skywave listener{'' if n == 1 else 's'}, the most Skywave puts on "
+            "one volunteer's receiver. Try another receiver.",
+            code="busy",
+            host=host,
+            port=port,
+        )
+
     def _pump_done(self, pump: asyncio.Task[None]) -> None:
         if pump is self._slot_holder:
             self._slot_holder = None
-            self._slots.release()
+            lease, self._lease = self._lease, None
+            self._slots.release(lease)
 
     def _mark_idle(self, pump: asyncio.Task[None]) -> None:
         # A pump replaced by a switch is no longer self._pump: the new one plays.

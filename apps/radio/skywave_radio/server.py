@@ -159,7 +159,11 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
     app.state.track_cleanup = track_cleanup
     # Caps live Kiwi connections, not browser sockets: a tab sitting on
     # "Stopped" or "Problem" holds no slot.
-    slots = app.state.slots = Slots(settings.max_sessions)
+    slots = app.state.slots = Slots(
+        settings.max_sessions,
+        per_receiver=settings.max_sessions_per_receiver,
+        per_owner=settings.max_sessions_per_ip,
+    )
     # Shared, so a receiver scanned for one listener isn't rescanned for the next.
     scan_cache = app.state.scan_cache = ScanCache()
     # Shared, so reconnecting doesn't get a listener a sooner sweep.
@@ -245,6 +249,8 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
             # Behind a reverse proxy this is only the user's address if
             # FORWARDED_ALLOW_IPS trusts that proxy; the session copes if not.
             client_ip=client_ip,
+            # MAX_SESSIONS_PER_IP counts by the same owner as MAX_SOCKETS_PER_IP.
+            owner=owner,
             on_stalled=stalled.set,
             **session_kwargs,
         )

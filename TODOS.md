@@ -2,16 +2,16 @@
 
 ## Radio service
 
-### Dial retunes never open a Kiwi channel
+### Echo a tune id so the dial settles on the newest answer
 
-**What:** Dial retunes carry `"retune": true`; the radio service applies one only to a session still running, and with nothing playing answers with its current status instead of starting a session. Tunes without the flag (Listen, list choices, an older page) keep today's behaviour. While there, have the service echo an id the page puts on each tune, so the page can settle the dial on the answer to its newest tune exactly: today it counts answers, and a dial move sent while the receiver was still connecting (not counted, since the service may or may not answer it) can be answered late and settle the dial on that older tuning until the next move (fix/web-dial-revert review; owner D4: fix it here, with the tune id).
+**What:** Have the service echo an id the page puts on each tune, so the page can settle the dial on the answer to its newest tune exactly: today it counts answers, and a dial move sent while the receiver was still connecting (not counted, since the service may or may not answer it) can be answered late and settle the dial on that older tuning until the next move (fix/web-dial-revert review; owner D4). The other half of this item, dial retunes carrying `"retune": true` so they never open a Kiwi channel, shipped in feat/listener-caps.
 
-**Why:** A dial retune in flight when a session ends (the time limit, a receiver drop) arrives after the ending and starts a whole new session: a listener slot and a volunteer's Kiwi channel taken without a Listen click, and a way around the session limit. Owner D3 (fix/web-dial-revert review, 2026-10-26): fix in its own PR.
+**Why:** A late answer leaves the dial showing an older tuning than what plays, until the next move.
 
-**Context:** `apps/radio/skywave_radio/session.py` (`handle`, `_tune`), `apps/web/src/lib/use-radio.ts` (`retune`), README protocol. Deploy the radio service first (it ignores an unknown key either way).
+**Context:** `apps/radio/skywave_radio/session.py` (`_tune`, `_status_payload`), `apps/web/src/lib/use-radio.ts` (`owedRef`, `settled`), README protocol. Deploy the radio service first.
 
 **Effort:** S
-**Priority:** P2
+**Priority:** P3
 **Depends on:** None
 
 ### Dial revert: small known gaps
@@ -37,18 +37,6 @@
 **Effort:** S
 **Priority:** P3
 **Depends on:** None
-
-### Limit how many Kiwi channels one address can hold
-
-**What:** Decide whether one address may hold several listener slots at once, and if not, add a per-address slot limit (for example `MAX_SESSIONS_PER_IP`) checked where a session takes a slot.
-
-**Why:** `MAX_SOCKETS_PER_IP` caps browser sockets, not Kiwi channels. With the defaults (8 sockets, `MAX_SESSIONS` 2), one person or script with two tabs can hold every listener slot and keep refreshing them, locking everyone else out of listening.
-
-**Context:** Raised by the security review of feat/idle-socket-timeout (2026-10-25); owner chose to decide it separately (D2). Unchanged from before that PR. Trade-off: people sharing one home, office or carrier address would share the limit; count by `socket_owner` (public addresses only, IPv6 by /64) so an untrusted proxy can't lump every listener together. `apps/radio/skywave_radio/session.py` (`Slots.try_acquire`, `_tune`).
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** Owner's choice of limit and shared-address handling
 
 ### Tighten the socket cap's IPv6 grouping and the lookup limit
 

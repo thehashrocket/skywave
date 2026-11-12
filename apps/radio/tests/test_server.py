@@ -27,6 +27,8 @@ def settings(**over):
         allowed_origins=("http://localhost:3000",),
         token=None,
         max_sessions=2,
+        max_sessions_per_receiver=2,
+        max_sessions_per_ip=2,
         max_session_minutes=60,
         idle_socket_minutes=10,
         max_sockets_per_ip=8,
@@ -2885,9 +2887,9 @@ async def test_switching_receivers_hands_the_slot_over():
     class CountingSlots(Slots):
         releases = 0
 
-        def release(self):
+        def release(self, lease=None):
             CountingSlots.releases += 1
-            super().release()
+            super().release(lease)
 
     class QuietClient:
         def __init__(self, *args, **kwargs):

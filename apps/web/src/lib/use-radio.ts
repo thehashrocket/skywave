@@ -197,9 +197,11 @@ export function useRadio() {
     refusedRef.current = false;
   }, []);
   const [settled, setSettled] = useState<Settled | null>(null);
-  const sendTune = useCallback((ws: WebSocket, t: Tuning) => {
+  // retune: a dial move, which the service applies only to a session still
+  // playing; one that arrives after its session ended opens no Kiwi channel.
+  const sendTune = useCallback((ws: WebSocket, t: Tuning, retune = false) => {
     if (serviceLiveRef.current) owedRef.current++;
-    ws.send(JSON.stringify({ type: "tune", ...t }));
+    ws.send(JSON.stringify(retune ? { type: "tune", ...t, retune: true } : { type: "tune", ...t }));
   }, []);
   // Band scan. canScan: the service said it can ("features" on its statuses);
   // an older one would answer a scan request with an error status.
@@ -581,7 +583,9 @@ export function useRadio() {
       }
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
-        sendTune(ws, t);
+        // For the tune still starting it stands in for that tune's own send
+        // (see retunedRef), so it must be able to start the session.
+        sendTune(ws, t, !forPending);
         if (forPending) retunedRef.current = ws;
       }
     },
