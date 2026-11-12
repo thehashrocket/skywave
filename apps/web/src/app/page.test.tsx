@@ -362,6 +362,35 @@ describe("ListenPage", () => {
     expect(screen.getByLabelText("browse").textContent).toBe("closed");
   });
 
+  // Value: protects=a shared link opens the page tuned to its frequency, mode and receiver, ready for Listen, and is applied once; fails_when=the link is ignored, starts a first visit's drawer, or stays in the URL; why_new=deep links for launch; seam=none; no_claim=clipboard permissions in real browsers
+  it("opens tuned from a shared link, dialing its receiver public-only", () => {
+    window.history.replaceState(null, "", "/?f=9580&m=usb&rx=kiwi.example:8074");
+    render(<ListenPage />);
+    expect(window.location.search).toBe("");
+    expect(screen.getByLabelText("browse").textContent).toBe("closed");
+    fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+    expect(radio.tune).toHaveBeenCalledWith({
+      host: "kiwi.example",
+      port: 8074,
+      freqKhz: 9580,
+      mode: "usb",
+      source: "list",
+    });
+    // Saved as the pin only once it plays, like any other choice.
+    expect(localStorage.getItem("skywave.pin")).toBeNull();
+  });
+
+  // Value: protects=Copy link puts where the dial is, and the tuned receiver, on the clipboard; fails_when=the link leaves out the receiver or the tuning; why_new=deep links for launch; seam=navigator.clipboard; no_claim=real clipboard permissions
+  it("copies a link to the current tuning", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    savePin({ host: "kiwi.example", port: 8073 });
+    render(<ListenPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
+    expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/?f=10000&m=am&rx=kiwi.example%3A8073`);
+    expect(await screen.findByRole("button", { name: "Link copied" })).toBeTruthy();
+  });
+
   it("tunes Pick best's choice", () => {
     render(<ListenPage />);
     act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));

@@ -18,6 +18,12 @@ describe("assertRadioTokenGuarded", () => {
     expect(() => assertRadioTokenGuarded({ NEXT_PUBLIC_RADIO_TOKEN: "t" })).not.toThrow();
   });
 
+  it("passes a public site's Vercel build with the token and no password", () => {
+    expect(() =>
+      assertRadioTokenGuarded({ VERCEL: "1", NEXT_PUBLIC_RADIO_TOKEN: "t", NEXT_PUBLIC_SITE_PUBLIC: "1" }),
+    ).not.toThrow();
+  });
+
   it("passes a Vercel build with no token", () => {
     expect(() => assertRadioTokenGuarded({ VERCEL: "1" })).not.toThrow();
   });

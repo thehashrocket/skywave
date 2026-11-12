@@ -1304,6 +1304,14 @@ html,
   color: var(--glass);
 }
 
+.presets-subhead {
+  margin: 14px 0 6px;
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 1.15rem;
+  color: var(--glass);
+}
+
 .presets-note {
   color: var(--muted);
   margin: 0 0 12px;
