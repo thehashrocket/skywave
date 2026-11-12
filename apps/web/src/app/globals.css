@@ -1923,6 +1923,55 @@ html,
   }
 }
 
+/* The /owners page: running text for KiwiSDR owners, in the console's frame. */
+
+.owners-wordmark {
+  text-decoration: none;
+}
+
+.owners-body {
+  max-width: 68ch;
+}
+
+.owners-title {
+  margin: 0 0 12px;
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 2rem;
+  line-height: 1.1;
+  color: var(--glass);
+}
+
+.owners-lede {
+  margin: 0 0 8px;
+}
+
+.owners-body h2 {
+  margin: 24px 0 8px;
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 1.6rem;
+  color: var(--glass);
+}
+
+.owners-body ul {
+  margin: 0;
+  padding-left: 1.25em;
+  display: grid;
+  gap: 8px;
+}
+
+.owners-body p {
+  margin: 0 0 8px;
+}
+
+.owners-body code {
+  font-size: 0.9em;
+  padding: 1px 4px;
+  border-radius: var(--radius-inset);
+  background: var(--enamel-deep);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .smeter-fill {
     transition: none;

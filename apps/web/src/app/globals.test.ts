@@ -6,6 +6,7 @@ const REPO = new URL("../../../../", import.meta.url);
 const css = readFileSync(new URL("apps/web/src/app/globals.css", REPO), "utf8");
 const sources = [
   new URL("./page.tsx", import.meta.url),
+  new URL("./owners/page.tsx", import.meta.url),
   ...readdirSync(new URL("../components/", import.meta.url))
     .filter((f) => f.endsWith(".tsx") && !f.endsWith(".test.tsx"))
     .map((f) => new URL(`../components/${f}`, import.meta.url)),

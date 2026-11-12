@@ -183,6 +183,14 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("ListenPage", () => {
+  // Value: protects=the "How skywave uses it" link to /owners opens a new tab, so reading it never unmounts the player and cuts the audio; fails_when=target="_blank" is dropped or the link is swapped for a same-tab next/link; why_new=new link on the listening page; seam=none; no_claim=browser tab behavior (jsdom doesn't navigate)
+  it("opens the owners page in a new tab so what's playing keeps playing", () => {
+    render(<ListenPage />);
+    const link = screen.getByRole("link", { name: "How skywave uses it" });
+    expect(link.getAttribute("href")).toBe("/owners");
+    expect(link.getAttribute("target")).toBe("_blank");
+  });
+
   // Value: protects=the Receiver field is named by its label and described by the choice (Auto or the pinned receiver) plus the visible typing hint (PR #36: visible, and kept once a host is typed), which stay once a host is typed; fails_when=the hint goes back to a placeholder (gone once typed), is hidden, or aria-describedby is dropped or mispointed; why_new=Auto chip replaced the "blank picks the best" hint; seam=none; no_claim=how the chip looks beside the label (jsdom applies no CSS)
   it("describes the Receiver field with the receiver choice and the typing hint", () => {
     render(<ListenPage />);
