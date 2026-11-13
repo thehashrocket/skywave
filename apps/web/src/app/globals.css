@@ -1034,6 +1034,57 @@ html,
   accent-color: var(--brass);
 }
 
+/* Audio spectrum: what's going to the speaker, under the S-meter and volume
+   (a rig's AF-FFT). Shown from the visit's first audio, with the waterfall. */
+.audio-spectrum {
+  grid-column: 3 / -1;
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.audio-spectrum-name {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.audio-spectrum-screen {
+  border-radius: var(--radius-inset);
+  background: var(--enamel-deep);
+  overflow: hidden;
+}
+
+.audio-spectrum-screen canvas {
+  display: block;
+  width: 100%;
+  height: 56px;
+}
+
+.audio-spectrum-axis {
+  position: relative;
+  height: 1.2em;
+  font-family: var(--font-instrument);
+  font-weight: 500;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.audio-spectrum-axis > span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+/* The ends sit inside the screen's edges. */
+.audio-spectrum-axis > span:first-child {
+  transform: none;
+}
+
+.audio-spectrum-axis > span:last-child {
+  transform: translateX(-100%);
+}
+
 /* Status */
 
 .status {
@@ -1785,7 +1836,8 @@ html,
     grid-template-columns: 1fr 1fr;
   }
   .readout,
-  .modes {
+  .modes,
+  .audio-spectrum {
     grid-column: span 2;
   }
   .readout-input {
@@ -1799,7 +1851,8 @@ html,
     padding: 14px;
   }
   .readout,
-  .modes {
+  .modes,
+  .audio-spectrum {
     grid-column: auto;
   }
   /* The box is sized for "29,999.99", which leaves shorter frequencies a gap beside

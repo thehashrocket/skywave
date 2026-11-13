@@ -154,6 +154,7 @@ export function useRadio() {
   const ctxRef = useRef<AudioContext | null>(null);
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const gainRef = useRef<GainNode | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
   const rateRef = useRef(DEFAULT_RATE);
   const volumeRef = useRef(0.8);
   const listenersRef = useRef(new Set<SpectrumListener>());
@@ -261,10 +262,17 @@ export function useRadio() {
     const gain = ctx.createGain();
     gain.gain.value = volumeRef.current;
     node.connect(gain).connect(ctx.destination);
+    // The audio spectrum taps the player before the volume, so turning it
+    // down doesn't shrink the picture. Not connected onward: it only looks.
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.6;
+    node.connect(analyser);
     node.port.postMessage({ type: "rate", rate: rateRef.current });
     ctxRef.current = ctx;
     nodeRef.current = node;
     gainRef.current = gain;
+    analyserRef.current = analyser;
     await ctx.resume();
   }, []);
 
@@ -640,6 +648,9 @@ export function useRadio() {
     if (gain && ctxRef.current) gain.gain.setTargetAtTime(v, ctxRef.current.currentTime, 0.02);
   }, []);
 
+  /** What's going to the speaker, for the audio spectrum; null until audio has started once. */
+  const getAnalyser = useCallback(() => analyserRef.current, []);
+
   const onSpectrum = useCallback((fn: SpectrumListener) => {
     listenersRef.current.add(fn);
     return () => {
@@ -694,6 +705,7 @@ export function useRadio() {
     stop,
     startScan,
     setVolume,
+    getAnalyser,
     onSpectrum,
     showView,
     onWideFrame,

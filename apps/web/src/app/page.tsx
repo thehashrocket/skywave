@@ -10,6 +10,7 @@ import { SignalList } from "@/components/SignalList";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SMeter } from "@/components/SMeter";
 import { SpanPicker } from "@/components/SpanPicker";
+import { AudioSpectrum } from "@/components/AudioSpectrum";
 import { Waterfall } from "@/components/Waterfall";
 import { WideWaterfall } from "@/components/WideWaterfall";
 import { ReceiverChip } from "@/components/ReceiverChip";
@@ -1057,6 +1058,15 @@ export default function ListenPage() {
         <button type="button" className="link-button" onClick={copyLink}>
           {copied ? "Link copied" : "Copy link"}
         </button>
+
+        {/* With the waterfall, from the visit's first audio: the same one layout change. */}
+        {waterfallOpen && (
+          <AudioSpectrum
+            getAnalyser={radio.getAnalyser}
+            active={status.state === "listening" && radio.heardAudio}
+            sampleRate={status.sampleRate ?? 12000}
+          />
+        )}
       </section>
 
       <div className="status-row">
