@@ -322,7 +322,7 @@ export default function ListenPage() {
       });
     }
     // A shared link (lib/share-link) says where to tune: it wins over what
-    // this browser saved, and over a first visit's open drawer, so Listen is
+    // this browser saved, and over a first visit's open list, so Listen is
     // the next click. Nothing plays until then.
     const shared = parseShareLink(window.location.search);
     const linked = shared?.receiver;
@@ -337,10 +337,11 @@ export default function ListenPage() {
       setPin(h);
       setDraft(draftOf(h));
     }
-    // First visit: show the drawer and the list so there's something to pick from.
+    // First visit: the drawer stays shut so the dial and Listen are on the first
+    // screen (Listen on Auto picks a receiver), but the list inside is open, so
+    // "change" shows something to pick from.
     const firstVisit = !p && !last.host && !shared;
     setBrowseOpen(firstVisit);
-    setDrawerOpen(firstVisit);
     const t = loadTuning();
     setFreqKhz(shared?.freqKhz ?? t.freqKhz);
     setMode(shared?.mode ?? t.mode);

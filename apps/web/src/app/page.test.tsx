@@ -345,6 +345,8 @@ describe("ListenPage", () => {
     try {
       radio.status = { state: "listening", host: listed.host, port: listed.port };
       const view = render(<ListenPage />);
+      // The map also waits for the drawer to have opened once; open it, so only audio is left.
+      fireEvent.click(screen.getByRole("button", { name: "Change receiver" }));
       act(() => vi.advanceTimersByTime(30_000));
       expect(screen.getByLabelText("map admitted").textContent).toBe("no");
       radio.heardAudio = true;
@@ -365,7 +367,7 @@ describe("ListenPage", () => {
     expect(screen.getByLabelText("browse").textContent).toBe("open");
   });
 
-  // Value: protects=a first-time visitor sees the receiver list open, a returning one doesn't get it in the way; fails_when=the first-visit setBrowseOpen(!host) is dropped or inverted; why_new=the picker mock ignored `open`; seam=none; no_claim=the details element's own toggle
+  // Value: protects=a first-time visitor who opens the drawer finds the receiver list already open, a returning one doesn't get it in the way; fails_when=the first-visit setBrowseOpen(!host) is dropped or inverted; why_new=the picker mock ignored `open`; seam=none; no_claim=the details element's own toggle
   it("opens the receiver list on a first visit only", () => {
     render(<ListenPage />);
     expect(screen.getByLabelText("browse").textContent).toBe("open");
@@ -1107,18 +1109,16 @@ describe("ListenPage", () => {
     const change = () => screen.getByRole("button", { name: "Change receiver" });
     const drawer = () => document.getElementById("receiver-drawer")!;
 
-    // Value: protects=the drawer opens on a first visit (something to pick from) and stays shut for a returning listener, with "change" saying which and the closed drawer out of reach (inert); fails_when=the first-visit open goes, aria-expanded drifts from the drawer, or a closed drawer stays reachable; why_new=header strip; seam=none; no_claim=the collapse itself (CSS, browser check)
-    it("opens on a first visit only, and change toggles it", () => {
+    // Value: protects=the drawer starts shut on every visit, a first one included, so the dial and Listen are on the first screen rather than under the map and a 690-row table, with "change" saying so and the closed drawer out of reach (inert); fails_when=a first visit opens the drawer again, aria-expanded drifts from the drawer, or a closed drawer stays reachable; why_new=r/shortwave feedback: a new visitor couldn't find the tuner; seam=none; no_claim=where the dial lands on screen (CSS, browser check)
+    it("starts shut, a first visit included, and change toggles it", () => {
       render(<ListenPage />);
-      expect(change().getAttribute("aria-expanded")).toBe("true");
-      expect(drawer().hasAttribute("inert")).toBe(false);
-      expect(drawer().hasAttribute("inert")).toBe(false);
+      expect(change().getAttribute("aria-expanded")).toBe("false");
+      expect(drawer().hasAttribute("inert")).toBe(true);
       cleanup();
 
       localStorage.setItem("skywave.receiver", JSON.stringify({ host: "old.example", port: "8073" }));
       render(<ListenPage />);
       expect(change().getAttribute("aria-expanded")).toBe("false");
-      expect(drawer().hasAttribute("inert")).toBe(true);
       expect(drawer().hasAttribute("inert")).toBe(true);
       fireEvent.click(change());
       expect(change().getAttribute("aria-expanded")).toBe("true");
@@ -1127,7 +1127,8 @@ describe("ListenPage", () => {
 
     // Value: protects=choosing a receiver in the drawer (table, map, typed + Switch/Enter, Pick best) closes it and puts focus on "change" rather than dropping it with the drawer; fails_when=a choice path skips closeDrawer or focus isn't moved; why_new=drawer; seam=picker and map mocked; no_claim=real focus rings
     it("closes after a choice, leaving focus on change", () => {
-      render(<ListenPage />); // first visit: open
+      render(<ListenPage />);
+      fireEvent.click(change());
       const choose = screen.getByRole("button", { name: "choose listed" });
       act(() => choose.focus());
       fireEvent.click(choose);
