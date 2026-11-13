@@ -191,6 +191,12 @@ describe("ListenPage", () => {
     expect(link.getAttribute("target")).toBe("_blank");
   });
 
+  // Value: protects=the listening page renders its footer in player mode (new-tab links), so the credit can't cut the audio; fails_when=page.tsx drops onPlayer from <SiteFooter>; why_new=new footer; seam=SiteFooter's own new-tab rule is tested in SiteFooter.test.tsx; no_claim=footer layout
+  it("renders the credit footer with links that leave what's playing alone", () => {
+    render(<ListenPage />);
+    expect(screen.getByRole("link", { name: "For Kiwi owners" }).getAttribute("target")).toBe("_blank");
+  });
+
   // Value: protects=the Receiver field is named by its label and described by the choice (Auto or the pinned receiver) plus the visible typing hint (PR #36: visible, and kept once a host is typed), which stay once a host is typed; fails_when=the hint goes back to a placeholder (gone once typed), is hidden, or aria-describedby is dropped or mispointed; why_new=Auto chip replaced the "blank picks the best" hint; seam=none; no_claim=how the chip looks beside the label (jsdom applies no CSS)
   it("describes the Receiver field with the receiver choice and the typing hint", () => {
     render(<ListenPage />);

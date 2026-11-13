@@ -1923,6 +1923,15 @@ html,
   }
 }
 
+/* The credit line at the bottom of every page (SiteFooter.tsx). */
+
+.site-footer {
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
 /* The /owners page: running text for KiwiSDR owners, in the console's frame. */
 
 .owners-wordmark {
