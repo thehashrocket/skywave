@@ -4,6 +4,11 @@ import { useEffect, useRef, type MouseEvent } from "react";
 import { PASSBANDS, type Mode } from "@/lib/radio-types";
 
 export const ROWS = 220;
+/** The spectrum trace's canvas height, in canvas pixels (CSS sets how tall it shows). */
+export const TRACE_ROWS = 64;
+// How much of the last trace each new row keeps: enough to steady the line
+// without it lagging a signal that comes and goes.
+const TRACE_HOLD = 0.6;
 // The waterfall shows FLOOR_OFFSET_DB below the noise floor up to RANGE_DB above
 // that. The radio service's uint8 rows (SPECTRUM_FLOOR_MARGIN_DB in
 // apps/radio/skywave_radio/dsp.py) must cover this window, so change both together.
@@ -55,29 +60,81 @@ function buildLut(colors: Rgb[]) {
   return lut;
 }
 
+/**
+ * Where the spectrum trace sits for each bin, in canvas pixels from the top: the
+ * waterfall's own window (the floor at the bottom, RANGE_DB above it at the top),
+ * so a bright line on the waterfall is a tall spike on the trace.
+ */
+export function traceYs(row: Float32Array, floor: number, height: number): Float32Array {
+  const ys = new Float32Array(row.length);
+  // A pixel of room top and bottom, so a line at either end isn't cut in half.
+  const span = height - 2;
+  for (let i = 0; i < row.length; i++) {
+    const t = Math.max(0, Math.min(1, (row[i]! - floor) / RANGE_DB));
+    ys[i] = 1 + (1 - t) * span;
+  }
+  return ys;
+}
+
+/** A canvas to draw the spectrum trace on, with its context. */
+export type TraceTarget = { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D };
+
 export type Painter = {
   /** Scrolls the picture down a row and draws this one at the top. */
   paint: (row: Float32Array) => void;
-  /** Blanks the picture and starts the levels over (a new view). */
+  /** Blanks the picture (and the trace) and starts the levels over (a new view). */
   clear: () => void;
 };
 
 /**
  * Draws rows of dB onto a canvas, newest at the top, auto-levelled to the
- * noise floor. The canvas takes each row's width. Call once the stylesheet
- * has applied: the colors come from its tokens.
+ * noise floor. The canvas takes each row's width. With a `trace`, each row is
+ * also drawn there as a line (the spectrum now), on the same levels. Call once
+ * the stylesheet has applied: the colors come from its tokens.
  */
-export function createPainter(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D): Painter {
+export function createPainter(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  trace?: TraceTarget,
+): Painter {
   const style = getComputedStyle(document.documentElement);
   const colors = resolveStops((name) => style.getPropertyValue(name));
   const lut = buildLut(colors);
   const fill = `rgb(${colors[0]!.join(",")})`;
+  // The trace: a cream line over a celadon wash, the waterfall's own upper stops.
+  const traceLine = `rgba(${colors[4]!.join(",")},0.9)`;
+  const traceWash = `rgba(${colors[2]!.join(",")},0.22)`;
+  // The trace, steadied row to row; null until a row comes, and after a clear.
+  let held: Float32Array | null = null;
   // The running noise floor, tracked slowly so the picture doesn't pump.
   let level: number | null = null;
   const clear = () => {
     ctx.fillStyle = fill;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     level = null;
+    held = null;
+    trace?.ctx.clearRect(0, 0, trace.canvas.width, trace.canvas.height);
+  };
+  const drawTrace = (row: Float32Array, floor: number) => {
+    if (!trace) return;
+    const { canvas: tc, ctx: tx } = trace;
+    if (tc.width !== row.length) tc.width = row.length;
+    if (!held || held.length !== row.length) held = Float32Array.from(row);
+    else for (let i = 0; i < row.length; i++) held[i] = held[i]! * TRACE_HOLD + row[i]! * (1 - TRACE_HOLD);
+    const ys = traceYs(held, floor, tc.height);
+    tx.clearRect(0, 0, tc.width, tc.height);
+    tx.beginPath();
+    tx.moveTo(0, ys[0]!);
+    for (let i = 1; i < ys.length; i++) tx.lineTo(i, ys[i]!);
+    tx.strokeStyle = traceLine;
+    tx.lineWidth = 1.25;
+    tx.stroke();
+    // Close it along the bottom for the wash under the line.
+    tx.lineTo(ys.length - 1, tc.height);
+    tx.lineTo(0, tc.height);
+    tx.closePath();
+    tx.fillStyle = traceWash;
+    tx.fill();
   };
   clear();
   const paint = (row: Float32Array) => {
@@ -101,8 +158,15 @@ export function createPainter(canvas: HTMLCanvasElement, ctx: CanvasRenderingCon
       img.data[i * 4 + 3] = 255;
     }
     ctx.putImageData(img, 0, 0);
+    drawTrace(row, floor);
   };
   return { paint, clear };
+}
+
+/** The trace canvas with its context, if it has one. */
+export function traceTarget(canvas: HTMLCanvasElement | null): TraceTarget | undefined {
+  const ctx = canvas?.getContext("2d");
+  return canvas && ctx ? { canvas, ctx } : undefined;
 }
 
 type Props = {
@@ -120,13 +184,14 @@ type Props = {
 
 export function Waterfall({ mode, sampleRate, active, expanded, connecting, subscribe, onClickOffset }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const traceRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d", { alpha: false });
     if (!canvas || !ctx) return;
     // Made on mount: the tokens only exist once the stylesheet applies.
-    const painter = createPainter(canvas, ctx);
+    const painter = createPainter(canvas, ctx, traceTarget(traceRef.current));
     return subscribe((row) => painter.paint(row));
   }, [subscribe]);
 
@@ -152,7 +217,8 @@ export function Waterfall({ mode, sampleRate, active, expanded, connecting, subs
         title={active && expanded ? "Click a signal to tune to it" : undefined}
         data-active={(active && expanded) || undefined}
       >
-        <canvas ref={canvasRef} width={512} height={ROWS} aria-hidden="true" />
+        <canvas ref={traceRef} className="waterfall-trace" width={512} height={TRACE_ROWS} aria-hidden="true" />
+        <canvas ref={canvasRef} className="waterfall-picture" width={512} height={ROWS} aria-hidden="true" />
         <div className="waterfall-passband" style={{ left: `${pct(lo)}%`, width: `${pct(hi) - pct(lo)}%` }} />
         <div className="waterfall-center" />
         {!(active && expanded) && (

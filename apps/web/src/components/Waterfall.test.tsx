@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { FALLBACK_STOPS, parseColor, resolveStops, Waterfall } from "./Waterfall";
+import { createPainter, FALLBACK_STOPS, parseColor, resolveStops, traceYs, Waterfall } from "./Waterfall";
 
 // jsdom has no canvas; the drawing isn't what's under test here.
 beforeAll(() => {
@@ -45,6 +45,7 @@ describe("Waterfall", () => {
         fills.push(v);
       },
       fillRect() {},
+      clearRect() {},
     };
     const getContext = HTMLCanvasElement.prototype.getContext;
     HTMLCanvasElement.prototype.getContext = (() => ctx) as unknown as typeof getContext;
@@ -121,6 +122,108 @@ describe("Waterfall", () => {
     );
     fireEvent.click(view.container.querySelector(".waterfall-screen")!, { clientX: 0 });
     expect(onClickOffset).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=the spectrum trace uses the waterfall's own window (the floor at the bottom, 55 dB above it at the top), so a spike on the trace is the bright line under it; fails_when=the trace scales differently from the picture, is upside down, or runs off the canvas; why_new=spectrum trace; seam=none; no_claim=how the line looks
+  it("places the trace on the waterfall's levels, clamped to the canvas", () => {
+    const ys = traceYs(Float32Array.from([-110, -100, -72.5, -45, 0]), -100, 64);
+    expect(Array.from(ys)).toEqual([63, 63, 32, 1, 1]);
+  });
+
+  // Value: protects=each row draws the trace across every bin, steadied against the last one, and a clear (a new view) wipes it and drops the old line instead of easing in from it; fails_when=the trace isn't drawn, ignores the hold, or a new view's trace starts from the old view's levels; why_new=spectrum trace; seam=canvas contexts faked; no_claim=the colors or line width
+  it("draws the trace from each row, steadied, and starts over on a clear", () => {
+    const picture = {
+      fillStyle: "",
+      fillRect() {},
+      drawImage() {},
+      createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+      putImageData() {},
+    };
+    const lines: number[][] = [];
+    const cleared = vi.fn();
+    const trace = {
+      strokeStyle: "",
+      fillStyle: "",
+      lineWidth: 0,
+      clearRect: cleared,
+      beginPath: () => lines.push([]),
+      moveTo: (_x: number, y: number) => lines.at(-1)!.push(y),
+      lineTo: (_x: number, y: number) => lines.at(-1)!.push(y),
+      stroke() {},
+      closePath() {},
+      fill() {},
+    };
+    const traceCanvas = document.createElement("canvas");
+    traceCanvas.height = 64;
+    const painter = createPainter(
+      document.createElement("canvas"),
+      picture as unknown as CanvasRenderingContext2D,
+      { canvas: traceCanvas, ctx: trace as unknown as CanvasRenderingContext2D },
+    );
+    // A flat floor with one strong bin: the first row sets the floor (and the line) outright.
+    const row = new Float32Array(8).fill(-100);
+    row[3] = -45;
+    painter.paint(row);
+    expect(traceCanvas.width).toBe(8);
+    // Eight points on the line, then two closing it along the bottom for the wash.
+    // The picture's window starts 3 dB under the floor, so the floor sits just above the bottom.
+    const floorY = 1 + 62 * (1 - 3 / 55);
+    expect(lines[0]!.slice(0, 8)).toEqual(
+      [floorY, floorY, floorY, 1, floorY, floorY, floorY, floorY].map((y) => expect.closeTo(y, 3)),
+    );
+    // The spike goes: the line falls only part way, steadied by the last row.
+    painter.paint(new Float32Array(8).fill(-100));
+    expect(lines[1]![3]).toBeGreaterThan(1);
+    expect(lines[1]![3]).toBeLessThan(floorY - 1);
+    // A new view: the trace is wiped and the next row draws straight from its own levels.
+    painter.clear();
+    expect(cleared).toHaveBeenCalled();
+    painter.paint(row);
+    expect(lines[2]![3]).toBeCloseTo(1, 0);
+  });
+
+  // Value: protects=the audio waterfall draws its spectrum trace from each row, in a trace canvas above the picture inside the clickable screen; fails_when=the trace canvas isn't handed to the painter or sits outside the screen; why_new=spectrum trace; seam=canvas context faked; no_claim=what the line looks like (browser check)
+  it("draws the spectrum trace from each row, above the picture", () => {
+    const stroke = vi.fn();
+    const ctx = {
+      fillStyle: "",
+      fillRect() {},
+      drawImage() {},
+      createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+      putImageData() {},
+      clearRect() {},
+      beginPath() {},
+      moveTo() {},
+      lineTo() {},
+      stroke,
+      closePath() {},
+      fill() {},
+    };
+    const getContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = (() => ctx) as unknown as typeof getContext;
+    try {
+      let send: ((row: Float32Array, rate: number) => void) | undefined;
+      const view = render(
+        <Waterfall
+          mode="am"
+          sampleRate={12_000}
+          active
+          expanded
+          connecting={false}
+          subscribe={(fn) => {
+            send = fn;
+            return () => {};
+          }}
+          onClickOffset={() => {}}
+        />,
+      );
+      const canvases = view.container.querySelectorAll(".waterfall-screen canvas");
+      expect(Array.from(canvases, (c) => c.className)).toEqual(["waterfall-trace", "waterfall-picture"]);
+      send!(new Float32Array(512).fill(-100), 12_000);
+      expect(stroke).toHaveBeenCalledTimes(1);
+    } finally {
+      HTMLCanvasElement.prototype.getContext = getContext;
+    }
   });
 
   // Value: protects=the fallback colormap (tests, a missing token) stays equal to the --wf-* tokens in globals.css (review finding); fails_when=someone recolors one side only; why_new=two copies of the same five colors; seam=source text; no_claim=how the canvas renders them

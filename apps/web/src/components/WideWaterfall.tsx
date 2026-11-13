@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { WideFrame } from "@/lib/use-radio";
 import { spanKhz, tickStepKhz, type WideView } from "@/lib/wide-view";
-import { createPainter, ROWS, type Painter } from "./Waterfall";
+import { createPainter, ROWS, TRACE_ROWS, traceTarget, type Painter } from "./Waterfall";
 
 type Shown = { startKhz: number; spanKhz: number };
 
@@ -68,6 +68,7 @@ export function placeLabels(at: readonly number[], tuned: number, widthPx: numbe
  */
 export function WideWaterfall({ view, freqKhz, passband, frozen, error, subscribe, onTune, stations = [] }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const traceRef = useRef<HTMLCanvasElement>(null);
   const screenRef = useRef<HTMLDivElement>(null);
   // The picture's width, for how many station labels fit.
   const [widthPx, setWidthPx] = useState(0);
@@ -107,7 +108,7 @@ export function WideWaterfall({ view, freqKhz, passband, frozen, error, subscrib
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d", { alpha: false });
     if (!canvas || !ctx) return;
-    const painter = createPainter(canvas, ctx);
+    const painter = createPainter(canvas, ctx, traceTarget(traceRef.current));
     painterRef.current = painter;
     return subscribe((frame) => {
       // Rendered only when something changed: frames come about ten a second.
@@ -169,7 +170,8 @@ export function WideWaterfall({ view, freqKhz, passband, frozen, error, subscrib
         title={clickable ? "Click a signal to tune to it" : undefined}
         data-active={clickable || undefined}
       >
-        <canvas ref={canvasRef} width={1024} height={ROWS} aria-hidden="true" />
+        <canvas ref={traceRef} className="waterfall-trace" width={1024} height={TRACE_ROWS} aria-hidden="true" />
+        <canvas ref={canvasRef} className="waterfall-picture" width={1024} height={ROWS} aria-hidden="true" />
         {hi >= startKhz && lo <= endKhz && (
           <div
             className="waterfall-passband"
