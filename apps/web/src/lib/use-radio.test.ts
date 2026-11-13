@@ -66,13 +66,23 @@ class FakeAudioContext {
   createGain() {
     return { gain: { value: 1, setTargetAtTime() {} }, connect: (next: unknown) => next };
   }
+  createAnalyser() {
+    return { kind: "analyser", fftSize: 2048, smoothingTimeConstant: 0.8 };
+  }
   async resume() {}
   async close() {}
 }
 
 class FakeWorkletNode {
+  static last: FakeWorkletNode | null = null;
   port = { postMessage: workletMessages };
+  // What the player feeds: the volume, and the audio spectrum's analyser.
+  outputs: unknown[] = [];
+  constructor() {
+    FakeWorkletNode.last = this;
+  }
   connect(next: unknown) {
+    this.outputs.push(next);
     return next;
   }
 }
@@ -95,6 +105,16 @@ afterEach(() => {
 });
 
 describe("useRadio", () => {
+  // Value: protects=the audio spectrum is fed by the player itself, alongside the volume rather than after it, so turning the volume down doesn't flatten the picture, and it's there only once audio has started; fails_when=the analyser hangs off the gain, isn't connected, or getAnalyser hands out one before audio exists; why_new=audio spectrum; seam=Web Audio faked; no_claim=what a real AnalyserNode measures
+  it("taps the player for the audio spectrum, ahead of the volume", async () => {
+    const { result } = renderHook(() => useRadio());
+    expect(result.current.getAnalyser()).toBeNull();
+    await act(() => result.current.tune(tuning));
+    const analyser = result.current.getAnalyser();
+    expect(analyser).toMatchObject({ kind: "analyser", fftSize: 1024 });
+    expect(FakeWorkletNode.last!.outputs).toContain(analyser);
+  });
+
   it("ignores the old socket's close after Stop and a quick Listen", async () => {
     const { result } = renderHook(() => useRadio());
     await act(() => result.current.tune(tuning));

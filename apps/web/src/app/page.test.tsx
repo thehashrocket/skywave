@@ -22,6 +22,7 @@ const radio = {
   retune: vi.fn(),
   stop: vi.fn(),
   setVolume: vi.fn(),
+  getAnalyser: () => null,
   onSpectrum: () => () => {},
 };
 
@@ -32,6 +33,11 @@ vi.mock("@/components/Presets", () => ({
     presetSelect.current = onSelect;
     return <output aria-label="presets" />;
   },
+}));
+vi.mock("@/components/AudioSpectrum", () => ({
+  AudioSpectrum: ({ active }: { active: boolean }) => (
+    <output aria-label="audio spectrum">{active ? "moving" : "flat"}</output>
+  ),
 }));
 vi.mock("@/components/Waterfall", () => ({
   Waterfall: ({ expanded, onClickOffset }: { expanded: boolean; onClickOffset: (hz: number) => void }) => {
@@ -1196,6 +1202,23 @@ describe("ListenPage", () => {
       radio.heardAudio = false;
       view.rerender(<ListenPage />);
       expect(dial().hasAttribute("data-compact")).toBe(true);
+    });
+
+    // Value: protects=the audio spectrum joins the controls with the visit's first audio (the one layout change, with the waterfall) and stays through Stop, moving only while audio plays; fails_when=it shows before any audio (back on the first screen a new visitor sees), leaves on Stop, or moves while stopped; why_new=audio spectrum; seam=AudioSpectrum mocked; no_claim=the drawing (AudioSpectrum tests)
+    it("adds the audio spectrum on first audio, moving only while it plays", () => {
+      const spectrum = () => screen.queryByLabelText("audio spectrum")?.textContent ?? null;
+      const view = render(<ListenPage />);
+      expect(spectrum()).toBeNull();
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(spectrum()).toBeNull();
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      expect(spectrum()).toBe("moving");
+      radio.status = { state: "stopped" };
+      radio.heardAudio = false;
+      view.rerender(<ListenPage />);
+      expect(spectrum()).toBe("flat");
     });
 
     // Value: protects=wheel tuning steps an AM medium wave channel by where the receiver playing is: 10 kHz in the Americas, 9 elsewhere or unknown; fails_when=the page passes no step, ignores the receiver's longitude, or the region test is inverted; why_new=wheel tuning; seam=list hook mocked, fake timers; no_claim=the step table itself (radio-types tests)
