@@ -5,6 +5,7 @@ import type { WideFrame } from "@/lib/use-radio";
 import { placeLabels, WideWaterfall } from "./WideWaterfall";
 
 // jsdom has no canvas: a context that takes the calls, so frames reach the component.
+const strokes = vi.fn();
 beforeAll(() => {
   const ctx = {
     fillStyle: "",
@@ -12,6 +13,14 @@ beforeAll(() => {
     drawImage() {},
     createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
     putImageData() {},
+    // The spectrum trace's calls.
+    clearRect() {},
+    beginPath() {},
+    moveTo() {},
+    lineTo() {},
+    stroke: strokes,
+    closePath() {},
+    fill() {},
   };
   HTMLCanvasElement.prototype.getContext = (() => ctx) as unknown as typeof HTMLCanvasElement.prototype.getContext;
 });
@@ -42,6 +51,17 @@ function show(over: Partial<Parameters<typeof WideWaterfall>[0]> = {}) {
 }
 
 describe("WideWaterfall", () => {
+  // Value: protects=the receiver's waterfall draws its spectrum trace from each frame, in a trace canvas above the picture inside the clickable screen (so the tuned mark and passband cross it); fails_when=the trace canvas isn't handed to the painter or sits outside the screen; why_new=spectrum trace; seam=canvas context faked; no_claim=what the line looks like (browser check)
+  it("draws the spectrum trace from each frame, above the picture", () => {
+    const { frame, screenEl } = show();
+    const [trace, picture] = Array.from(screenEl.querySelectorAll("canvas"));
+    expect(trace!.className).toBe("waterfall-trace");
+    expect(picture!.className).toBe("waterfall-picture");
+    strokes.mockClear();
+    frame(9_600, 100);
+    expect(strokes).toHaveBeenCalledTimes(1);
+  });
+
   // Value: protects=until its first frame the wide view says it's opening and can't be clicked, then it tunes to the RF frequency under the click; fails_when=an empty picture tunes, the opening note stays, or the click maths uses the wrong start or span; why_new=wideband waterfall; seam=canvas context faked; no_claim=what the drawing looks like
   it("opens, then tunes to the frequency under a click", () => {
     const { frame, onTune, screenEl } = show();

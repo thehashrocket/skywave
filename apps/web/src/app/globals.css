@@ -1157,6 +1157,8 @@ html,
 }
 
 .waterfall-screen {
+  /* The spectrum trace's height; the marks under it (stations) start below it. */
+  --trace-h: 64px;
   position: relative;
   border-radius: var(--radius-panel);
   overflow: hidden;
@@ -1164,7 +1166,7 @@ html,
   cursor: default;
 }
 
-.waterfall-screen canvas {
+.waterfall-screen .waterfall-picture {
   display: block;
   width: 100%;
   height: 240px;
@@ -1172,8 +1174,18 @@ html,
   transition: height 200ms ease-out;
 }
 
+/* The spectrum now, as a line over the waterfall it feeds: a signal is a spike
+   here before it has drawn much of a line below. Same width and levels as the
+   picture, so the marks and passband cross both. */
+.waterfall-screen .waterfall-trace {
+  display: block;
+  width: 100%;
+  height: var(--trace-h);
+  border-bottom: 1px solid var(--rule);
+}
+
 /* Before the visit's first audio: a strip that points at Listen. */
-.waterfall:not([data-open]) .waterfall-screen canvas {
+.waterfall:not([data-open]) .waterfall-screen .waterfall-picture {
   height: 56px;
 }
 
@@ -1182,6 +1194,7 @@ html,
   cursor: crosshair;
 }
 
+.waterfall:not([data-open]) .waterfall-trace,
 .waterfall:not([data-open]) .waterfall-axis,
 .waterfall:not([data-open]) .waterfall-passband,
 .waterfall:not([data-open]) .waterfall-center {
@@ -1192,7 +1205,12 @@ html,
   position: absolute;
   top: 0;
   bottom: 0;
-  background: rgba(212, 230, 216, 0.08);
+  /* Stronger over the trace, like a rig's filter shape: what you hear, against the spectrum. */
+  background: linear-gradient(
+    to bottom,
+    rgba(212, 230, 216, 0.16) 0 var(--trace-h),
+    rgba(212, 230, 216, 0.08) var(--trace-h)
+  );
   border-left: 1px solid rgba(212, 230, 216, 0.45);
   border-right: 1px solid rgba(212, 230, 216, 0.45);
   pointer-events: none;
@@ -1208,10 +1226,22 @@ html,
   pointer-events: none;
 }
 
+/* A pointer on the tuned line at the top edge, so it's found at a glance. */
+.waterfall-center::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  /* Centred on the 1px line: half the 11px pointer, less half the line. */
+  left: -5px;
+  border-inline: 5.5px solid transparent;
+  border-top: 7px solid var(--needle);
+}
+
 /* Wide waterfall: a mark at the top for each scheduled station, its name under it where one fits. */
 .waterfall-stations {
   position: absolute;
-  inset: 0;
+  /* Under the trace, so the names don't cover it. */
+  inset: var(--trace-h) 0 0 0;
   pointer-events: none;
 }
 
@@ -1873,8 +1903,11 @@ html,
   .receivers-table-wrap {
     padding: 12px;
   }
-  .waterfall[data-open] .waterfall-screen canvas {
+  .waterfall[data-open] .waterfall-screen .waterfall-picture {
     height: 180px;
+  }
+  .waterfall-screen {
+    --trace-h: 48px;
   }
   :root {
     --map-height: 220px;
@@ -2038,7 +2071,7 @@ html,
   .smeter-fill {
     transition: none;
   }
-  .waterfall-screen canvas {
+  .waterfall-screen .waterfall-picture {
     transition: none;
   }
   .map-canvas {
