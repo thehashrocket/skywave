@@ -35,6 +35,7 @@ import { usePickBest, WATCH_MS } from "@/lib/use-pick-best";
 import { LIST_FAILED_TEXT, listFailed, useReceiverList } from "@/lib/use-receiver-list";
 import { useBetterReceiver } from "@/lib/use-better-receiver";
 import { useMapAdmission } from "@/lib/use-map-admission";
+import { useListenTracking } from "@/lib/use-listen-tracking";
 import { useRadio } from "@/lib/use-radio";
 import { useSchedule } from "@/lib/use-schedule";
 import { useSolarClock } from "@/lib/use-solar-clock";
@@ -258,6 +259,7 @@ const AUTO_SCAN_MS = 10_000;
 export default function ListenPage() {
   const radio = useRadio();
   const { status, meter, tune } = radio;
+  useListenTracking(status, radio.heardAudio);
   const sun = useSolarClock();
   // The receiver the page is tuned to (or last was): where dial retunes go.
   // Only a tune sets it; the fields edit `draft`.
