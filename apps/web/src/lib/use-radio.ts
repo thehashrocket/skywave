@@ -129,6 +129,23 @@ const MAX_ABS_DB = 300;
 const DEFAULT_RATE = 12000;
 const SERVICE_URL = process.env.NEXT_PUBLIC_RADIO_WS_URL ?? "ws://localhost:8765/ws";
 
+/**
+ * iOS plays Web Audio on the ringer channel: with the phone on silent, the
+ * page plays to nothing and no error says so (the spectrum still moves).
+ * The Audio Session API (Safari 16.4+) marks the page as a media player, so
+ * it plays through silent mode like a video. Set before the AudioContext
+ * exists; other browsers don't have it.
+ */
+export function playThroughSilentMode(): void {
+  const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+  if (!session || session.type === "playback") return;
+  try {
+    session.type = "playback";
+  } catch {
+    // An older engine that rejects the value: same as not having the API.
+  }
+}
+
 /** A service on this machine is a developer's; anywhere else, a listener is reading. */
 const SERVICE_IS_LOCAL = /^wss?:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(SERVICE_URL);
 
@@ -266,6 +283,7 @@ export function useRadio() {
       await ctxRef.current.resume();
       return;
     }
+    playThroughSilentMode();
     let ctx: AudioContext;
     try {
       // Running the context at the radio's rate lets the browser do the
