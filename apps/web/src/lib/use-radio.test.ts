@@ -749,6 +749,27 @@ describe("useRadio", () => {
       expect(result.current.tuning).toBe(false);
     });
 
+    // Value: protects=a socket that never opened reads as unreachable only, not "…was lost too" (a connection that never existed can't be lost); fails_when=onclose for a never-opened socket appends the lost-connection text; why_new=browsers fire close after error on a failed connect, and the phone showed both sentences; seam=FakeSocket subclass that errors then closes; no_claim=real browser event order beyond error-before-close
+    it("reports a socket that never opened once, without 'lost too'", async () => {
+      class Refused extends FakeSocket {
+        constructor(url: string) {
+          super(url);
+          Object.defineProperty(this, "onopen", { get: () => null, set: () => {} });
+          // As in a browser: error, then close as a later task, after tune() has
+          // already reported the failure.
+          queueMicrotask(() => this.onerror?.());
+          setTimeout(() => this.finishClose(1006), 0);
+        }
+      }
+      vi.stubGlobal("WebSocket", Refused);
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      await act(() => new Promise((r) => setTimeout(r, 5)));
+      expect(result.current.status.state).toBe("error");
+      expect(result.current.status.message).toMatch(/Can't reach the radio service/);
+      expect(result.current.status.message).not.toMatch(/lost/);
+    });
+
     // Value: protects=a radio service that never answers ends in an error, not an endless "Connecting…"; fails_when=ensureSocket has no deadline of its own; why_new=Codex adversarial (PR 1); seam=a socket double that never opens, fake timers; no_claim=the browser's own network timeouts
     it("gives up on a radio service that never answers", async () => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

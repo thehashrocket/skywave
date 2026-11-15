@@ -129,6 +129,23 @@ const MAX_ABS_DB = 300;
 const DEFAULT_RATE = 12000;
 const SERVICE_URL = process.env.NEXT_PUBLIC_RADIO_WS_URL ?? "ws://localhost:8765/ws";
 
+/** A service on this machine is a developer's; anywhere else, a listener is reading. */
+const SERVICE_IS_LOCAL = /^wss?:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(SERVICE_URL);
+
+/**
+ * Why Listen couldn't open a socket. In production that's usually not an
+ * outage: a VPN or blocker's DNS filter (NordVPN Threat Protection, say) can
+ * refuse the radio host while the site itself loads, so name it.
+ */
+export function unreachableMessage(): string {
+  if (SERVICE_IS_LOCAL) return `Can't reach the radio service at ${SERVICE_URL}. Start it with pnpm dev:radio.`;
+  let host = SERVICE_URL;
+  try {
+    host = new URL(SERVICE_URL).host;
+  } catch {}
+  return `Can't reach the radio service. If you use a VPN, ad blocker or firewall, it may be blocking ${host}: allow it or turn the filter off. Otherwise try again in a minute.`;
+}
+
 function serviceUrl() {
   const token = process.env.NEXT_PUBLIC_RADIO_TOKEN;
   return token ? `${SERVICE_URL}?token=${encodeURIComponent(token)}` : SERVICE_URL;
@@ -473,9 +490,13 @@ export function useRadio() {
         reject(new Error("timeout"));
       }, CONNECT_TIMEOUT_MS);
       ws.onopen = () => {
+        opened = true;
         clearTimeout(timer);
         resolve(ws);
       };
+      // Whether this socket ever opened. One that didn't was reported by tune()
+      // as unreachable; its close must not add "the connection was lost too".
+      let opened = false;
       ws.onerror = () => {
         clearTimeout(timer);
         reject(new Error("socket"));
@@ -504,6 +525,13 @@ export function useRadio() {
         setMeter(null);
         setTuningBoth(false);
         setHeardAudioBoth(false);
+        if (!opened) {
+          // Settles the promise if no error came first (a no-op if one did); tune()
+          // then reports it as unreachable, a fresh uncoded error like the one below.
+          clearTimeout(timer);
+          reject(new Error("socket"));
+          return;
+        }
         // Hung up for being idle: nothing was playing, so the status stands.
         if (event.code === IDLE_CLOSE_CODE) {
           if (crossed && !stoppingRef.current) void retryTuneRef.current?.(crossed);
@@ -527,7 +555,7 @@ export function useRadio() {
             message:
               s.state === "error" && s.message
                 ? `${s.message} The connection to the radio service was lost too.`
-                : "Lost the connection to the radio service. Is it running?",
+                : "Lost the connection to the radio service. Press Listen to reconnect.",
           }));
         }
       };
@@ -562,7 +590,7 @@ export function useRadio() {
         setTuningBoth(false);
         setStatus({
           state: "error",
-          message: `Can't reach the radio service at ${SERVICE_URL}. Start it with pnpm dev:radio.`,
+          message: unreachableMessage(),
         });
         return;
       }
