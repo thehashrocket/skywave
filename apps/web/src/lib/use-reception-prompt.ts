@@ -8,6 +8,7 @@ import {
   beaconTransmitter,
   eibiTransmitter,
   LISTING_GRACE_MS,
+  SAME_CHANNEL_MS,
   type BeaconPick,
   type Transmitter,
 } from "./reception";
@@ -23,6 +24,14 @@ import type { RadioStatus } from "./use-radio";
  * (issue #60).
  */
 export const DWELL_MS = 60_000;
+
+/**
+ * Past SAME_CHANNEL_MS before asking about a beacon this tab already answered
+ * about on the same receiver and frequency: the server counts a report made
+ * exactly that long ago, by its own clock and the answer's arrival, so ask a
+ * little after.
+ */
+export const SAME_CHANNEL_SLACK_MS = 60_000;
 
 /** At most one prompt per this long in a tab, however often the listener retunes. */
 export const PROMPT_GAP_MS = 10 * 60_000;
@@ -54,20 +63,37 @@ export type ReceptionPromptData = {
   tx: Transmitter;
 };
 
-type Counts = { lastShownMs: number; dismissals: number };
+/**
+ * `beacons`: when this tab last sent an answer about each beacon on each
+ * receiver and frequency (beaconAnswerKey), by this browser's clock. The
+ * server takes one per SAME_CHANNEL_MS; the prompt waits that out.
+ */
+type Counts = { lastShownMs: number; dismissals: number; beacons?: Record<string, number> };
 
 function loadCounts(): Counts {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY);
     const c: unknown = raw ? JSON.parse(raw) : null;
     if (c && typeof c === "object" && "lastShownMs" in c && "dismissals" in c) {
-      const { lastShownMs, dismissals } = c as Record<string, unknown>;
-      if (typeof lastShownMs === "number" && typeof dismissals === "number") return { lastShownMs, dismissals };
+      const { lastShownMs, dismissals, beacons } = c as Record<string, unknown>;
+      if (typeof lastShownMs === "number" && typeof dismissals === "number") {
+        // Only entries we wrote: string keys to numbers.
+        const sent =
+          beacons && typeof beacons === "object"
+            ? Object.fromEntries(Object.entries(beacons).filter(([, ms]) => typeof ms === "number"))
+            : {};
+        return { lastShownMs, dismissals, beacons: sent as Record<string, number> };
+      }
     }
   } catch {
     /* storage unavailable or unreadable; start fresh */
   }
   return { lastShownMs: 0, dismissals: 0 };
+}
+
+/** One beacon on one receiver and frequency, as the server's same-channel limit counts it. */
+function beaconAnswerKey(host: string, port: number, freqKhz: number, call: string): string {
+  return `${host.toLowerCase()}:${port}:${freqKhz}:${call}`;
 }
 
 function saveCounts(c: Counts) {
@@ -141,23 +167,58 @@ export function useReceptionPrompt(
       : schedule !== undefined && scheduledOn(schedule, status.freqKhz!, Date.now()).length > 0);
   const pickCall = pick?.call ?? null;
 
+  // When audio started on the picked beacon's channel (server time; the key
+  // appears with first audio): what the prompt's rule counts from, and what the
+  // band strip says was missed. A new pick counts from then. Null otherwise.
+  const audioStart = useRef<number | null>(null);
+  const [beaconAudioStartMs, setBeaconAudioStartMs] = useState<number | null>(null);
+  useEffect(() => {
+    audioStart.current = key !== null && pickCall !== null ? serverNow() : null;
+    setBeaconAudioStartMs(audioStart.current);
+  }, [key, pickCall, band]);
+
+  // The beacon turn this plans to ask about (server time), null for none; and
+  // whether the listener has turned questions off in this tab. The band strip
+  // says when the turn it shows won't be asked about (noQuestionReason).
+  const [beaconAskSlotMs, setBeaconAskSlotMs] = useState<number | null>(null);
+  const [questionsOff, setQuestionsOff] = useState(false);
+
   useEffect(() => {
     if (key !== null) setPrompt((p) => (p && promptKey(p) !== key ? null : p));
-    if (askedOn.current !== key) askedOn.current = null;
-    if (key === null || !askable || askedOn.current === key) return;
+    // One question per channel until it changes; on a beacon frequency, per
+    // callsign too, as the server counts (another beacon picked is a new question).
+    const askKey = key !== null && pickCall !== null ? `${key}:${pickCall}` : key;
+    if (askedOn.current !== askKey) askedOn.current = null;
+    setBeaconAskSlotMs(null);
+    if (askKey === null || !askable || askedOn.current === askKey) return;
     const c = (counts.current ??= loadCounts());
-    if (c.dismissals >= MAX_DISMISSALS) return;
-    const notBefore = c.lastShownMs + PROMPT_GAP_MS;
-    if (pickCall !== null) {
-      // Audio on this channel starts now (the key appears with first audio). The
-      // schedule runs on the server's clock; the gap on this browser's.
+    if (c.dismissals >= MAX_DISMISSALS) {
+      setQuestionsOff(true);
+      return;
+    }
+    let notBefore = c.lastShownMs + PROMPT_GAP_MS;
+    if (pickCall !== null && audioStart.current !== null) {
+      const s = latest.current.status;
+      // An answer this tab sent about this beacon here: the server takes the next
+      // one only after SAME_CHANNEL_MS, so don't ask (and thank) before then.
+      const sentAt =
+        s.host && s.freqKhz !== undefined
+          ? c.beacons?.[beaconAnswerKey(s.host, s.port ?? DEFAULT_KIWI_PORT, s.freqKhz, pickCall)]
+          : undefined;
+      if (sentAt !== undefined) notBefore = Math.max(notBefore, sentAt + SAME_CHANNEL_MS + SAME_CHANNEL_SLACK_MS);
+      // The schedule runs on the server's clock; the gap on this browser's.
       const server = serverNow();
-      const at = beaconPromptAt({ call: pickCall, bandIndex: band }, server, notBefore + (server - Date.now()));
+      const at = beaconPromptAt(
+        { call: pickCall, bandIndex: band },
+        audioStart.current,
+        notBefore + (server - Date.now()),
+      );
       if (at === null) return;
+      setBeaconAskSlotMs(at.slotStartMs);
       const timer = setTimeout(() => {
         const s = latest.current.status;
         if (!s.host || s.freqKhz === undefined || !s.mode) return;
-        askedOn.current = key;
+        askedOn.current = askKey;
         update((c) => ({ ...c, lastShownMs: Date.now() }));
         setPrompt({
           host: s.host,
@@ -176,7 +237,7 @@ export function useReceptionPrompt(
       // The listing may have ended during the wait.
       const tx = eibiTransmitter(scheduledOn(sched, s.freqKhz, Date.now()));
       if (!tx) return;
-      askedOn.current = key;
+      askedOn.current = askKey;
       update((c) => ({ ...c, lastShownMs: Date.now() }));
       setPrompt({ host: s.host, port: s.port ?? DEFAULT_KIWI_PORT, freqKhz: s.freqKhz, mode: s.mode, tx });
     }, wait);
@@ -193,20 +254,35 @@ export function useReceptionPrompt(
   /** The close button: counts toward MAX_DISMISSALS. */
   const dismiss = useCallback(() => {
     setPrompt(null);
-    update((c) => ({ ...c, dismissals: c.dismissals + 1 }));
+    if (update((c) => ({ ...c, dismissals: c.dismissals + 1 })).dismissals >= MAX_DISMISSALS) setQuestionsOff(true);
   }, [update]);
 
   /** Answered: goes away without counting as a dismissal, and thanks shows for THANKS_MS. */
   const [thanked, setThanked] = useState(false);
+  const promptRef = useRef(prompt);
+  promptRef.current = prompt;
   const answered = useCallback(() => {
+    const p = promptRef.current;
+    // An answer about a beacon is sent: remember it, so this tab doesn't ask about
+    // that beacon here again before the server would take another (SAME_CHANNEL_MS).
+    if (p?.tx.kind === "beacon") {
+      const now = Date.now();
+      update((c) => ({
+        ...c,
+        beacons: {
+          ...Object.fromEntries(Object.entries(c.beacons ?? {}).filter(([, ms]) => now - ms < SAME_CHANNEL_MS)),
+          [beaconAnswerKey(p.host, p.port, p.freqKhz, p.tx.name)]: now,
+        },
+      }));
+    }
     setPrompt(null);
     setThanked(true);
-  }, []);
+  }, [update]);
   useEffect(() => {
     if (!thanked) return;
     const timer = setTimeout(() => setThanked(false), THANKS_MS);
     return () => clearTimeout(timer);
   }, [thanked]);
 
-  return { prompt, thanked, dismiss, answered };
+  return { prompt, thanked, dismiss, answered, beaconAudioStartMs, beaconAskSlotMs, questionsOff };
 }

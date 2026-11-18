@@ -1935,8 +1935,39 @@ html,
   font-size: 0.9rem;
 }
 
-.beacons-prompt-line:not(:empty) {
+.beacons-strip .beacons-prompt td[data-filled] {
   padding-bottom: 8px;
+}
+
+/* The picked beacon, marked on whichever band it's on now. */
+.beacons-strip tr[data-picked] .beacons-call {
+  color: var(--lamp);
+}
+
+.beacons-picked {
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+}
+
+/* The line about the picked beacon, under its band's row (the prompt replaces it). */
+.beacons-watch {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.beacons-watch[data-state="on-air"] {
+  color: var(--lamp);
+}
+
+.beacons-countdown {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* "· no question this time": the turn on the line won't be asked about. */
+.beacons-no-question {
+  color: var(--muted);
 }
 
 .beacons-note {

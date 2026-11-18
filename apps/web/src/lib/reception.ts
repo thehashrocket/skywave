@@ -30,6 +30,16 @@ export const COMMENT_MAX = 280;
  */
 export const LISTING_GRACE_MS = 5 * 60_000;
 
+/**
+ * One report per listener, receiver and frequency in this long (and, for a
+ * beacon, per callsign: its frequency carries a new beacon every 10 s): a
+ * second answer about the same channel this soon adds nothing. The server
+ * declines it (routers/reports.ts); the prompt doesn't ask about a beacon it
+ * already sent an answer about in this tab, so it never thanks for one that
+ * would be dropped.
+ */
+export const SAME_CHANNEL_MS = 30 * 60_000;
+
 /** What a prompt asks about: the transmitter(s) and how to name them. */
 export type Transmitter = {
   kind: TxKind;
@@ -105,16 +115,92 @@ export function beaconPromptAt(
   audioStartMs: number,
   notBeforeMs: number,
 ): { slotStartMs: number; askAtMs: number } | null {
-  const index = BEACONS.findIndex((b) => b.call === pick.call);
-  if (index < 0 || IBP_BANDS_KHZ[pick.bandIndex] === undefined) return null;
-  const heardFrom = audioStartMs + STREAM_LATENCY_MS;
-  // The beacon's slot on this band, in the cycle `heardFrom` falls in.
-  const slot = (index + pick.bandIndex) % BEACONS.length;
-  let start = heardFrom - (((heardFrom % CYCLE_MS) + CYCLE_MS) % CYCLE_MS) + slot * SLOT_MS;
-  if (start + SLOT_MS <= heardFrom) start += CYCLE_MS;
-  if (start + SLOT_MS - Math.max(start, heardFrom) < BEACON_MIN_HEARD_MS) start += CYCLE_MS;
+  let start = turnAtOrAfter(pick, audioStartMs + STREAM_LATENCY_MS);
+  if (start === null) return null;
+  if (!heardEnough(start, audioStartMs)) start += CYCLE_MS;
   while (start + SLOT_MS + STREAM_LATENCY_MS < notBeforeMs) start += CYCLE_MS;
   return { slotStartMs: start, askAtMs: start + SLOT_MS + STREAM_LATENCY_MS };
+}
+
+/**
+ * The start of the picked beacon's turn on its band that's on at `ms`, or
+ * else its next one (server time); null if it isn't one of the 18.
+ */
+export function turnAtOrAfter(pick: BeaconPick, ms: number): number | null {
+  const index = BEACONS.findIndex((b) => b.call === pick.call);
+  if (index < 0 || IBP_BANDS_KHZ[pick.bandIndex] === undefined) return null;
+  // The beacon reaches band b in its own slot plus b, in the cycle `ms` falls in.
+  const slot = (index + pick.bandIndex) % BEACONS.length;
+  const start = ms - (((ms % CYCLE_MS) + CYCLE_MS) % CYCLE_MS) + slot * SLOT_MS;
+  return start + SLOT_MS <= ms ? start + CYCLE_MS : start;
+}
+
+/**
+ * Whether the turn starting `turnStartMs` played long enough to ask about:
+ * BEACON_MIN_HEARD_MS of it after first audio (`audioStartMs`, null for none
+ * yet) plus STREAM_LATENCY_MS.
+ */
+export function heardEnough(turnStartMs: number, audioStartMs: number | null): boolean {
+  if (audioStartMs === null) return false;
+  const heardFrom = audioStartMs + STREAM_LATENCY_MS;
+  return turnStartMs + SLOT_MS - Math.max(turnStartMs, heardFrom) >= BEACON_MIN_HEARD_MS;
+}
+
+/**
+ * What the band strip says about the beacon picked with Listen, at `nowMs`
+ * (server time): its turn on the picked band is on; it's next on in `inMs`;
+ * or, in the gap after the first turn since the pick if that one didn't play
+ * long enough to ask about (heardEnough), it was missed and is back in `inMs`.
+ */
+export type BeaconWatch =
+  | { state: "on-air"; call: string; turnStartMs: number }
+  | { state: "waiting" | "missed"; call: string; bandKhz: number; inMs: number; turnStartMs: number };
+
+export function beaconWatch(a: {
+  pick: BeaconPick;
+  /** When Listen was pressed. */
+  pickedAtMs: number;
+  /** First audio on the picked channel, or null for none yet. */
+  audioStartMs: number | null;
+  nowMs: number;
+}): BeaconWatch | null {
+  const turn = turnAtOrAfter(a.pick, a.nowMs);
+  const first = turnAtOrAfter(a.pick, a.pickedAtMs);
+  if (turn === null || first === null) return null;
+  const { call } = a.pick;
+  if (turn <= a.nowMs) return { state: "on-air", call, turnStartMs: turn };
+  const bandKhz = IBP_BANDS_KHZ[a.pick.bandIndex]!;
+  const inMs = turn - a.nowMs;
+  const missed = turn === first + CYCLE_MS && !heardEnough(first, a.audioStartMs);
+  return { state: missed ? "missed" : "waiting", call, bandKhz, inMs, turnStartMs: turn };
+}
+
+/**
+ * Why no question will follow the turn the watch line is about (`turnStartMs`:
+ * the one on air, or the next), or null when one will. "off": the listener
+ * closed MAX_DISMISSALS questions in this tab. "none": the prompt plans to ask
+ * about another turn (the 10-minute gap between questions, or this one won't
+ * have played long enough), or about none (already asked on this channel, or
+ * a receiver the server keeps no reports about). `askSlotMs` is the turn the
+ * prompt plans to ask about, null for none. "connecting": a receiver is still
+ * connecting, with no audio yet, so the prompt has no plan and none can be
+ * judged; once audio starts, the others apply.
+ */
+export function noQuestionReason(
+  turnStartMs: number,
+  askSlotMs: number | null,
+  questionsOff: boolean,
+  connecting = false,
+): "off" | "connecting" | "none" | null {
+  if (questionsOff) return "off";
+  if (connecting) return "connecting";
+  return askSlotMs === turnStartMs ? null : "none";
+}
+
+/** A countdown as m:ss, rounded up to the whole second (so it reads 0:01, never 0:00, before the turn). */
+export function formatCountdown(ms: number): string {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
 /** What a beacon prompt asks about: "Did you hear 4X6TU …?", in the slot starting `slotStartMs`. */

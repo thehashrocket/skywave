@@ -8,10 +8,11 @@ import {
   MAX_DISMISSALS,
   PROMPT_GAP_MS,
   PROMPT_TTL_MS,
+  SAME_CHANNEL_SLACK_MS,
   THANKS_MS,
   useReceptionPrompt,
 } from "./use-reception-prompt";
-import { LISTING_GRACE_MS, STREAM_LATENCY_MS, type BeaconPick } from "./reception";
+import { LISTING_GRACE_MS, SAME_CHANNEL_MS, STREAM_LATENCY_MS, type BeaconPick } from "./reception";
 
 const allDay = (khz: number, station: string, lang = "E", target = "Eu"): Broadcast => ({
   khz,
@@ -247,6 +248,49 @@ describe("useReceptionPrompt", () => {
     // The clock starts at 12:00:00 UTC, the top of a cycle: 4U1UN on 14.100 until 12:00:10.
     const beaconStatus = (freqKhz = 14_100): RadioStatus => ({ ...listening(freqKhz), mode: "cw" });
     const pick: BeaconPick = { call: "4U1UN", bandIndex: 0 };
+
+    // Value: protects=on one receiver and band, each beacon is its own question (4U1UN, then YV5B, both asked, after the 10-minute gap), and a beacon this tab already answered about there isn't asked again until the server would take the answer (30 min + slack), so the page never thanks for an answer the server drops; EiBi's one-per-channel stays as it was (other tests); fails_when=the one-per-channel key ignores the callsign, or the sent-answer record is missing, lost, or too short; why_new=owner: beacon answers dropped after thanks (option 3 + per-callsign key); seam=fake timers + jsdom sessionStorage; no_claim=the server's own limit (reports tests)
+    it("asks about each beacon once per receiver and band, and not again before the server would take it", () => {
+      const hook = setup({ status: beaconStatus(), beacon: pick });
+      wait(10_000 + STREAM_LATENCY_MS);
+      expect(hook.result.current.prompt?.tx.name).toBe("4U1UN");
+      // Answered at 12:00:11.5.
+      act(() => hook.result.current.answered());
+
+      // YV5B picked on the same receiver and band: a new question, at its first turn after
+      // the 10-minute gap (12:10:11.5). YV5B has 14.100 at :50 past each cycle: 12:11:50,
+      // asked 12:12:01.5.
+      hook.rerender({ status: beaconStatus(), heard: true, schedule, beacon: { call: "YV5B", bandIndex: 0 } });
+      wait(PROMPT_GAP_MS + 110_000 - 1);
+      expect(hook.result.current.prompt).toBeNull();
+      wait(1);
+      expect(hook.result.current.prompt?.tx.name).toBe("YV5B");
+      act(() => hook.result.current.answered());
+
+      // 4U1UN again, here, at 12:12:01.5: not before 12:31:11.5 (its answer + 30 min + slack),
+      // so not its 12:30:00 turn (asked 12:30:11.5) but 12:33:00 (asked 12:33:11.5).
+      expect(SAME_CHANNEL_MS + SAME_CHANNEL_SLACK_MS).toBe(31 * 60_000);
+      hook.rerender({ status: beaconStatus(), heard: true, schedule, beacon: pick });
+      wait(21 * 60_000 + 10_000 - 1);
+      expect(hook.result.current.prompt).toBeNull();
+      wait(1);
+      expect(hook.result.current.prompt?.tx.name).toBe("4U1UN");
+    });
+
+    // Value: protects=the sent-answer record survives a reload in the tab (sessionStorage), like the gap; fails_when=it lives in memory only, so a reload asks again and the server drops the answer; why_new=owner: beacon answers dropped after thanks; seam=jsdom sessionStorage; no_claim=none
+    it("remembers a beacon answer across a reload in the tab", () => {
+      const first = setup({ status: beaconStatus(), beacon: pick });
+      wait(10_000 + STREAM_LATENCY_MS);
+      act(() => first.result.current.answered());
+      first.unmount();
+      // A reload 15 minutes later: the gap has passed, but not 30 minutes since the answer.
+      wait(15 * 60_000);
+      const again = setup({ status: beaconStatus(), beacon: pick });
+      wait(10 * 60_000);
+      expect(again.result.current.prompt).toBeNull();
+      wait(10 * 60_000);
+      expect(again.result.current.prompt?.tx.name).toBe("4U1UN");
+    });
 
     // Value: protects=the beacon picked with Listen is asked about once its slot's end reaches the listener, by callsign; fails_when=the beacon path uses the one-minute dwell or names another beacon; why_new=beacon prompt (owner rule); seam=fake timers; no_claim=the rule's arithmetic (reception.test)
     it("asks about the picked beacon after its slot", () => {

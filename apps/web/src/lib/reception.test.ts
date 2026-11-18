@@ -4,7 +4,10 @@ import {
   BEACON_MIN_HEARD_MS,
   beaconPromptAt,
   beaconTransmitter,
+  beaconWatch,
   eibiTransmitter,
+  formatCountdown,
+  noQuestionReason,
   STREAM_LATENCY_MS,
 } from "./reception";
 
@@ -96,5 +99,78 @@ describe("beaconPromptAt", () => {
       label: "4X6TU",
       slotStartMs: t(40),
     });
+  });
+});
+
+describe("formatCountdown", () => {
+  // Value: protects=the countdown reads m:ss, rounded up to the second so it never says 0:00 while the turn is still ahead; fails_when=it rounds down, drops the leading zero on seconds, or goes negative; why_new=beacon watch line; seam=none; no_claim=none
+  it("formats m:ss, rounding up", () => {
+    expect(formatCountdown(168_000)).toBe("2:48");
+    expect(formatCountdown(167_001)).toBe("2:48");
+    expect(formatCountdown(59_001)).toBe("1:00");
+    expect(formatCountdown(9_000)).toBe("0:09");
+    expect(formatCountdown(1)).toBe("0:01");
+    expect(formatCountdown(-5)).toBe("0:00");
+  });
+});
+
+describe("beaconWatch", () => {
+  // Listen pressed at 00:00:03, while 4U1UN had 14.100 (00:00:00–00:00:10).
+  const t = (s: number) => Date.UTC(2026, 10, 18, 0, 0, 0) + s * 1000;
+  const pick = { call: "4U1UN", bandIndex: 0 };
+  const at = (nowS: number, audioS: number | null) =>
+    beaconWatch({ pick, pickedAtMs: t(3), audioStartMs: audioS === null ? null : t(audioS), nowMs: t(nowS) });
+
+  // Value: protects=while the picked beacon's turn on its band is on (by the server clock), the line says so; fails_when=the turn is found on the wrong band or the edge is off; why_new=beacon watch line; seam=none; no_claim=what the audio carries (it trails)
+  it("is on air during the picked beacon's turn on its band", () => {
+    expect(at(5, 4)).toEqual({ state: "on-air", call: "4U1UN", turnStartMs: t(0) });
+    expect(at(9.999, 4)?.state).toBe("on-air");
+    expect(at(180, 4)?.state).toBe("on-air");
+  });
+
+  // Value: protects=a first turn that didn't play 7 s after first audio + 1.5 s (the prompt's own rule) reads as missed until the beacon is back, with the time to its next turn; and with no audio yet it's missed too; fails_when=the first turn is called missed when it qualified, or not when it didn't; why_new=beacon watch line (owner: say so plainly); seam=none; no_claim=whether a prompt will actually come (gap, closes)
+  it("says the first turn was missed when too little of it played", () => {
+    // Audio at 00:00:05 counts from 00:00:06.5: 3.5 s of the turn.
+    expect(at(10, 5)).toEqual({
+      state: "missed",
+      call: "4U1UN",
+      bandKhz: 14_100,
+      inMs: 170_000,
+      turnStartMs: t(180),
+    });
+    expect(at(120, null)).toMatchObject({ state: "missed", inMs: 60_000 });
+    // Exactly 7 s heard (audio at 00:00:01.5) qualifies: not missed.
+    expect(at(10, 1.5)?.state).toBe("waiting");
+  });
+
+  // Value: protects=otherwise the line waits for the beacon's next turn on its band, with the countdown, and "missed" never outlives the gap after the first turn; fails_when=missed sticks after the next turn, or the countdown points at the wrong turn; why_new=beacon watch line; seam=none; no_claim=none
+  it("waits for the next turn otherwise", () => {
+    expect(at(10, 1)).toEqual({
+      state: "waiting",
+      call: "4U1UN",
+      bandKhz: 14_100,
+      inMs: 170_000,
+      turnStartMs: t(180),
+    });
+    // After the second turn, even with the first missed.
+    expect(at(190, 5)).toMatchObject({ state: "waiting", inMs: 170_000 });
+    expect(beaconWatch({ pick: { call: "NOPE", bandIndex: 0 }, pickedAtMs: 0, audioStartMs: null, nowMs: 0 })).toBe(
+      null,
+    );
+  });
+});
+
+describe("noQuestionReason", () => {
+  const TURN = Date.UTC(2026, 10, 18, 12, 3);
+
+  // Value: protects=the line only promises nothing when the prompt plans to ask about exactly the turn it shows; otherwise (the 10-minute gap pushed the plan to a later turn, or there's no plan: already asked on this channel, a typed receiver) it says no question this time, and after two closes it says questions are off, whatever the plan; fails_when=a countdown looks like a question is coming when the limits hold it back; why_new=owner: say when no question will come; seam=none; no_claim=the plan itself (hook tests)
+  it("says why no question will follow the turn shown, if none will", () => {
+    expect(noQuestionReason(TURN, TURN, false)).toBeNull();
+    expect(noQuestionReason(TURN, TURN + 180_000, false)).toBe("none");
+    expect(noQuestionReason(TURN, null, false)).toBe("none");
+    expect(noQuestionReason(TURN, TURN, true)).toBe("off");
+    // Connecting: not yet known, unless questions are off anyway.
+    expect(noQuestionReason(TURN, null, false, true)).toBe("connecting");
+    expect(noQuestionReason(TURN, null, true, true)).toBe("off");
   });
 });
