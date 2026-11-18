@@ -2401,5 +2401,72 @@ describe("ListenPage", () => {
       act(() => fireEvent.click(screen.getByRole("button", { name: "Change receiver" })));
       expect(question().closest(".beacons")).not.toBeNull();
     });
+
+    describe("following the picked beacon", () => {
+      const watchLine = () => document.querySelector(".beacons-watch");
+      /** The band row the line (or prompt) sits under. */
+      const rowAbove = (el: Element) => el.closest("tr")!.previousElementSibling!.querySelector("th")!.textContent;
+      const pickedRow = () => document.querySelector(".beacons-strip tr[data-picked]");
+      const advance = (ms: number) => act(() => vi.advanceTimersByTime(ms));
+
+      // Value: protects=after Listen the strip says, under the picked band's row, when the beacon is on air, that its first turn was missed (receiver connect outlasts the 1.5 s allowance) and when it's back, a countdown to its next turn on the server clock, and then the prompt in that same place; the picked beacon stays marked as it moves up the bands; fails_when=the line is missing, in the wrong row, shows the wrong state or countdown, the mark drops off when the beacon leaves the band, or the prompt shows alongside the line; why_new=beacon watch line (owner); seam=MapPanel/radio mocked, real strip, hook and clock; no_claim=audio timing (latency is a constant)
+      it("says when the picked beacon is on, missed and next, then asks in the same place", () => {
+        sessionStorage.clear();
+        const view = render(<ListenPage />);
+        act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+        act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+        // 12:00:03: its turn is on.
+        expect(watchLine()!.textContent).toBe("4U1UN on air now. Listen for the callsign, then four dashes.");
+        expect(rowAbove(watchLine()!)).toBe("14.100");
+        expect(pickedRow()!.querySelector("th")!.textContent).toBe("14.100");
+
+        // Audio arrives at once, too late in the turn to count (12:00:03 + 1.5 s leaves 5.5 s).
+        radio.status = { state: "listening", host: london.host, port: london.port, freqKhz: 14_100, mode: "cw" };
+        radio.heardAudio = true;
+        view.rerender(<ListenPage />);
+        advance(7_100);
+        // 12:00:10: missed; back at 12:03:00.
+        expect(watchLine()!.textContent).toBe("Missed the start; 4U1UN is back in 2:50.");
+        expect(rowAbove(watchLine()!)).toBe("14.100");
+        // The beacon has moved up to 18.110, still marked; the 14.100 row has moved on.
+        expect(pickedRow()!.querySelector("th")!.textContent).toBe("18.110");
+        expect(pickedRow()!.textContent).toMatch(/picked/);
+        // The countdown runs.
+        advance(50_000);
+        expect(watchLine()!.textContent).toBe("Missed the start; 4U1UN is back in 2:00.");
+
+        // 12:03:00: on again, and this turn plays in full.
+        advance(120_000);
+        expect(watchLine()!.textContent).toMatch(/^4U1UN on air now/);
+        // 12:03:10: the turn has ended, and its end hasn't reached the listener yet.
+        advance(10_000);
+        expect(watchLine()!.textContent).toBe("Listening for 4U1UN: next on 14.100 in 2:50");
+        // 1.5 s later the prompt takes the line's place.
+        advance(1_500);
+        const q = screen.getByText(/Did you hear 4U1UN/);
+        expect(rowAbove(q)).toBe("14.100");
+        expect(watchLine()).toBeNull();
+      });
+
+      // Value: protects=the pick (and its line and mark) ends when the listener changes receiver themselves, as it does on a retune off the band; fails_when=a stale pick keeps a line or prompt about a beacon the listener walked away from; why_new=beacon watch line (owner: until retune or receiver change); seam=as above; no_claim=none
+      it("drops the pick when the listener changes receiver or retunes", () => {
+        render(<ListenPage />);
+        act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+        act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+        expect(pickedRow()).not.toBeNull();
+        act(() => fireEvent.click(screen.getByRole("button", { name: "map listen" })));
+        expect(pickedRow()).toBeNull();
+        expect(watchLine()).toBeNull();
+
+        act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+        expect(pickedRow()).not.toBeNull();
+        act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to YV5B on 18.110 MHz" })));
+        // Another beacon picked: the first one's mark goes.
+        expect(pickedRow()!.textContent).toMatch(/YV5B/);
+        // A retune off the band.
+        act(() => presetSelect.current!({ freqKhz: 9_580, mode: "am" }));
+        expect(pickedRow()).toBeNull();
+      });
+    });
   });
 });

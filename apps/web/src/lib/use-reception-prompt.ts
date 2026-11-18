@@ -141,6 +141,16 @@ export function useReceptionPrompt(
       : schedule !== undefined && scheduledOn(schedule, status.freqKhz!, Date.now()).length > 0);
   const pickCall = pick?.call ?? null;
 
+  // When audio started on the picked beacon's channel (server time; the key
+  // appears with first audio): what the prompt's rule counts from, and what the
+  // band strip says was missed. A new pick counts from then. Null otherwise.
+  const audioStart = useRef<number | null>(null);
+  const [beaconAudioStartMs, setBeaconAudioStartMs] = useState<number | null>(null);
+  useEffect(() => {
+    audioStart.current = key !== null && pickCall !== null ? serverNow() : null;
+    setBeaconAudioStartMs(audioStart.current);
+  }, [key, pickCall, band]);
+
   useEffect(() => {
     if (key !== null) setPrompt((p) => (p && promptKey(p) !== key ? null : p));
     if (askedOn.current !== key) askedOn.current = null;
@@ -148,11 +158,14 @@ export function useReceptionPrompt(
     const c = (counts.current ??= loadCounts());
     if (c.dismissals >= MAX_DISMISSALS) return;
     const notBefore = c.lastShownMs + PROMPT_GAP_MS;
-    if (pickCall !== null) {
-      // Audio on this channel starts now (the key appears with first audio). The
-      // schedule runs on the server's clock; the gap on this browser's.
+    if (pickCall !== null && audioStart.current !== null) {
+      // The schedule runs on the server's clock; the gap on this browser's.
       const server = serverNow();
-      const at = beaconPromptAt({ call: pickCall, bandIndex: band }, server, notBefore + (server - Date.now()));
+      const at = beaconPromptAt(
+        { call: pickCall, bandIndex: band },
+        audioStart.current,
+        notBefore + (server - Date.now()),
+      );
       if (at === null) return;
       const timer = setTimeout(() => {
         const s = latest.current.status;
@@ -208,5 +221,5 @@ export function useReceptionPrompt(
     return () => clearTimeout(timer);
   }, [thanked]);
 
-  return { prompt, thanked, dismiss, answered };
+  return { prompt, thanked, dismiss, answered, beaconAudioStartMs };
 }

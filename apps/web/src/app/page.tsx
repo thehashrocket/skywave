@@ -521,11 +521,21 @@ export default function ListenPage() {
     forgetPin();
     lastSavedPin.current = null;
   }, []);
+  // IBP beacon mode (issue #59): the band strip under the map is open, and the map shows the beacons.
+  const [beaconMode, setBeaconMode] = useState(false);
+  // The beacon picked with Listen on the strip, its band, and when (server
+  // time): the map draws its path, the strip follows it, and it's the only
+  // beacon the reception prompt asks about. It lasts until the listener
+  // retunes off its band or changes receiver (pickFrom, switchTo).
+  const [beaconPick, setBeaconPick] = useState<(BeaconPick & { atMs: number }) | null>(null);
+  if (beaconPick && ibpBandIndex(freqKhz) !== beaconPick.bandIndex) setBeaconPick(null);
   // Asking skywave to choose (Pick best, blank Listen, the error link, the
-  // better-receiver offer) is Auto, so a run that starts ends any pin.
+  // better-receiver offer) is Auto, so a run that starts ends any pin. It's a
+  // change of receiver too, which ends a beacon pick (beacon Listen sets its own after).
   const pickFrom = useCallback(
     (ranked: Receiver[], known?: readonly Receiver[]) => {
       setPageMessage(null);
+      setBeaconPick(null);
       const started = startPicking(ranked, known);
       if (started) clearPin();
       return started;
@@ -547,13 +557,6 @@ export default function ListenPage() {
     },
     [receivers, pickFrom],
   );
-  // IBP beacon mode (issue #59): the band strip under the map is open, and the map shows the beacons.
-  const [beaconMode, setBeaconMode] = useState(false);
-  // The beacon picked with Listen on the strip, and its band: the map draws its
-  // path, and it's the only beacon the reception prompt asks about.
-  const [beaconPick, setBeaconPick] = useState<BeaconPick | null>(null);
-  // A pick lasts while the dial stays on its band; tuning back by hand isn't a pick.
-  if (beaconPick && ibpBandIndex(freqKhz) !== beaconPick.bandIndex) setBeaconPick(null);
   const changeBeaconMode = useCallback((on: boolean) => {
     setBeaconMode(on);
     if (!on) setBeaconPick(null);
@@ -567,13 +570,14 @@ export default function ListenPage() {
       const now = serverNow();
       const beacon = beaconOnBand(now, band);
       const khz = IBP_BANDS_KHZ[band]!;
-      setBeaconPick({ call: beacon.call, bandIndex: band });
       // Set before the run starts: its tunes and coverage checks read the dial from here.
       latest.current = { freqKhz: khz, mode: "cw" };
       setFreqKhz(khz);
       setMode("cw");
       const started =
         receivers !== undefined && pickFrom(rankForBeacon(receivers, beacon, khz, sunPosition(now)), receivers);
+      // After the run starts, which ends any earlier pick.
+      setBeaconPick({ call: beacon.call, bandIndex: band, atMs: now });
       if (!receivers) setPageMessage({ from: "listen" });
       // Nothing to try (no list, nothing covers it, or every one just refused):
       // whatever plays moves to the beacon's frequency instead.
@@ -595,10 +599,11 @@ export default function ListenPage() {
   const stopPicking = useCallback(() => {
     if (!stopPickBest()) radio.stop();
   }, [stopPickBest, radio]);
-  /** Ends any Pick best run, then tunes. Leaves the pin as it is (pinTo sets it). */
+  /** Ends any Pick best run (and beacon pick), then tunes. Leaves the pin as it is (pinTo sets it). */
   const switchTo = useCallback(
     (r: Target, fromList: boolean) => {
       cancelPickBest();
+      setBeaconPick(null);
       tuneReceiver(r, fromList);
     },
     [cancelPickBest, tuneReceiver],
@@ -1121,6 +1126,7 @@ export default function ListenPage() {
                 onOpenChange={changeBeaconMode}
                 tunedBand={ibpBandIndex(freqKhz)}
                 pick={beaconPick}
+                audioStartMs={reception.beaconAudioStartMs}
                 onListen={listenToBeacon}
                 prompt={promptInStrip ? receptionPrompt : thanksBand !== null ? thanks : null}
                 promptBand={promptInStrip ? promptBand : (thanksBand ?? -1)}
