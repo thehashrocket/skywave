@@ -6,11 +6,13 @@ import { createTRPCContext } from "@trpc/tanstack-react-query";
 import { useState, type ReactNode } from "react";
 import superjson from "superjson";
 import type { AppRouter } from "@/server/root";
+import { clockedFetch } from "./server-clock";
 import { UNBATCHED_PATHS } from "./unbatched";
 
 export const { TRPCProvider, useTRPC } = createTRPCContext<AppRouter>();
 
-const linkOptions = { url: "/api/trpc", transformer: superjson };
+// Any response can tell the page the server's time (beacon slots need it); the first usable one does.
+const linkOptions = { url: "/api/trpc", transformer: superjson, fetch: clockedFetch };
 
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { staleTime: 30_000 } } }));

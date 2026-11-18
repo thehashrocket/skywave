@@ -19,8 +19,6 @@ export function useSubmitReport() {
   const { mutate } = useMutation(trpc.reports.submit.mutationOptions());
   return useCallback(
     (p: ReceptionPromptData, outcome: Outcome, comment: string) => {
-      // Only EiBi listings are asked about until beacon mode (#59).
-      if (p.tx.kind !== "eibi") return;
       mutate({
         listenerId: listenerId(),
         receiverHost: p.host,
@@ -30,6 +28,7 @@ export function useSubmitReport() {
         txKind: p.tx.kind,
         txName: p.tx.name,
         txDetail: p.tx.detail,
+        slotStartMs: p.tx.slotStartMs,
         outcome,
         comment,
       });

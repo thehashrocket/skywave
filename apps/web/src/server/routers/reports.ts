@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { scheduledOn, type Broadcast } from "@/lib/eibi";
+import { beaconOnBand, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
 import { findReceiver } from "@/lib/kiwi-list";
 import { MODES } from "@/lib/radio-types";
-import { COMMENT_MAX, LISTING_GRACE_MS, MAX_LISTED, OUTCOMES, TX_NAME_SEPARATOR } from "@/lib/reception";
+import { COMMENT_MAX, LISTING_GRACE_MS, MAX_LISTED, OUTCOMES, TX_KINDS, TX_NAME_SEPARATOR } from "@/lib/reception";
 import { publicProcedure, router } from "../trpc";
 import { getReceivers, servedReceivers } from "./receivers";
 import { getSchedule } from "./stations";
@@ -22,6 +23,32 @@ export function scheduledRecently(schedule: readonly Broadcast[], txName: string
     for (const b of scheduledOn(schedule, freqKhz, t)) onAir.add(b.station);
   }
   return names.every((n) => onAir.has(n));
+}
+
+/**
+ * How far ahead of this server's clock a slot may start: the page corrects
+ * its clock from a Date header to about a second, and asks only after a slot
+ * has ended, so more than this is a made-up slot.
+ */
+export const MAX_CLOCK_SKEW_MS = 5_000;
+
+/**
+ * Whether the page's report names the beacon that really was on the air:
+ * `slotStartMs` starts a 10 s slot, within the last LISTING_GRACE_MS by this
+ * server's clock (and no more than MAX_CLOCK_SKEW_MS ahead of it), and the
+ * schedule has `call` on the band `freqKhz` is tuned to in that slot. The
+ * page asks once the slot's end reaches the listener and closes the prompt
+ * well before the slot leaves this window.
+ */
+export function beaconSlotChecks(call: string, freqKhz: number, slotStartMs: number, ms: number) {
+  const band = ibpBandIndex(freqKhz);
+  return (
+    band >= 0 &&
+    slotStartMs % SLOT_MS === 0 &&
+    slotStartMs >= ms - LISTING_GRACE_MS &&
+    slotStartMs <= ms + MAX_CLOCK_SKEW_MS &&
+    beaconOnBand(slotStartMs, band).call === call
+  );
 }
 
 /** Whether the receiver is on the public list as the page is served it (opted-out owners left out). */
@@ -70,10 +97,12 @@ const reportInput = z.object({
   receiverPort: z.number().int().min(1).max(65_535),
   freqKhz: z.number().positive().max(32_000),
   mode: z.enum(MODES),
-  // Only EiBi listings until beacon mode (#59) adds "beacon"; the column is text.
-  txKind: z.literal("eibi"),
+  // An EiBi listing, or an IBP beacon (#59) by callsign; the column is text.
+  txKind: z.enum(TX_KINDS),
   txName: z.string().trim().min(1).max(200),
   txDetail: optionalText(100),
+  // Beacons: the UTC start of the 10 s slot asked about (beaconSlotChecks).
+  slotStartMs: z.number().int().optional(),
   outcome: z.enum(OUTCOMES),
   comment: optionalText(COMMENT_MAX),
 });
@@ -97,10 +126,17 @@ export const reportsRouter = router({
     const now = Date.now();
     const { listenerId, receiverHost, receiverPort, freqKhz } = input;
     // Only what the page could really have asked about: a listed receiver,
-    // and a station the schedule had on that frequency just now. Both from
-    // this server's cached copies; neither fetches per request.
-    const { broadcasts } = await getSchedule();
-    if (!scheduledRecently(broadcasts, input.txName, freqKhz, now)) return { accepted: false };
+    // and a station the schedule had on that frequency just now (or the
+    // beacon the schedule had on that band in the slot asked about). From this
+    // server's cached copies; neither fetches per request.
+    const { slotStartMs, ...report } = input;
+    if (input.txKind === "beacon") {
+      if (slotStartMs === undefined || !beaconSlotChecks(input.txName, freqKhz, slotStartMs, now))
+        return { accepted: false };
+    } else {
+      const { broadcasts } = await getSchedule();
+      if (!scheduledRecently(broadcasts, input.txName, freqKhz, now)) return { accepted: false };
+    }
     if (!(await listed(receiverHost, receiverPort))) return { accepted: false };
     const hourAgo = new Date(now - 60 * MINUTE);
     const [lastHour, receiverHour, sameChannel] = await Promise.all([
@@ -118,7 +154,10 @@ export const reportsRouter = router({
     ]);
     if (lastHour >= REPORTS_PER_HOUR || receiverHour >= RECEIVER_REPORTS_PER_HOUR || sameChannel > 0)
       return { accepted: false };
-    await ctx.db.receptionReport.create({ data: input });
+    // The slot is kept for beacons only.
+    await ctx.db.receptionReport.create({
+      data: input.txKind === "beacon" ? { ...report, slotStartMs: BigInt(slotStartMs!) } : report,
+    });
     return { accepted: true };
   }),
 });

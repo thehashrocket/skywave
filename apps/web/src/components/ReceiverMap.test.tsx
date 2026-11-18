@@ -468,6 +468,21 @@ describe("ReceiverMap", () => {
     }
   });
 
+  // Value: protects=beacon mode draws the beacons and the path to the receiver being played, and leaving it clears both; fails_when=the adapter never pushes beacon data, or leaves beacons up after mode ends; why_new=beacon layer (#59); seam=mocked map; no_claim=what MapLibre renders (model tests cover the data)
+  it("draws the beacons and the selected one's path while beacon mode is on", () => {
+    const { rerender } = setup({ playing: { host: "a.example", port: 8073, phase: "listening" } });
+    load();
+    const beacons = () => map().getSource("beacons")!.setData.mock.calls.at(-1)![0];
+    const path = () => map().getSource("beacon-path")!.setData.mock.calls.at(-1)![0];
+    expect(beacons().features).toEqual([]);
+    rerender({ beacons: { atMs: Date.UTC(2026, 10, 18, 12), selected: "4U1UN" } });
+    expect(beacons().features).toHaveLength(18);
+    expect(path().features[0].geometry.type).toBe("MultiLineString");
+    rerender({ beacons: null });
+    expect(beacons().features).toEqual([]);
+    expect(path().features).toEqual([]);
+  });
+
   // Value: protects=a lost graphics context, a base map whose description won't load (blocked host), or receivers that can't draw each end in Map unavailable with a reason, never a stale or silent map; fails_when=any of those errors is ignored or waits for a budget it can't reach; why_new=final adversarial pass (PR 2b ship); seam=fake timers, mocked events; no_claim=MapLibre's restore internals
   it("fails at once on a lost context, a base map that won't load, or a receivers error", () => {
     const lost = setup();

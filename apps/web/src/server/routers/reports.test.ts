@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Broadcast } from "@/lib/eibi";
 import type { Receiver } from "@/lib/kiwi-list";
 import type { createContext } from "@/server/trpc";
-import { RECEIVER_REPORTS_PER_HOUR, REPORTS_PER_HOUR, SAME_CHANNEL_MS } from "./reports";
+import { RECEIVER_REPORTS_PER_HOUR, REPORTS_PER_HOUR, SAME_CHANNEL_MS, type ReportInput } from "./reports";
 
 // The real module opens a Prisma client at import; every test injects its own db.
 vi.mock("@/server/db", () => ({ db: {} }));
@@ -105,7 +105,7 @@ describe("reports.submit", () => {
   it.each([
     ["a listener id that isn't a UUID", { listenerId: "1.2.3.4" }],
     ["an unknown outcome", { outcome: "maybe" }],
-    ["a beacon, before beacon mode", { txKind: "beacon" }],
+    ["an unknown transmitter kind", { txKind: "ship" }],
     ["an unknown mode", { mode: "fm" }],
     ["a frequency above 32 MHz", { freqKhz: 40_000 }],
     ["a port out of range", { receiverPort: 70_000 }],
@@ -186,12 +186,12 @@ describe("reports.submit checks what it's told", () => {
     vi.unstubAllGlobals();
   });
 
-  const declined = async (input: typeof valid) => {
+  const declined = async (input: ReportInput) => {
     const { caller, receptionReport } = setup();
     await expect(caller.reports.submit(input)).resolves.toEqual({ accepted: false });
     expect(receptionReport.create).not.toHaveBeenCalled();
   };
-  const accepted = async (input: typeof valid) => {
+  const accepted = async (input: ReportInput) => {
     const { caller } = setup();
     await expect(caller.reports.submit(input)).resolves.toEqual({ accepted: true });
   };
@@ -228,6 +228,69 @@ describe("reports.submit checks what it's told", () => {
     vi.unstubAllEnvs();
     cache.listDown = true;
     await declined(valid);
+  });
+
+  describe("a beacon report", () => {
+    const NOON = Date.UTC(2026, 10, 18, 12);
+    // 11:57:00 opened the last cycle: 4U1UN on 14.100 until 11:57:10, then VE8AT.
+    const SLOT = NOON - 180_000;
+    const beacon = {
+      ...valid,
+      freqKhz: 14_100,
+      mode: "cw" as const,
+      txKind: "beacon" as const,
+      txName: "4U1UN",
+      txDetail: "14100",
+      slotStartMs: SLOT,
+    };
+    beforeEach(() => {
+      cache.broadcasts = [];
+    });
+
+    // Value: protects=a beacon report is kept when the schedule had that beacon on that band in the slot it names, judged by the server's clock (not EiBi), and the slot is stored with it; fails_when=the slot isn't checked or stored, or beacon reports go through the EiBi check; why_new=tightened beacon check (owner: the 5-minute window passed any beacon); seam=getSchedule mocked empty, in-memory db; no_claim=that the listener heard it
+    it("accepts the right beacon in the right slot, and stores the slot", async () => {
+      const { caller, receptionReport } = setup();
+      await expect(caller.reports.submit(beacon)).resolves.toEqual({ accepted: true });
+      expect(receptionReport.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ txKind: "beacon", txName: "4U1UN", slotStartMs: BigInt(SLOT) }),
+      });
+    });
+
+    // Value: protects=a real beacon on a real beacon frequency is declined when the named slot belonged to another beacon; fails_when=the check only asks whether the beacon was on the band at some point (any beacon passes a 5-minute window); why_new=tightened beacon check; seam=none; no_claim=none
+    it("declines the right beacon in the wrong slot", async () => {
+      await declined({ ...beacon, slotStartMs: SLOT + 10_000 });
+      // Nor on another band in its own slot, nor a made-up callsign, nor off a beacon frequency.
+      await declined({ ...beacon, freqKhz: 18_110 });
+      await declined({ ...beacon, txName: "N0CALL" });
+      await declined({ ...beacon, freqKhz: 14_000 });
+    });
+
+    // Value: protects=a slot must start on the 10 s grid; fails_when=an off-grid time is floored into a slot and accepted; why_new=tightened beacon check; seam=none; no_claim=none
+    it("declines a slot that isn't on a 10-second boundary", async () => {
+      await declined({ ...beacon, slotStartMs: SLOT + 1 });
+      await declined({ ...beacon, slotStartMs: SLOT + 5_000 });
+    });
+
+    // Value: protects=only a slot in the last 5 minutes counts (exactly 5 minutes still does), and none from the future beyond a few seconds of clock difference; fails_when=the window is open-ended or off by its edge, or future slots pass; why_new=tightened beacon check; seam=fake clock at noon; no_claim=none
+    it("declines a slot older than 5 minutes, or from the future", async () => {
+      // 4U1UN had 14.100 at 11:54:00 too, a cycle earlier.
+      await declined({ ...beacon, slotStartMs: SLOT - 180_000 });
+      // 11:55:00, exactly 5 minutes ago, was JA2IGY's slot on 14.100.
+      await accepted({ ...beacon, txName: "JA2IGY", slotStartMs: NOON - 5 * 60_000 });
+      // 4U1UN on 14.100 at noon itself (now) is fine; the next cycle isn't.
+      await accepted({ ...beacon, slotStartMs: NOON });
+      await declined({ ...beacon, slotStartMs: NOON + 180_000 });
+    });
+
+    // Value: protects=a beacon report without a slot is declined, and an EiBi report neither needs nor stores one; fails_when=the slot is optional for beacons, or EiBi rows get a slot; why_new=tightened beacon check (column is beacons only); seam=in-memory db; no_claim=none
+    it("needs a slot for a beacon, and keeps none for an EiBi listing", async () => {
+      await declined({ ...beacon, slotStartMs: undefined });
+      await declined({ ...valid, freqKhz: 14_100, txName: "4U1UN" });
+      cache.broadcasts = [on(9_580, "KBS World Radio")];
+      const { caller, receptionReport } = setup();
+      await expect(caller.reports.submit({ ...valid, slotStartMs: SLOT })).resolves.toEqual({ accepted: true });
+      expect(receptionReport.create.mock.calls[0]![0].data).not.toHaveProperty("slotStartMs");
+    });
   });
 
   // Value: protects=the checks read the server's cached schedule and list, one call each, never a fetch of their own; fails_when=submit builds its own source or fetches EiBi/the mirror per request; why_new=PR #63 review (no fetch per request); seam=sources mocked, fetch stubbed; no_claim=the sources' own caching (stations/receivers tests)

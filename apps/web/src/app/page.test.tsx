@@ -66,13 +66,19 @@ vi.mock("@/components/MapPanel", () => ({
     last,
     onListen,
     onBrowse,
+    beacons,
+    children,
   }: {
     admitted: boolean;
     last: { host: string; port: number } | null;
     onListen: (r: Receiver) => void;
     onBrowse: () => void;
+    beacons?: { atMs: number; selected: string | null } | null;
+    children?: React.ReactNode;
   }) => (
     <>
+      <output aria-label="map beacons">{beacons ? `on, selected ${beacons.selected ?? "none"}` : "off"}</output>
+      {children}
       <output aria-label="map admitted">{admitted ? "yes" : "no"}</output>
       <output aria-label="map last">{last ? `${last.host}:${last.port}` : "none"}</output>
       <button type="button" onClick={() => onListen(listed)}>
@@ -2244,6 +2250,88 @@ describe("ListenPage", () => {
       expect(wide.current!.mount).toBe(first);
       playing(view, backup.host, backup.port);
       expect(wide.current!.mount).toBeGreaterThan(first);
+    });
+  });
+
+  describe("IBP beacon mode", () => {
+    // 12:00:03 UTC: 4U1UN (New York) on 14.100, YV5B (Caracas) on 18.110.
+    const NOW = Date.UTC(2026, 10, 18, 12, 0, 3);
+    // A strong receiver in the beacon's skip zone, and a weaker one an ocean away under a lit midpoint.
+    const nearby: Receiver = {
+      ...listed,
+      id: "nyc",
+      name: "Nearby",
+      host: "nyc.example",
+      snr: 40,
+      lat: 40.7,
+      lon: -74,
+    };
+    const london: Receiver = {
+      ...listed,
+      id: "london",
+      name: "London",
+      host: "london.example",
+      snr: 15,
+      lat: 51.5,
+      lon: -0.12,
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers({ now: NOW });
+      receiverList.data = { receivers: [nearby, london] };
+    });
+    afterEach(() => vi.useRealTimers());
+
+    const openStrip = () => {
+      const details = screen.getByText("IBP beacons").closest("details")!;
+      details.open = true;
+      act(() => fireEvent(details, new Event("toggle")));
+    };
+
+    // Value: protects=the strip shows the beacon on each band now and turns on the map's beacon layer; Listen tunes the band in CW through Pick best with receivers ranked for that beacon (not the strongest or nearest), and the map gets the pick for its path; fails_when=Listen tunes another frequency or mode, ranks by SNR, bypasses Pick best, or the map isn't told; why_new=beacon mode (#59); seam=MapPanel/picker/radio mocked, real BeaconStrip and ranking; no_claim=what the map draws (ReceiverMap tests)
+    it("listens to a beacon through a receiver placed to hear it", () => {
+      render(<ListenPage />);
+      expect(screen.getByLabelText("map beacons").textContent).toBe("off");
+      openStrip();
+      expect(screen.getByLabelText("map beacons").textContent).toBe("on, selected none");
+      expect(screen.getByText(/next change in 7 s/)).toBeTruthy();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+      expect(radio.tune).toHaveBeenLastCalledWith({
+        host: "london.example",
+        port: 8076,
+        freqKhz: 14_100,
+        mode: "cw",
+        source: "list",
+      });
+      expect(screen.getByLabelText("map beacons").textContent).toBe("on, selected 4U1UN");
+
+      // At the slot boundary 4U1UN moves up to 18.110 and the rows move with it.
+      act(() => vi.advanceTimersByTime(7_100));
+      expect(screen.getByRole("button", { name: "Listen to 4U1UN on 18.110 MHz" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Listen to VE8AT on 14.100 MHz" })).toBeTruthy();
+
+      // Closing the strip ends beacon mode and the pick.
+      const details = screen.getByText("IBP beacons").closest("details")!;
+      details.open = false;
+      act(() => fireEvent(details, new Event("toggle")));
+      expect(screen.getByLabelText("map beacons").textContent).toBe("off");
+    });
+
+    // Value: protects=a beacon Listen while a receiver plays, with nothing in the list able to tune it, still moves what plays to the beacon frequency in CW instead of leaving the dial and the audio apart; fails_when=a failed run leaves the old tuning playing; why_new=beacon mode (#59); seam=radio mocked; no_claim=none
+    it("retunes what plays when no listed receiver can take the beacon", () => {
+      receiverList.data = { receivers: [{ ...london, maxKhz: 10_000 }] };
+      const view = render(<ListenPage />);
+      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "other.example" } });
+      fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+      radio.status = { state: "listening", host: "other.example", port: 8073, freqKhz: 10_000, mode: "am" };
+      view.rerender(<ListenPage />);
+      radio.tune.mockClear();
+      radio.retune.mockClear();
+      openStrip();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+      act(() => vi.advanceTimersByTime(200));
+      expect(radio.tune).not.toHaveBeenCalled();
+      expect(radio.retune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 14_100, mode: "cw" }));
     });
   });
 });

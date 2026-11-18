@@ -11,6 +11,12 @@ import { SiteFooter } from "@/components/SiteFooter";
 import { SMeter } from "@/components/SMeter";
 import { SpanPicker } from "@/components/SpanPicker";
 import { AudioSpectrum } from "@/components/AudioSpectrum";
+import { BeaconStrip } from "@/components/BeaconStrip";
+import { rankForBeacon } from "@/lib/beacon-rank";
+import { beaconOnBand, IBP_BANDS_KHZ, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
+import { serverNow } from "@/lib/server-clock";
+import { sunPosition } from "@/lib/solar";
+import { useServerTick } from "@/lib/use-server-tick";
 import { Waterfall } from "@/components/Waterfall";
 import { WideWaterfall } from "@/components/WideWaterfall";
 import { ReceiverChip } from "@/components/ReceiverChip";
@@ -37,7 +43,7 @@ import { LIST_FAILED_TEXT, listFailed, useReceiverList } from "@/lib/use-receive
 import { useBetterReceiver } from "@/lib/use-better-receiver";
 import { useMapAdmission } from "@/lib/use-map-admission";
 import { useListenTracking } from "@/lib/use-listen-tracking";
-import type { Outcome } from "@/lib/reception";
+import type { BeaconPick, Outcome } from "@/lib/reception";
 import { useRadio } from "@/lib/use-radio";
 import { useReceptionPrompt } from "@/lib/use-reception-prompt";
 import { useSubmitReport } from "@/lib/use-submit-report";
@@ -541,6 +547,46 @@ export default function ListenPage() {
     },
     [receivers, pickFrom],
   );
+  // IBP beacon mode (issue #59): the band strip under the map is open, and the map shows the beacons.
+  const [beaconMode, setBeaconMode] = useState(false);
+  // The beacon picked with Listen on the strip, and its band: the map draws its
+  // path, and it's the only beacon the reception prompt asks about.
+  const [beaconPick, setBeaconPick] = useState<BeaconPick | null>(null);
+  // A pick lasts while the dial stays on its band; tuning back by hand isn't a pick.
+  if (beaconPick && ibpBandIndex(freqKhz) !== beaconPick.bandIndex) setBeaconPick(null);
+  const changeBeaconMode = useCallback((on: boolean) => {
+    setBeaconMode(on);
+    if (!on) setBeaconPick(null);
+  }, []);
+  /**
+   * Listen on a strip row: the beacon on that band now, tuned in CW, through
+   * Pick best with receivers ranked for where that beacon is (beacon-rank).
+   */
+  const listenToBeacon = useCallback(
+    (band: number) => {
+      const now = serverNow();
+      const beacon = beaconOnBand(now, band);
+      const khz = IBP_BANDS_KHZ[band]!;
+      setBeaconPick({ call: beacon.call, bandIndex: band });
+      // Set before the run starts: its tunes and coverage checks read the dial from here.
+      latest.current = { freqKhz: khz, mode: "cw" };
+      setFreqKhz(khz);
+      setMode("cw");
+      const started =
+        receivers !== undefined && pickFrom(rankForBeacon(receivers, beacon, khz, sunPosition(now)), receivers);
+      if (!receivers) setPageMessage({ from: "listen" });
+      // Nothing to try (no list, nothing covers it, or every one just refused):
+      // whatever plays moves to the beacon's frequency instead.
+      if (!started) sendRetune({ freqKhz: khz, mode: "cw" });
+    },
+    [receivers, pickFrom, sendRetune],
+  );
+  // What the map draws, once per slot while beacon mode is on.
+  const beaconSlot = useServerTick(SLOT_MS, beaconMode);
+  const beaconLayer = useMemo(
+    () => (beaconSlot === null ? null : { atMs: beaconSlot, selected: beaconPick?.call ?? null }),
+    [beaconSlot, beaconPick],
+  );
   // The list arriving (or coming back) answers "still loading" and "couldn't load".
   useEffect(() => {
     if (receivers) setPageMessage(null);
@@ -873,7 +919,7 @@ export default function ListenPage() {
 
   // "Did you hear it?" after a minute on a scheduled station (issue #60), only
   // on a listed receiver: the server keeps no report about one typed in.
-  const reception = useReceptionPrompt(status, radio.heardAudio, schedule, playingListed !== undefined);
+  const reception = useReceptionPrompt(status, radio.heardAudio, schedule, playingListed !== undefined, beaconPick);
   const submitReport = useSubmitReport();
   const receptionPlace = useMemo(() => {
     const p = reception.prompt;
@@ -1022,7 +1068,16 @@ export default function ListenPage() {
               last={lastPlace}
               onListen={chooseReceiver}
               onBrowse={openBrowse}
-            />
+              beacons={beaconLayer}
+            >
+              <BeaconStrip
+                open={beaconMode}
+                onOpenChange={changeBeaconMode}
+                tunedBand={ibpBandIndex(freqKhz)}
+                pick={beaconPick}
+                onListen={listenToBeacon}
+              />
+            </MapPanel>
           )}
         >
           <p className="receiver-help">
