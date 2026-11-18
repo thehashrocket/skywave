@@ -169,5 +169,8 @@ describe("noQuestionReason", () => {
     expect(noQuestionReason(TURN, TURN + 180_000, false)).toBe("none");
     expect(noQuestionReason(TURN, null, false)).toBe("none");
     expect(noQuestionReason(TURN, TURN, true)).toBe("off");
+    // Connecting: not yet known, unless questions are off anyway.
+    expect(noQuestionReason(TURN, null, false, true)).toBe("connecting");
+    expect(noQuestionReason(TURN, null, true, true)).toBe("off");
   });
 });

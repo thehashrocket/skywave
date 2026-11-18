@@ -1129,6 +1129,9 @@ export default function ListenPage() {
                 audioStartMs={reception.beaconAudioStartMs}
                 askSlotMs={reception.beaconAskSlotMs}
                 questionsOff={reception.questionsOff}
+                // Busy with no audio on the picked channel yet: the hook's own record, set in the
+                // same pass as its plan, so the note never flashes "no question" in between.
+                connecting={busy && reception.beaconAudioStartMs === null}
                 onListen={listenToBeacon}
                 prompt={promptInStrip ? receptionPrompt : thanksBand !== null ? thanks : null}
                 promptBand={promptInStrip ? promptBand : (thanksBand ?? -1)}

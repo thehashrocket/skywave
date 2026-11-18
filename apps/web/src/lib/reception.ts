@@ -172,14 +172,18 @@ export function beaconWatch(a: {
  * about another turn (the 10-minute gap between questions, or this one won't
  * have played long enough), or about none (already asked on this channel, or
  * a receiver the server keeps no reports about). `askSlotMs` is the turn the
- * prompt plans to ask about, null for none.
+ * prompt plans to ask about, null for none. "connecting": a receiver is still
+ * connecting, with no audio yet, so the prompt has no plan and none can be
+ * judged; once audio starts, the others apply.
  */
 export function noQuestionReason(
   turnStartMs: number,
   askSlotMs: number | null,
   questionsOff: boolean,
-): "off" | "none" | null {
+  connecting = false,
+): "off" | "connecting" | "none" | null {
   if (questionsOff) return "off";
+  if (connecting) return "connecting";
   return askSlotMs === turnStartMs ? null : "none";
 }
 

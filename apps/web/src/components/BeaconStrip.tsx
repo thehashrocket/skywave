@@ -19,6 +19,8 @@ type Props = {
   askSlotMs?: number | null;
   /** The listener closed enough questions that none are asked in this tab. */
   questionsOff?: boolean;
+  /** A receiver is being tuned or connected, with no audio from it yet. */
+  connecting?: boolean;
   onListen: (bandIndex: number) => void;
   /**
    * The reception prompt (or its thanks) about a beacon, shown in a row of its
@@ -66,6 +68,8 @@ function PromptRow({
 }) {
   const line = !prompt && watch ? watchText(watch) : null;
   const note = why && NO_QUESTION[why];
+  // For the hidden live line, as a sentence.
+  const spoken = note && `${note[0]!.toUpperCase()}${note.slice(1)}${note.endsWith("…") ? "" : "."}`;
   return (
     <tr className="beacons-prompt">
       <td colSpan={3} data-filled={prompt || line ? true : undefined}>
@@ -82,7 +86,7 @@ function PromptRow({
           {line && (
             <span className="visually-hidden">
               {stateWords(watch!)}
-              {note && ` ${note[0]!.toUpperCase()}${note.slice(1)}.`}
+              {spoken && ` ${spoken}`}
             </span>
           )}
         </div>
@@ -93,10 +97,15 @@ function PromptRow({
 
 type NoQuestion = ReturnType<typeof noQuestionReason>;
 
-/** What the line adds when no question will follow the turn it's about. */
+/**
+ * What the line adds when no question will follow the turn it's about, or,
+ * while the receiver is still connecting, that it is: whether a question will
+ * come isn't known until audio starts.
+ */
 const NO_QUESTION: Record<NonNullable<NoQuestion>, string> = {
   none: "no question this time",
   off: "questions are off in this tab",
+  connecting: "Connecting…",
 };
 
 /** What the hidden live line says: the state, without the countdown. */
@@ -119,6 +128,7 @@ export function BeaconStrip({
   audioStartMs = null,
   askSlotMs = null,
   questionsOff = false,
+  connecting = false,
   onListen,
   prompt,
   promptBand = -1,
@@ -129,7 +139,7 @@ export function BeaconStrip({
     pick?.atMs !== undefined && now !== null
       ? beaconWatch({ pick, pickedAtMs: pick.atMs, audioStartMs, nowMs: now })
       : null;
-  const why = watch && noQuestionReason(watch.turnStartMs, askSlotMs, questionsOff);
+  const why = watch && noQuestionReason(watch.turnStartMs, askSlotMs, questionsOff, connecting);
 
   return (
     <details className="beacons" open={open} onToggle={(e) => onOpenChange(e.currentTarget.open)}>

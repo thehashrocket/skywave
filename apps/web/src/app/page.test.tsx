@@ -2485,6 +2485,29 @@ describe("ListenPage", () => {
         );
       });
 
+      // Value: protects=while the picked receiver is still connecting (no audio yet) the line says Connecting… instead of "no question this time", which isn't known until audio starts; once audio starts the note is decided as before; fails_when=a connecting receiver reads as "no question", or Connecting… lingers after audio; why_new=owner: connecting state on the first turn; seam=radio mocked (status, heardAudio), real strip, hook and clock; no_claim=the tune itself
+      it("says Connecting… instead of no question while the receiver connects", () => {
+        sessionStorage.clear();
+        const view = render(<ListenPage />);
+        act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+        act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+        radio.status = { state: "connecting", host: london.host, port: london.port, freqKhz: 14_100, mode: "cw" };
+        view.rerender(<ListenPage />);
+        expect(watchLine()!.textContent).toBe(
+          "4U1UN on air now. Listen for the callsign, then four dashes. · Connecting…",
+        );
+        expect(watchLine()!.textContent).not.toMatch(/no question/);
+
+        // Audio at 12:00:05: this turn won't count (3.5 s), so now it's decided: no question this time.
+        advance(2_000);
+        radio.status = { state: "listening", host: london.host, port: london.port, freqKhz: 14_100, mode: "cw" };
+        radio.heardAudio = true;
+        view.rerender(<ListenPage />);
+        expect(watchLine()!.textContent).toBe(
+          "4U1UN on air now. Listen for the callsign, then four dashes. · no question this time",
+        );
+      });
+
       // Value: protects=the pick (and its line and mark) ends when the listener changes receiver themselves, as it does on a retune off the band; fails_when=a stale pick keeps a line or prompt about a beacon the listener walked away from; why_new=beacon watch line (owner: until retune or receiver change); seam=as above; no_claim=none
       it("drops the pick when the listener changes receiver or retunes", () => {
         render(<ListenPage />);
