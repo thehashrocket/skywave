@@ -29,7 +29,7 @@
     "@vercel/analytics": "^2.0.1",
     "@vercel/functions": "^3.10.3",
     "maplibre-gl": "6.12.0",
-    "next": "^16.4.2",
+    "next": "^16.4.5",
     "pg": "^8.23.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
