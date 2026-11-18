@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   BEACONS,
   beaconOnBand,
-  beaconsBetween,
   CYCLE_MS,
   findBeacon,
   IBP_BANDS_KHZ,
@@ -120,14 +119,5 @@ describe("ibpBandIndex", () => {
     expect(ibpBandIndex(28_200 + IBP_TOLERANCE_KHZ)).toBe(4);
     expect(ibpBandIndex(21_150 - IBP_TOLERANCE_KHZ - 0.01)).toBe(-1);
     expect(ibpBandIndex(14_000)).toBe(-1);
-  });
-});
-
-describe("beaconsBetween", () => {
-  // Value: protects=a window catches every slot it touches, partly or wholly, oldest first; fails_when=a partial first or last slot is dropped; why_new=beacon prompt and server check; seam=none; no_claim=none
-  it("lists the beacons on a band over a window, partial slots included", () => {
-    expect(beaconsBetween(0, utc(0, 0, 5), utc(0, 0, 21)).map((b) => b.call)).toEqual(["4U1UN", "VE8AT", "W6WX"]);
-    expect(beaconsBetween(0, utc(0, 0, 0), utc(0, 0, 9, 999)).map((b) => b.call)).toEqual(["4U1UN"]);
-    expect(beaconsBetween(2, utc(0, 0, 0), utc(1, 0, 0))).toHaveLength(18);
   });
 });

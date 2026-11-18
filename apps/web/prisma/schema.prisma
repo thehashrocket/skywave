@@ -41,6 +41,9 @@ model ReceptionReport {
   txName       String
   /// EiBi language/target codes ("E/NAm"), or the beacon's band.
   txDetail     String?
+  /// Beacons only: the UTC start (ms since the epoch) of the 10 s slot the
+  /// prompt asked about, which the server checked against the schedule.
+  slotStartMs  BigInt?
   /// "heard" | "not_heard" | "no_open"
   outcome      String
   comment      String?

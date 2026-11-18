@@ -164,9 +164,9 @@ export function useReceptionPrompt(
           port: s.port ?? DEFAULT_KIWI_PORT,
           freqKhz: s.freqKhz,
           mode: s.mode,
-          tx: beaconTransmitter({ call: pickCall, bandIndex: band }),
+          tx: beaconTransmitter({ call: pickCall, bandIndex: band }, at.slotStartMs),
         });
-      }, at - server);
+      }, at.askAtMs - server);
       return () => clearTimeout(timer);
     }
     const wait = Math.max(DWELL_MS, notBefore - Date.now());

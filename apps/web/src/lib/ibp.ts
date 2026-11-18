@@ -82,11 +82,6 @@ export function msLeftInSlot(ms: number): number {
   return SLOT_MS - mod(ms, SLOT_MS);
 }
 
-/** The start of the slot `ms` falls in. */
-export function slotStart(ms: number): number {
-  return ms - mod(ms, SLOT_MS);
-}
-
 /** Which band a dial frequency is a beacon frequency for, or -1 for none. */
 export function ibpBandIndex(freqKhz: number): number {
   return IBP_BANDS_KHZ.findIndex((khz) => Math.abs(freqKhz - khz) <= IBP_TOLERANCE_KHZ);
@@ -95,18 +90,4 @@ export function ibpBandIndex(freqKhz: number): number {
 /** The beacon with this callsign, if it's one of the 18. */
 export function findBeacon(call: string): Beacon | undefined {
   return BEACONS.find((b) => b.call === call);
-}
-
-/**
- * Every beacon that was on band `bandIndex` at some point in [fromMs, toMs],
- * oldest first: each slot touching the interval counts, partly or wholly.
- */
-export function beaconsBetween(bandIndex: number, fromMs: number, toMs: number): Beacon[] {
-  const out: Beacon[] = [];
-  for (let t = slotStart(fromMs); t <= toMs; t += SLOT_MS) {
-    const b = beaconOnBand(t, bandIndex);
-    if (!out.includes(b)) out.push(b);
-    if (out.length === BEACONS.length) break;
-  }
-  return out;
 }

@@ -259,7 +259,8 @@ describe("useReceptionPrompt", () => {
         port: 8073,
         freqKhz: 14_100,
         mode: "cw",
-        tx: { kind: "beacon", name: "4U1UN", detail: "14100", label: "4U1UN" },
+        // The slot asked about: 12:00:00, the one just heard.
+        tx: { kind: "beacon", name: "4U1UN", detail: "14100", label: "4U1UN", slotStartMs: Date.UTC(2026, 10, 18, 12) },
       });
     });
 

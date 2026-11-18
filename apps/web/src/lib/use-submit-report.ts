@@ -28,6 +28,7 @@ export function useSubmitReport() {
         txKind: p.tx.kind,
         txName: p.tx.name,
         txDetail: p.tx.detail,
+        slotStartMs: p.tx.slotStartMs,
         outcome,
         comment,
       });

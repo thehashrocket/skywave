@@ -39,6 +39,8 @@ export type Transmitter = {
   detail?: string;
   /** For the question: "KBS World Radio", or "anything from A, B or C". */
   label: string;
+  /** Beacons: the UTC start of the 10 s slot asked about, by the server-corrected clock. */
+  slotStartMs?: number;
 };
 
 /** Up to this many stations sharing a frequency are asked about together. */
@@ -90,14 +92,19 @@ export const BEACON_MIN_HEARD_MS = 7_000;
 export type BeaconPick = { call: string; bandIndex: number };
 
 /**
- * When to ask about the beacon picked with Listen (server time, ms), or null
- * if it isn't one of the 18. Only that beacon, only on its band: the first of
- * its slots there with at least BEACON_MIN_HEARD_MS played after
+ * Which of the picked beacon's slots to ask about and when (server time, ms),
+ * or null if it isn't one of the 18. Only that beacon, only on its band: the
+ * first of its slots there with at least BEACON_MIN_HEARD_MS played after
  * `audioStartMs` + STREAM_LATENCY_MS, asked once that slot's end has reached
  * the listener. A slot with less left is skipped; the beacon is back on the
- * band one cycle (3 minutes) later. Never before `notBeforeMs`.
+ * band one cycle (3 minutes) later. Never before `notBeforeMs`. The report
+ * carries `slotStartMs`, which the server checks against the schedule.
  */
-export function beaconPromptAt(pick: BeaconPick, audioStartMs: number, notBeforeMs: number): number | null {
+export function beaconPromptAt(
+  pick: BeaconPick,
+  audioStartMs: number,
+  notBeforeMs: number,
+): { slotStartMs: number; askAtMs: number } | null {
   const index = BEACONS.findIndex((b) => b.call === pick.call);
   if (index < 0 || IBP_BANDS_KHZ[pick.bandIndex] === undefined) return null;
   const heardFrom = audioStartMs + STREAM_LATENCY_MS;
@@ -107,10 +114,16 @@ export function beaconPromptAt(pick: BeaconPick, audioStartMs: number, notBefore
   if (start + SLOT_MS <= heardFrom) start += CYCLE_MS;
   if (start + SLOT_MS - Math.max(start, heardFrom) < BEACON_MIN_HEARD_MS) start += CYCLE_MS;
   while (start + SLOT_MS + STREAM_LATENCY_MS < notBeforeMs) start += CYCLE_MS;
-  return start + SLOT_MS + STREAM_LATENCY_MS;
+  return { slotStartMs: start, askAtMs: start + SLOT_MS + STREAM_LATENCY_MS };
 }
 
-/** What a beacon prompt asks about: "Did you hear 4X6TU …?" */
-export function beaconTransmitter(pick: BeaconPick): Transmitter {
-  return { kind: "beacon", name: pick.call, detail: String(IBP_BANDS_KHZ[pick.bandIndex]), label: pick.call };
+/** What a beacon prompt asks about: "Did you hear 4X6TU …?", in the slot starting `slotStartMs`. */
+export function beaconTransmitter(pick: BeaconPick, slotStartMs: number): Transmitter {
+  return {
+    kind: "beacon",
+    name: pick.call,
+    detail: String(IBP_BANDS_KHZ[pick.bandIndex]),
+    label: pick.call,
+    slotStartMs,
+  };
 }

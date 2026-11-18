@@ -55,38 +55,46 @@ describe("beaconPromptAt", () => {
     expect(BEACON_MIN_HEARD_MS).toBe(7_000);
     expect(STREAM_LATENCY_MS).toBe(1_500);
     // Audio at 1 s, heard from 2.5 s: 7.5 s of the slot.
-    expect(beaconPromptAt(pick, t(1), 0)).toBe(t(10) + STREAM_LATENCY_MS);
+    expect(beaconPromptAt(pick, t(1), 0)?.askAtMs).toBe(t(10) + STREAM_LATENCY_MS);
     // Audio at 1.5 s, heard from 3 s: exactly 7 s counts.
-    expect(beaconPromptAt(pick, t(1.5), 0)).toBe(t(10) + STREAM_LATENCY_MS);
+    expect(beaconPromptAt(pick, t(1.5), 0)?.askAtMs).toBe(t(10) + STREAM_LATENCY_MS);
     // Audio before the slot: all of it.
-    expect(beaconPromptAt(pick, t(-30), 0)).toBe(t(10) + STREAM_LATENCY_MS);
+    expect(beaconPromptAt(pick, t(-30), 0)?.askAtMs).toBe(t(10) + STREAM_LATENCY_MS);
   });
 
   // Value: protects=too little of the slot left means no question this time, but the same pick qualifies on its next turn on the band 3 minutes later; fails_when=a short slot is asked about, or the next turn is computed wrong; why_new=beacon prompt (owner rule); seam=none; no_claim=none
   it("skips a slot with less than 7 s heard and waits for the beacon's next turn", () => {
     // Audio at 1.6 s, heard from 3.1 s: 6.9 s.
-    expect(beaconPromptAt(pick, t(1.6), 0)).toBe(t(180 + 10) + STREAM_LATENCY_MS);
+    expect(beaconPromptAt(pick, t(1.6), 0)?.askAtMs).toBe(t(180 + 10) + STREAM_LATENCY_MS);
     // Audio after the slot ended entirely.
-    expect(beaconPromptAt(pick, t(20), 0)).toBe(t(180 + 10) + STREAM_LATENCY_MS);
+    expect(beaconPromptAt(pick, t(20), 0)?.askAtMs).toBe(t(180 + 10) + STREAM_LATENCY_MS);
   });
 
   // Value: protects=the slot is the picked beacon's on the picked band (it reaches band b at its own slot plus b), and the prompt gap pushes it to a later turn; fails_when=the band offset is applied the wrong way, or the gap is ignored; why_new=beacon prompt; seam=none; no_claim=none
   it("finds the beacon's turn on its band, and waits out the prompt gap", () => {
     // 4U1UN reaches 21.150 (band 2) at 00:00:20.
-    expect(beaconPromptAt({ call: "4U1UN", bandIndex: 2 }, t(0), 0)).toBe(t(30) + STREAM_LATENCY_MS);
+    expect(beaconPromptAt({ call: "4U1UN", bandIndex: 2 }, t(0), 0)?.askAtMs).toBe(t(30) + STREAM_LATENCY_MS);
     // YV5B, last in the list, is on 18.110 (band 1) in the first slot.
-    expect(beaconPromptAt({ call: "YV5B", bandIndex: 1 }, t(0), 0)).toBe(t(10) + STREAM_LATENCY_MS);
-    expect(beaconPromptAt(pick, t(1), t(200))).toBe(t(360 + 10) + STREAM_LATENCY_MS);
+    expect(beaconPromptAt({ call: "YV5B", bandIndex: 1 }, t(0), 0)?.askAtMs).toBe(t(10) + STREAM_LATENCY_MS);
+    expect(beaconPromptAt(pick, t(1), t(200))?.askAtMs).toBe(t(360 + 10) + STREAM_LATENCY_MS);
     expect(beaconPromptAt({ call: "NOPE", bandIndex: 0 }, t(0), 0)).toBeNull();
   });
 
-  // Value: protects=the stored report names the beacon by callsign and its band as the detail (schema.prisma's txDetail); fails_when=the shape drifts from what the server checks; why_new=beacon prompt; seam=none; no_claim=none
-  it("names the beacon and its band", () => {
-    expect(beaconTransmitter({ call: "4X6TU", bandIndex: 4 })).toEqual({
+  // Value: protects=the slot the report carries is the one asked about (the server checks it against the schedule), on the 10 s grid; fails_when=it's the ask time, or a skipped slot's start; why_new=tightened beacon server check; seam=none; no_claim=none
+  it("names the slot it asks about", () => {
+    expect(beaconPromptAt(pick, t(1), 0)?.slotStartMs).toBe(t(0));
+    expect(beaconPromptAt(pick, t(1.6), 0)?.slotStartMs).toBe(t(180));
+    expect(beaconPromptAt({ call: "4U1UN", bandIndex: 2 }, t(0), 0)?.slotStartMs).toBe(t(20));
+  });
+
+  // Value: protects=the stored report names the beacon by callsign, its band as the detail (schema.prisma's txDetail) and the slot asked about; fails_when=the shape drifts from what the server checks; why_new=beacon prompt; seam=none; no_claim=none
+  it("names the beacon, its band and its slot", () => {
+    expect(beaconTransmitter({ call: "4X6TU", bandIndex: 4 }, t(40))).toEqual({
       kind: "beacon",
       name: "4X6TU",
       detail: "28200",
       label: "4X6TU",
+      slotStartMs: t(40),
     });
   });
 });
