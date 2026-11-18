@@ -1,0 +1,2 @@
+# Row-level output derived from .local-data must never be committed (#61).
+*.csv
