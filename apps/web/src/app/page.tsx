@@ -14,6 +14,7 @@ import { AudioSpectrum } from "@/components/AudioSpectrum";
 import { Waterfall } from "@/components/Waterfall";
 import { WideWaterfall } from "@/components/WideWaterfall";
 import { ReceiverChip } from "@/components/ReceiverChip";
+import { ReceptionPrompt } from "@/components/ReceptionPrompt";
 import { scheduledBetween, scheduledOn, shortLabel, stationLine } from "@/lib/eibi";
 import { covers, findReceiver, placeName, rankReceivers, receiverKey, type Receiver } from "@/lib/kiwi-list";
 import {
@@ -36,7 +37,10 @@ import { LIST_FAILED_TEXT, listFailed, useReceiverList } from "@/lib/use-receive
 import { useBetterReceiver } from "@/lib/use-better-receiver";
 import { useMapAdmission } from "@/lib/use-map-admission";
 import { useListenTracking } from "@/lib/use-listen-tracking";
+import type { Outcome } from "@/lib/reception";
 import { useRadio } from "@/lib/use-radio";
+import { useReceptionPrompt } from "@/lib/use-reception-prompt";
+import { useSubmitReport } from "@/lib/use-submit-report";
 import { useSchedule } from "@/lib/use-schedule";
 import { useSolarClock } from "@/lib/use-solar-clock";
 import { bandAt, DEFAULT_SPAN, nextView, spanKhz, type SpanStep, type WideView } from "@/lib/wide-view";
@@ -867,6 +871,22 @@ export default function ListenPage() {
     }));
   }, [schedule, clock, wideView]);
 
+  // "Did you hear it?" after a minute on a scheduled station (issue #60), only
+  // on a listed receiver: the server keeps no report about one typed in.
+  const reception = useReceptionPrompt(status, radio.heardAudio, schedule, playingListed !== undefined);
+  const submitReport = useSubmitReport();
+  const receptionPlace = useMemo(() => {
+    const p = reception.prompt;
+    const listed = p ? findReceiver(receivers, p.host, p.port) : undefined;
+    return listed ? placeName(listed.location) : "";
+  }, [reception.prompt, receivers]);
+  const answerReception = (outcome: Outcome, comment: string) => {
+    if (reception.prompt) submitReport(reception.prompt, outcome, comment);
+    reception.answered();
+    // The buttons go away with the prompt; leave focus on the status row beside it.
+    statusRef.current?.focus();
+  };
+
   return (
     <main className="console">
       <header className="console-header">
@@ -1010,9 +1030,8 @@ export default function ListenPage() {
             <a href="http://kiwisdr.com/public/" target="_blank" rel="noreferrer">
               kiwisdr.com/public
             </a>
-            . They're run by volunteers and most allow only a handful of listeners, so stop when you're done.
-            Run a Kiwi?{" "}
-            {/* A new tab: leaving this page would stop what's playing. */}
+            . They're run by volunteers and most allow only a handful of listeners, so stop when you're done. Run a
+            Kiwi? {/* A new tab: leaving this page would stop what's playing. */}
             <a href="/owners" target="_blank" rel="noopener">
               How skywave uses it
             </a>
@@ -1117,7 +1136,22 @@ export default function ListenPage() {
       </div>
 
       {/* Always rendered, so a screen reader hears the offer when it appears; its line is reserved so nothing moves. */}
+      {/* The reception question shares the line, and waits while an offer is showing. */}
       <div className="switch-prompt" role="status">
+        {!offer && reception.prompt && (
+          <ReceptionPrompt
+            key={`${reception.prompt.host}:${reception.prompt.port}:${reception.prompt.freqKhz}`}
+            prompt={reception.prompt}
+            place={receptionPlace}
+            onAnswer={answerReception}
+            onClose={() => {
+              reception.dismiss();
+              // The ✕ goes away with the prompt; leave focus on the status row beside it.
+              statusRef.current?.focus();
+            }}
+          />
+        )}
+        {!offer && !reception.prompt && reception.thanked && <span>Thanks for the report.</span>}
         {offer && (
           <>
             <span>

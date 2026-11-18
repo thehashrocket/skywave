@@ -333,6 +333,44 @@ html,
   margin-top: -10px;
 }
 
+/* "Did you hear …?" (ReceptionPrompt) on the same reserved line: the
+   question, three inline answers, a comment link (or its field) and a ✕. */
+.reception-answers {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.reception-comment {
+  font: inherit;
+  color: var(--text);
+  background: var(--enamel-deep);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-panel);
+  padding: 2px 8px;
+  width: min(320px, 100%);
+}
+
+.reception-close {
+  display: inline-grid;
+  place-items: center;
+  align-self: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.reception-close:hover {
+  color: var(--text);
+  background: var(--rule);
+}
+
 .receiver-help {
   margin: 0;
   max-width: 70ch;
@@ -1960,11 +1998,13 @@ html,
   .receiver-choose {
     min-height: 44px;
   }
-  /* The chip's ✕ keeps its size; its hit area grows around it. */
-  .chip-unpin {
+  /* The chip's and the reception prompt's ✕ keep their size; the hit area grows around them. */
+  .chip-unpin,
+  .reception-close {
     position: relative;
   }
-  .chip-unpin::before {
+  .chip-unpin::before,
+  .reception-close::before {
     content: "";
     position: absolute;
     inset: -11px;

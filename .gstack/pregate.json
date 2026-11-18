@@ -32,6 +32,9 @@
     ],
     "apps/web/src/lib/use-radio.ts": [
       "apps/radio/tests/test_error_codes.py"
+    ],
+    "apps/web/prisma/**": [
+      "apps/web/prisma-migrations.test.ts"
     ]
   },
   "strays": {
