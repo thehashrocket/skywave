@@ -3,7 +3,15 @@ import { scheduledOn, type Broadcast } from "@/lib/eibi";
 import { beaconOnBand, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
 import { findReceiver } from "@/lib/kiwi-list";
 import { MODES } from "@/lib/radio-types";
-import { COMMENT_MAX, LISTING_GRACE_MS, MAX_LISTED, OUTCOMES, TX_KINDS, TX_NAME_SEPARATOR } from "@/lib/reception";
+import {
+  COMMENT_MAX,
+  LISTING_GRACE_MS,
+  MAX_LISTED,
+  OUTCOMES,
+  SAME_CHANNEL_MS,
+  TX_KINDS,
+  TX_NAME_SEPARATOR,
+} from "@/lib/reception";
 import { publicProcedure, router } from "../trpc";
 import { getReceivers, servedReceivers } from "./receivers";
 import { getSchedule } from "./stations";
@@ -64,12 +72,7 @@ async function listed(host: string, port: number): Promise<boolean> {
 /** Reports one listener may send in a rolling hour. */
 export const REPORTS_PER_HOUR = 10;
 
-/**
- * One report per listener, receiver and frequency in this long: a second
- * answer about the same channel this soon adds nothing (and the prompt
- * itself waits 10 minutes between asks).
- */
-export const SAME_CHANNEL_MS = 30 * MINUTE;
+export { SAME_CHANNEL_MS };
 
 /**
  * Reports about one receiver in a rolling hour, from everyone. The listener
@@ -148,6 +151,8 @@ export const reportsRouter = router({
           receiverHost,
           receiverPort,
           freqKhz,
+          // A beacon frequency carries a new beacon every 10 s: each callsign is its own channel.
+          ...(input.txKind === "beacon" && { txKind: "beacon", txName: input.txName }),
           createdAt: { gte: new Date(now - SAME_CHANNEL_MS) },
         },
       }),

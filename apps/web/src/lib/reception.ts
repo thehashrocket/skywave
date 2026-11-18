@@ -30,6 +30,16 @@ export const COMMENT_MAX = 280;
  */
 export const LISTING_GRACE_MS = 5 * 60_000;
 
+/**
+ * One report per listener, receiver and frequency in this long (and, for a
+ * beacon, per callsign: its frequency carries a new beacon every 10 s): a
+ * second answer about the same channel this soon adds nothing. The server
+ * declines it (routers/reports.ts); the prompt doesn't ask about a beacon it
+ * already sent an answer about in this tab, so it never thanks for one that
+ * would be dropped.
+ */
+export const SAME_CHANNEL_MS = 30 * 60_000;
+
 /** What a prompt asks about: the transmitter(s) and how to name them. */
 export type Transmitter = {
   kind: TxKind;

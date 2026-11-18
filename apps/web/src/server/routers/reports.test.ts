@@ -282,6 +282,21 @@ describe("reports.submit checks what it's told", () => {
       await declined({ ...beacon, slotStartMs: NOON + 180_000 });
     });
 
+    // Value: protects=on one receiver and band each beacon is its own channel for the 30-minute limit (4U1UN then YV5B both kept), the same beacon twice isn't (until 30 minutes pass); EiBi's per-frequency limit is the earlier test; fails_when=beacon answers about different callsigns are dropped as one channel, or the same one is kept twice; why_new=owner: beacon answers dropped after thanks; seam=in-memory db + fake clock; no_claim=the page's own matching rule (hook tests)
+    it("limits beacon reports per callsign on one receiver and band", async () => {
+      const { caller, receptionReport } = setup();
+      await expect(caller.reports.submit(beacon)).resolves.toEqual({ accepted: true });
+      // YV5B had 14.100 at 11:59:50.
+      const yv5b = { ...beacon, txName: "YV5B", slotStartMs: NOON - 10_000 };
+      await expect(caller.reports.submit(yv5b)).resolves.toEqual({ accepted: true });
+      await expect(caller.reports.submit(beacon)).resolves.toEqual({ accepted: false });
+      expect(receptionReport.create).toHaveBeenCalledTimes(2);
+      // 30 minutes on, 4U1UN again (its 12:27:00 turn on 14.100) is a new report.
+      vi.advanceTimersByTime(SAME_CHANNEL_MS + 1);
+      const later = { ...beacon, slotStartMs: NOON + 27 * 60_000 };
+      await expect(caller.reports.submit(later)).resolves.toEqual({ accepted: true });
+    });
+
     // Value: protects=a beacon report without a slot is declined, and an EiBi report neither needs nor stores one; fails_when=the slot is optional for beacons, or EiBi rows get a slot; why_new=tightened beacon check (column is beacons only); seam=in-memory db; no_claim=none
     it("needs a slot for a beacon, and keeps none for an EiBi listing", async () => {
       await declined({ ...beacon, slotStartMs: undefined });
