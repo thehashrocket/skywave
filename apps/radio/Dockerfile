@@ -4,6 +4,11 @@ COPY pyproject.toml ./
 COPY skywave_radio ./skywave_radio
 RUN pip install --no-cache-dir .
 RUN useradd --system --no-create-home radio
+# Noise-floor aggregates (issue #67). Compose mounts a named volume here, which
+# takes this directory's owner on first use, so the data survives rebuilds.
+RUN mkdir /data && chown radio:radio /data
+ENV NOISE_DB=/data/noise.sqlite3
+VOLUME /data
 USER radio
 EXPOSE 8765
 # --timeout-graceful-shutdown: on a stop, uvicorn closes every listener's

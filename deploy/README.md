@@ -11,7 +11,7 @@ copies, which the README's "One process" rule forbids).
 | File | Does |
 | --- | --- |
 | `../docker-compose.prod.yml` | `radio` (no published port) + `caddy` (80/443) on a private network with fixed addresses, so `FORWARDED_ALLOW_IPS` names Caddy and only Caddy |
-| `Caddyfile` | TLS for `RADIO_DOMAIN`; proxies `/ws` and `/healthz`, 404s the rest |
+| `Caddyfile` | TLS for `RADIO_DOMAIN`; proxies `/ws`, `/healthz` and `/noise`, 404s the rest |
 | `setup-droplet.sh` | One-time box setup: updates + unattended-upgrades, Docker, log rotation, 1 GB swap, ufw, a `deploy` user |
 | `deploy.sh` | Pull, rebuild, restart, wait for healthy |
 | `forced-command.sh` | The only command the GitHub Actions key may run on the box |
@@ -90,6 +90,16 @@ By hand, on the box: `~/skywave/deploy/deploy.sh [branch]`.
   (compose recreates the container when its env changes).
 - `Caddyfile`: `docker compose -f docker-compose.prod.yml exec caddy caddy reload --config /etc/caddy/Caddyfile`.
   A reload gives open sockets up to 5 minutes (`stream_close_delay`) before cutting them.
+
+## Noise-floor data
+
+Each receiver's noise floor per band and UTC hour (issue #67) is kept in SQLite
+at `/data/noise.sqlite3`, on the `radio_data` named volume. `deploy.sh`
+(`up -d --build`, `image prune`) leaves volumes alone, so it survives redeploys;
+`docker compose ... down -v` deletes it. It's only aggregates (30 days, rebuilt
+from listening), so losing it costs ranking quality for a while, nothing more.
+To copy it off the box:
+`docker compose -f docker-compose.prod.yml cp radio:/data/noise.sqlite3 .`
 
 ## Rotating the token
 

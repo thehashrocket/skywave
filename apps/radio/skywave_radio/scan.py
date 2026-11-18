@@ -242,8 +242,11 @@ async def sweep(
     *,
     deadline_s: float = DEADLINE_S,
     bands=SCAN_BANDS,
+    on_frame: Callable[[WaterfallFrame], None] | None = None,
 ) -> ScanResult:
     """Fetch every planned frame and rank what they show.
+
+    on_frame, if given, sees each frame as it comes (the noise sampler).
 
     Stops at deadline_s, or when one frame times out (a stalled waterfall),
     and returns the bands finished so far, so a slow receiver still gives a
@@ -260,6 +263,8 @@ async def sweep(
                 peaks = []
                 for plan in plans:
                     frame = await fetch(plan.band.zoom, plan.cf_khz)
+                    if on_frame is not None:
+                        on_frame(frame)
                     peaks += find_peaks(frame, plan, offset_khz)
                 # A band counts only once all its frames are in.
                 found += peaks

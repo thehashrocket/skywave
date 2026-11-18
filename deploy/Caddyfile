@@ -19,6 +19,12 @@
 		reverse_proxy radio:8765
 	}
 
+	# Each receiver's noise floor (issue #67). The service sets CORS for the
+	# origins the WebSocket takes, and Cache-Control.
+	handle /noise {
+		reverse_proxy radio:8765
+	}
+
 	handle {
 		respond 404
 	}

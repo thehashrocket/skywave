@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import struct
 import time
 from collections.abc import Awaitable, Callable, Hashable, Iterable
@@ -57,6 +58,7 @@ from .config import Settings
 from .dsp import CW_PITCH_HZ, MODES, Demodulator, Spectrum, encode_audio, encode_spectrum
 from .hostguard import HostRejected, is_public_address, resolve_receiver
 from .kiwi import CLOSE_TIMEOUT_S, DEFAULT_PORT, KiwiClient, KiwiError
+from .noise import OVERFLOW_HOLD_S, NoiseSampler
 from .scan import ScanResult, sweep
 from .waterfall import MAX_ZOOM, View, WaterfallClient, WaterfallFrame
 
@@ -374,6 +376,7 @@ class ListenSession:
         client_ip: str | None = None,
         owner: Hashable | None = None,
         on_stalled: Callable[[], None] | None = None,
+        noise: NoiseSampler | None = None,
     ):
         self.settings = settings
         self._raw_send_text = send_text
@@ -393,6 +396,12 @@ class ListenSession:
         self._waterfall_factory = waterfall_factory
         self._client_ip = client_ip
         self._on_stalled = on_stalled
+        # Shared by every session: samples each receiver's noise floor from the
+        # sweeps' and live views' frames (issue #67). None measures nothing.
+        self._noise = noise
+        # When the receiver's audio last reported an ADC overflow (monotonic):
+        # frames near it aren't sampled.
+        self._overflow_at = -math.inf
         self._client: KiwiClient | None = None
         self._pump: asyncio.Task[None] | None = None
         # When this session went idle, at creation or when its pump ended
@@ -763,6 +772,8 @@ class ListenSession:
                         # sends these.
                         if not block.samples.size:
                             continue
+                        if block.adc_overflow:
+                            self._overflow_at = time.monotonic()
                         audio = self._demod.process(block.samples)
                         await self._send_bytes(AUDIO_TAG + encode_audio(audio))
                         for frame in self._spectrum.process(block.samples):
@@ -993,7 +1004,12 @@ class ListenSession:
             await asyncio.wait({opening})
         try:
             waterfall = await self._paired_waterfall(client)
-            result = await sweep(waterfall.frame, waterfall.info.freq_offset_khz, waterfall.bandwidth_khz)
+            result = await sweep(
+                waterfall.frame,
+                waterfall.info.freq_offset_khz,
+                waterfall.bandwidth_khz,
+                on_frame=partial(self._sample_noise, target, waterfall),
+            )
         except KiwiError as e:
             if self._client is not client:
                 return  # this connection ended; its teardown owns the waterfall
@@ -1148,7 +1164,23 @@ class ListenSession:
         waterfall.view = View(zoom, waterfall.centre(zoom, rf_khz))
         waterfall.on_frame = partial(self._forward_view, waterfall, view_id)
 
+    def _sample_noise(self, target: Target | None, waterfall: WaterfallClient, frame: WaterfallFrame) -> None:
+        """Offer a frame we already have to the noise sampler; never raises."""
+        if self._noise is None or target is None:
+            return
+        try:
+            self._noise.offer(
+                f"{target[0]}:{target[1]}",
+                frame,
+                waterfall.info.freq_offset_khz,
+                overflow=time.monotonic() - self._overflow_at < OVERFLOW_HOLD_S,
+            )
+        except Exception:
+            # A sampling bug must not cost a listener their scan or view.
+            log.exception("noise sampling failed")
+
     def _forward_view(self, waterfall: WaterfallClient, view_id: int, frame: WaterfallFrame) -> None:
+        self._sample_noise(self._target, waterfall, frame)
         if self._view_send is not None and not self._view_send.done():
             return  # the browser is still taking the last one
         start_khz = waterfall.info.freq_offset_khz + frame.start_khz

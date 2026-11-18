@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Broadcast } from "./eibi";
+import { SLOT_MS } from "./ibp";
 import {
   BEACON_MIN_HEARD_MS,
   beaconPromptAt,
@@ -165,12 +166,27 @@ describe("noQuestionReason", () => {
 
   // Value: protects=the line only promises nothing when the prompt plans to ask about exactly the turn it shows; otherwise (the 10-minute gap pushed the plan to a later turn, or there's no plan: already asked on this channel, a typed receiver) it says no question this time, and after two closes it says questions are off, whatever the plan; fails_when=a countdown looks like a question is coming when the limits hold it back; why_new=owner: say when no question will come; seam=none; no_claim=the plan itself (hook tests)
   it("says why no question will follow the turn shown, if none will", () => {
-    expect(noQuestionReason(TURN, TURN, false)).toBeNull();
-    expect(noQuestionReason(TURN, TURN + 180_000, false)).toBe("none");
-    expect(noQuestionReason(TURN, null, false)).toBe("none");
-    expect(noQuestionReason(TURN, TURN, true)).toBe("off");
+    const why = (askSlotMs: number | null, questionsOff = false, connecting = false) =>
+      noQuestionReason({ turnStartMs: TURN, askSlotMs, questionsOff, connecting, nowMs: TURN - 60_000 });
+    expect(why(TURN)).toBeNull();
+    expect(why(TURN + 180_000)).toBe("none");
+    expect(why(null)).toBe("none");
+    expect(why(TURN, true)).toBe("off");
     // Connecting: not yet known, unless questions are off anyway.
-    expect(noQuestionReason(TURN, null, false, true)).toBe("connecting");
-    expect(noQuestionReason(TURN, null, true, true)).toBe("off");
+    expect(why(null, false, true)).toBe("connecting");
+    expect(why(null, true, true)).toBe("off");
+  });
+
+  // Value: protects=in the STREAM_LATENCY_MS between a qualifying turn's end and its question, the line (already on the next turn) doesn't claim no question is coming; from the ask time on, an earlier planned turn reads as none again; fails_when=the note flashes for 1.5 s before the prompt appears, or the pending window never closes; why_new=#70 follow-up; seam=none; no_claim=the prompt's own timing (hook tests)
+  it("says nothing while the question about the turn that just ended is on its way", () => {
+    const ended = TURN - 180_000; // the planned turn, one cycle before the one shown
+    const askAt = ended + SLOT_MS + STREAM_LATENCY_MS;
+    const why = (nowMs: number) =>
+      noQuestionReason({ turnStartMs: TURN, askSlotMs: ended, questionsOff: false, nowMs });
+    expect(why(ended + SLOT_MS)).toBeNull();
+    expect(why(askAt - 1)).toBeNull();
+    expect(why(askAt)).toBe("none");
+    // Questions off still wins.
+    expect(noQuestionReason({ turnStartMs: TURN, askSlotMs: ended, questionsOff: true, nowMs: askAt - 1 })).toBe("off");
   });
 });

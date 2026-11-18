@@ -25,6 +25,9 @@ services:
     # clean close on restart.
     stop_grace_period: 40s
     profiles: ["radio"]
+    volumes:
+      - radio_data:/data
 
 volumes:
   pgdata:
+  radio_data:

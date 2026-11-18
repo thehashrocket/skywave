@@ -18,6 +18,10 @@ services:
     # No ports: the service is reachable only through Caddy on this network.
     expose:
       - "8765"
+    # Each receiver's noise-floor aggregates (SQLite, NOISE_DB in the image).
+    # A named volume: rebuilds and deploy.sh keep it; only `down -v` drops it.
+    volumes:
+      - radio_data:/data
     networks:
       edge:
         ipv4_address: 172.30.0.3
@@ -68,3 +72,4 @@ networks:
 volumes:
   caddy_data:
   caddy_config:
+  radio_data:

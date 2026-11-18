@@ -146,6 +146,9 @@ class Settings:
     max_sockets_per_ip: int
     # Receivers whose owners asked not to be used: (host, port), None for any port.
     blocked_receivers: frozenset[tuple[str, int | None]] = frozenset()
+    # Where each receiver's noise-floor aggregates live (SQLite, issue #67):
+    # a file on a volume in production, or ":memory:" (lost on restart).
+    noise_db: str = ":memory:"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -163,4 +166,5 @@ class Settings:
             idle_socket_minutes=_minutes("IDLE_SOCKET_MINUTES", "10"),
             max_sockets_per_ip=_count("MAX_SOCKETS_PER_IP", "8"),
             blocked_receivers=parse_blocked(os.environ.get("BLOCKED_RECEIVERS", "")),
+            noise_db=os.environ.get("NOISE_DB") or ":memory:",
         )

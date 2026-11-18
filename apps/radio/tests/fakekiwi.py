@@ -47,6 +47,8 @@ class FakeKiwi:
     drop_after: int | None = None
     # With drop_after, send this MSG frame just before closing, e.g. b"MSG too_busy=0".
     last_words: bytes | None = None
+    # Set the ADC overflow flag on every SND frame.
+    adc_overflow: bool = False
     # Serve wss:// with this context.
     ssl: ssl.SSLContext | None = None
     # Answer the upgrade with a 301 to this Location instead of a WebSocket.
@@ -151,7 +153,8 @@ class FakeKiwi:
                 inter[0::2] = (iq.real * 32767).astype(np.int16)
                 inter[1::2] = (iq.imag * 32767).astype(np.int16)
                 smeter = int((-73.0 + 127) * 10)
-                frame = b"SND" + struct.pack("<BI", 0x08, seq) + struct.pack(">H", smeter) + bytes(10) + inter.tobytes()
+                flags = 0x08 | (0x02 if self.adc_overflow else 0)
+                frame = b"SND" + struct.pack("<BI", flags, seq) + struct.pack(">H", smeter) + bytes(10) + inter.tobytes()
                 await ws.send(frame)
                 seq += 1
                 n += size
