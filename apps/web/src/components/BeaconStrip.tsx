@@ -2,7 +2,7 @@
 
 import { Fragment, type ReactNode } from "react";
 import { beaconOnBand, IBP_BANDS_KHZ, msLeftInSlot } from "@/lib/ibp";
-import { beaconWatch, formatCountdown, type BeaconPick, type BeaconWatch } from "@/lib/reception";
+import { beaconWatch, formatCountdown, noQuestionReason, type BeaconPick, type BeaconWatch } from "@/lib/reception";
 import { useServerTick } from "@/lib/use-server-tick";
 
 type Props = {
@@ -15,6 +15,10 @@ type Props = {
   pick: (BeaconPick & { atMs?: number }) | null;
   /** When audio started on the picked beacon's channel (server time), or null for none yet. */
   audioStartMs?: number | null;
+  /** The picked beacon's turn the reception prompt plans to ask about (server time), null for none. */
+  askSlotMs?: number | null;
+  /** The listener closed enough questions that none are asked in this tab. */
+  questionsOff?: boolean;
   onListen: (bandIndex: number) => void;
   /**
    * The reception prompt (or its thanks) about a beacon, shown in a row of its
@@ -50,8 +54,18 @@ export function watchText(w: BeaconWatch): { text: string; countdown?: string; a
  * its countdown changes every second. A hidden live line says only when the
  * state changes (waiting, on air, missed).
  */
-function PromptRow({ prompt, watch }: { prompt: ReactNode; watch: BeaconWatch | null }) {
+function PromptRow({
+  prompt,
+  watch,
+  why,
+}: {
+  prompt: ReactNode;
+  watch: BeaconWatch | null;
+  /** Why no question will follow the turn the line is about, if none will. */
+  why: NoQuestion;
+}) {
   const line = !prompt && watch ? watchText(watch) : null;
+  const note = why && NO_QUESTION[why];
   return (
     <tr className="beacons-prompt">
       <td colSpan={3} data-filled={prompt || line ? true : undefined}>
@@ -59,17 +73,31 @@ function PromptRow({ prompt, watch }: { prompt: ReactNode; watch: BeaconWatch | 
           <p className="beacons-watch" data-state={watch!.state}>
             {line.text}
             {line.countdown && <span className="beacons-countdown">{line.countdown}</span>}
+            {note && <span className="beacons-no-question"> · {note}</span>}
             {line.after}
           </p>
         )}
         <div className="beacons-prompt-line" role="status">
           {prompt}
-          {line && <span className="visually-hidden">{stateWords(watch!)}</span>}
+          {line && (
+            <span className="visually-hidden">
+              {stateWords(watch!)}
+              {note && ` ${note[0]!.toUpperCase()}${note.slice(1)}.`}
+            </span>
+          )}
         </div>
       </td>
     </tr>
   );
 }
+
+type NoQuestion = ReturnType<typeof noQuestionReason>;
+
+/** What the line adds when no question will follow the turn it's about. */
+const NO_QUESTION: Record<NonNullable<NoQuestion>, string> = {
+  none: "no question this time",
+  off: "questions are off in this tab",
+};
 
 /** What the hidden live line says: the state, without the countdown. */
 function stateWords(w: BeaconWatch): string {
@@ -89,6 +117,8 @@ export function BeaconStrip({
   tunedBand,
   pick,
   audioStartMs = null,
+  askSlotMs = null,
+  questionsOff = false,
   onListen,
   prompt,
   promptBand = -1,
@@ -99,6 +129,7 @@ export function BeaconStrip({
     pick?.atMs !== undefined && now !== null
       ? beaconWatch({ pick, pickedAtMs: pick.atMs, audioStartMs, nowMs: now })
       : null;
+  const why = watch && noQuestionReason(watch.turnStartMs, askSlotMs, questionsOff);
 
   return (
     <details className="beacons" open={open} onToggle={(e) => onOpenChange(e.currentTarget.open)}>
@@ -142,6 +173,7 @@ export function BeaconStrip({
                     <PromptRow
                       prompt={promptBand === b ? prompt : null}
                       watch={watch && pick?.bandIndex === b ? watch : null}
+                      why={why}
                     />
                   </Fragment>
                 );

@@ -151,12 +151,22 @@ export function useReceptionPrompt(
     setBeaconAudioStartMs(audioStart.current);
   }, [key, pickCall, band]);
 
+  // The beacon turn this plans to ask about (server time), null for none; and
+  // whether the listener has turned questions off in this tab. The band strip
+  // says when the turn it shows won't be asked about (noQuestionReason).
+  const [beaconAskSlotMs, setBeaconAskSlotMs] = useState<number | null>(null);
+  const [questionsOff, setQuestionsOff] = useState(false);
+
   useEffect(() => {
     if (key !== null) setPrompt((p) => (p && promptKey(p) !== key ? null : p));
     if (askedOn.current !== key) askedOn.current = null;
+    setBeaconAskSlotMs(null);
     if (key === null || !askable || askedOn.current === key) return;
     const c = (counts.current ??= loadCounts());
-    if (c.dismissals >= MAX_DISMISSALS) return;
+    if (c.dismissals >= MAX_DISMISSALS) {
+      setQuestionsOff(true);
+      return;
+    }
     const notBefore = c.lastShownMs + PROMPT_GAP_MS;
     if (pickCall !== null && audioStart.current !== null) {
       // The schedule runs on the server's clock; the gap on this browser's.
@@ -167,6 +177,7 @@ export function useReceptionPrompt(
         notBefore + (server - Date.now()),
       );
       if (at === null) return;
+      setBeaconAskSlotMs(at.slotStartMs);
       const timer = setTimeout(() => {
         const s = latest.current.status;
         if (!s.host || s.freqKhz === undefined || !s.mode) return;
@@ -206,7 +217,7 @@ export function useReceptionPrompt(
   /** The close button: counts toward MAX_DISMISSALS. */
   const dismiss = useCallback(() => {
     setPrompt(null);
-    update((c) => ({ ...c, dismissals: c.dismissals + 1 }));
+    if (update((c) => ({ ...c, dismissals: c.dismissals + 1 })).dismissals >= MAX_DISMISSALS) setQuestionsOff(true);
   }, [update]);
 
   /** Answered: goes away without counting as a dismissal, and thanks shows for THANKS_MS. */
@@ -221,5 +232,5 @@ export function useReceptionPrompt(
     return () => clearTimeout(timer);
   }, [thanked]);
 
-  return { prompt, thanked, dismiss, answered, beaconAudioStartMs };
+  return { prompt, thanked, dismiss, answered, beaconAudioStartMs, beaconAskSlotMs, questionsOff };
 }

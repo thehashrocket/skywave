@@ -143,7 +143,8 @@ export function heardEnough(turnStartMs: number, audioStartMs: number | null): b
  * long enough to ask about (heardEnough), it was missed and is back in `inMs`.
  */
 export type BeaconWatch =
-  { state: "on-air"; call: string } | { state: "waiting" | "missed"; call: string; bandKhz: number; inMs: number };
+  | { state: "on-air"; call: string; turnStartMs: number }
+  | { state: "waiting" | "missed"; call: string; bandKhz: number; inMs: number; turnStartMs: number };
 
 export function beaconWatch(a: {
   pick: BeaconPick;
@@ -157,11 +158,29 @@ export function beaconWatch(a: {
   const first = turnAtOrAfter(a.pick, a.pickedAtMs);
   if (turn === null || first === null) return null;
   const { call } = a.pick;
-  if (turn <= a.nowMs) return { state: "on-air", call };
+  if (turn <= a.nowMs) return { state: "on-air", call, turnStartMs: turn };
   const bandKhz = IBP_BANDS_KHZ[a.pick.bandIndex]!;
   const inMs = turn - a.nowMs;
   const missed = turn === first + CYCLE_MS && !heardEnough(first, a.audioStartMs);
-  return { state: missed ? "missed" : "waiting", call, bandKhz, inMs };
+  return { state: missed ? "missed" : "waiting", call, bandKhz, inMs, turnStartMs: turn };
+}
+
+/**
+ * Why no question will follow the turn the watch line is about (`turnStartMs`:
+ * the one on air, or the next), or null when one will. "off": the listener
+ * closed MAX_DISMISSALS questions in this tab. "none": the prompt plans to ask
+ * about another turn (the 10-minute gap between questions, or this one won't
+ * have played long enough), or about none (already asked on this channel, or
+ * a receiver the server keeps no reports about). `askSlotMs` is the turn the
+ * prompt plans to ask about, null for none.
+ */
+export function noQuestionReason(
+  turnStartMs: number,
+  askSlotMs: number | null,
+  questionsOff: boolean,
+): "off" | "none" | null {
+  if (questionsOff) return "off";
+  return askSlotMs === turnStartMs ? null : "none";
 }
 
 /** A countdown as m:ss, rounded up to the whole second (so it reads 0:01, never 0:00, before the turn). */

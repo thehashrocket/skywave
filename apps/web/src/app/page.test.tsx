@@ -2415,8 +2415,10 @@ describe("ListenPage", () => {
         const view = render(<ListenPage />);
         act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
         act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
-        // 12:00:03: its turn is on.
-        expect(watchLine()!.textContent).toBe("4U1UN on air now. Listen for the callsign, then four dashes.");
+        // 12:00:03: its turn is on, but no audio yet, so this turn won't be asked about.
+        expect(watchLine()!.textContent).toBe(
+          "4U1UN on air now. Listen for the callsign, then four dashes. · no question this time",
+        );
         expect(rowAbove(watchLine()!)).toBe("14.100");
         expect(pickedRow()!.querySelector("th")!.textContent).toBe("14.100");
 
@@ -2435,17 +2437,52 @@ describe("ListenPage", () => {
         advance(50_000);
         expect(watchLine()!.textContent).toBe("Missed the start; 4U1UN is back in 2:00.");
 
-        // 12:03:00: on again, and this turn plays in full.
+        // 12:03:00: on again, and this turn plays in full: the one asked about, so no note.
         advance(120_000);
-        expect(watchLine()!.textContent).toMatch(/^4U1UN on air now/);
-        // 12:03:10: the turn has ended, and its end hasn't reached the listener yet.
+        expect(watchLine()!.textContent).toBe("4U1UN on air now. Listen for the callsign, then four dashes.");
+        // 12:03:10: the turn has ended, and its end hasn't reached the listener yet. The next
+        // turn won't be asked about (one question per channel).
         advance(10_000);
-        expect(watchLine()!.textContent).toBe("Listening for 4U1UN: next on 14.100 in 2:50");
+        expect(watchLine()!.textContent).toBe("Listening for 4U1UN: next on 14.100 in 2:50 · no question this time");
         // 1.5 s later the prompt takes the line's place.
         advance(1_500);
         const q = screen.getByText(/Did you hear 4U1UN/);
         expect(rowAbove(q)).toBe("14.100");
         expect(watchLine()).toBeNull();
+      });
+
+      /** Listens to 4U1UN through London from 12:00:03 with this tab's prompt counts, and returns at 12:00:10. */
+      function listenWithCounts(counts: { lastShownMs: number; dismissals: number }) {
+        sessionStorage.setItem("skywave.receptionPrompt", JSON.stringify(counts));
+        const view = render(<ListenPage />);
+        act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+        act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+        radio.status = { state: "listening", host: london.host, port: london.port, freqKhz: 14_100, mode: "cw" };
+        radio.heardAudio = true;
+        view.rerender(<ListenPage />);
+        advance(7_100);
+      }
+
+      // Value: protects=when the 10-minute gap after an earlier question holds back the beacon's next turn, the line says no question will come rather than counting down as if one will, and drops the note once the turn it shows is the one asked about; fails_when=the countdown implies a question the limits hold back; why_new=owner: say when no question will come; seam=sessionStorage counts, fake clock; no_claim=the gap itself (hook tests)
+      it("says no question this time while the prompt gap holds the next turn back", () => {
+        // A question answered at 11:58:00: none before 12:08:00, so not about the 12:03:00 turn.
+        listenWithCounts({ lastShownMs: NOW - 2 * 60_000 - 3_000, dismissals: 0 });
+        expect(watchLine()!.textContent).toBe("Missed the start; 4U1UN is back in 2:50 · no question this time.");
+        // 12:06:10: the 12:09:00 turn is the one it will ask about.
+        advance(6 * 60_000);
+        expect(watchLine()!.textContent).toBe("Listening for 4U1UN: next on 14.100 in 2:50");
+      });
+
+      // Value: protects=after two closes in this tab the line says questions are off, on every turn; fails_when=it still counts down as if a question will come; why_new=owner: say when no question will come; seam=sessionStorage counts; no_claim=none
+      it("says questions are off after two closes in this tab", () => {
+        listenWithCounts({ lastShownMs: 0, dismissals: 2 });
+        expect(watchLine()!.textContent).toBe(
+          "Missed the start; 4U1UN is back in 2:50 · questions are off in this tab.",
+        );
+        advance(170_000);
+        expect(watchLine()!.textContent).toBe(
+          "4U1UN on air now. Listen for the callsign, then four dashes. · questions are off in this tab",
+        );
       });
 
       // Value: protects=the pick (and its line and mark) ends when the listener changes receiver themselves, as it does on a retune off the band; fails_when=a stale pick keeps a line or prompt about a beacon the listener walked away from; why_new=beacon watch line (owner: until retune or receiver change); seam=as above; no_claim=none

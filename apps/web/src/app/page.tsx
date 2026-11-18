@@ -1127,6 +1127,8 @@ export default function ListenPage() {
                 tunedBand={ibpBandIndex(freqKhz)}
                 pick={beaconPick}
                 audioStartMs={reception.beaconAudioStartMs}
+                askSlotMs={reception.beaconAskSlotMs}
+                questionsOff={reception.questionsOff}
                 onListen={listenToBeacon}
                 prompt={promptInStrip ? receptionPrompt : thanksBand !== null ? thanks : null}
                 promptBand={promptInStrip ? promptBand : (thanksBand ?? -1)}

@@ -1965,6 +1965,11 @@ html,
   color: var(--text);
 }
 
+/* "· no question this time": the turn on the line won't be asked about. */
+.beacons-no-question {
+  color: var(--muted);
+}
+
 .beacons-note {
   margin: 6px 0 0;
   max-width: 68ch;
