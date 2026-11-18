@@ -19,3 +19,32 @@ model Preset {
 
   @@index([freqKhz])
 }
+
+/// One listener's answer to "Did you hear it?" (issue #60): a known transmitter
+/// on a receiver and frequency at a UTC time, heard or not. Ground truth for
+/// propagation forecasts and per-band receiver ranking.
+///
+/// Holds no IP address, name or callsign: `listenerId` is a random id the
+/// browser keeps, only so the rate limits in routers/reports.ts work.
+model ReceptionReport {
+  id           String   @id @default(cuid())
+  createdAt    DateTime @default(now())
+  listenerId   String
+  receiverHost String
+  receiverPort Int
+  freqKhz      Float
+  mode         String
+  /// "eibi" for a station in the EiBi schedule, "beacon" for a beacon (#59).
+  /// Text rather than an enum, so adding a kind needs no migration.
+  txKind       String
+  /// The EiBi station, or the beacon's callsign.
+  txName       String
+  /// EiBi language/target codes ("E/NAm"), or the beacon's band.
+  txDetail     String?
+  /// "heard" | "not_heard" | "no_open"
+  outcome      String
+  comment      String?
+
+  @@index([receiverHost, receiverPort, freqKhz])
+  @@index([listenerId, createdAt])
+}

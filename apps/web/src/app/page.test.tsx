@@ -115,6 +115,8 @@ const presetSelect: { current?: (p: { freqKhz: number; mode: "am" }) => void } =
 const receiverList: { data?: { receivers: Receiver[] }; errorUpdatedAt: number } = { errorUpdatedAt: 0 };
 const schedule: { data?: { season: string; bundled: boolean; broadcasts: Broadcast[] } } = {};
 vi.mock("@/lib/use-schedule", () => ({ useSchedule: () => schedule }));
+const submitReport = vi.fn();
+vi.mock("@/lib/use-submit-report", () => ({ useSubmitReport: () => submitReport }));
 vi.mock("@/lib/use-receiver-list", async (actual) => ({
   ...(await actual<typeof import("@/lib/use-receiver-list")>()),
   useReceiverList: () => receiverList,
@@ -1499,6 +1501,69 @@ describe("ListenPage", () => {
       act(() => vi.advanceTimersByTime(5_000));
       expect(prompt().textContent).toBe("");
       expect(radio.tune).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Did you hear it?", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      sessionStorage.clear();
+      submitReport.mockClear();
+      schedule.data = {
+        season: "b26",
+        bundled: false,
+        broadcasts: [
+          { khz: 9_580, start: 0, end: 1440, days: "", station: "KBS World Radio", lang: "E", target: "NAm" },
+        ],
+      };
+    });
+    afterEach(() => vi.useRealTimers());
+
+    const line = () => document.querySelector(".switch-prompt")!;
+
+    function listeningOn(freqKhz: number) {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz, mode: "am" }));
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz, mode: "am" };
+      radio.heardAudio = true;
+      return render(<ListenPage />);
+    }
+
+    // Value: protects=after a minute on a scheduled station the question appears on the reserved line under the status row, names the station, the receiver's place and the frequency, and an answer is sent (with the comment) without touching playback, then thanks; fails_when=the hook isn't wired to the page, the place or answer is wrong, or answering stops or retunes; why_new=reception prompt (#60); seam=useRadio and useSubmitReport mocked, fake timers; no_claim=the server's limits (reports.test)
+    it("asks on the reserved line after a minute, and sends the answer without stopping", () => {
+      listeningOn(9_580);
+      act(() => vi.advanceTimersByTime(59_000));
+      expect(line().textContent).toBe("");
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(line().textContent).toContain("Did you hear KBS World Radio on the receiver in Vermont on 9,580 kHz?");
+
+      fireEvent.click(screen.getByRole("button", { name: "Add a comment" }));
+      fireEvent.change(screen.getByRole("textbox", { name: "Comment (optional)" }), {
+        target: { value: "S7, fading" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      expect(submitReport).toHaveBeenCalledWith(
+        expect.objectContaining({ host: listed.host, port: listed.port, freqKhz: 9_580, mode: "am" }),
+        "heard",
+        "S7, fading",
+      );
+      expect(line().textContent).toBe("Thanks for the report.");
+      expect(document.activeElement).toBe(document.querySelector("div.status"));
+      expect(radio.stop).not.toHaveBeenCalled();
+      expect(radio.tune).not.toHaveBeenCalled();
+    });
+
+    it("asks nothing where nothing is scheduled, and the ✕ closes it without sending", () => {
+      const view = listeningOn(6_070);
+      act(() => vi.advanceTimersByTime(120_000));
+      expect(line().textContent).toBe("");
+      view.unmount();
+
+      listeningOn(9_580);
+      act(() => vi.advanceTimersByTime(60_000));
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+      expect(line().textContent).toBe("");
+      expect(submitReport).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(document.querySelector("div.status"));
     });
   });
 
