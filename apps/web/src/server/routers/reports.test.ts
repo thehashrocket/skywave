@@ -320,3 +320,128 @@ describe("reports.submit checks what it's told", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+describe("reports.submit with Pick best's context (#61)", () => {
+  const NOON = Date.UTC(2026, 10, 18, 12);
+  beforeEach(() => vi.useFakeTimers({ now: NOON }));
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // Picked a minute ago from a list where the answered receiver came first.
+  const pick = {
+    pickedAtMs: NOON - 60_000,
+    pickSource: "listen" as const,
+    rankPos: 0,
+    candidates: ["kiwi.example.org:8073", "other.example:8073"],
+    freqKhz: 9_580,
+    lat: 44.5,
+    lon: -72.6,
+    snr: 20,
+    users: 1,
+  };
+  const stored = {
+    pickedAtMs: BigInt(NOON - 60_000),
+    pickSource: "listen",
+    rankPos: 0,
+    candidates: ["kiwi.example.org:8073", "other.example:8073"],
+    pickLat: 44.5,
+    pickLon: -72.6,
+    pickSnr: 20,
+    pickUsers: 1,
+  };
+  const pickColumns = Object.keys(stored);
+  const submit = async (input: ReportInput) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { caller, receptionReport } = setup();
+    await expect(caller.reports.submit(input)).resolves.toEqual({ accepted: true });
+    const data = receptionReport.create.mock.lastCall![0].data as Record<string, unknown>;
+    return { data, warn };
+  };
+
+  // Value: protects=a report with context fitting it stores every pick column; fails_when=a column is dropped, renamed or mis-converted (pickedAtMs as BigInt); why_new=new columns (D5); seam=in-memory db; no_claim=Postgres JSONB behaviour
+  it("stores context that fits the report", async () => {
+    const { data, warn } = await submit({ ...valid, pick });
+    expect(data).toMatchObject(stored);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=an answer from a page without context (a tab open before the deploy, a hand pick) saves exactly as before with no pick columns; fails_when=context becomes required or empty columns are written; why_new=deploy-order safety (D6); seam=in-memory db; no_claim=none beyond protects
+  it("stores a report without context as before", async () => {
+    const { data } = await submit(valid);
+    for (const k of pickColumns) expect(data).not.toHaveProperty(k);
+  });
+
+  // Value: protects=context the server can't vouch for is dropped and logged but the answer is kept, for each bound D6 lists; fails_when=a bound is missing, inverted, or rejects the whole report; why_new=D6 contract; seam=console.warn spied, fake clock; no_claim=that the page sends true values
+  it.each([
+    ["malformed: too many candidates", { candidates: Array.from({ length: 11 }, (_, i) => `r${i}.example:8073`) }],
+    ["malformed: an unknown source", { pickSource: "map" }],
+    ["malformed: a latitude past the pole", { lat: 91 }],
+    ["malformed: a longitude past the antimeridian", { lon: 181 }],
+    ["malformed: more users than any receiver has", { users: 1_001 }],
+    ["malformed: a negative rank", { rankPos: -1 }],
+    ["malformed: a rank no list can reach", { rankPos: 3_000 }],
+    ["malformed: a candidate that isn't host:port", { candidates: ["kiwi.example.org:8073", "<b>not a key</b>"] }],
+    ["malformed: a candidate listed twice", { candidates: ["kiwi.example.org:8073", "kiwi.example.org:8073"] }],
+    ["malformed: a latitude without a longitude", { lon: undefined }],
+    [
+      "a rank past the head for a receiver the head names",
+      {
+        rankPos: 12,
+        candidates: ["kiwi.example.org:8073", ...Array.from({ length: 9 }, (_, i) => `r${i}.example:8073`)],
+      },
+    ],
+    ["malformed: an implausible SNR", { snr: 99 }],
+    ["ranked for another frequency", { freqKhz: 9_590 }],
+    ["picked in the future", { pickedAtMs: NOON + 10_000 }],
+    ["picked over three hours ago", { pickedAtMs: NOON - 3 * 3_600_000 - 1 }],
+    ["naming another receiver at its rank", { rankPos: 1 }],
+    ["a rank past a short list", { rankPos: 5 }],
+  ])("drops context %s, keeps the answer, and logs it", async (_, override) => {
+    const { data, warn } = await submit({ ...valid, pick: { ...pick, ...override } } as ReportInput);
+    for (const k of pickColumns) expect(data).not.toHaveProperty(k);
+    expect(data).toMatchObject({ outcome: "heard", txName: "KBS World Radio" });
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  // Value: protects=a receiver Pick best reached past the stored top 10 keeps its rank (owner answer: store rank, top 10 anyway); fails_when=such context is dropped or rankPos is capped; why_new=rank past 10 rule; seam=none; no_claim=none beyond protects
+  it("keeps a rank past the stored top 10 when the list was that long", async () => {
+    const candidates = Array.from({ length: 10 }, (_, i) => `r${i}.example:8073`);
+    const { data, warn } = await submit({ ...valid, pick: { ...pick, rankPos: 12, candidates } });
+    expect(data).toMatchObject({ rankPos: 12, candidates });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=context from a receiver with no SNR on the list is kept, its SNR stored as null; fails_when=the schema stops accepting null snr, or null is dropped/coerced on write; why_new=nullable snr was untested; seam=in-memory db; no_claim=Postgres NULL handling
+  it("keeps context whose receiver had no SNR, storing it as null", async () => {
+    const { data, warn } = await submit({ ...valid, pick: { ...pick, snr: null } });
+    expect(data).toMatchObject({ ...stored, pickSnr: null });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  describe("about a beacon", () => {
+    const SLOT = NOON - 180_000;
+    const beacon = {
+      ...valid,
+      freqKhz: 14_100,
+      mode: "cw" as const,
+      txKind: "beacon" as const,
+      txName: "4U1UN",
+      txDetail: "14100",
+      slotStartMs: SLOT,
+    };
+    beforeEach(() => {
+      cache.broadcasts = [];
+    });
+
+    // Value: protects=a beacon's context counts only if Pick best chose before the slot asked about, so a replay never credits spots from after the choice; fails_when=the slot comparison is missing or off by one; why_new=decision-time bound (review finding 13); seam=fake clock; no_claim=the page's own clock offset
+    it("keeps context picked before the slot, drops it at or after the slot start", async () => {
+      const before = await submit({ ...beacon, pick: { ...pick, freqKhz: 14_100, pickedAtMs: SLOT - 8_500 } });
+      expect(before.data).toMatchObject({ pickedAtMs: BigInt(SLOT - 8_500), slotStartMs: BigInt(SLOT) });
+      const at = await submit({ ...beacon, pick: { ...pick, freqKhz: 14_100, pickedAtMs: SLOT } });
+      expect(at.data).not.toHaveProperty("pickedAtMs");
+      expect(at.data).toMatchObject({ slotStartMs: BigInt(SLOT) });
+    });
+  });
+});

@@ -4,6 +4,7 @@ import { useMutation } from "@tanstack/react-query";
 import { track } from "@vercel/analytics";
 import { useCallback } from "react";
 import { listenerId } from "./listener-id";
+import type { PickContext } from "./pick-context";
 import type { Outcome } from "./reception";
 import { useTRPC } from "./trpc";
 import type { ReceptionPromptData } from "./use-reception-prompt";
@@ -13,12 +14,14 @@ import type { ReceptionPromptData } from "./use-reception-prompt";
  * Vercel Analytics as `reception_report` with the outcome only (no receiver,
  * station or comment). Fire and forget: over a rate limit the server quietly
  * declines, and a failed send isn't the listener's to fix, so neither shows.
+ *
+ * `pick` says how Pick best chose the receiver (issue #61), when it did.
  */
 export function useSubmitReport() {
   const trpc = useTRPC();
   const { mutate } = useMutation(trpc.reports.submit.mutationOptions());
   return useCallback(
-    (p: ReceptionPromptData, outcome: Outcome, comment: string) => {
+    (p: ReceptionPromptData, outcome: Outcome, comment: string, pick?: PickContext) => {
       mutate({
         listenerId: listenerId(),
         receiverHost: p.host,
@@ -31,6 +34,7 @@ export function useSubmitReport() {
         slotStartMs: p.tx.slotStartMs,
         outcome,
         comment,
+        pick,
       });
       track("reception_report", { outcome });
     },

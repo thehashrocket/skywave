@@ -26,9 +26,10 @@ describe("prisma migrations", () => {
   it.each(models().map((m) => [m.name, m.fields] as const))("creates %s and its columns", (name, fields) => {
     const table = new RegExp(`CREATE TABLE "${name}" \\(([\\s\\S]*?)\\n\\);`).exec(migrations)?.[1];
     expect(table, `no migration creates "${name}"`).toBeDefined();
-    // A column comes from the CREATE TABLE or a later ALTER TABLE ... ADD COLUMN on that table.
-    const added = [...migrations.matchAll(new RegExp(`ALTER TABLE "${name}" ADD COLUMN "(\\w+)"`, "g"))].map(
-      ([, f]) => `"${f}"`,
+    // A column comes from the CREATE TABLE or a later ALTER TABLE on that table, which
+    // Prisma writes as one statement with an ADD COLUMN per column, comma-separated.
+    const added = [...migrations.matchAll(new RegExp(`ALTER TABLE "${name}" ([^;]*);`, "g"))].flatMap(([, body]) =>
+      [...body!.matchAll(/ADD COLUMN "(\w+)"/g)].map(([, f]) => `"${f}"`),
     );
     for (const f of fields)
       expect(`${table} ${added.join(" ")}`, `"${name}"."${f}" has no migration`).toContain(`"${f}"`);

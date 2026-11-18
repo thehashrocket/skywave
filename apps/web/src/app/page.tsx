@@ -38,6 +38,7 @@ import {
 } from "@/lib/radio-types";
 import { DEFAULT_KIWI_PORT, parseReceiver } from "@/lib/receiver";
 import { buildShareLink, parseShareLink } from "@/lib/share-link";
+import type { PickSource } from "@/lib/pick-context";
 import { usePickBest, WATCH_MS } from "@/lib/use-pick-best";
 import { LIST_FAILED_TEXT, listFailed, useReceiverList } from "@/lib/use-receiver-list";
 import { rankByNoise } from "@/lib/noise-rank";
@@ -540,10 +541,11 @@ export default function ListenPage() {
   // better-receiver offer) is Auto, so a run that starts ends any pin. It's a
   // change of receiver too, which ends a beacon pick (beacon Listen sets its own after).
   const pickFrom = useCallback(
-    (ranked: Receiver[], known?: readonly Receiver[]) => {
+    (ranked: Receiver[], source: PickSource, known?: readonly Receiver[]) => {
       setPageMessage(null);
       setBeaconPick(null);
-      const started = startPicking(ranked, known);
+      // The dial is set before every run starts (beacon Listen sets it first), so this is what `ranked` is for.
+      const started = startPicking(ranked, known, { source, freqKhz: latest.current.freqKhz });
       if (started) clearPin();
       return started;
     },
@@ -558,7 +560,7 @@ export default function ListenPage() {
     (from: "listen" | "link"): boolean => {
       if (receivers) {
         const khz = latest.current.freqKhz;
-        return pickFrom(rankByNoise(rankReceivers(receivers, khz), noiseRef.current, khz));
+        return pickFrom(rankByNoise(rankReceivers(receivers, khz), noiseRef.current, khz), from);
       }
       setPageMessage({ from });
       // The message points at the Receiver field and Try again, which are in the drawer.
@@ -585,7 +587,7 @@ export default function ListenPage() {
       setFreqKhz(khz);
       setMode("cw");
       const started =
-        receivers !== undefined && pickFrom(rankForBeacon(receivers, beacon, khz, sunPosition(now)), receivers);
+        receivers !== undefined && pickFrom(rankForBeacon(receivers, beacon, khz, sunPosition(now)), "beacon", receivers);
       // After the run starts, which ends any earlier pick.
       setBeaconPick({ call: beacon.call, bandIndex: band, atMs: now });
       if (!receivers) setPageMessage({ from: "listen" });
@@ -825,7 +827,7 @@ export default function ListenPage() {
       (r) => !skip.has(receiverKey(r)) && !excluded(r),
     );
     dismissOffer();
-    pickFrom([offer.target, ...rest], receivers);
+    pickFrom([offer.target, ...rest], "better", receivers);
     // The prompt (and the button) goes away; the status row reports the switch.
     statusRef.current?.focus();
   };
@@ -944,6 +946,16 @@ export default function ListenPage() {
   // A question about a beacon, with the beacon strip open and in view (the
   // drawer open: shut, it's hidden and inert), is asked in the strip under its
   // band's row instead of on the status line; its thanks follow it.
+  // How Pick best chose this receiver (issue #61), read when the question
+  // appears, not when it's answered: a run started in between (or one that
+  // failed and moved the dial) must not lend its choice to this answer. Only
+  // while the dial is still where it ranked for; a hand pick has none.
+  const { pickedFor } = pickBest;
+  const promptPick = useMemo(() => {
+    const p = reception.prompt;
+    const pick = p ? pickedFor(p.host, p.port) : null;
+    return pick && pick.freqKhz === p?.freqKhz ? pick : undefined;
+  }, [reception.prompt, pickedFor]);
   const promptBand = reception.prompt?.tx.kind === "beacon" ? ibpBandIndex(reception.prompt.freqKhz) : -1;
   const stripShown = beaconMode && drawerOpen;
   const promptInStrip = stripShown && promptBand >= 0;
@@ -953,7 +965,7 @@ export default function ListenPage() {
   // strip, or the status row beside the line (moving to the other would scroll the page).
   const focusAfterPrompt = (inStrip: boolean) => (inStrip ? focusBeaconStrip() : statusRef.current?.focus());
   const answerReception = (outcome: Outcome, comment: string) => {
-    if (reception.prompt) submitReport(reception.prompt, outcome, comment);
+    if (reception.prompt) submitReport(reception.prompt, outcome, comment, promptPick);
     reception.answered();
     if (promptInStrip) setThanksBand(promptBand);
     focusAfterPrompt(promptInStrip);
@@ -1113,7 +1125,7 @@ export default function ListenPage() {
           onOpenChange={setBrowseOpen}
           onChoose={chooseReceiver}
           onPickBest={(ranked) => {
-            const started = pickFrom(rankByNoise(ranked, noise, latest.current.freqKhz));
+            const started = pickFrom(rankByNoise(ranked, noise, latest.current.freqKhz), "drawer");
             if (started) closeDrawer();
             return started;
           }}

@@ -386,6 +386,86 @@ describe("usePickBest", () => {
     }
   });
 
+  describe("how it chose, for reception reports (#61)", () => {
+    const NOW = Date.UTC(2026, 10, 18, 12);
+    const run = { source: "listen" as const, freqKhz: 9_580 };
+    beforeEach(() => vi.useFakeTimers({ now: NOW }));
+    afterEach(() => vi.useRealTimers());
+
+    // Value: protects=the receiver a run tunes carries when it was tuned, the run's source and frequency, its place in the list as given (refused ones counted), the top of that list and its listed details; fails_when=rank counts in the filtered candidates, the time is the run's start for a later candidate, or details are read later; why_new=pick context (D5); seam=none; no_claim=serverNow's offset (server-clock tests)
+    it("records the receiver each tune chose, ranked within the list as given", () => {
+      const { hook, report } = setup();
+      // "a" refused a moment ago, so the run starts at "b", second in the list it was given.
+      report(fail("a", "busy"));
+      act(() => hook.result.current.start(candidates, candidates, run));
+      expect(hook.result.current.pickedFor("b", 8073)).toEqual({
+        pickedAtMs: NOW,
+        pickSource: "listen",
+        rankPos: 1,
+        candidates: ["a:8073", "b:8073", "c:8073", "d:8073"],
+        freqKhz: 9_580,
+        snr: 20,
+        users: 0,
+      });
+      expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
+
+      act(() => vi.advanceTimersByTime(4_000));
+      report(fail("b", "busy"));
+      expect(hook.result.current.pickedFor("b", 8073)).toBeNull();
+      expect(hook.result.current.pickedFor("C", 8073)).toMatchObject({ pickedAtMs: NOW + 4_000, rankPos: 2 });
+    });
+
+    // Value: protects=the context outlives the run's watch (the prompt comes a minute in) but not a hand pick; fails_when=it's dropped with the chain, or cancel keeps it so a hand-picked receiver is credited to Pick best; why_new=pick context; seam=none; no_claim=none beyond protects
+    it("keeps it after the watch ends, and forgets it on a hand pick", () => {
+      const { hook, report } = setup();
+      act(() => hook.result.current.start(candidates, candidates, run));
+      report({ state: "listening", host: "a", port: 8073 });
+      act(() => vi.advanceTimersByTime(WATCH_MS + 60_000));
+      expect(hook.result.current.pickedFor("a", 8073)).toMatchObject({ rankPos: 0 });
+      act(() => hook.result.current.cancel());
+      expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
+    });
+
+    // Value: protects=the receiver a failed run goes back to is never credited to this run, nor to an earlier run whose list was for another moment; fails_when=goBack's tune records context, or an earlier run's context survives the return; why_new=approach A over B (review); seam=none; no_claim=none beyond protects
+    it("records nothing for the receiver it goes back to", () => {
+      const { hook, report } = setup();
+      // An earlier run chose "home", and it plays.
+      act(() => hook.result.current.start([rx("home")], undefined, run));
+      report({ state: "listening", host: "home", port: 8073 });
+      act(() => vi.advanceTimersByTime(WATCH_MS));
+      expect(hook.result.current.pickedFor("home", 8073)).not.toBeNull();
+      // A new run fails and goes back to it.
+      act(() => hook.result.current.start([rx("a")], [rx("home"), rx("a")], run));
+      report(fail("a", "busy"));
+      expect(hook.result.current.note).toContain("Going back to HOME");
+      expect(hook.result.current.pickedFor("home", 8073)).toBeNull();
+      expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
+    });
+
+    // Value: protects=a run that can't start (every candidate refused) still drops the previous run's context, so a failed beacon Listen can't lend another beacon's ranking to the receiver still playing; fails_when=start's early returns leave picked set; why_new=adversarial review (native + Codex) A1; seam=none; no_claim=none beyond protects
+    it("forgets the last run's choice when a new run can't start", () => {
+      const { hook, report } = setup();
+      act(() => hook.result.current.start([rx("a")], undefined, run));
+      report({ state: "listening", host: "a", port: 8073 });
+      act(() => vi.advanceTimersByTime(WATCH_MS));
+      expect(hook.result.current.pickedFor("a", 8073)).not.toBeNull();
+      report(fail("b", "busy"));
+      let started = true;
+      act(() => {
+        started = hook.result.current.start([rx("b")], undefined, { source: "beacon", freqKhz: 14_100 });
+      });
+      expect(started).toBe(false);
+      expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
+    });
+
+    // Value: protects=a caller that doesn't say what started the run stores no half-filled context; fails_when=start records context with an undefined source; why_new=run is optional on start; seam=none; no_claim=none beyond protects
+    it("records nothing for a run started without a source", () => {
+      const { hook } = setup();
+      act(() => hook.result.current.start(candidates));
+      expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
+    });
+  });
+
   // Value: protects=a run whose candidates leave out the receiver playing (the better-receiver switch) still names it by its listed name on the way back; fails_when=start looks the fallback up only among the candidates, so the note and Back say the bare host; why_new=Claude review of the switch prompt; seam=none; no_claim=none beyond protects
   it("names the way back from the list it's given", () => {
     const { hook, report } = setup();

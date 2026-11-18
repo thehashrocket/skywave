@@ -1561,7 +1561,7 @@ describe("ListenPage", () => {
       return render(<ListenPage />);
     }
 
-    // Value: protects=after a minute on a scheduled station the question appears on the reserved line under the status row, names the station, the receiver's place and the frequency, and an answer is sent (with the comment) without touching playback, then thanks; fails_when=the hook isn't wired to the page, the place or answer is wrong, or answering stops or retunes; why_new=reception prompt (#60); seam=useRadio and useSubmitReport mocked, fake timers; no_claim=the server's limits (reports.test)
+    // Value: protects=after a minute on a scheduled station the question appears on the reserved line under the status row, names the station, the receiver's place and the frequency, and an answer is sent (with the comment) without touching playback, then thanks, and a receiver not chosen by Pick best sends no pick context (#61); fails_when=the hook isn't wired to the page, the place or answer is wrong, answering stops or retunes, or a restored receiver is credited to Pick best; why_new=reception prompt (#60); seam=useRadio and useSubmitReport mocked, fake timers; no_claim=the server's limits (reports.test)
     it("asks on the reserved line after a minute, and sends the answer without stopping", () => {
       listeningOn(9_580);
       act(() => vi.advanceTimersByTime(59_000));
@@ -1578,11 +1578,49 @@ describe("ListenPage", () => {
         expect.objectContaining({ host: listed.host, port: listed.port, freqKhz: 9_580, mode: "am" }),
         "heard",
         "S7, fading",
+        // Restored from the last visit, not chosen by Pick best: no pick context (#61).
+        undefined,
       );
       expect(line().textContent).toBe("Thanks for the report.");
       expect(document.activeElement).toBe(document.querySelector("div.status"));
       expect(radio.stop).not.toHaveBeenCalled();
       expect(radio.tune).not.toHaveBeenCalled();
+    });
+
+    // Value: protects=a drawer Pick best run's answer carries its own source, not "beacon" or none (#61); fails_when=the drawer call site passes the wrong source or answerReception drops the context; why_new=only beacon source was tested; seam=useRadio, picker and useSubmitReport mocked; no_claim=the server's checks (reports.test)
+    it("sends the drawer's Pick best context with the answer", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
+      const view = render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 9_580, mode: "am" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(60_000));
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      expect(submitReport).toHaveBeenCalledWith(
+        expect.objectContaining({ host: listed.host, freqKhz: 9_580 }),
+        "heard",
+        "",
+        expect.objectContaining({ pickSource: "drawer", freqKhz: 9_580 }),
+      );
+    });
+
+    // Value: protects=the context sent is the one in force when the question appeared, not one from a run started while it waited; fails_when=answerReception reads pickedFor at answer time, so a later run's time and list ride along; why_new=adversarial review (Codex structured P1) A2; seam=useRadio, picker and useSubmitReport mocked; no_claim=the server's checks (reports.test)
+    it("sends the context from when the question appeared, not from a run started after it", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
+      const view = render(<ListenPage />);
+      const firstPickAt = Date.now();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 9_580, mode: "am" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(screen.getByRole("button", { name: "Heard" })).toBeTruthy();
+      // Pick best again while the question waits: the same receiver, picked a minute later.
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      const [, , , pick] = submitReport.mock.lastCall!;
+      expect(pick).toMatchObject({ pickSource: "drawer", pickedAtMs: firstPickAt });
     });
 
     // Value: protects=the page asks only about a receiver on the public list it was served, since the server drops reports about any other; fails_when=the page passes onList as always true, or reads it from something other than the served list; why_new=PR #63 review; seam=receiver list hook mocked; no_claim=the server's own check (reports.test)
@@ -2397,7 +2435,7 @@ describe("ListenPage", () => {
     const question = () => screen.getByText(/Did you hear 4U1UN/);
     const statusLine = () => document.querySelector(".switch-prompt")!;
 
-    // Value: protects=a beacon question with the strip open is asked inside the strip, in the row right under the band it's about, and not also on the status line; answering it works as before and the thanks and focus stay in the strip; fails_when=the prompt shows in both places, under the wrong row, or answers/focus jump back to the status row; why_new=beacon prompt placement (owner); seam=submitReport mocked, real prompt hook and BeaconStrip; no_claim=the prompt's own behaviour (hook and component tests)
+    // Value: protects=a beacon question with the strip open is asked inside the strip, in the row right under the band it's about, and not also on the status line; answering it works as before and the thanks and focus stay in the strip, and the beacon Listen's pick context rides along, chosen before the slot asked about (#61); fails_when=the prompt shows in both places, under the wrong row, answers/focus jump back to the status row, or the context is dropped or made after the slot; why_new=beacon prompt placement (owner); seam=submitReport mocked, real prompt hook and BeaconStrip; no_claim=the prompt's own behaviour (hook and component tests), the server's checks of the context (reports.test)
     it("asks about a beacon under its row in the open strip, not on the status line", () => {
       beaconPrompt();
       const q = question();
@@ -2412,7 +2450,16 @@ describe("ListenPage", () => {
         expect.objectContaining({ tx: expect.objectContaining({ kind: "beacon", name: "4U1UN" }) }),
         "heard",
         "",
+        // Beacon Listen went through Pick best: how it chose London rides along (#61).
+        expect.objectContaining({
+          pickSource: "beacon",
+          freqKhz: 14_100,
+          rankPos: 0,
+          candidates: expect.arrayContaining([`${london.host.toLowerCase()}:${london.port}`]),
+        }),
       );
+      const [prompt, , , pick] = submitReport.mock.lastCall!;
+      expect(pick.pickedAtMs).toBeLessThan(prompt.tx.slotStartMs);
       expect(screen.getByText("Thanks for the report.").closest(".beacons")).not.toBeNull();
       expect(statusLine().textContent).not.toMatch(/Thanks/);
       expect(document.activeElement).toBe(document.querySelector("details.beacons > summary"));

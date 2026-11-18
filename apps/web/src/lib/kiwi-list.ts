@@ -237,7 +237,7 @@ const MAX_SPAN_KHZ = 32_000;
 // Real Kiwis report HF SNR in the 0-50 dB range. Anything far above that is a
 // made-up number that would otherwise win every Pick best, so treat it as
 // unmeasured.
-const MAX_PLAUSIBLE_SNR = 60;
+export const MAX_PLAUSIBLE_SNR = 60;
 
 // "44,42" is all-band then HF; 0 means not measured yet.
 function hfSnr(raw: string): number | null {
