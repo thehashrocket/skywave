@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { scheduledOn, type Broadcast } from "@/lib/eibi";
+import { beaconsBetween, ibpBandIndex } from "@/lib/ibp";
 import { findReceiver } from "@/lib/kiwi-list";
 import { MODES } from "@/lib/radio-types";
-import { COMMENT_MAX, LISTING_GRACE_MS, MAX_LISTED, OUTCOMES, TX_NAME_SEPARATOR } from "@/lib/reception";
+import { COMMENT_MAX, LISTING_GRACE_MS, MAX_LISTED, OUTCOMES, TX_KINDS, TX_NAME_SEPARATOR } from "@/lib/reception";
 import { publicProcedure, router } from "../trpc";
 import { getReceivers, servedReceivers } from "./receivers";
 import { getSchedule } from "./stations";
@@ -22,6 +23,17 @@ export function scheduledRecently(schedule: readonly Broadcast[], txName: string
     for (const b of scheduledOn(schedule, freqKhz, t)) onAir.add(b.station);
   }
   return names.every((n) => onAir.has(n));
+}
+
+/**
+ * Whether the beacon `call` was on the band `freqKhz` is tuned to at some 10 s
+ * slot in the last LISTING_GRACE_MS, by this server's clock. The page asks
+ * once that slot's end reaches the listener and closes the prompt well before
+ * this window passes it.
+ */
+export function beaconRecently(call: string, freqKhz: number, ms: number) {
+  const band = ibpBandIndex(freqKhz);
+  return band >= 0 && beaconsBetween(band, ms - LISTING_GRACE_MS, ms).some((b) => b.call === call);
 }
 
 /** Whether the receiver is on the public list as the page is served it (opted-out owners left out). */
@@ -70,8 +82,8 @@ const reportInput = z.object({
   receiverPort: z.number().int().min(1).max(65_535),
   freqKhz: z.number().positive().max(32_000),
   mode: z.enum(MODES),
-  // Only EiBi listings until beacon mode (#59) adds "beacon"; the column is text.
-  txKind: z.literal("eibi"),
+  // An EiBi listing, or an IBP beacon (#59) by callsign; the column is text.
+  txKind: z.enum(TX_KINDS),
   txName: z.string().trim().min(1).max(200),
   txDetail: optionalText(100),
   outcome: z.enum(OUTCOMES),
@@ -97,10 +109,15 @@ export const reportsRouter = router({
     const now = Date.now();
     const { listenerId, receiverHost, receiverPort, freqKhz } = input;
     // Only what the page could really have asked about: a listed receiver,
-    // and a station the schedule had on that frequency just now. Both from
-    // this server's cached copies; neither fetches per request.
-    const { broadcasts } = await getSchedule();
-    if (!scheduledRecently(broadcasts, input.txName, freqKhz, now)) return { accepted: false };
+    // and a station the schedule had on that frequency just now (or the
+    // beacon the clock had on that band). From this server's cached copies;
+    // neither fetches per request.
+    if (input.txKind === "beacon") {
+      if (!beaconRecently(input.txName, freqKhz, now)) return { accepted: false };
+    } else {
+      const { broadcasts } = await getSchedule();
+      if (!scheduledRecently(broadcasts, input.txName, freqKhz, now)) return { accepted: false };
+    }
     if (!(await listed(receiverHost, receiverPort))) return { accepted: false };
     const hourAgo = new Date(now - 60 * MINUTE);
     const [lastHour, receiverHour, sameChannel] = await Promise.all([

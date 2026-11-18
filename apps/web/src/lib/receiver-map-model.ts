@@ -4,6 +4,8 @@
  * whether the camera follows the receiver playing.
  */
 
+import { greatCirclePath } from "./great-circle";
+import { BEACONS, beaconOnBand, findBeacon, IBP_BANDS_KHZ } from "./ibp";
 import { covers, isFull, receiverKey, type Receiver } from "./kiwi-list";
 import { isNight, type SunPosition } from "./solar";
 
@@ -151,6 +153,69 @@ export function hitGroup(
     .filter((d) => d.d <= radius)
     .sort((a, b) => a.d - b.d || a.key.localeCompare(b.key));
   return { keys: near.slice(0, limit).map((d) => d.key), more: near.length > limit };
+}
+
+/**
+ * The IBP beacon layer (issue #59), while beacon mode is on: `atMs` is any
+ * time in the slot to show (server clock), `selected` the callsign picked with
+ * Listen, if any.
+ */
+export type BeaconLayer = { atMs: number; selected: string | null };
+
+/**
+ * All 18 beacons as points. The five on the air in the slot carry their
+ * frequency in MHz, which the map shows beside the callsign; the rest are
+ * drawn faint. The selected one is labeled whether it's on the air or not.
+ */
+export function beaconFeatures(layer: BeaconLayer) {
+  const onAir = new Map(IBP_BANDS_KHZ.map((khz, b) => [beaconOnBand(layer.atMs, b).call, khz]));
+  return {
+    type: "FeatureCollection" as const,
+    features: BEACONS.map((b) => {
+      const khz = onAir.get(b.call);
+      const selected = b.call === layer.selected;
+      return {
+        type: "Feature" as const,
+        geometry: { type: "Point" as const, coordinates: [b.lon, b.lat] },
+        properties: {
+          call: b.call,
+          onAir: khz !== undefined,
+          selected,
+          label: khz !== undefined ? `${b.call} ${(khz / 1000).toFixed(3)}` : selected ? b.call : "",
+        },
+      };
+    }),
+  };
+}
+
+/**
+ * The great-circle path from the selected beacon to the receiver playing or
+ * connecting (the one Pick best is trying), as GeoJSON; empty with no beacon
+ * selected or no receiver at a known place.
+ */
+export function beaconPathFeatures(
+  layer: BeaconLayer | null,
+  playing: MapPlaying | null,
+  receivers: readonly Receiver[],
+) {
+  const beacon = layer?.selected ? findBeacon(layer.selected) : undefined;
+  const key = playing && receiverKey(playing);
+  const r = key ? receivers.find((x) => receiverKey(x) === key) : undefined;
+  if (!beacon || !r || r.lat === undefined || r.lon === undefined)
+    return { type: "FeatureCollection" as const, features: [] };
+  return {
+    type: "FeatureCollection" as const,
+    features: [
+      {
+        type: "Feature" as const,
+        geometry: {
+          type: "MultiLineString" as const,
+          coordinates: greatCirclePath(beacon, { lat: r.lat, lon: r.lon }),
+        },
+        properties: {},
+      },
+    ],
+  };
 }
 
 /**

@@ -2,9 +2,18 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { scheduledOn, type Broadcast } from "./eibi";
-import { eibiTransmitter, LISTING_GRACE_MS, type Transmitter } from "./reception";
+import { ibpBandIndex } from "./ibp";
+import {
+  beaconPromptAt,
+  beaconTransmitter,
+  eibiTransmitter,
+  LISTING_GRACE_MS,
+  type BeaconPick,
+  type Transmitter,
+} from "./reception";
 import { DEFAULT_KIWI_PORT } from "./receiver";
 import type { Mode } from "./radio-types";
+import { serverNow } from "./server-clock";
 import type { RadioStatus } from "./use-radio";
 
 /**
@@ -91,12 +100,18 @@ const promptKey = (p: ReceptionPromptData) => `${p.host.toLowerCase()}:${p.port}
  * A prompt showing goes away on a retune or another receiver, since it no
  * longer names what's playing, and after PROMPT_TTL_MS unanswered; after Stop
  * or an error it stays until then, so a listener who stopped can still answer.
+ *
+ * On an IBP beacon frequency a new beacon takes over every 10 s, so a minute
+ * there spans six. There it asks only about `beacon`, the one picked with
+ * Listen, on the band it was picked on, once enough of its slot has played
+ * (beaconPromptAt). Tuned to a beacon frequency by hand: no prompt at all.
  */
 export function useReceptionPrompt(
   status: RadioStatus,
   heardAudio: boolean,
   schedule: readonly Broadcast[] | undefined,
   onList: boolean,
+  beacon: BeaconPick | null = null,
 ) {
   const [prompt, setPrompt] = useState<ReceptionPromptData | null>(null);
   // Loaded from sessionStorage on first use, then kept here (storage may throw).
@@ -115,8 +130,16 @@ export function useReceptionPrompt(
   const askedOn = useRef<string | null>(null);
 
   const key = channelKey(status, heardAudio);
+  const band = key === null ? -1 : ibpBandIndex(status.freqKhz!);
+  // The Listen pick, while the dial is on the band it was picked on.
+  const pick = beacon && band >= 0 && beacon.bandIndex === band ? beacon : null;
   const askable =
-    key !== null && onList && schedule !== undefined && scheduledOn(schedule, status.freqKhz!, Date.now()).length > 0;
+    key !== null &&
+    onList &&
+    (band >= 0
+      ? pick !== null
+      : schedule !== undefined && scheduledOn(schedule, status.freqKhz!, Date.now()).length > 0);
+  const pickCall = pick?.call ?? null;
 
   useEffect(() => {
     if (key !== null) setPrompt((p) => (p && promptKey(p) !== key ? null : p));
@@ -124,7 +147,29 @@ export function useReceptionPrompt(
     if (key === null || !askable || askedOn.current === key) return;
     const c = (counts.current ??= loadCounts());
     if (c.dismissals >= MAX_DISMISSALS) return;
-    const wait = Math.max(DWELL_MS, c.lastShownMs + PROMPT_GAP_MS - Date.now());
+    const notBefore = c.lastShownMs + PROMPT_GAP_MS;
+    if (pickCall !== null) {
+      // Audio on this channel starts now (the key appears with first audio). The
+      // schedule runs on the server's clock; the gap on this browser's.
+      const server = serverNow();
+      const at = beaconPromptAt({ call: pickCall, bandIndex: band }, server, notBefore + (server - Date.now()));
+      if (at === null) return;
+      const timer = setTimeout(() => {
+        const s = latest.current.status;
+        if (!s.host || s.freqKhz === undefined || !s.mode) return;
+        askedOn.current = key;
+        update((c) => ({ ...c, lastShownMs: Date.now() }));
+        setPrompt({
+          host: s.host,
+          port: s.port ?? DEFAULT_KIWI_PORT,
+          freqKhz: s.freqKhz,
+          mode: s.mode,
+          tx: beaconTransmitter({ call: pickCall, bandIndex: band }),
+        });
+      }, at - server);
+      return () => clearTimeout(timer);
+    }
+    const wait = Math.max(DWELL_MS, notBefore - Date.now());
     const timer = setTimeout(() => {
       const { status: s, schedule: sched } = latest.current;
       if (!sched || !s.host || s.freqKhz === undefined || !s.mode) return;
@@ -136,7 +181,7 @@ export function useReceptionPrompt(
       setPrompt({ host: s.host, port: s.port ?? DEFAULT_KIWI_PORT, freqKhz: s.freqKhz, mode: s.mode, tx });
     }, wait);
     return () => clearTimeout(timer);
-  }, [key, askable, update]);
+  }, [key, askable, pickCall, band, update]);
 
   // Unanswered for PROMPT_TTL_MS: the answer would no longer be taken.
   useEffect(() => {

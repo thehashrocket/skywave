@@ -13,6 +13,8 @@ import {
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { receiverKey, type Receiver } from "@/lib/kiwi-list";
 import {
+  beaconFeatures,
+  beaconPathFeatures,
   cameraTarget,
   changedStates,
   dotStates,
@@ -21,6 +23,7 @@ import {
   markFeatures,
   receiverFeatures,
   shortName,
+  type BeaconLayer,
   type DotState,
   type Follow,
   type MapPlaying,
@@ -63,7 +66,11 @@ export type ReceiverMapProps = {
   onListen: (r: Receiver) => void;
   /** The map can't be drawn; the reason is shown to the user. */
   onFail: (reason: string) => void;
+  /** The IBP beacons to draw, while beacon mode is on; a new object each slot. */
+  beacons?: BeaconLayer | null;
 };
+
+const NO_FEATURES = { type: "FeatureCollection" as const, features: [] };
 
 /** An open card: the receivers it lists, nearest first. It sits by the first one still listed. */
 type Card = { keys: string[]; more: boolean };
@@ -87,6 +94,7 @@ export default memo(function ReceiverMap({
   onUserMove,
   onListen,
   onFail,
+  beacons = null,
 }: ReceiverMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -318,6 +326,17 @@ export default memo(function ReceiverMap({
     if (!map) return;
     (map.getSource(SOURCES.marks) as GeoJSONSource).setData(markFeatures(drawn, playing, last));
   }, [map, drawn, playing, last]);
+
+  // The beacons, each slot (18 points: redrawn whole), and the path from the
+  // selected one to the receiver playing or being tried.
+  useEffect(() => {
+    if (!map) return;
+    (map.getSource(SOURCES.beacons) as GeoJSONSource).setData(beacons ? beaconFeatures(beacons) : NO_FEATURES);
+  }, [map, beacons]);
+  useEffect(() => {
+    if (!map) return;
+    (map.getSource(SOURCES.beaconPath) as GeoJSONSource).setData(beaconPathFeatures(beacons, playing, drawn));
+  }, [map, beacons, playing, drawn]);
 
   // Follow the receiver playing until the user moves the map; Center brings it
   // back. Its position counts too, so a list that arrives late still moves the

@@ -20,6 +20,8 @@ export type MapTokens = {
   needle: string;
   /** Labels on the listening and last dots. */
   label: string;
+  /** IBP beacons and the path from the selected one. */
+  beacon: string;
 };
 
 /** The CSS custom property each token is read from. */
@@ -34,6 +36,7 @@ export const TOKEN_VARS: Record<keyof MapTokens, string> = {
   last: "--map-last",
   needle: "--needle",
   label: "--lamp",
+  beacon: "--map-beacon",
 };
 
 /** globals.css's values, for when the stylesheet can't be read (tests, a style that failed). */
@@ -48,6 +51,7 @@ export const FALLBACK_TOKENS: MapTokens = {
   last: "rgba(212, 230, 216, 0.45)",
   needle: "#c8322b",
   label: "#f2c55c",
+  beacon: "#c19a4b",
 };
 
 /** Reads the tokens through `read` (getComputedStyle in the browser); blank values fall back. */
@@ -66,7 +70,14 @@ const GLYPHS_URL = "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf"
 const LABEL_FONT = ["Noto Sans Bold"];
 
 /** Source and layer ids the adapter updates. */
-export const SOURCES = { twilight: "twilight", night: "night", receivers: "receivers", marks: "marks" } as const;
+export const SOURCES = {
+  twilight: "twilight",
+  night: "night",
+  receivers: "receivers",
+  marks: "marks",
+  beacons: "beacons",
+  beaconPath: "beacon-path",
+} as const;
 export const DOT_LAYER = "receiver-dots";
 
 const state = (name: string): ExpressionSpecification => ["boolean", ["feature-state", name], false];
@@ -88,6 +99,8 @@ export function buildStyle(t: MapTokens): StyleSpecification {
       [SOURCES.night]: { type: "geojson", data: emptyCollection },
       [SOURCES.receivers]: { type: "geojson", data: emptyCollection, promoteId: "key" },
       [SOURCES.marks]: { type: "geojson", data: emptyCollection },
+      [SOURCES.beacons]: { type: "geojson", data: emptyCollection },
+      [SOURCES.beaconPath]: { type: "geojson", data: emptyCollection },
     },
     layers: [
       { id: "land", type: "background", paint: { "background-color": t.land } },
@@ -118,6 +131,14 @@ export function buildStyle(t: MapTokens): StyleSpecification {
       // After sunset (lighter), then after civil twilight on top: 0.45 together.
       { id: "twilight", type: "fill", source: SOURCES.twilight, paint: { "fill-color": t.twilight } },
       { id: "night", type: "fill", source: SOURCES.night, paint: { "fill-color": t.night } },
+      // The selected beacon's path, under the receiver dots so it ends beneath the receiver, not over it.
+      {
+        id: "beacon-path",
+        type: "line",
+        source: SOURCES.beaconPath,
+        layout: { "line-cap": "round" },
+        paint: { "line-color": t.beacon, "line-width": 1.5, "line-dasharray": [2, 2] },
+      },
       {
         id: DOT_LAYER,
         type: "circle",
@@ -171,6 +192,35 @@ export function buildStyle(t: MapTokens): StyleSpecification {
           "text-halo-color": t.sea,
           "text-halo-width": 1,
         },
+      },
+      // Beacons, over the receivers: filled while on the air, a faint ring otherwise; the selected one larger, ringed in red.
+      {
+        id: "beacon-dots",
+        type: "circle",
+        source: SOURCES.beacons,
+        paint: {
+          "circle-radius": ["case", ["get", "selected"], 7, ["get", "onAir"], 5, 3.5],
+          "circle-color": t.beacon,
+          "circle-opacity": ["case", ["get", "onAir"], 1, 0],
+          "circle-stroke-color": ["case", ["get", "selected"], t.needle, t.beacon],
+          "circle-stroke-width": ["case", ["get", "selected"], 2, 1.5],
+          "circle-stroke-opacity": ["case", ["any", ["get", "onAir"], ["get", "selected"]], 1, 0.6],
+        },
+      },
+      {
+        id: "beacon-labels",
+        type: "symbol",
+        source: SOURCES.beacons,
+        filter: ["!=", ["get", "label"], ""],
+        layout: {
+          "text-field": ["get", "label"],
+          "text-font": LABEL_FONT,
+          "text-size": 11,
+          "text-anchor": "right",
+          "text-offset": [-0.8, 0],
+          "text-allow-overlap": false,
+        },
+        paint: { "text-color": t.beacon, "text-halo-color": t.sea, "text-halo-width": 1 },
       },
     ],
   };

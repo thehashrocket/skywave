@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Broadcast } from "@/lib/eibi";
 import type { Receiver } from "@/lib/kiwi-list";
 import type { createContext } from "@/server/trpc";
-import { RECEIVER_REPORTS_PER_HOUR, REPORTS_PER_HOUR, SAME_CHANNEL_MS } from "./reports";
+import {
+  beaconRecently,
+  RECEIVER_REPORTS_PER_HOUR,
+  REPORTS_PER_HOUR,
+  SAME_CHANNEL_MS,
+  type ReportInput,
+} from "./reports";
 
 // The real module opens a Prisma client at import; every test injects its own db.
 vi.mock("@/server/db", () => ({ db: {} }));
@@ -105,7 +111,7 @@ describe("reports.submit", () => {
   it.each([
     ["a listener id that isn't a UUID", { listenerId: "1.2.3.4" }],
     ["an unknown outcome", { outcome: "maybe" }],
-    ["a beacon, before beacon mode", { txKind: "beacon" }],
+    ["an unknown transmitter kind", { txKind: "ship" }],
     ["an unknown mode", { mode: "fm" }],
     ["a frequency above 32 MHz", { freqKhz: 40_000 }],
     ["a port out of range", { receiverPort: 70_000 }],
@@ -186,12 +192,12 @@ describe("reports.submit checks what it's told", () => {
     vi.unstubAllGlobals();
   });
 
-  const declined = async (input: typeof valid) => {
+  const declined = async (input: ReportInput) => {
     const { caller, receptionReport } = setup();
     await expect(caller.reports.submit(input)).resolves.toEqual({ accepted: false });
     expect(receptionReport.create).not.toHaveBeenCalled();
   };
-  const accepted = async (input: typeof valid) => {
+  const accepted = async (input: ReportInput) => {
     const { caller } = setup();
     await expect(caller.reports.submit(input)).resolves.toEqual({ accepted: true });
   };
@@ -230,6 +236,18 @@ describe("reports.submit checks what it's told", () => {
     await declined(valid);
   });
 
+  // Value: protects=a beacon report names one of the 18 IBP beacons on a beacon frequency, judged by the server's own clock, not the EiBi schedule; fails_when=any callsign or frequency is taken, or beacon reports are checked against EiBi (and declined); why_new=beacon prompt (#59); seam=getSchedule mocked empty; no_claim=which slot the listener heard (a 5-minute window spans every beacon on every band)
+  it("accepts a beacon report only for an IBP beacon on a beacon frequency", async () => {
+    cache.broadcasts = [];
+    const beacon = { ...valid, freqKhz: 14_100, mode: "cw" as const, txKind: "beacon" as const, txDetail: "14100" };
+    // Noon UTC opens a cycle: 4U1UN on 14.100.
+    await accepted({ ...beacon, txName: "4U1UN" });
+    await declined({ ...beacon, freqKhz: 14_000, txName: "4U1UN" });
+    await declined({ ...beacon, txName: "N0CALL" });
+    // An EiBi report still needs the schedule.
+    await declined({ ...valid, freqKhz: 14_100, txName: "4U1UN" });
+  });
+
   // Value: protects=the checks read the server's cached schedule and list, one call each, never a fetch of their own; fails_when=submit builds its own source or fetches EiBi/the mirror per request; why_new=PR #63 review (no fetch per request); seam=sources mocked, fetch stubbed; no_claim=the sources' own caching (stations/receivers tests)
   it("uses the cached schedule and list without fetching", async () => {
     const fetch = vi.fn();
@@ -240,5 +258,18 @@ describe("reports.submit checks what it's told", () => {
     expect(getSchedule).toHaveBeenCalledTimes(1);
     expect(getReceivers).toHaveBeenCalledTimes(1);
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("beaconRecently", () => {
+  const noon = Date.UTC(2026, 10, 18, 12);
+
+  // Value: protects=the window reaches back LISTING_GRACE_MS by slots on the band the frequency names, so a slot asked about just before the prompt closed still counts; fails_when=the window is shorter than the prompt's life, or the band is read from the wrong frequency; why_new=beacon prompt (#59); seam=none; no_claim=none
+  it("finds the beacon in any slot of the last 5 minutes on that band", () => {
+    expect(beaconRecently("4U1UN", 14_100, noon)).toBe(true);
+    // 4U1UN had 28.200 (band 4) at 11:57:40; 4X6TU had 14.100 at 11:59:00.
+    expect(beaconRecently("4U1UN", 28_200, noon)).toBe(true);
+    expect(beaconRecently("4X6TU", 14_100, noon)).toBe(true);
+    expect(beaconRecently("4U1UN", 14_200, noon)).toBe(false);
   });
 });

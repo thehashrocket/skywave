@@ -45,6 +45,7 @@
   --map-dot: var(--glass);
   --map-playing: var(--lamp);
   --map-last: rgba(212, 230, 216, 0.45);
+  --map-beacon: var(--brass); /* IBP beacons and the selected one's path */
   --map-height: 360px;
   color-scheme: dark;
 }
@@ -1837,6 +1838,91 @@ html,
 
 .map-legend-times [data-old] {
   color: var(--danger);
+}
+
+.key-beacon {
+  color: var(--map-beacon);
+}
+
+/* The IBP band strip under the map (BeaconStrip): folded like the receiver table. */
+.beacons summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--glass);
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 1.15rem;
+}
+
+.beacons summary:hover {
+  color: var(--text);
+}
+
+.beacons-head {
+  margin: 8px 0 4px;
+  font-family: var(--font-instrument);
+  font-size: 1.05rem;
+  color: var(--glass);
+}
+
+.beacons-next {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.beacons-strip {
+  width: 100%;
+  max-width: 34rem;
+  border-collapse: collapse;
+  background: var(--enamel-raised);
+  border-radius: var(--radius-panel);
+}
+
+.beacons-strip th,
+.beacons-strip td {
+  padding: 6px 10px;
+  border-top: 1px solid var(--rule);
+  text-align: left;
+}
+
+.beacons-strip tr:first-child th,
+.beacons-strip tr:first-child td {
+  border-top: 0;
+}
+
+.beacons-strip td:last-child {
+  text-align: right;
+}
+
+.beacons-freq {
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.beacons-strip tr[data-current] .beacons-freq {
+  color: var(--lamp);
+}
+
+.beacons-call {
+  font-family: var(--font-instrument);
+  font-size: 1.05rem;
+  color: var(--text);
+}
+
+.beacons-place {
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.beacons-note {
+  margin: 6px 0 0;
+  max-width: 68ch;
+  font-size: 0.85rem;
+  color: var(--muted);
 }
 
 .map-note {

@@ -11,7 +11,7 @@ import {
   THANKS_MS,
   useReceptionPrompt,
 } from "./use-reception-prompt";
-import { LISTING_GRACE_MS } from "./reception";
+import { LISTING_GRACE_MS, STREAM_LATENCY_MS, type BeaconPick } from "./reception";
 
 const allDay = (khz: number, station: string, lang = "E", target = "Eu"): Broadcast => ({
   khz,
@@ -41,13 +41,20 @@ const listening = (freqKhz = 9_580, host = "a.example"): RadioStatus => ({
 });
 
 /** `onList` left out means the receiver is on the public list. */
-type Props = { status: RadioStatus; heard: boolean; schedule: readonly Broadcast[] | undefined; onList?: boolean };
+type Props = {
+  status: RadioStatus;
+  heard: boolean;
+  schedule: readonly Broadcast[] | undefined;
+  onList?: boolean;
+  beacon?: BeaconPick | null;
+};
 
 function setup(initial: Partial<Props> = {}) {
   const initialProps: Props = { status: listening(), heard: true, schedule, ...initial };
-  return renderHook((p: Props) => useReceptionPrompt(p.status, p.heard, p.schedule, p.onList ?? true), {
-    initialProps,
-  });
+  return renderHook(
+    (p: Props) => useReceptionPrompt(p.status, p.heard, p.schedule, p.onList ?? true, p.beacon ?? null),
+    { initialProps },
+  );
 }
 
 const wait = (ms: number) => act(() => vi.advanceTimersByTime(ms));
@@ -234,6 +241,53 @@ describe("useReceptionPrompt", () => {
       expect(hook.result.current.prompt?.freqKhz).toBe(khz);
       wait(PROMPT_TTL_MS);
     }
+  });
+
+  describe("on a beacon frequency", () => {
+    // The clock starts at 12:00:00 UTC, the top of a cycle: 4U1UN on 14.100 until 12:00:10.
+    const beaconStatus = (freqKhz = 14_100): RadioStatus => ({ ...listening(freqKhz), mode: "cw" });
+    const pick: BeaconPick = { call: "4U1UN", bandIndex: 0 };
+
+    // Value: protects=the beacon picked with Listen is asked about once its slot's end reaches the listener, by callsign; fails_when=the beacon path uses the one-minute dwell or names another beacon; why_new=beacon prompt (owner rule); seam=fake timers; no_claim=the rule's arithmetic (reception.test)
+    it("asks about the picked beacon after its slot", () => {
+      const hook = setup({ status: beaconStatus(), beacon: pick });
+      wait(10_000 + STREAM_LATENCY_MS - 1);
+      expect(hook.result.current.prompt).toBeNull();
+      wait(1);
+      expect(hook.result.current.prompt).toEqual({
+        host: "a.example",
+        port: 8073,
+        freqKhz: 14_100,
+        mode: "cw",
+        tx: { kind: "beacon", name: "4U1UN", detail: "14100", label: "4U1UN" },
+      });
+    });
+
+    // Value: protects=too little of the slot heard waits for the beacon's next turn on the band (3 minutes); fails_when=a short slot is asked about; why_new=beacon prompt (owner rule); seam=fake timers; no_claim=none
+    it("waits for the next turn when audio started too late in the slot", () => {
+      wait(4_000);
+      const hook = setup({ status: beaconStatus(), beacon: pick });
+      wait(60_000);
+      expect(hook.result.current.prompt).toBeNull();
+      wait(180_000 - 4_000 - 60_000 + 10_000 + STREAM_LATENCY_MS);
+      expect(hook.result.current.prompt?.tx.name).toBe("4U1UN");
+    });
+
+    // Value: protects=no prompt for a beacon frequency tuned by hand, nor for a pick made on another band, nor an EiBi question there; fails_when=a dwell on 14.100 asks about some beacon or station; why_new=beacon prompt (owner rule: no prompt for manual tuning); seam=fake timers; no_claim=none
+    it("asks nothing without a Listen pick on this band", () => {
+      const onBeacon = [...schedule, allDay(14_100, "Some Station")].sort((a, b) => a.khz - b.khz);
+      const hook = setup({ status: beaconStatus(), schedule: onBeacon });
+      wait(PROMPT_GAP_MS);
+      expect(hook.result.current.prompt).toBeNull();
+      hook.rerender({
+        status: beaconStatus(),
+        heard: true,
+        schedule: onBeacon,
+        beacon: { call: "4U1UN", bandIndex: 3 },
+      });
+      wait(PROMPT_GAP_MS);
+      expect(hook.result.current.prompt).toBeNull();
+    });
   });
 
   it("says thanks after an answer, briefly", () => {

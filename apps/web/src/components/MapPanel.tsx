@@ -2,7 +2,7 @@
 
 import { Component, lazy, Suspense, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { receiverKey, type Receiver } from "@/lib/kiwi-list";
-import type { Follow, MapPlaying, Place } from "@/lib/receiver-map-model";
+import type { BeaconLayer, Follow, MapPlaying, Place } from "@/lib/receiver-map-model";
 import { formatHostPort } from "@/lib/receiver";
 import type { SolarClock } from "@/lib/use-solar-clock";
 
@@ -84,6 +84,10 @@ type Props = {
   onListen: (r: Receiver) => void;
   /** Opens the receiver table, for when the map can't be drawn. */
   onBrowse: () => void;
+  /** The IBP beacons to draw (beacon mode), or null. */
+  beacons?: BeaconLayer | null;
+  /** Shown under the map, whether or not it draws: the beacon band strip. */
+  children?: ReactNode;
 };
 
 /**
@@ -91,7 +95,18 @@ type Props = {
  * page doesn't jump when the map arrives; the MapLibre adapter loads only
  * once admitted and then stays mounted.
  */
-export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen, onBrowse }: Props) {
+export function MapPanel({
+  admitted,
+  list,
+  freqKhz,
+  sun,
+  playing,
+  last,
+  onListen,
+  onBrowse,
+  beacons = null,
+  children,
+}: Props) {
   const [follow, setFollow] = useState<Follow>("follow");
   const [centerRequest, setCenterRequest] = useState(0);
   // Why the map can't show, and whether its code may be gone (a deploy
@@ -153,6 +168,7 @@ export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen
                 onUserMove={onUserMove}
                 onListen={onListen}
                 onFail={onFail}
+                beacons={beacons}
               />
             </Suspense>
           </MapBoundary>
@@ -230,6 +246,19 @@ export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen
             ○
           </span>{" "}
           last
+          {beacons && (
+            <>
+              {" · "}
+              <span className="key-beacon" aria-hidden="true">
+                ●
+              </span>{" "}
+              beacon on air ·{" "}
+              <span className="key-beacon" aria-hidden="true">
+                ○
+              </span>{" "}
+              beacon
+            </>
+          )}
         </span>
         <span className="map-legend-times">
           {sun && `Greyline ${utcTime(sun.at)} UTC`}
@@ -243,6 +272,7 @@ export function MapPanel({ admitted, list, freqKhz, sun, playing, last, onListen
         Shaded areas are in darkness now. Night often carries distant shortwave; Pick best still ranks by signal and
         load.
       </p>
+      {children}
     </section>
   );
 }

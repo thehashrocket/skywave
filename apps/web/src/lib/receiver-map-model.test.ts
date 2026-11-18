@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { SLOT_MS } from "./ibp";
 import type { Receiver } from "./kiwi-list";
 import {
+  beaconFeatures,
+  beaconPathFeatures,
   cameraTarget,
   changedStates,
   dotStates,
@@ -185,5 +188,45 @@ describe("markFeatures", () => {
     expect(shortName(`${"x".repeat(26)}📻📻📻`)).toBe(`${"x".repeat(26)}📻…`);
     // A flag is two code points but one character.
     expect(shortName(`${"x".repeat(26)}🇩🇪🇩🇪🇩🇪`)).toBe(`${"x".repeat(26)}🇩🇪…`);
+  });
+});
+
+describe("beacon layer", () => {
+  // 12:00:00 UTC: 4U1UN, YV5B, OA4B, LU4AA and CS3B on the air, lowest band first.
+  const NOON = Date.UTC(2026, 10, 18, 12);
+  const props = (call: string, layer = { atMs: NOON, selected: null as string | null }) =>
+    beaconFeatures(layer).features.find((f) => f.properties.call === call)!.properties;
+
+  // Value: protects=all 18 beacons are drawn, the five on the air marked and labeled with their frequency, the rest unlabeled unless selected; fails_when=the layer drops beacons, marks the wrong five, or labels every one; why_new=beacon layer (#59); seam=none; no_claim=how MapLibre places labels
+  it("draws all 18 beacons, labeling the five on the air", () => {
+    const features = beaconFeatures({ atMs: NOON, selected: null }).features;
+    expect(features).toHaveLength(18);
+    expect(features.filter((f) => f.properties.onAir).map((f) => f.properties.call)).toEqual(
+      expect.arrayContaining(["4U1UN", "YV5B", "OA4B", "LU4AA", "CS3B"]),
+    );
+    expect(features.filter((f) => f.properties.onAir)).toHaveLength(5);
+    expect(props("4U1UN").label).toBe("4U1UN 14.100");
+    expect(props("CS3B").label).toBe("CS3B 28.200");
+    expect(props("OH2B")).toMatchObject({ onAir: false, label: "" });
+    expect(props("OH2B", { atMs: NOON, selected: "OH2B" })).toMatchObject({ selected: true, label: "OH2B" });
+    // Ten seconds on, LU4AA has moved up to 28.200 and CS3B has gone quiet.
+    expect(props("LU4AA", { atMs: NOON + SLOT_MS, selected: null }).label).toBe("LU4AA 28.200");
+    expect(props("CS3B", { atMs: NOON + SLOT_MS, selected: null }).onAir).toBe(false);
+  });
+
+  // Value: protects=the path runs from the selected beacon to the receiver playing or being tried, and only when both are known and placed; fails_when=a path is drawn with no pick, to an unplaced or unlisted receiver, or to the wrong end; why_new=beacon path (#59); seam=none; no_claim=the path's geometry (great-circle tests)
+  it("draws the path from the selected beacon to the receiver playing", () => {
+    const here = rx("here", { lat: 51.5, lon: -0.1 });
+    const layer = { atMs: NOON, selected: "4U1UN" };
+    const playing = { host: "here", port: 8073, phase: "connecting" as const };
+    const path = beaconPathFeatures(layer, playing, [here]).features;
+    expect(path).toHaveLength(1);
+    const line = path[0]!.geometry.coordinates[0]!;
+    expect(line[0]![0]).toBeCloseTo(-73.958, 3);
+    expect(line.at(-1)![1]).toBeCloseTo(51.5, 3);
+    expect(beaconPathFeatures({ ...layer, selected: null }, playing, [here]).features).toEqual([]);
+    expect(beaconPathFeatures(null, playing, [here]).features).toEqual([]);
+    expect(beaconPathFeatures(layer, null, [here]).features).toEqual([]);
+    expect(beaconPathFeatures(layer, playing, [{ ...here, lat: undefined, lon: undefined }]).features).toEqual([]);
   });
 });
