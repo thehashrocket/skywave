@@ -185,16 +185,23 @@ export function beaconWatch(a: {
  * prompt plans to ask about, null for none. "connecting": a receiver is still
  * connecting, with no audio yet, so the prompt has no plan and none can be
  * judged; once audio starts, the others apply.
+ *
+ * Between a planned turn's end and its question (STREAM_LATENCY_MS, while
+ * the end of the turn reaches the listener) the line already shows the next
+ * turn, but a question is on its way: null then, not "none" (#70 follow-up).
  */
-export function noQuestionReason(
-  turnStartMs: number,
-  askSlotMs: number | null,
-  questionsOff: boolean,
-  connecting = false,
-): "off" | "connecting" | "none" | null {
-  if (questionsOff) return "off";
-  if (connecting) return "connecting";
-  return askSlotMs === turnStartMs ? null : "none";
+export function noQuestionReason(a: {
+  turnStartMs: number;
+  askSlotMs: number | null;
+  questionsOff: boolean;
+  connecting?: boolean;
+  nowMs: number;
+}): "off" | "connecting" | "none" | null {
+  if (a.questionsOff) return "off";
+  if (a.connecting) return "connecting";
+  if (a.askSlotMs === a.turnStartMs) return null;
+  const asking = a.askSlotMs !== null && a.askSlotMs < a.turnStartMs;
+  return asking && a.nowMs < a.askSlotMs! + SLOT_MS + STREAM_LATENCY_MS ? null : "none";
 }
 
 /** A countdown as m:ss, rounded up to the whole second (so it reads 0:01, never 0:00, before the turn). */

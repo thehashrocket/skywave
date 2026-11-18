@@ -40,6 +40,8 @@ import { DEFAULT_KIWI_PORT, parseReceiver } from "@/lib/receiver";
 import { buildShareLink, parseShareLink } from "@/lib/share-link";
 import { usePickBest, WATCH_MS } from "@/lib/use-pick-best";
 import { LIST_FAILED_TEXT, listFailed, useReceiverList } from "@/lib/use-receiver-list";
+import { rankByNoise } from "@/lib/noise-rank";
+import { useNoise } from "@/lib/use-noise";
 import { useBetterReceiver } from "@/lib/use-better-receiver";
 import { useMapAdmission } from "@/lib/use-map-admission";
 import { useListenTracking } from "@/lib/use-listen-tracking";
@@ -510,6 +512,11 @@ export default function ListenPage() {
   const list = useReceiverList();
   const receivers = list.data?.receivers;
   const listGone = listFailed(list);
+  // Each receiver's measured noise floor for the dial's band and this UTC
+  // hour (issue #67): Pick best prefers a receiver quieter than its usual.
+  const noise = useNoise(receivers, freqKhz);
+  const noiseRef = useRef(noise);
+  noiseRef.current = noise;
   const lastSavedPin = useRef<Heard | null>(null);
   /**
    * Back to Auto. Only the choice changes: nothing is tuned or stopped, and
@@ -549,7 +556,10 @@ export default function ListenPage() {
    */
   const startPickBest = useCallback(
     (from: "listen" | "link"): boolean => {
-      if (receivers) return pickFrom(rankReceivers(receivers, latest.current.freqKhz));
+      if (receivers) {
+        const khz = latest.current.freqKhz;
+        return pickFrom(rankByNoise(rankReceivers(receivers, khz), noiseRef.current, khz));
+      }
       setPageMessage({ from });
       // The message points at the Receiver field and Try again, which are in the drawer.
       setDrawerOpen(true);
@@ -1103,7 +1113,7 @@ export default function ListenPage() {
           onOpenChange={setBrowseOpen}
           onChoose={chooseReceiver}
           onPickBest={(ranked) => {
-            const started = pickFrom(ranked);
+            const started = pickFrom(rankByNoise(ranked, noise, latest.current.freqKhz));
             if (started) closeDrawer();
             return started;
           }}

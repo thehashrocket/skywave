@@ -123,6 +123,9 @@ const schedule: { data?: { season: string; bundled: boolean; broadcasts: Broadca
 vi.mock("@/lib/use-schedule", () => ({ useSchedule: () => schedule }));
 const submitReport = vi.fn();
 vi.mock("@/lib/use-submit-report", () => ({ useSubmitReport: () => submitReport }));
+// The radio service's measured noise floors (issue #67), as useNoise hands them to the page.
+const noise: { current: import("@/lib/noise-rank").NoiseLevels | null } = { current: null };
+vi.mock("@/lib/use-noise", () => ({ useNoise: () => noise.current }));
 vi.mock("@/lib/use-receiver-list", async (actual) => ({
   ...(await actual<typeof import("@/lib/use-receiver-list")>()),
   useReceiverList: () => receiverList,
@@ -188,6 +191,7 @@ beforeEach(() => {
   radio.canView = false;
   radio.viewError = null;
   schedule.data = undefined;
+  noise.current = null;
   radio.showView.mockClear();
   radio.startScan.mockClear();
   radio.tune.mockClear();
@@ -431,6 +435,29 @@ describe("ListenPage", () => {
       mode: "am",
       source: "list",
     });
+  });
+
+  // Value: protects=both Pick best paths (the picker's button and a blank Listen) rank by measured noise when the dial's band has enough samples, and ignore levels for another band; fails_when=the page passes the list's order straight through, or uses a stale band's levels; why_new=issue #67; seam=useNoise mocked; no_claim=the scoring rules (noise-rank tests)
+  it.each([
+    ["the picker's Pick best", () => fireEvent.click(screen.getByRole("button", { name: "pick best" }))],
+    ["a blank Listen", () => fireEvent.click(screen.getByRole("button", { name: "Listen" }))],
+  ])("ranks %s by each receiver's noise against its own baseline", (_, press) => {
+    window.history.replaceState(null, "", "/?f=7100&m=lsb");
+    const quiet = { medianDb: 50, count: 6, baselineDb: 60, baselineCount: 40 };
+    const usual = { medianDb: 60, count: 6, baselineDb: 60, baselineCount: 40 };
+    noise.current = { band: "ham-40m", receivers: { "sdr.k1vl.com:8076": usual, "backup.example:8073": quiet } };
+    render(<ListenPage />);
+    act(press);
+    expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: backup.host, freqKhz: 7_100 }));
+  });
+
+  it("ranks Pick best by the list alone when the noise levels are for another band", () => {
+    window.history.replaceState(null, "", "/?f=7100&m=lsb");
+    const quiet = { medianDb: 50, count: 6, baselineDb: 60, baselineCount: 40 };
+    noise.current = { band: "ham-20m", receivers: { "backup.example:8073": quiet } };
+    render(<ListenPage />);
+    act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+    expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: listed.host }));
   });
 
   // Value: protects=Pick best wired to live radio status in the page; fails_when=page stops feeding status to usePickBest or tuneReceiver drops the retry; why_new=hook test mocks tune, page test never changed status; seam=none; no_claim=real socket or server codes
@@ -2441,9 +2468,10 @@ describe("ListenPage", () => {
         advance(120_000);
         expect(watchLine()!.textContent).toBe("4U1UN on air now. Listen for the callsign, then four dashes.");
         // 12:03:10: the turn has ended, and its end hasn't reached the listener yet. The next
-        // turn won't be asked about (one question per channel).
+        // turn won't be asked about (one question per channel), but a question is on its way,
+        // so the line doesn't say "no question this time" for these 1.5 s.
         advance(10_000);
-        expect(watchLine()!.textContent).toBe("Listening for 4U1UN: next on 14.100 in 2:50 · no question this time");
+        expect(watchLine()!.textContent).toBe("Listening for 4U1UN: next on 14.100 in 2:50");
         // 1.5 s later the prompt takes the line's place.
         advance(1_500);
         const q = screen.getByText(/Did you hear 4U1UN/);

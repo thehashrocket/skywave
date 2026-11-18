@@ -139,7 +139,10 @@ export function BeaconStrip({
     pick?.atMs !== undefined && now !== null
       ? beaconWatch({ pick, pickedAtMs: pick.atMs, audioStartMs, nowMs: now })
       : null;
-  const why = watch && noQuestionReason(watch.turnStartMs, askSlotMs, questionsOff, connecting);
+  const why =
+    watch && now !== null
+      ? noQuestionReason({ turnStartMs: watch.turnStartMs, askSlotMs, questionsOff, connecting, nowMs: now })
+      : null;
 
   return (
     <details className="beacons" open={open} onToggle={(e) => onOpenChange(e.currentTarget.open)}>
