@@ -11,7 +11,7 @@ import { SiteFooter } from "@/components/SiteFooter";
 import { SMeter } from "@/components/SMeter";
 import { SpanPicker } from "@/components/SpanPicker";
 import { AudioSpectrum } from "@/components/AudioSpectrum";
-import { BeaconStrip } from "@/components/BeaconStrip";
+import { BeaconStrip, focusBeaconStrip } from "@/components/BeaconStrip";
 import { rankForBeacon } from "@/lib/beacon-rank";
 import { beaconOnBand, IBP_BANDS_KHZ, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
 import { serverNow } from "@/lib/server-clock";
@@ -926,12 +926,48 @@ export default function ListenPage() {
     const listed = p ? findReceiver(receivers, p.host, p.port) : undefined;
     return listed ? placeName(listed.location) : "";
   }, [reception.prompt, receivers]);
+  // A question about a beacon, with the beacon strip open and in view (the
+  // drawer open: shut, it's hidden and inert), is asked in the strip under its
+  // band's row instead of on the status line; its thanks follow it.
+  const promptBand = reception.prompt?.tx.kind === "beacon" ? ibpBandIndex(reception.prompt.freqKhz) : -1;
+  const stripShown = beaconMode && drawerOpen;
+  const promptInStrip = stripShown && promptBand >= 0;
+  const [thanksBand, setThanksBand] = useState<number | null>(null);
+  if (thanksBand !== null && !reception.thanked) setThanksBand(null);
+  // The buttons go away with the prompt; leave focus where it was asked: the
+  // strip, or the status row beside the line (moving to the other would scroll the page).
+  const focusAfterPrompt = (inStrip: boolean) => (inStrip ? focusBeaconStrip() : statusRef.current?.focus());
   const answerReception = (outcome: Outcome, comment: string) => {
     if (reception.prompt) submitReport(reception.prompt, outcome, comment);
     reception.answered();
-    // The buttons go away with the prompt; leave focus on the status row beside it.
-    statusRef.current?.focus();
+    if (promptInStrip) setThanksBand(promptBand);
+    focusAfterPrompt(promptInStrip);
   };
+  const receptionPrompt = reception.prompt && (
+    <ReceptionPrompt
+      key={`${reception.prompt.host}:${reception.prompt.port}:${reception.prompt.freqKhz}`}
+      prompt={reception.prompt}
+      place={receptionPlace}
+      onAnswer={answerReception}
+      onClose={() => {
+        reception.dismiss();
+        focusAfterPrompt(promptInStrip);
+      }}
+    />
+  );
+  const thanks = <span>Thanks for the report.</span>;
+
+  // The header's "IBP beacons": the drawer, with the beacon strip open and focused.
+  const [beaconFocus, setBeaconFocus] = useState(0);
+  const openBeacons = () => {
+    setDrawerOpen(true);
+    changeBeaconMode(true);
+    setBeaconFocus((n) => n + 1);
+  };
+  // After the render that opens them: the drawer is inert until then.
+  useEffect(() => {
+    if (beaconFocus) focusBeaconStrip();
+  }, [beaconFocus]);
 
   return (
     <main className="console">
@@ -956,6 +992,16 @@ export default function ListenPage() {
             onClick={() => setDrawerOpen((o) => !o)}
           >
             change
+          </button>
+          <button
+            type="button"
+            className="link-button inline tuned-to-beacons"
+            aria-controls="receiver-drawer"
+            onClick={(e) => {
+              if (e.detail <= 1) openBeacons();
+            }}
+          >
+            IBP beacons
           </button>
         </div>
         {/* The receiver form's submit button, kept in the strip so it's always in reach. */}
@@ -1076,6 +1122,8 @@ export default function ListenPage() {
                 tunedBand={ibpBandIndex(freqKhz)}
                 pick={beaconPick}
                 onListen={listenToBeacon}
+                prompt={promptInStrip ? receptionPrompt : thanksBand !== null ? thanks : null}
+                promptBand={promptInStrip ? promptBand : (thanksBand ?? -1)}
               />
             </MapPanel>
           )}
@@ -1191,22 +1239,11 @@ export default function ListenPage() {
       </div>
 
       {/* Always rendered, so a screen reader hears the offer when it appears; its line is reserved so nothing moves. */}
-      {/* The reception question shares the line, and waits while an offer is showing. */}
+      {/* The reception question shares the line, and waits while an offer is showing; one about
+          a beacon goes in the open beacon strip instead (promptInStrip). */}
       <div className="switch-prompt" role="status">
-        {!offer && reception.prompt && (
-          <ReceptionPrompt
-            key={`${reception.prompt.host}:${reception.prompt.port}:${reception.prompt.freqKhz}`}
-            prompt={reception.prompt}
-            place={receptionPlace}
-            onAnswer={answerReception}
-            onClose={() => {
-              reception.dismiss();
-              // The ✕ goes away with the prompt; leave focus on the status row beside it.
-              statusRef.current?.focus();
-            }}
-          />
-        )}
-        {!offer && !reception.prompt && reception.thanked && <span>Thanks for the report.</span>}
+        {!offer && !promptInStrip && receptionPrompt}
+        {!offer && !reception.prompt && reception.thanked && (thanksBand === null || !stripShown) && thanks}
         {offer && (
           <>
             <span>

@@ -2283,7 +2283,7 @@ describe("ListenPage", () => {
     afterEach(() => vi.useRealTimers());
 
     const openStrip = () => {
-      const details = screen.getByText("IBP beacons").closest("details")!;
+      const details = document.querySelector<HTMLDetailsElement>("details.beacons")!;
       details.open = true;
       act(() => fireEvent(details, new Event("toggle")));
     };
@@ -2311,7 +2311,7 @@ describe("ListenPage", () => {
       expect(screen.getByRole("button", { name: "Listen to VE8AT on 14.100 MHz" })).toBeTruthy();
 
       // Closing the strip ends beacon mode and the pick.
-      const details = screen.getByText("IBP beacons").closest("details")!;
+      const details = document.querySelector<HTMLDetailsElement>("details.beacons")!;
       details.open = false;
       act(() => fireEvent(details, new Event("toggle")));
       expect(screen.getByLabelText("map beacons").textContent).toBe("off");
@@ -2332,6 +2332,74 @@ describe("ListenPage", () => {
       act(() => vi.advanceTimersByTime(200));
       expect(radio.tune).not.toHaveBeenCalled();
       expect(radio.retune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 14_100, mode: "cw" }));
+    });
+
+    // Value: protects=the beacons are one click from the main screen: the header's IBP beacons opens the drawer with the strip expanded (beacon mode on) and focus on it; fails_when=the control is missing, opens a shut strip, leaves the drawer inert, or leaves focus behind; why_new=beacon entry point (owner: it was behind change and a folded details); seam=MapPanel/radio mocked, real BeaconStrip; no_claim=where it sits visually (CSS, browser check)
+    it("opens the drawer with the beacon strip from the header", () => {
+      render(<ListenPage />);
+      const drawer = document.getElementById("receiver-drawer")!;
+      const strip = document.querySelector<HTMLDetailsElement>("details.beacons")!;
+      expect(drawer.hasAttribute("inert")).toBe(true);
+      expect(strip.open).toBe(false);
+      const entry = screen.getByRole("button", { name: "IBP beacons" });
+      // In the header strip, beside "change".
+      expect(entry.closest(".console-header")).not.toBeNull();
+      act(() => fireEvent.click(entry));
+      expect(drawer.hasAttribute("inert")).toBe(false);
+      expect(screen.getByRole("button", { name: "Change receiver" }).getAttribute("aria-expanded")).toBe("true");
+      expect(strip.open).toBe(true);
+      expect(screen.getByLabelText("map beacons").textContent).toBe("on, selected none");
+      expect(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })).toBeTruthy();
+      expect(document.activeElement).toBe(strip.querySelector("summary"));
+    });
+
+    /** Listens to 4U1UN on 14.100 through London, then waits for its next full turn (12:03:00) to be asked about. */
+    function beaconPrompt() {
+      // The prompt's gap and close counts, which earlier tests' prompts (at real times) would set.
+      sessionStorage.clear();
+      const view = render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+      radio.status = { state: "listening", host: london.host, port: london.port, freqKhz: 14_100, mode: "cw" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      // Audio from 12:00:03 leaves too little of this turn; the next one ends 12:03:10, asked 1.5 s later.
+      act(() => vi.advanceTimersByTime(190_000));
+      return view;
+    }
+    const question = () => screen.getByText(/Did you hear 4U1UN/);
+    const statusLine = () => document.querySelector(".switch-prompt")!;
+
+    // Value: protects=a beacon question with the strip open is asked inside the strip, in the row right under the band it's about, and not also on the status line; answering it works as before and the thanks and focus stay in the strip; fails_when=the prompt shows in both places, under the wrong row, or answers/focus jump back to the status row; why_new=beacon prompt placement (owner); seam=submitReport mocked, real prompt hook and BeaconStrip; no_claim=the prompt's own behaviour (hook and component tests)
+    it("asks about a beacon under its row in the open strip, not on the status line", () => {
+      beaconPrompt();
+      const q = question();
+      expect(q.closest(".beacons")).not.toBeNull();
+      expect(statusLine().textContent).not.toMatch(/Did you hear/);
+      const row = q.closest("tr")!.previousElementSibling!;
+      expect(row.querySelector("th")!.textContent).toBe("14.100");
+      expect(q.closest("[role=status]")).not.toBeNull();
+
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Heard" })));
+      expect(submitReport).toHaveBeenLastCalledWith(
+        expect.objectContaining({ tx: expect.objectContaining({ kind: "beacon", name: "4U1UN" }) }),
+        "heard",
+        "",
+      );
+      expect(screen.getByText("Thanks for the report.").closest(".beacons")).not.toBeNull();
+      expect(statusLine().textContent).not.toMatch(/Thanks/);
+      expect(document.activeElement).toBe(document.querySelector("details.beacons > summary"));
+    });
+
+    // Value: protects=with the strip out of view (drawer shut, or the strip closed) a beacon question stays on the status line, where it always was; fails_when=it renders into the hidden, inert drawer where no one can see or answer it; why_new=beacon prompt placement; seam=as above; no_claim=none
+    it("keeps a beacon question on the status line when the strip isn't in view", () => {
+      beaconPrompt();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Change receiver" })));
+      expect(question().closest(".switch-prompt")).not.toBeNull();
+      expect(document.querySelector(".beacons")!.textContent).not.toMatch(/Did you hear/);
+      // Back in view, it moves back under its row.
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Change receiver" })));
+      expect(question().closest(".beacons")).not.toBeNull();
     });
   });
 });

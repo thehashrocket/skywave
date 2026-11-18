@@ -151,7 +151,8 @@ html,
   color: var(--muted);
 }
 
-.tuned-to-change {
+.tuned-to-change,
+.tuned-to-beacons {
   white-space: nowrap;
 }
 
@@ -1918,6 +1919,26 @@ html,
   color: var(--muted);
 }
 
+/* The reception prompt about a beacon, in the row under the band it was asked on.
+   Every band has the row (an always-present live region); empty, it takes no height. */
+.beacons-strip .beacons-prompt td {
+  border-top: 0;
+  padding: 0 10px;
+  text-align: left;
+}
+
+.beacons-prompt-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  font-size: 0.9rem;
+}
+
+.beacons-prompt-line:not(:empty) {
+  padding-bottom: 8px;
+}
+
 .beacons-note {
   margin: 6px 0 0;
   max-width: 68ch;
@@ -2079,6 +2100,7 @@ html,
   .power,
   .receiver-switch,
   .tuned-to-change,
+  .tuned-to-beacons,
   .span-step,
   .presets-save button,
   .receiver-choose {
