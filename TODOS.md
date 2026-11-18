@@ -76,6 +76,18 @@
 
 ## Web app
 
+### Live spot feed for receiver ranking (#61)
+
+**What:** Feed live RBN and/or WSPR spots to Pick best as a re-order after today's order, the way `rankByNoise` works (`apps/web/src/lib/noise-rank.ts`).
+
+**Why:** If the #61 replay shows that spots near a receiver predict "heard" better than today's order, the ranking still needs spots live. The replay alone ships nothing.
+
+**Context:** Owner D7 in the #61 eng review (2026-11-18). Start only after the #61 replay passes its pre-registered bar (D1, D4); a pass also says which source earns the work. RBN live goes through #69's single connection in the radio service once its login question is settled. wspr.live (https://wspr.live/) is a free, non-commercial research service with no availability promise: use it only as a cached, rate-limited poll, and fall back to today's order when it's down or slow. A WSPR spot counts only when both ends match: transmitter near the station or beacon, receiver near the Kiwi.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** #61 replay passing; #69 login (RBN half only)
+
 ### Pick best follow-ups from the design-pass review
 
 **What:** Finish the refused-receiver memory and the Pick best edges the design-pass /ship reviews listed but didn't fix.
