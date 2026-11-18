@@ -1,9 +1,38 @@
 import { z } from "zod";
+import { scheduledOn, type Broadcast } from "@/lib/eibi";
+import { findReceiver } from "@/lib/kiwi-list";
 import { MODES } from "@/lib/radio-types";
-import { COMMENT_MAX, OUTCOMES } from "@/lib/reception";
+import { COMMENT_MAX, LISTING_GRACE_MS, MAX_LISTED, OUTCOMES, TX_NAME_SEPARATOR } from "@/lib/reception";
 import { publicProcedure, router } from "../trpc";
+import { getReceivers, servedReceivers } from "./receivers";
+import { getSchedule } from "./stations";
 
 const MINUTE = 60_000;
+
+/**
+ * Whether every station in txName ("A", or "A / B / C") was scheduled on this
+ * frequency at some minute in the last LISTING_GRACE_MS, by this server's
+ * clock. The schedule works in whole minutes, so each minute is checked.
+ */
+export function scheduledRecently(schedule: readonly Broadcast[], txName: string, freqKhz: number, ms: number) {
+  const names = txName.split(TX_NAME_SEPARATOR);
+  if (names.length > MAX_LISTED) return false;
+  const onAir = new Set<string>();
+  for (let t = ms - LISTING_GRACE_MS; t <= ms; t += MINUTE) {
+    for (const b of scheduledOn(schedule, freqKhz, t)) onAir.add(b.station);
+  }
+  return names.every((n) => onAir.has(n));
+}
+
+/** Whether the receiver is on the public list as the page is served it (opted-out owners left out). */
+async function listed(host: string, port: number): Promise<boolean> {
+  try {
+    return findReceiver(servedReceivers((await getReceivers()).receivers), host, port) !== undefined;
+  } catch {
+    // No list to check against (the mirror is down on a fresh server): can't vouch for it.
+    return false;
+  }
+}
 
 /** Reports one listener may send in a rolling hour. */
 export const REPORTS_PER_HOUR = 10;
@@ -53,8 +82,9 @@ export type ReportInput = z.input<typeof reportInput>;
 
 export const reportsRouter = router({
   /**
-   * Store one reception report. Over a limit it answers { accepted: false }
-   * rather than an error: the listener has nothing to fix, so nothing to show.
+   * Store one reception report. Over a limit, or about a receiver or station
+   * the server can't vouch for, it answers { accepted: false } rather than an
+   * error: the listener has nothing to fix, so nothing to show.
    *
    * The limits are counted in the database, not memory: Vercel's function
    * instances don't share memory. Two reports racing past the count can both
@@ -66,6 +96,12 @@ export const reportsRouter = router({
   submit: publicProcedure.input(reportInput).mutation(async ({ ctx, input }) => {
     const now = Date.now();
     const { listenerId, receiverHost, receiverPort, freqKhz } = input;
+    // Only what the page could really have asked about: a listed receiver,
+    // and a station the schedule had on that frequency just now. Both from
+    // this server's cached copies; neither fetches per request.
+    const { broadcasts } = await getSchedule();
+    if (!scheduledRecently(broadcasts, input.txName, freqKhz, now)) return { accepted: false };
+    if (!(await listed(receiverHost, receiverPort))) return { accepted: false };
     const hourAgo = new Date(now - 60 * MINUTE);
     const [lastHour, receiverHour, sameChannel] = await Promise.all([
       ctx.db.receptionReport.count({ where: { listenerId, createdAt: { gte: hourAgo } } }),

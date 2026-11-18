@@ -871,8 +871,9 @@ export default function ListenPage() {
     }));
   }, [schedule, clock, wideView]);
 
-  // "Did you hear it?" after a minute on a scheduled station (issue #60).
-  const reception = useReceptionPrompt(status, radio.heardAudio, schedule);
+  // "Did you hear it?" after a minute on a scheduled station (issue #60), only
+  // on a listed receiver: the server keeps no report about one typed in.
+  const reception = useReceptionPrompt(status, radio.heardAudio, schedule, playingListed !== undefined);
   const submitReport = useSubmitReport();
   const receptionPlace = useMemo(() => {
     const p = reception.prompt;

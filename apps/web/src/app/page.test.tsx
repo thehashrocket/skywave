@@ -1552,6 +1552,16 @@ describe("ListenPage", () => {
       expect(radio.tune).not.toHaveBeenCalled();
     });
 
+    // Value: protects=the page asks only about a receiver on the public list it was served, since the server drops reports about any other; fails_when=the page passes onList as always true, or reads it from something other than the served list; why_new=PR #63 review; seam=receiver list hook mocked; no_claim=the server's own check (reports.test)
+    it("asks nothing about a receiver typed in that isn't on the list", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
+      radio.status = { state: "listening", host: "typed.example", port: 8073, freqKhz: 9_580, mode: "am" };
+      radio.heardAudio = true;
+      render(<ListenPage />);
+      act(() => vi.advanceTimersByTime(120_000));
+      expect(line().textContent).toBe("");
+    });
+
     it("asks nothing where nothing is scheduled, and the ✕ closes it without sending", () => {
       const view = listeningOn(6_070);
       act(() => vi.advanceTimersByTime(120_000));

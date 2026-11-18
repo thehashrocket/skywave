@@ -20,6 +20,14 @@ export type TxKind = "eibi" | "beacon";
 /** The longest comment kept, in characters. */
 export const COMMENT_MAX = 280;
 
+/**
+ * How far back the server still counts a listing as the one asked about
+ * (routers/reports.ts). The prompt comes after a minute's listening and may
+ * sit a while before it's answered, so a broadcast that ended a few minutes
+ * ago is still a fair answer. The prompt closes itself before this runs out.
+ */
+export const LISTING_GRACE_MS = 5 * 60_000;
+
 /** What a prompt asks about: the transmitter(s) and how to name them. */
 export type Transmitter = {
   kind: TxKind;
@@ -32,7 +40,13 @@ export type Transmitter = {
 };
 
 /** Up to this many stations sharing a frequency are asked about together. */
-const MAX_LISTED = 3;
+export const MAX_LISTED = 3;
+
+/**
+ * Joins the stations asked about together in txName. No EiBi station name
+ * contains it, so the server splits on it to check each one is scheduled.
+ */
+export const TX_NAME_SEPARATOR = " / ";
 
 /** "A", "A or B", "A, B or C". */
 function orList(names: readonly string[]): string {
@@ -51,7 +65,7 @@ export function eibiTransmitter(broadcasts: readonly Broadcast[]): Transmitter |
   // EiBi lists a station once per language and site; ask about each station once.
   const names = [...new Set(broadcasts.map((b) => b.station))];
   if (names.length >= 2 && names.length <= MAX_LISTED) {
-    return { kind: "eibi", name: names.join(" / "), label: `anything from ${orList(names)}` };
+    return { kind: "eibi", name: names.join(TX_NAME_SEPARATOR), label: `anything from ${orList(names)}` };
   }
   return { kind: "eibi", name: first.station, detail: `${first.lang}/${first.target}`, label: first.station };
 }

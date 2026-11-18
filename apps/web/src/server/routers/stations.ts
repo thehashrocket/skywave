@@ -114,7 +114,8 @@ export function scheduleSource({
   };
 }
 
-const getSchedule = scheduleSource();
+/** The one cached schedule for this server: `stations.schedule` serves it, and `reports.submit` checks against it. */
+export const getSchedule = scheduleSource();
 
 export const stationsRouter = router({
   schedule: publicProcedure.query(() => getSchedule()),

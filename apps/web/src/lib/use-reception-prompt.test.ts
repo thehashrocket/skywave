@@ -3,7 +3,15 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Broadcast } from "./eibi";
 import type { RadioStatus } from "./use-radio";
-import { DWELL_MS, MAX_DISMISSALS, PROMPT_GAP_MS, THANKS_MS, useReceptionPrompt } from "./use-reception-prompt";
+import {
+  DWELL_MS,
+  MAX_DISMISSALS,
+  PROMPT_GAP_MS,
+  PROMPT_TTL_MS,
+  THANKS_MS,
+  useReceptionPrompt,
+} from "./use-reception-prompt";
+import { LISTING_GRACE_MS } from "./reception";
 
 const allDay = (khz: number, station: string, lang = "E", target = "Eu"): Broadcast => ({
   khz,
@@ -32,11 +40,14 @@ const listening = (freqKhz = 9_580, host = "a.example"): RadioStatus => ({
   mode: "am",
 });
 
-type Props = { status: RadioStatus; heard: boolean; schedule: readonly Broadcast[] | undefined };
+/** `onList` left out means the receiver is on the public list. */
+type Props = { status: RadioStatus; heard: boolean; schedule: readonly Broadcast[] | undefined; onList?: boolean };
 
 function setup(initial: Partial<Props> = {}) {
   const initialProps: Props = { status: listening(), heard: true, schedule, ...initial };
-  return renderHook((p: Props) => useReceptionPrompt(p.status, p.heard, p.schedule), { initialProps });
+  return renderHook((p: Props) => useReceptionPrompt(p.status, p.heard, p.schedule, p.onList ?? true), {
+    initialProps,
+  });
 }
 
 const wait = (ms: number) => act(() => vi.advanceTimersByTime(ms));
@@ -194,6 +205,35 @@ describe("useReceptionPrompt", () => {
     hook.rerender({ status: listening(6_070), heard: true, schedule });
     wait(DWELL_MS);
     expect(hook.result.current.prompt).toBeNull();
+  });
+
+  // Value: protects=a receiver the listener typed in (not on the public list) is never asked about, since the server drops every report about it, and the list arriving mid-listen starts the wait; fails_when=onList is ignored, or a late list never starts the timer; why_new=PR #63 review: answers the server can't keep; seam=fake timers; no_claim=the page's choice of onList (page tests)
+  it("asks nothing about a receiver that isn't on the public list", () => {
+    const hook = setup({ onList: false });
+    wait(DWELL_MS * 3);
+    expect(hook.result.current.prompt).toBeNull();
+    hook.rerender({ status: listening(), heard: true, schedule, onList: true });
+    wait(DWELL_MS);
+    expect(hook.result.current.prompt).not.toBeNull();
+  });
+
+  // Value: protects=an unanswered prompt goes away before the server's 5-minute grace runs out (after Stop too), so no one answers a question whose answer is dropped, and timing out doesn't count as a close; fails_when=the prompt stays past the grace, the timeout is at or over the grace, or it counts toward MAX_DISMISSALS; why_new=PR #63 review; seam=fake timers; no_claim=client and server clocks agreeing beyond the one-minute margin
+  it("closes an unanswered prompt before the server would stop taking the answer", () => {
+    expect(PROMPT_TTL_MS).toBeLessThan(LISTING_GRACE_MS);
+    const hook = setup();
+    wait(DWELL_MS);
+    hook.rerender({ status: { state: "stopped" }, heard: false, schedule });
+    wait(PROMPT_TTL_MS - 1);
+    expect(hook.result.current.prompt).not.toBeNull();
+    wait(1);
+    expect(hook.result.current.prompt).toBeNull();
+    // Not a close: two timeouts later it still asks.
+    for (const khz of [6_070, 11_700, 9_580]) {
+      hook.rerender({ status: listening(khz), heard: true, schedule });
+      wait(PROMPT_GAP_MS);
+      expect(hook.result.current.prompt?.freqKhz).toBe(khz);
+      wait(PROMPT_TTL_MS);
+    }
   });
 
   it("says thanks after an answer, briefly", () => {

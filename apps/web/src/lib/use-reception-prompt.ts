@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { scheduledOn, type Broadcast } from "./eibi";
-import { eibiTransmitter, type Transmitter } from "./reception";
+import { eibiTransmitter, LISTING_GRACE_MS, type Transmitter } from "./reception";
 import { DEFAULT_KIWI_PORT } from "./receiver";
 import type { Mode } from "./radio-types";
 import type { RadioStatus } from "./use-radio";
@@ -23,6 +23,15 @@ export const MAX_DISMISSALS = 2;
 
 /** How long "Thanks for the report." stays after an answer, in place of the prompt. */
 export const THANKS_MS = 4_000;
+
+/**
+ * An unanswered prompt goes away after this long (not counted as a close).
+ * The server only takes an answer about a listing on air in the last
+ * LISTING_GRACE_MS; a minute less leaves room for the schedule's whole
+ * minutes and a little clock difference, so the prompt never asks a
+ * question whose answer would be dropped.
+ */
+export const PROMPT_TTL_MS = LISTING_GRACE_MS - 60_000;
 
 // sessionStorage, so a reload in the same tab doesn't start the counts over.
 const STORAGE_KEY = "skywave.receptionPrompt";
@@ -72,19 +81,22 @@ const promptKey = (p: ReceptionPromptData) => `${p.host.toLowerCase()}:${p.port}
 /**
  * "Did you hear it?": offers a reception prompt once audio has played for
  * DWELL_MS on one receiver, frequency and mode where the EiBi schedule lists
- * a station. A retune, mode change, another receiver, Stop or an error starts
- * the wait over. One prompt per channel until it changes, at most one per
+ * a station, on a receiver from the public list (`onList`: the server only
+ * keeps reports about listed receivers, so a typed one is never asked about).
+ * A retune, mode change, another receiver, Stop or an error starts the wait
+ * over. One prompt per channel until it changes, at most one per
  * PROMPT_GAP_MS in the tab (a later one waits for the gap), and none after
  * MAX_DISMISSALS closes.
  *
  * A prompt showing goes away on a retune or another receiver, since it no
- * longer names what's playing; after Stop or an error it stays, so a listener
- * who stopped can still answer.
+ * longer names what's playing, and after PROMPT_TTL_MS unanswered; after Stop
+ * or an error it stays until then, so a listener who stopped can still answer.
  */
 export function useReceptionPrompt(
   status: RadioStatus,
   heardAudio: boolean,
   schedule: readonly Broadcast[] | undefined,
+  onList: boolean,
 ) {
   const [prompt, setPrompt] = useState<ReceptionPromptData | null>(null);
   // Loaded from sessionStorage on first use, then kept here (storage may throw).
@@ -103,13 +115,13 @@ export function useReceptionPrompt(
   const askedOn = useRef<string | null>(null);
 
   const key = channelKey(status, heardAudio);
-  const hasStation =
-    key !== null && schedule !== undefined && scheduledOn(schedule, status.freqKhz!, Date.now()).length > 0;
+  const askable =
+    key !== null && onList && schedule !== undefined && scheduledOn(schedule, status.freqKhz!, Date.now()).length > 0;
 
   useEffect(() => {
     if (key !== null) setPrompt((p) => (p && promptKey(p) !== key ? null : p));
     if (askedOn.current !== key) askedOn.current = null;
-    if (key === null || !hasStation || askedOn.current === key) return;
+    if (key === null || !askable || askedOn.current === key) return;
     const c = (counts.current ??= loadCounts());
     if (c.dismissals >= MAX_DISMISSALS) return;
     const wait = Math.max(DWELL_MS, c.lastShownMs + PROMPT_GAP_MS - Date.now());
@@ -124,7 +136,14 @@ export function useReceptionPrompt(
       setPrompt({ host: s.host, port: s.port ?? DEFAULT_KIWI_PORT, freqKhz: s.freqKhz, mode: s.mode, tx });
     }, wait);
     return () => clearTimeout(timer);
-  }, [key, hasStation, update]);
+  }, [key, askable, update]);
+
+  // Unanswered for PROMPT_TTL_MS: the answer would no longer be taken.
+  useEffect(() => {
+    if (!prompt) return;
+    const timer = setTimeout(() => setPrompt(null), PROMPT_TTL_MS);
+    return () => clearTimeout(timer);
+  }, [prompt]);
 
   /** The close button: counts toward MAX_DISMISSALS. */
   const dismiss = useCallback(() => {

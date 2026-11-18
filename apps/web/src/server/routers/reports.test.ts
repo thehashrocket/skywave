@@ -1,11 +1,56 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Broadcast } from "@/lib/eibi";
+import type { Receiver } from "@/lib/kiwi-list";
 import type { createContext } from "@/server/trpc";
 import { RECEIVER_REPORTS_PER_HOUR, REPORTS_PER_HOUR, SAME_CHANNEL_MS } from "./reports";
 
 // The real module opens a Prisma client at import; every test injects its own db.
 vi.mock("@/server/db", () => ({ db: {} }));
 
+// The server's cached schedule and receiver list, as stations.schedule and receivers.list serve them.
+const cache = { broadcasts: [] as Broadcast[], receivers: [] as Receiver[], listDown: false };
+vi.mock("./stations", async (actual) => ({
+  ...(await actual<typeof import("./stations")>()),
+  getSchedule: vi.fn(async () => ({ season: "b26", bundled: false, broadcasts: cache.broadcasts })),
+}));
+vi.mock("./receivers", async (actual) => ({
+  ...(await actual<typeof import("./receivers")>()),
+  getReceivers: vi.fn(async () => {
+    if (cache.listDown) throw new Error("Receiver list request failed: HTTP 502");
+    return { receivers: cache.receivers, fetchedAt: 0, stale: false };
+  }),
+}));
+
 const { appRouter } = await import("@/server/root");
+const { getSchedule } = await import("./stations");
+const { getReceivers } = await import("./receivers");
+
+/** A broadcast between two UTC times ("HHMM"), daily. */
+const on = (khz: number, station: string, from = "0000", to = "2400"): Broadcast => {
+  const min = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(2));
+  return { khz, start: min(from), end: min(to), days: "", station, lang: "E", target: "NAm" };
+};
+const rx = (host: string, port = 8073): Receiver => ({
+  id: `${host}:${port}`,
+  name: host,
+  location: "",
+  antenna: "",
+  host,
+  port,
+  users: 0,
+  usersMax: 8,
+  snr: 20,
+  minKhz: 0,
+  maxKhz: 30_000,
+});
+
+// KBS all day on every frequency the limit tests use, and the receivers they report on.
+const LIMIT_FREQS = [9_580, 9_590, 7_000, ...Array.from({ length: 40 }, (_, i) => 6_000 + i)];
+beforeEach(() => {
+  cache.broadcasts = LIMIT_FREQS.map((khz) => on(khz, "KBS World Radio")).sort((a, b) => a.khz - b.khz);
+  cache.receivers = [rx("kiwi.example.org"), rx("kiwi.example.org", 8074), rx("other.example")];
+  cache.listDown = false;
+});
 
 type Context = Awaited<ReturnType<typeof createContext>>;
 type Row = { listenerId: string; receiverHost: string; receiverPort: number; freqKhz: number; createdAt: Date };
@@ -129,5 +174,71 @@ describe("reports.submit", () => {
     await expect(caller.reports.submit({ ...valid, listenerId: fresh(), freqKhz: 7_000 })).resolves.toEqual({
       accepted: true,
     });
+  });
+});
+
+describe("reports.submit checks what it's told", () => {
+  // Noon UTC.
+  beforeEach(() => vi.useFakeTimers({ now: Date.UTC(2026, 10, 18, 12) }));
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  const declined = async (input: typeof valid) => {
+    const { caller, receptionReport } = setup();
+    await expect(caller.reports.submit(input)).resolves.toEqual({ accepted: false });
+    expect(receptionReport.create).not.toHaveBeenCalled();
+  };
+  const accepted = async (input: typeof valid) => {
+    const { caller } = setup();
+    await expect(caller.reports.submit(input)).resolves.toEqual({ accepted: true });
+  };
+
+  // Value: protects=a report names a station the server's own schedule has on that frequency, not whatever a client sends; fails_when=txName isn't checked, or is checked against any frequency; why_new=PR #63 review: the server trusted client-sent transmitter details; seam=getSchedule mocked; no_claim=EiBi's accuracy
+  it("declines a station the schedule doesn't have on that frequency", async () => {
+    await declined({ ...valid, txName: "Radio Nowhere" });
+    cache.broadcasts = [on(9_580, "KBS World Radio"), on(11_700, "Radio A")];
+    await declined({ ...valid, txName: "Radio A" });
+  });
+
+  // Value: protects=an answer given a few minutes after the listing ended still counts (the prompt comes after 60 s and may wait), but not past the 5-minute grace, judged to the minute; fails_when=only the current minute is checked (dropping late honest answers) or the grace is open-ended; why_new=PR #63 review; seam=getSchedule mocked + fake clock; no_claim=the client's own timeout
+  it("accepts a listing that ended within the last 5 minutes, not one before that", async () => {
+    // On air 11:00 until 11:56 (its last minute 11:55): five minutes before noon.
+    cache.broadcasts = [on(9_580, "Just ended", "1100", "1156")];
+    await accepted({ ...valid, txName: "Just ended" });
+    // Its last minute 11:54: six minutes ago.
+    cache.broadcasts = [on(9_580, "Long gone", "1100", "1155")];
+    await declined({ ...valid, txName: "Long gone" });
+  });
+
+  it("accepts two or three stations asked about together only if each is scheduled", async () => {
+    cache.broadcasts = [on(11_700, "Radio A"), on(11_700, "Radio B")];
+    await accepted({ ...valid, freqKhz: 11_700, txName: "Radio A / Radio B" });
+    await declined({ ...valid, freqKhz: 11_700, txName: "Radio A / Radio Nowhere" });
+  });
+
+  // Value: protects=a report is about a receiver on the public list the page is served (opted-out owners left out), checked from the cached list; fails_when=any host:port is taken, a blocked receiver's reports are kept, or a list outage lets unchecked reports in; why_new=PR #63 review: the server trusted client-sent receiver details; seam=getReceivers mocked; no_claim=the mirror's contents
+  it("declines a receiver that isn't on the served list, or when there's no list", async () => {
+    await declined({ ...valid, receiverHost: "made-up.example" });
+    await declined({ ...valid, receiverPort: 9999 });
+    vi.stubEnv("BLOCKED_RECEIVERS", "kiwi.example.org:8073");
+    await declined(valid);
+    vi.unstubAllEnvs();
+    cache.listDown = true;
+    await declined(valid);
+  });
+
+  // Value: protects=the checks read the server's cached schedule and list, one call each, never a fetch of their own; fails_when=submit builds its own source or fetches EiBi/the mirror per request; why_new=PR #63 review (no fetch per request); seam=sources mocked, fetch stubbed; no_claim=the sources' own caching (stations/receivers tests)
+  it("uses the cached schedule and list without fetching", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    vi.mocked(getSchedule).mockClear();
+    vi.mocked(getReceivers).mockClear();
+    await accepted(valid);
+    expect(getSchedule).toHaveBeenCalledTimes(1);
+    expect(getReceivers).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
