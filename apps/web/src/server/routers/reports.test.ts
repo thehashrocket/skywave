@@ -4,6 +4,7 @@ import type { Receiver } from "@/lib/kiwi-list";
 import { PICK_CONTEXT_VERSION } from "@/lib/pick-context";
 import type { createContext } from "@/server/trpc";
 import {
+  candidateKeyOk,
   PICK_IN_SLOT_MS,
   RECEIVER_REPORTS_PER_HOUR,
   REPORTS_PER_HOUR,
@@ -396,6 +397,16 @@ describe("reports.submit with Pick best's context (#61)", () => {
     ["malformed: a candidate on port 0", { candidates: ["kiwi.example.org:8073", "other.example:0"] }],
     ["malformed: a candidate past the last port", { candidates: ["kiwi.example.org:8073", "other.example:99999"] }],
     ["malformed: a version this server doesn't know", { version: PICK_CONTEXT_VERSION + 1 }],
+    ["malformed: a version before the first numbered rules", { version: 1 }],
+    ["malformed: version 0", { version: 0 }],
+    ["malformed: a candidate with a padded port", { candidates: ["kiwi.example.org:8073", "other.example:08073"] }],
+    ["malformed: a candidate with a trailing dot", { candidates: ["kiwi.example.org:8073", "other.example.:8073"] }],
+    ["malformed: a candidate in capitals", { candidates: ["kiwi.example.org:8073", "Other.Example:8073"] }],
+    ["malformed: an IPv6 candidate written out in full", { candidates: ["kiwi.example.org:8073", "2001:0db8::1:8073"] }],
+    ["malformed: a candidate that only looks like IPv6", { candidates: ["kiwi.example.org:8073", "::::::8073"] }],
+    ["malformed: a candidate with no port", { candidates: ["kiwi.example.org:8073", "other.example"] }],
+    // Value: protects=an IPv4 candidate a URL rewrites (leading zero, read as octal) isn't canonical and drops the context; fails_when=candidateKeyOk skips the URL round trip for non-IPv6 hosts; why_new=the other rows reject non-IPv6 keys by regex alone; seam=none; no_claim=none beyond protects
+    ["malformed: an IPv4 candidate with a leading zero", { candidates: ["kiwi.example.org:8073", "010.0.0.1:8073"] }],
     ["malformed: a latitude without a longitude", { lon: undefined }],
     [
       "a rank past the head for a receiver the head names",
@@ -440,6 +451,30 @@ describe("reports.submit with Pick best's context (#61)", () => {
     const { pickVersion: __, ...rest } = stored;
     expect(data).toMatchObject(rest);
     expect(data.pickVersion).toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=a tab opened before the round 2 deploy still sends version 2; its context is kept and stored as 2, so the replay can tell it from version 3; fails_when=the server accepts only the current version (old tabs lose context) or rewrites the version it stores; why_new=round 2 raised PICK_CONTEXT_VERSION to 3; seam=in-memory db; no_claim=Postgres
+  it("keeps context from a tab on the previous version, storing that version", async () => {
+    expect(PICK_CONTEXT_VERSION).toBe(3);
+    const { data, warn } = await submit({ ...valid, pick: { ...pick, version: 2 } });
+    expect(data).toMatchObject({ ...stored, pickVersion: 2 });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=the longest key the page can write (a 253-character hostname and port 65535) still passes the length check that runs before any parsing, and a far longer forged key doesn't; fails_when=MAX_CANDIDATE_KEY is set too low and drops real long-hostname receivers; why_new=round 2 review (length cap); seam=none; no_claim=the CPU saved on forged keys
+  it("takes candidate keys up to the longest a receiver can have", () => {
+    const host = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
+    expect(host).toHaveLength(253);
+    expect(candidateKeyOk(`${host}:65535`)).toBe(true);
+    expect(candidateKeyOk(`${"1:".repeat(5_000)}:8073`)).toBe(false);
+  });
+
+  // Value: protects=candidate ports at both ends of the range are real receiver ports and keep the context; fails_when=the port check is off by one at 1 or 65535; why_new=round-2 edge cases (canonical keys); seam=none; no_claim=none beyond protects
+  it("keeps context whose candidates use ports 1 and 65535", async () => {
+    const candidates = ["kiwi.example.org:8073", "low.example:1", "high.example:65535"];
+    const { data, warn } = await submit({ ...valid, pick: { ...pick, candidates } });
+    expect(data).toMatchObject({ candidates });
     expect(warn).not.toHaveBeenCalled();
   });
 

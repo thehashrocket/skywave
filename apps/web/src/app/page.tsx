@@ -509,7 +509,13 @@ export default function ListenPage() {
     [isTarget],
   );
   const pickBest = usePickBest(status, tuneReceiver, coversDial, provenance);
-  const { cancel: cancelPickBest, stop: stopPickBest, start: startPicking, forgetOffFrequency } = pickBest;
+  const {
+    cancel: cancelPickBest,
+    stop: stopPickBest,
+    start: startPicking,
+    forgetOffFrequency,
+    forget: forgetPick,
+  } = pickBest;
   // A dial move off the frequency Pick best ranked for ends its claim on the
   // answer (issue #61), even if the dial comes back later.
   useEffect(() => forgetOffFrequency(freqKhz), [freqKhz, forgetOffFrequency]);
@@ -591,6 +597,9 @@ export default function ListenPage() {
       setMode("cw");
       const started =
         receivers !== undefined && pickFrom(rankForBeacon(receivers, beacon, khz, sunPosition(now)), "beacon", receivers);
+      // With no list there's no run, but an earlier choice (an earlier beacon's,
+      // on this band) mustn't ride along with this beacon's answer.
+      if (receivers === undefined) forgetPick();
       // After the run starts, which ends any earlier pick.
       setBeaconPick({ call: beacon.call, bandIndex: band, atMs: now });
       if (!receivers) setPageMessage({ from: "listen" });
@@ -598,7 +607,7 @@ export default function ListenPage() {
       // whatever plays moves to the beacon's frequency instead.
       if (!started) sendRetune({ freqKhz: khz, mode: "cw" });
     },
-    [receivers, pickFrom, sendRetune],
+    [receivers, pickFrom, sendRetune, forgetPick],
   );
   // What the map draws, once per slot while beacon mode is on.
   const beaconSlot = useServerTick(SLOT_MS, beaconMode);
@@ -953,12 +962,14 @@ export default function ListenPage() {
   // appears, not when it's answered: a run started in between (or one that
   // failed and moved the dial) must not lend its choice to this answer. Only
   // while the dial is still where it ranked for; a hand pick has none.
-  const { pickedFor } = pickBest;
+  // Snapshotted with the hook's drop count, so the answer can tell whether that
+  // choice was ever dropped in between.
+  const { pickedFor, dropCount } = pickBest;
   const promptPick = useMemo(() => {
     const p = reception.prompt;
     const pick = p ? pickedFor(p.host, p.port) : null;
-    return pick && pick.freqKhz === p?.freqKhz ? pick : undefined;
-  }, [reception.prompt, pickedFor]);
+    return pick && pick.freqKhz === p?.freqKhz ? { pick, drops: dropCount() } : undefined;
+  }, [reception.prompt, pickedFor, dropCount]);
   const promptBand = reception.prompt?.tx.kind === "beacon" ? ibpBandIndex(reception.prompt.freqKhz) : -1;
   const stripShown = beaconMode && drawerOpen;
   const promptInStrip = stripShown && promptBand >= 0;
@@ -969,13 +980,14 @@ export default function ListenPage() {
   const focusAfterPrompt = (inStrip: boolean) => (inStrip ? focusBeaconStrip() : statusRef.current?.focus());
   const answerReception = (outcome: Outcome, comment: string) => {
     const p = reception.prompt;
-    // Anything that has since cleared the hook's choice for this receiver (a
-    // hand pick of it, a failed or abandoned run, a dial move) revokes the
-    // snapshot too. A newer run that picked it again on the same frequency
-    // leaves the snapshot as is; one on another frequency (a question left up
-    // after Stop or an error) doesn't vouch for it.
+    // Anything that has dropped the hook's choice since the question appeared (a
+    // hand pick, a failed or abandoned run, a dial move, even one followed by a
+    // run that picks the same receiver again) revokes the snapshot. A newer run
+    // that replaced the choice without a drop, on the same frequency and
+    // receiver, leaves the snapshot as is.
     const live = p && promptPick ? pickedFor(p.host, p.port) : null;
-    if (p) submitReport(p, outcome, comment, live && live.freqKhz === promptPick?.freqKhz ? promptPick : undefined);
+    const kept = promptPick && live && live.freqKhz === promptPick.pick.freqKhz && dropCount() === promptPick.drops;
+    if (p) submitReport(p, outcome, comment, kept ? promptPick.pick : undefined);
     reception.answered();
     if (promptInStrip) setThanksBand(promptBand);
     focusAfterPrompt(promptInStrip);

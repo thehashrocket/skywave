@@ -1670,6 +1670,24 @@ describe("ListenPage", () => {
       expect(submitReport).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 9_580 }), "heard", "", undefined);
     });
 
+    // Value: protects=a question left up through a dial move away and back, then a new run that picks the same receiver on the original frequency, sends no context, since the choice it snapshotted was dropped in between; fails_when=answerReception checks only that the live choice matches the receiver and frequency, not that it was never dropped; why_new=round-2 edge cases (Codex structured P2, #74); seam=useRadio, picker and useSubmitReport mocked; no_claim=the server's checks (reports.test)
+    it("sends no pick context after the dial left and came back and a new run re-picked the receiver", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
+      const view = render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 9_580, mode: "am" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(screen.getByRole("button", { name: "Heard" })).toBeTruthy();
+      const dial = screen.getByRole("slider", { name: "Tuning dial" });
+      act(() => fireEvent.keyDown(dial, { key: "ArrowUp" }));
+      act(() => fireEvent.keyDown(dial, { key: "ArrowDown" }));
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      expect(submitReport).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 9_580 }), "heard", "", undefined);
+    });
+
     // Value: protects=a blank Listen's run is labelled "listen" on the answer; fails_when=the Listen call site passes another source or none; why_new=#73 proposed test 2; seam=useRadio and useSubmitReport mocked, list hook mocked; no_claim=the link path (same startPickBest(from) call)
     it("labels the context of a blank Listen's run", () => {
       localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
@@ -2544,6 +2562,31 @@ describe("ListenPage", () => {
       expect(screen.getByText("Thanks for the report.").closest(".beacons")).not.toBeNull();
       expect(statusLine().textContent).not.toMatch(/Thanks/);
       expect(document.activeElement).toBe(document.querySelector("details.beacons > summary"));
+    });
+
+    // Value: protects=a beacon Listen made while the receiver list is missing (so no run starts) drops the earlier beacon's choice on that band, so the next beacon's answer isn't credited to a ranking made for another beacon; fails_when=listenToBeacon leaves the hook's choice when receivers is undefined; why_new=round-2 edge cases (native adversarial, #74); seam=submitReport and the list hook mocked, real prompt hook and BeaconStrip; no_claim=the server's checks (reports.test)
+    it("sends no pick context for a beacon Listened to while the list was missing", () => {
+      const view = beaconPrompt();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Heard" })));
+      // The list goes missing; Listen to whichever beacon is on 14.100 now.
+      const list = receiverList.data;
+      receiverList.data = undefined;
+      view.rerender(<ListenPage />);
+      const next = screen.getByRole("button", { name: /^Listen to \S+ on 14\.100 MHz$/ });
+      const call = next.getAttribute("aria-label")!.match(/^Listen to (\S+)/)![1]!;
+      act(() => fireEvent.click(next));
+      // The list comes back (the page asks only about listed receivers).
+      receiverList.data = list;
+      view.rerender(<ListenPage />);
+      // Questions are at least 10 minutes apart (PROMPT_GAP_MS); then its next turn.
+      act(() => vi.advanceTimersByTime(10 * 60_000 + 190_000));
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Heard" })));
+      expect(submitReport).toHaveBeenLastCalledWith(
+        expect.objectContaining({ tx: expect.objectContaining({ kind: "beacon", name: call }) }),
+        "heard",
+        "",
+        undefined,
+      );
     });
 
     // Value: protects=with the strip out of view (drawer shut, or the strip closed) a beacon question stays on the status line, where it always was; fails_when=it renders into the hidden, inert drawer where no one can see or answer it; why_new=beacon prompt placement; seam=as above; no_claim=none

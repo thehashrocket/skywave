@@ -93,21 +93,35 @@ export const RECEIVER_REPORTS_PER_HOUR = 30;
  */
 export const MAX_PICK_AGE_MS = 3 * 60 * MINUTE;
 
-/**
- * A candidate as pickKey writes it: a lowercase hostname or IPv4 address (at
- * most 253 characters) or a bare IPv6 address (parseReceiver drops the
- * brackets), a colon, a port. Anything else isn't a receiver key. Every key
- * the page writes passes, so one that doesn't comes from a broken or forged
- * page, and the whole context goes: dropping just that key would shift the
- * list under rankPos.
- */
-const CANDIDATE_KEY = /^(?:[a-z0-9._-]{1,253}|[0-9a-f:.]{2,45}):([0-9]{1,5})$/;
+/** The longest key pickKey writes: a 253-character hostname, a colon, a 5-digit port. */
+const MAX_CANDIDATE_KEY = 253 + 1 + 5;
 
-/** Whether a candidate key ends in a port a receiver can have. */
-const candidatePortOk = (key: string) => {
-  const port = Number(key.match(CANDIDATE_KEY)?.[1]);
-  return port >= 1 && port <= 65_535;
-};
+/**
+ * Whether a candidate is a receiver key exactly as pickKey writes it, so two
+ * spellings of one receiver can't pass as two: a lowercase hostname or IPv4
+ * address (at most 253 characters, no trailing dot) or a bare IPv6 address in
+ * its compressed form (parseReceiver drops the brackets), a colon, then a
+ * port from 1 to 65535 with no leading zero. A URL round trip is the
+ * canonical form, as it is for the list's own hosts. Every key the page
+ * writes passes, so one that doesn't comes from a broken or forged page, and
+ * the whole context goes: dropping just that key would shift the list under
+ * rankPos.
+ */
+export function candidateKeyOk(key: string): boolean {
+  // Before any parsing: a forged key of any length mustn't cost a regex and a URL parse.
+  if (key.length > MAX_CANDIDATE_KEY) return false;
+  const m = key.match(/^(.+):([1-9][0-9]{0,4})$/);
+  if (!m || Number(m[2]) > 65_535) return false;
+  const host = m[1]!;
+  const ipv6 = host.includes(":");
+  if (!ipv6 && !/^(?=.{1,253}$)[a-z0-9_-]+(?:\.[a-z0-9_-]+)*$/.test(host)) return false;
+  const bracketed = ipv6 ? `[${host}]` : host;
+  try {
+    return new URL(`http://${bracketed}/`).hostname === bracketed;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * How Pick best chose the receiver (issue #61, lib/pick-context.ts). The page
@@ -125,7 +139,7 @@ const pickInput = z
     // A place in a list of at most MAX_ROWS receivers, from 0.
     rankPos: z.number().int().min(0).max(MAX_ROWS - 1),
     candidates: z
-      .array(z.string().regex(CANDIDATE_KEY).refine(candidatePortOk, "port out of range"))
+      .array(z.string().refine(candidateKeyOk, "not a receiver key"))
       .min(1)
       .max(MAX_CANDIDATES)
       .refine((keys) => new Set(keys).size === keys.length, "duplicate candidate"),
