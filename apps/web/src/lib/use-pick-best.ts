@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LIST_MAX_AGE_MS, receiverKey, type Receiver } from "./kiwi-list";
+import { pickContext, pickKey, type PickContext, type PickSource } from "./pick-context";
 import { DEFAULT_KIWI_PORT } from "./receiver";
+import { serverNow } from "./server-clock";
 import type { RadioErrorCode, RadioStatus } from "./use-radio";
 
 /**
@@ -73,7 +75,13 @@ export type Provenance = (host: string, port: number) => { fromList: boolean; se
 
 type Fallback = { receiver: Receiver; fromList: boolean };
 
+/** What a run was asked to do, kept for the report context (pick-context). */
+export type PickRun = { source: PickSource; freqKhz: number };
+
 type Chain = {
+  /** The ranked list as given, refused receivers included: rankPos counts in this. */
+  ranked: Receiver[];
+  run?: PickRun;
   candidates: Receiver[];
   tried: Receiver[];
   /** Failures that count against MAX_ATTEMPTS. */
@@ -157,6 +165,35 @@ export function usePickBest(
   provenanceRef.current = provenance;
   // When each receiver last refused, by refusedKey.
   const refused = useRef(new Map<string, number>());
+  /**
+   * How a run chose the receiver it last tuned. Outlives the chain (the
+   * reception prompt comes a minute or more after the watch ends); a new run,
+   * a hand pick (cancel) or the way back to the old receiver replaces or drops it.
+   */
+  const picked = useRef<{ key: string; context: PickContext } | null>(null);
+  /** Tunes a candidate of `c` and notes how it was chosen. */
+  const tuneCandidate = useCallback(
+    (c: Chain, r: Receiver) => {
+      picked.current = c.run
+        ? { key: pickKey(r), context: pickContext(c.ranked, r, c.run.source, c.run.freqKhz, serverNow()) }
+        : null;
+      tune(r, true);
+    },
+    [tune],
+  );
+  /**
+   * Forgets how the last run chose once the dial is somewhere it didn't rank
+   * for: coming back to that frequency later is the listener's own choice, and
+   * its pick time would be long before the listening an answer is about.
+   */
+  const forgetOffFrequency = useCallback((freqKhz: number) => {
+    if (picked.current && picked.current.context.freqKhz !== freqKhz) picked.current = null;
+  }, []);
+  /** How a run chose the receiver at host:port, or null if no run chose it (a hand pick, the way back). */
+  const pickedFor = useCallback((host: string, port: number): PickContext | null => {
+    const p = picked.current;
+    return p && p.key === pickKey({ host, port }) ? p.context : null;
+  }, []);
   /** Whether this receiver refused within REFUSED_MS, so neither a run nor a suggestion should offer it. */
   const isRefused = useCallback(
     (r: { host: string; port?: number }) => Date.now() - (refused.current.get(refusedKey(r)) ?? -Infinity) < REFUSED_MS,
@@ -185,6 +222,8 @@ export function usePickBest(
       if (!back || c.tried.some((r) => receiverKey(r) === receiverKey(back.receiver))) return false;
       clearTimeout(c.retryTimer);
       c.returning = { receiver: back.receiver, why };
+      // The receiver it goes back to wasn't chosen by this run (and maybe not by any).
+      picked.current = null;
       setRunning(false);
       setNote(`${why} Going back to ${back.receiver.name}…`);
       tune(back.receiver, back.fromList);
@@ -199,7 +238,11 @@ export function usePickBest(
    * when the candidates leave it out.
    */
   const start = useCallback(
-    (covering: Receiver[], known: readonly Receiver[] = covering): boolean => {
+    (covering: Receiver[], known: readonly Receiver[] = covering, run?: PickRun): boolean => {
+      // A new attempt supersedes how the last run chose, even if this one never
+      // tunes anything: a failed beacon Listen leaves the old receiver playing
+      // on a band where another beacon is now asked about.
+      picked.current = null;
       if (!covering.length) {
         finish("No listed receiver covers this frequency.");
         return false;
@@ -216,7 +259,9 @@ export function usePickBest(
       }
       clearTimers(chain.current);
       const before = latestStatus.current;
-      chain.current = {
+      const c: Chain = {
+        ranked: covering,
+        run,
         candidates,
         tried: [first],
         strikes: 0,
@@ -224,17 +269,21 @@ export function usePickBest(
         fallback: playing(before, known, provenanceRef.current),
         retried: false,
       };
+      chain.current = c;
       setRunning(true);
       setSettled(false);
       setNote(null);
-      tune(first, true);
+      tuneCandidate(c, first);
       return true;
     },
-    [finish, tune, isRefused],
+    [finish, tuneCandidate, isRefused],
   );
 
-  /** The user chose something else (a row, Listen): just stop following. */
-  const cancel = useCallback(() => finish(), [finish]);
+  /** The user chose something else (a row, Listen): just stop following, and forget how the last run chose. */
+  const cancel = useCallback(() => {
+    picked.current = null;
+    finish();
+  }, [finish]);
 
   /**
    * The user pressed Stop picking: stop, and don't leave them in silence.
@@ -250,6 +299,8 @@ export function usePickBest(
       return true;
     }
     if (c && goBack(c, "Stopped.")) return true;
+    // Abandoned mid-run: a tune still in flight mustn't count as its choice.
+    if (c) picked.current = null;
     finish();
     return false;
   }, [finish, goBack]);
@@ -308,7 +359,11 @@ export function usePickBest(
     // without trying to go back. One of them, a lookup still stuck on an
     // earlier dead name, says when to try the same receiver again; do that once.
     if (!status.code) {
-      if (!status.retryAfterMs || c.retried) return finish();
+      if (!status.retryAfterMs || c.retried) {
+        // The run ends on the service's failure, not on a choice that played.
+        picked.current = null;
+        return finish();
+      }
       c.retried = true;
       setNote(`Waiting on an earlier address lookup; trying ${current.name} again…`);
       c.retryTimer = setTimeout(() => {
@@ -331,8 +386,8 @@ export function usePickBest(
     c.tried.push(next);
     c.retried = false;
     setNote(`${current.name} ${WHY_SKIPPED[status.code]}; trying ${next.name}…`);
-    tune(next, true);
-  }, [status, tune, finish, goBack]);
+    tuneCandidate(c, next);
+  }, [status, tune, tuneCandidate, finish, goBack]);
 
-  return { start, cancel, stop, note, running, settled, isRefused };
+  return { start, cancel, stop, note, running, settled, isRefused, pickedFor, forgetOffFrequency };
 }

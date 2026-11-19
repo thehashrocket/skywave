@@ -47,6 +47,22 @@ model ReceptionReport {
   /// "heard" | "not_heard" | "no_open"
   outcome      String
   comment      String?
+  /// How Pick best chose this receiver (issue #61; lib/pick-context.ts).
+  /// All null for a hand-picked receiver, a page from before this column,
+  /// or context the server couldn't vouch for (the answer is kept anyway).
+  /// When it tuned the receiver, ms since the epoch by the server's clock.
+  pickedAtMs   BigInt?
+  /// "beacon" | "listen" | "link" | "drawer" | "better"; text, like txKind.
+  pickSource   String?
+  /// Place in the ranked list the run was given, from 0.
+  rankPos      Int?
+  /// The ranked list's first 10 receivers, "host:port", best first.
+  candidates   Json?
+  /// The receiver's position, listed SNR and users at pick time.
+  pickLat      Float?
+  pickLon      Float?
+  pickSnr      Float?
+  pickUsers    Int?
 
   @@index([receiverHost, receiverPort, freqKhz])
   @@index([listenerId, createdAt])

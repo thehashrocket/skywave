@@ -76,6 +76,43 @@
 
 ## Web app
 
+### Live spot feed for receiver ranking (#61)
+
+**What:** Feed live RBN and/or WSPR spots to Pick best as a re-order after today's order, the way `rankByNoise` works (`apps/web/src/lib/noise-rank.ts`).
+
+**Why:** If the #61 replay shows that spots near a receiver predict "heard" better than today's order, the ranking still needs spots live. The replay alone ships nothing.
+
+**Context:** Owner D7 in the #61 eng review (2026-11-18). Start only after the #61 replay passes its pre-registered bar (D1, D4); a pass also says which source earns the work. RBN live goes through #69's single connection in the radio service once its login question is settled. wspr.live (https://wspr.live/) is a free, non-commercial research service with no availability promise: use it only as a cached, rate-limited poll, and fall back to today's order when it's down or slow. A WSPR spot counts only when both ends match: transmitter near the station or beacon, receiver near the Kiwi.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** #61 replay passing; #69 login (RBN half only)
+
+### Pick context edge cases (#61)
+
+**What:** Close the rare cases where a reception report's Pick best context is dropped or mislabelled, before the #61 replay reads that data. The answer itself is never lost in any of them.
+
+**Why:** The owner capped the PR #73 review rounds so collection could start (2026-11-18). Every item below was noted, not fixed. Each one only drops or mislabels the optional pick columns.
+
+**Context:** The noted items:
+- A question left up after Stop or an error picks up a later run's context for the same receiver, even when that run is on another frequency. The fix is to compare the live `pickedFor()` frequency with the snapshot's.
+- List rows whose hosts differ only by case become duplicate candidates, so the whole context is dropped. The fix is to dedupe on the lowercased key.
+- A run that runs out of receivers with nothing to go back to leaves `picked` set.
+- A radio-side tuning correction drops context without logging it.
+- The retry timer keeps the first attempt's pick time (owner ruling: keep).
+- IPv6 keys are dropped.
+- A failed non-beacon start over-drops.
+- One bad candidate key drops the whole context.
+- The beacon bound is 1.5 s looser than it needs to be.
+- Candidate ports 0 and above 65535 pass the check.
+- pickSource isn't checked against the report kind.
+- The server-clock offset goes stale after the machine sleeps or the clock changes (`server-clock.ts`).
+- The listen, link and better source labels and the promptPick frequency guard have no tests.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** nothing; do before the #61 replay's count gate
+
 ### Pick best follow-ups from the design-pass review
 
 **What:** Finish the refused-receiver memory and the Pick best edges the design-pass /ship reviews listed but didn't fix.

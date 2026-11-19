@@ -1,9 +1,11 @@
 import { z } from "zod";
 import { scheduledOn, type Broadcast } from "@/lib/eibi";
 import { beaconOnBand, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
-import { findReceiver } from "@/lib/kiwi-list";
+import { findReceiver, MAX_PLAUSIBLE_SNR, MAX_ROWS } from "@/lib/kiwi-list";
+import { MAX_CANDIDATES, MAX_USERS, PICK_SOURCES, pickKey } from "@/lib/pick-context";
 import { MODES } from "@/lib/radio-types";
 import {
+  BEACON_MIN_HEARD_MS,
   COMMENT_MAX,
   LISTING_GRACE_MS,
   MAX_LISTED,
@@ -84,6 +86,83 @@ export { SAME_CHANNEL_MS };
  */
 export const RECEIVER_REPORTS_PER_HOUR = 30;
 
+/**
+ * How old a pick may be: a listening session lasts at most an hour on the
+ * radio service, so anything much older is a page bug or made up.
+ */
+export const MAX_PICK_AGE_MS = 3 * 60 * MINUTE;
+
+/**
+ * A candidate as pickKey writes it: a lowercase hostname or IPv4 address (at
+ * most 253 characters), a colon, a port. Anything else isn't a receiver key.
+ */
+const CANDIDATE_KEY = /^[a-z0-9._-]{1,253}:[0-9]{1,5}$/;
+
+/**
+ * How Pick best chose the receiver (issue #61, lib/pick-context.ts). The page
+ * can't be vouched for, so this is checked, and bad context costs only
+ * itself: owner decision D6 keeps the answer, which is the scarce part. The
+ * values themselves (position, SNR, users) can't be checked against the list
+ * as it was at pick time; only their shape and ranges are.
+ */
+const pickInput = z
+  .object({
+    pickedAtMs: z.number().int().positive(),
+    pickSource: z.enum(PICK_SOURCES),
+    // A place in a list of at most MAX_ROWS receivers, from 0.
+    rankPos: z.number().int().min(0).max(MAX_ROWS - 1),
+    candidates: z
+      .array(z.string().regex(CANDIDATE_KEY))
+      .min(1)
+      .max(MAX_CANDIDATES)
+      .refine((keys) => new Set(keys).size === keys.length, "duplicate candidate"),
+    freqKhz: z.number().positive().max(32_000),
+    lat: z.number().min(-90).max(90).optional(),
+    lon: z.number().min(-180).max(180).optional(),
+    snr: z.number().min(0).max(MAX_PLAUSIBLE_SNR).nullable(),
+    users: z.number().int().min(0).max(MAX_USERS),
+  })
+  // pickContext keeps a position only when both halves are known.
+  .refine((p) => (p.lat === undefined) === (p.lon === undefined), { path: ["lat"], message: "lat without lon" });
+type PickInput = z.infer<typeof pickInput>;
+
+/**
+ * The latest a pick can come in a beacon slot that's then asked about. The
+ * page asks about a slot only if BEACON_MIN_HEARD_MS of it played after audio
+ * started (beaconPromptAt), and the pick precedes the audio: so a pick after
+ * slot start + SLOT_MS - BEACON_MIN_HEARD_MS can't be the one that led to it.
+ */
+export const PICK_IN_SLOT_MS = SLOT_MS - BEACON_MIN_HEARD_MS;
+
+/**
+ * Whether a well-formed pick fits the report it came with: ranked for the
+ * frequency answered about, made before the beacon slot asked about could
+ * still be heard (and not in the future or long ago, by this server's clock),
+ * and naming the answered receiver at its rank when that's among the candidates.
+ */
+export function pickChecks(
+  pick: PickInput,
+  report: { receiverHost: string; receiverPort: number; freqKhz: number; slotStartMs?: number },
+  ms: number,
+): boolean {
+  const { rankPos, candidates, pickedAtMs } = pick;
+  const key = pickKey({ host: report.receiverHost, port: report.receiverPort });
+  const named =
+    rankPos < candidates.length
+      ? candidates[rankPos] === key
+      : // Past the stored head: the list was longer than it, and the receiver isn't in it.
+        candidates.length === MAX_CANDIDATES && !candidates.includes(key);
+  return (
+    named &&
+    pick.freqKhz === report.freqKhz &&
+    pickedAtMs <= ms + MAX_CLOCK_SKEW_MS &&
+    pickedAtMs >= ms - MAX_PICK_AGE_MS &&
+    // Beacon Listen picks the beacon on the air, so the slot asked about can be
+    // the one that was already on when it picked.
+    (report.slotStartMs === undefined || pickedAtMs < report.slotStartMs + PICK_IN_SLOT_MS)
+  );
+}
+
 /** Blank text is no text. */
 const optionalText = (max: number) =>
   z
@@ -108,6 +187,14 @@ const reportInput = z.object({
   slotStartMs: z.number().int().optional(),
   outcome: z.enum(OUTCOMES),
   comment: optionalText(COMMENT_MAX),
+  // Malformed context is dropped here rather than failing the whole report.
+  pick: pickInput.optional().catch(({ error }) => {
+    console.warn(
+      "reports.submit: dropped malformed pick context:",
+      error.issues.map((i) => i.path.join(".") || "(root)").join(", "),
+    );
+    return undefined;
+  }),
 });
 
 export type ReportInput = z.input<typeof reportInput>;
@@ -132,7 +219,7 @@ export const reportsRouter = router({
     // and a station the schedule had on that frequency just now (or the
     // beacon the schedule had on that band in the slot asked about). From this
     // server's cached copies; neither fetches per request.
-    const { slotStartMs, ...report } = input;
+    const { slotStartMs, pick, ...report } = input;
     if (input.txKind === "beacon") {
       if (slotStartMs === undefined || !beaconSlotChecks(input.txName, freqKhz, slotStartMs, now))
         return { accepted: false };
@@ -159,9 +246,28 @@ export const reportsRouter = router({
     ]);
     if (lastHour >= REPORTS_PER_HOUR || receiverHour >= RECEIVER_REPORTS_PER_HOUR || sameChannel > 0)
       return { accepted: false };
-    // The slot is kept for beacons only.
+    const slot = input.txKind === "beacon" ? slotStartMs : undefined;
+    let fit = pick;
+    if (pick && !pickChecks(pick, { ...input, slotStartMs: slot }, now)) {
+      console.warn("reports.submit: dropped pick context that doesn't fit the report");
+      fit = undefined;
+    }
     await ctx.db.receptionReport.create({
-      data: input.txKind === "beacon" ? { ...report, slotStartMs: BigInt(slotStartMs!) } : report,
+      data: {
+        ...report,
+        // The slot is kept for beacons only.
+        ...(slot !== undefined && { slotStartMs: BigInt(slot) }),
+        ...(fit && {
+          pickedAtMs: BigInt(fit.pickedAtMs),
+          pickSource: fit.pickSource,
+          rankPos: fit.rankPos,
+          candidates: fit.candidates,
+          pickLat: fit.lat,
+          pickLon: fit.lon,
+          pickSnr: fit.snr,
+          pickUsers: fit.users,
+        }),
+      },
     });
     return { accepted: true };
   }),
