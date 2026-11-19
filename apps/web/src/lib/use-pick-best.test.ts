@@ -442,6 +442,12 @@ describe("usePickBest", () => {
         await act(async () => void serverNow());
         expect(hook.result.current.pickedFor("a", 8073)).toMatchObject({ rankPos: 0, pickedAtMs: at });
         expect(hook.result.current.dropCount()).toBe(drops);
+        // Value (extension): protects=a pick the sleep's re-measure proved right survives a later correction (this second jump was by hand) while the clock reads settled; fails_when=the effect drops on any settled notice, ignoring the measurement count or never clearing the flag; why_new=only unsettled notices reached the proven pick; seam=fake timers, the real server clock fed responses; no_claim=none beyond protects
+        act(() =>
+          noteResponse(new Headers({ date: new Date(Date.now() - 600_000).toUTCString() }), Date.now() - 100, Date.now()),
+        );
+        expect(hook.result.current.pickedFor("a", 8073)).toMatchObject({ rankPos: 0, pickedAtMs: at });
+        expect(hook.result.current.dropCount()).toBe(drops);
       });
 
       it("drops it when the re-measure corrects a change by hand", async () => {

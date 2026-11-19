@@ -160,6 +160,24 @@ describe("serverNow", () => {
     off();
   });
 
+  // Value: protects=a response that closes a jump nothing had read yet still tells listeners the time moved onto the computer's clock, and a settled clock then stays silent (no stray switch notice); fails_when=noteResponse notifies only on a correction, or it leaves the wall-clock flag set so the next serverNow announces a switch back; why_new=existing jump tests all call serverNow before the response; seam=fake timers (setSystemTime moves only Date); no_claim=none beyond protects
+  it("tells listeners once when a response is the first to see a jump", async () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
+    const told = vi.fn();
+    const off = onServerOffset(told);
+    // Ten minutes asleep, and nothing read the clock before the next response.
+    const woke = TRUE_MS + 600_000;
+    vi.setSystemTime(woke);
+    noteResponse(headers({ date: new Date(woke).toUTCString() }), Date.now() - 100, Date.now());
+    expect(told).toHaveBeenCalledTimes(1);
+    expect(serverClockSettled()).toBe(true);
+    expect(Math.abs(serverNow() - woke)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS + 50);
+    await Promise.resolve();
+    expect(told).toHaveBeenCalledTimes(1);
+    off();
+  });
+
   // Value: protects=a listener that throws neither fails the response that measured the clock (a tRPC call) nor keeps the other listeners from hearing; fails_when=listeners run bare inside noteResponse; why_new=clock-edges TODO (adversarial review); seam=console.error spied; no_claim=none beyond protects
   it("keeps measuring when a listener throws", () => {
     vi.useFakeTimers({ now: TRUE_MS });
