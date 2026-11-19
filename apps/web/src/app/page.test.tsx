@@ -74,11 +74,12 @@ vi.mock("@/components/MapPanel", () => ({
     last: { host: string; port: number } | null;
     onListen: (r: Receiver) => void;
     onBrowse: () => void;
-    beacons?: { atMs: number; selected: string | null } | null;
+    beacons?: { atMs: number; selected: string | null; off?: readonly string[] } | null;
     children?: React.ReactNode;
   }) => (
     <>
       <output aria-label="map beacons">{beacons ? `on, selected ${beacons.selected ?? "none"}` : "off"}</output>
+      <output aria-label="map beacons off">{beacons?.off?.join(" ") ?? ""}</output>
       {children}
       <output aria-label="map admitted">{admitted ? "yes" : "no"}</output>
       <output aria-label="map last">{last ? `${last.host}:${last.port}` : "none"}</output>
@@ -122,6 +123,9 @@ const presetSelect: { current?: (p: { freqKhz: number; mode: "am" }) => void } =
 const receiverList: { data?: { receivers: Receiver[] }; errorUpdatedAt: number } = { errorUpdatedAt: 0 };
 const schedule: { data?: { season: string; bundled: boolean; broadcasts: Broadcast[] } } = {};
 vi.mock("@/lib/use-schedule", () => ({ useSchedule: () => schedule }));
+// NCDXF's beacons off the air (#69), as useBeaconStatus hands them to the page.
+const beaconsOff: { current: ReadonlyMap<string, string | null> } = { current: new Map() };
+vi.mock("@/lib/use-beacon-status", () => ({ useBeaconStatus: () => beaconsOff.current }));
 const submitReport = vi.fn();
 vi.mock("@/lib/use-submit-report", () => ({ useSubmitReport: () => submitReport }));
 // The radio service's measured noise floors (issue #67), as useNoise hands them to the page.
@@ -193,6 +197,7 @@ beforeEach(() => {
   radio.viewError = null;
   schedule.data = undefined;
   noise.current = null;
+  beaconsOff.current = new Map();
   radio.showView.mockClear();
   radio.startScan.mockClear();
   radio.tune.mockClear();
@@ -2570,6 +2575,26 @@ describe("ListenPage", () => {
       expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 18_110, mode: "cw" }));
       expect(screen.queryByText("Checking the time with the server…")).toBeNull();
       vi.unstubAllGlobals();
+    });
+
+    // Value: protects=a beacon NCDXF lists as off the air is marked in the strip ("Listed off the air" and its note, tied to its Listen for screen readers), the map is told to dim it, and its Listen still tunes it in CW so a listener can report it back on the air (owner); other rows are unmarked; fails_when=the strip ignores the official status, the mark isn't described to the Listen, the map isn't told, or Listen on an OFF beacon is blocked; why_new=issue #69 v1 (owner: ask, marked as off); seam=useBeaconStatus, MapPanel, picker and radio mocked, real BeaconStrip; no_claim=how the dimmed map looks (map style)
+    it("marks a beacon listed off the air, and still listens to it", () => {
+      beaconsOff.current = new Map([["YV5B", "The beacon is off the air temporarily."]]);
+      render(<ListenPage />);
+      openStrip();
+      const off = screen.getByRole("button", { name: "Listen to YV5B on 18.110 MHz" }) as HTMLButtonElement;
+      expect(off.closest("tr")!.getAttribute("data-off")).toBe("true");
+      expect(off.closest("tr")!.textContent).toContain("Listed off the air. The beacon is off the air temporarily.");
+      expect(document.getElementById(off.getAttribute("aria-describedby")!)!.textContent).toContain(
+        "Listed off the air",
+      );
+      expect(screen.getByLabelText("map beacons off").textContent).toBe("YV5B");
+      const on = screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" });
+      expect(on.closest("tr")!.textContent).not.toContain("off the air");
+      expect(on.getAttribute("aria-describedby")).toBeNull();
+      act(() => fireEvent.click(off));
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 18_110, mode: "cw" }));
+      expect(screen.getByLabelText("map beacons").textContent).toBe("on, selected YV5B");
     });
 
     // Value: protects=the strip shows the beacon on each band now and turns on the map's beacon layer; Listen tunes the band in CW through Pick best with receivers ranked for that beacon (not the strongest or nearest), and the map gets the pick for its path; fails_when=Listen tunes another frequency or mode, ranks by SNR, bypasses Pick best, or the map isn't told; why_new=beacon mode (#59); seam=MapPanel/picker/radio mocked, real BeaconStrip and ranking; no_claim=what the map draws (ReceiverMap tests)

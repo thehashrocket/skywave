@@ -15,6 +15,12 @@ type Props = {
   pick: (BeaconPick & { atMs?: number }) | null;
   /** When audio started on the picked beacon's channel (server time), or null for none yet. */
   audioStartMs?: number | null;
+  /**
+   * Beacons NCDXF lists as off the air (issue #69), callsign to its note:
+   * shown greyed with the note. Listen still works, so a listener can hear
+   * (and report) one back on the air before the list catches up.
+   */
+  off?: ReadonlyMap<string, string | null>;
   /** The picked beacon's turn the reception prompt plans to ask about (server time), null for none. */
   askSlotMs?: number | null;
   /** The listener closed enough questions that none are asked in this tab. */
@@ -31,6 +37,7 @@ type Props = {
 };
 
 const SECOND = 1_000;
+const NONE_OFF: ReadonlyMap<string, string | null> = new Map();
 
 /** The strip's summary: where focus goes when the strip is opened from elsewhere, or its prompt goes away. */
 export function focusBeaconStrip() {
@@ -125,6 +132,7 @@ export function BeaconStrip({
   onOpenChange,
   tunedBand,
   pick,
+  off = NONE_OFF,
   audioStartMs = null,
   askSlotMs = null,
   questionsOff = false,
@@ -159,15 +167,26 @@ export function BeaconStrip({
                 const beacon = beaconOnBand(now, b);
                 // The picked beacon stays marked as it moves up the bands; Listen is pressed only on its own band.
                 const picked = pick?.call === beacon.call;
+                const isOff = off.has(beacon.call);
+                const note = off.get(beacon.call);
                 return (
                   <Fragment key={khz}>
-                    <tr data-current={tunedBand === b || undefined} data-picked={picked || undefined}>
+                    <tr
+                      data-current={tunedBand === b || undefined}
+                      data-picked={picked || undefined}
+                      data-off={isOff || undefined}
+                    >
                       <th scope="row" className="beacons-freq">
                         {(khz / 1000).toFixed(3)}
                       </th>
                       <td className="beacons-call">
                         {beacon.call} <span className="beacons-place">{beacon.location}</span>
                         {picked && <span className="beacons-picked"> · picked</span>}
+                        {isOff && (
+                          <span className="beacons-off" id={`beacons-off-${b}`}>
+                            Listed off the air{note ? `. ${note}` : " by NCDXF."}
+                          </span>
+                        )}
                       </td>
                       <td>
                         <button
@@ -175,6 +194,7 @@ export function BeaconStrip({
                           className="link-button inline"
                           aria-label={`Listen to ${beacon.call} on ${(khz / 1000).toFixed(3)} MHz`}
                           aria-pressed={picked && pick?.bandIndex === b}
+                          aria-describedby={isOff ? `beacons-off-${b}` : undefined}
                           onClick={(e) => {
                             if (e.detail <= 1) onListen(b);
                           }}
@@ -199,7 +219,8 @@ export function BeaconStrip({
           </p>
           <p className="beacons-note">
             By the UTC clock; the receiver&apos;s audio runs a second or two behind, and a beacon may be off the air.
-            Each moves up a band every 10 seconds.
+            Each moves up a band every 10 seconds. &ldquo;Listed off the air&rdquo; is NCDXF&apos;s list, which can lag
+            by days and misses beacons off for a contest; hearing one back on is worth reporting.
           </p>
         </>
       )}

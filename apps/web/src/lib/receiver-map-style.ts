@@ -194,6 +194,7 @@ export function buildStyle(t: MapTokens): StyleSpecification {
         },
       },
       // Beacons, over the receivers: filled while on the air, a faint ring otherwise; the selected one larger, ringed in red.
+      // One NCDXF lists as off the air (#69) is dimmer still, and never filled.
       {
         id: "beacon-dots",
         type: "circle",
@@ -204,7 +205,14 @@ export function buildStyle(t: MapTokens): StyleSpecification {
           "circle-opacity": ["case", ["get", "onAir"], 1, 0],
           "circle-stroke-color": ["case", ["get", "selected"], t.needle, t.beacon],
           "circle-stroke-width": ["case", ["get", "selected"], 2, 1.5],
-          "circle-stroke-opacity": ["case", ["any", ["get", "onAir"], ["get", "selected"]], 1, 0.6],
+          "circle-stroke-opacity": [
+            "case",
+            ["get", "off"],
+            0.25,
+            ["any", ["get", "onAir"], ["get", "selected"]],
+            1,
+            0.6,
+          ],
         },
       },
       {
@@ -220,7 +228,12 @@ export function buildStyle(t: MapTokens): StyleSpecification {
           "text-offset": [-0.8, 0],
           "text-allow-overlap": false,
         },
-        paint: { "text-color": t.beacon, "text-halo-color": t.sea, "text-halo-width": 1 },
+        paint: {
+          "text-color": t.beacon,
+          "text-opacity": ["case", ["get", "off"], 0.45, 1],
+          "text-halo-color": t.sea,
+          "text-halo-width": 1,
+        },
       },
     ],
   };
