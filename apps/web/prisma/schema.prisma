@@ -87,7 +87,29 @@ model ReceptionReport {
   /// before this column. The list can lag the air by days, and a beacon off
   /// for a contest still reads "OK".
   beaconStatus String?
+  /// Beacons only (#69 v2): how many times the Reverse Beacon Network's
+  /// skimmers spotted this beacon (mode "NCDXF B") on `rbnDay`, the last whole
+  /// UTC day the server had counted when the answer arrived (usually
+  /// yesterday). 0 with a "heard" answer: heard back on the air. Null for a
+  /// station, when the server had no count yet, or on older rows.
+  rbnSpots     Int?
+  /// The UTC day ("YYYY-MM-DD") `rbnSpots` counts.
+  rbnDay       String?
 
   @@index([receiverHost, receiverPort, freqKhz])
   @@index([listenerId, createdAt])
+}
+
+/// One UTC day of the Reverse Beacon Network's IBP spots (#69 v2): how many
+/// times its skimmers spotted each beacon. Fetched once, by whichever server
+/// first needs the day after 01:00 UTC, from RBN's daily file.
+model RbnBeaconDay {
+  /// "YYYY-MM-DD", UTC.
+  day       String   @id
+  createdAt DateTime @default(now())
+  /// All NCDXF B spots of the 18 beacons that day. Under 2,000
+  /// (RBN_MIN_DAY_SPOTS) is RBN's own outage: nothing is marked quiet.
+  total     Int
+  /// [{ call, spots }] for all 18 beacons, in transmission order.
+  beacons   Json
 }
