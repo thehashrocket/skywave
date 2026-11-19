@@ -588,6 +588,12 @@ export default function ListenPage() {
    */
   // The latest beacon Listen waiting on the clock; an earlier click that's still waiting does nothing.
   const beaconWait = useRef(0);
+  // What the listener is doing, read when a beacon Listen's wait ends: any change
+  // since the click (Stop, another receiver, the dial, beacon mode off, a run)
+  // cancels it, so it can never reopen a volunteer's receiver after Stop.
+  const listening = JSON.stringify([status.state, status.host, status.port, freqKhz, mode, beaconMode, pickBest.running]);
+  const listeningNow = useRef(listening);
+  listeningNow.current = listening;
   const listenToBeaconNow = useCallback(
     (band: number) => {
       const now = serverNow();
@@ -616,14 +622,18 @@ export default function ListenPage() {
    * page's clock is unsure (a forward jump not yet measured, or no measurement
    * yet) Listen first asks the server for its time, briefly, then picks.
    */
+  // The current listenToBeaconNow, so a Listen after a wait uses the receiver list as it is then.
+  const listenToBeaconLatest = useRef(listenToBeaconNow);
+  listenToBeaconLatest.current = listenToBeaconNow;
   const listenToBeacon = useCallback(
     (band: number) => {
       const ticket = ++beaconWait.current;
       if (serverClockSettled()) return listenToBeaconNow(band);
+      const at = listeningNow.current;
       setPageMessage({ from: "clock" });
       void settleServerClock().then(() => {
         setPageMessage((m) => (m?.from === "clock" ? null : m));
-        if (beaconWait.current === ticket) listenToBeaconNow(band);
+        if (beaconWait.current === ticket && listeningNow.current === at) listenToBeaconLatest.current(band);
       });
     },
     [listenToBeaconNow],

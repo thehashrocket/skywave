@@ -153,10 +153,13 @@ describe("serverNow", () => {
     // Took 4 s, and the server stamped it 1.5 s off the middle.
     noteResponse(precise(TRUE_MS - 2_000 + 1_500), Date.now() - 4_000, Date.now());
     expect(serverNow()).toBe(TRUE_MS + 1_500);
+    // Value (extension): protects=a clock measured only roughly (a 4 s first reply, good to 2 s) reads as unsure until bettered, so beacon Listen waits for the quick re-ask rather than picking off it; fails_when=settled ignores how well the clock was measured; why_new=round 4 specialist review; seam=fake timers, stubbed fetch; no_claim=none beyond protects
+    expect(serverClockSettled()).toBe(false);
     await vi.advanceTimersByTimeAsync(REMEASURE_RETRY_MS);
     expect(fetch).toHaveBeenCalledWith(REMEASURE_PATH, expect.objectContaining({ method: "HEAD" }));
     expect(Math.abs(serverNow() - (TRUE_MS + REMEASURE_RETRY_MS))).toBeLessThanOrEqual(1);
     expect(serverClockCorrections()).toBe(1);
+    expect(serverClockSettled()).toBe(true);
   });
 
   // Value: protects=setting the computer's clock back doesn't move the server time the page works from, and a later measurement agrees, so nothing is corrected; fails_when=serverNow is tied to Date.now, or a backward drift is taken as a correction; why_new=clock TODO (owner: monotonic clock); seam=fake timers (setSystemTime moves only Date); no_claim=none

@@ -2459,6 +2459,34 @@ describe("ListenPage", () => {
       act(() => fireEvent(details, new Event("toggle")));
     };
 
+    // Value: protects=a beacon Listen still waiting on the clock does nothing once the listener has pressed Stop (or changed anything else) meanwhile, so it can never reopen a volunteer's receiver after Stop; fails_when=the wait ends in listenToBeaconNow whatever happened since the click; why_new=round 4 specialist review (owner: cancel on any change); seam=MapPanel/picker/radio mocked, real server clock with a fetch answering after a delay; no_claim=the radio service's own Stop handling
+    it("drops a beacon Listen waiting on the clock once the listener presses Stop", async () => {
+      resetServerClock();
+      radio.status = { state: "listening", host: "nyc.example", port: 8073, freqKhz: 9_580, mode: "am" };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          () =>
+            new Promise<Response>((resolve) =>
+              setTimeout(() => resolve(new Response(null, { status: 204, headers: { "x-server-ms": String(Date.now()) } })), 500),
+            ),
+        ),
+      );
+      const page = render(<ListenPage />);
+      openStrip();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+      expect(screen.getByText("Checking the time with the server…")).toBeTruthy();
+      // Stop while it waits.
+      radio.status = { state: "idle" };
+      page.rerender(<ListenPage />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(radio.tune).not.toHaveBeenCalled();
+      expect(screen.queryByText("Checking the time with the server…")).toBeNull();
+      vi.unstubAllGlobals();
+    });
+
     // Value: protects=beacon Listen while the page's clock is unsure (here never measured, the computer's clock 8 s fast) says it's checking the time, asks the server, and picks the beacon actually on the air by the server's clock, not the one the computer's clock names; fails_when=Listen picks at once off an unsure clock, latching the wrong beacon; why_new=P4 TODO (owner: beacon Listen waits for a measurement); seam=MapPanel/picker/radio mocked, real server clock with a stubbed fetch; no_claim=how long the real route takes
     it("checks the time with the server before picking a beacon on an unsure clock", async () => {
       resetServerClock();

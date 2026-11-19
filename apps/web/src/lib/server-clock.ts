@@ -264,11 +264,12 @@ export function serverOffset(): number | null {
 }
 
 /**
- * Whether serverNow() is measured and not counting from the computer's clock
- * through a forward jump (a sleep or a change by hand) it hasn't re-measured.
+ * Whether serverNow() is measured well (to within QUICK_ROUND_TRIP_MS, not a
+ * slow first reply) and not counting from the computer's clock through a
+ * forward jump (a sleep or a change by hand) it hasn't re-measured.
  */
 export function serverClockSettled(): boolean {
-  return monoOffset !== null && !wallClockNow();
+  return monoOffset !== null && offsetError <= QUICK_ROUND_TRIP_MS && !wallClockNow();
 }
 
 /**
