@@ -7,6 +7,9 @@ import {
   DATE_HEADER_ROUNDING_MS,
   MAX_ROUND_TRIP_MS,
   noteResponse,
+  onServerOffset,
+  REMEASURE_MS,
+  REMEASURE_ROUND_TRIP_MS,
   offsetFromResponse,
   resetServerClock,
   serverNow,
@@ -64,6 +67,55 @@ describe("serverNow", () => {
     const first = serverOffset();
     noteResponse(headers({ date: new Date(TRUE_MS + 60_000).toUTCString() }), Date.now(), Date.now());
     expect(serverOffset()).toBe(first);
+  });
+
+  // Value: protects=a manual change or NTP step of the computer's clock doesn't move the server time the page works from, and the next response doesn't re-plan anything; fails_when=serverNow is tied to Date.now again, or a steady offset is replaced after the jump; why_new=clock TODO (owner: monotonic clock + re-plan); seam=fake timers (setSystemTime moves only Date); no_claim=browsers whose monotonic clock pauses in sleep (next test)
+  it("ignores a change of the computer's clock", () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
+    const told = vi.fn();
+    const off = onServerOffset(told);
+    const before = serverNow();
+    vi.setSystemTime(Date.now() - 3_600_000);
+    expect(serverNow()).toBe(before);
+    vi.advanceTimersByTime(1_000);
+    noteResponse(headers({ date: new Date(TRUE_MS + 1_000).toUTCString() }), Date.now() - 100, Date.now());
+    expect(told).not.toHaveBeenCalled();
+    expect(Math.abs(serverNow() - (TRUE_MS + 1_000))).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS);
+    off();
+  });
+
+  // Value: protects=after a sleep the monotonic clock lagged through, the next quick response corrects the offset and tells listeners (the beacon strip, the beacon question), and a slow one can't; fails_when=the offset is never measured again, a slow response replaces it, or listeners aren't told; why_new=clock TODO (owner: monotonic clock + re-plan); seam=fake timers (setSystemTime models the wall clock moving on while performance.now paused); no_claim=network asymmetry
+  it("measures again after a sleep, from a quick response only", () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
+    const told = vi.fn();
+    const off = onServerOffset(told);
+    // Ten minutes asleep: the wall clock and the server moved on, performance.now() didn't.
+    const woke = TRUE_MS + 600_000;
+    vi.setSystemTime(woke);
+    expect(woke - serverNow()).toBeGreaterThan(REMEASURE_MS);
+    noteResponse(headers({ date: new Date(woke).toUTCString() }), Date.now() - REMEASURE_ROUND_TRIP_MS - 1, Date.now());
+    expect(told).not.toHaveBeenCalled();
+    noteResponse(headers({ date: new Date(woke).toUTCString() }), Date.now() - 100, Date.now());
+    expect(told).toHaveBeenCalledTimes(1);
+    expect(Math.abs(serverNow() - woke)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS + 50);
+    off();
+  });
+
+  // Value: protects=on an ordinary visit (no jump) a first offset from a slow response is kept even when a quick later one disagrees by more than REMEASURE_MS, so the clock never moves under the beacon strip; fails_when=any quick response may replace the offset without a jump (the pulled re-measure's bug); why_new=PR #74 red team; seam=fake timers; no_claim=the first offset's accuracy, which is as before
+  it("keeps a slow first offset on an ordinary visit", () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    // The first response took 4.8 s, and the server stamped it right as it was sent.
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now() + 4_800);
+    const first = serverOffset();
+    const told = vi.fn();
+    const off = onServerOffset(told);
+    vi.advanceTimersByTime(30_000);
+    noteResponse(headers({ date: new Date(TRUE_MS + 30_000).toUTCString() }), Date.now() - 50, Date.now());
+    expect(told).not.toHaveBeenCalled();
+    expect(serverOffset()).toBe(first);
+    off();
   });
 
   // Value: protects=before any response, the page's own clock is used rather than nothing; fails_when=serverNow throws or returns NaN with no offset; why_new=server clock; seam=fake system time; no_claim=none

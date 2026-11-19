@@ -14,7 +14,7 @@ import {
 } from "./reception";
 import { DEFAULT_KIWI_PORT } from "./receiver";
 import type { Mode } from "./radio-types";
-import { serverNow } from "./server-clock";
+import { onServerOffset, serverNow } from "./server-clock";
 import type { RadioStatus } from "./use-radio";
 
 /**
@@ -172,10 +172,19 @@ export function useReceptionPrompt(
   // band strip says was missed. A new pick counts from then. Null otherwise.
   const audioStart = useRef<number | null>(null);
   const [beaconAudioStartMs, setBeaconAudioStartMs] = useState<number | null>(null);
+  // Bumped when the server-clock offset becomes known or is replaced after a
+  // jump (lib/server-clock.ts). On a beacon frequency the plan below starts over
+  // then, counting audio from that moment on the new clock, so the question and
+  // the band strip (useServerTick) never work from two clocks; at worst the
+  // question waits one more turn. Broadcasts run on this browser's clock and
+  // aren't restarted.
+  const [clockEpoch, setClockEpoch] = useState(0);
+  useEffect(() => onServerOffset(() => setClockEpoch((e) => e + 1)), []);
+  const beaconClock = pickCall !== null ? clockEpoch : 0;
   useEffect(() => {
     audioStart.current = key !== null && pickCall !== null ? serverNow() : null;
     setBeaconAudioStartMs(audioStart.current);
-  }, [key, pickCall, band]);
+  }, [key, pickCall, band, beaconClock]);
 
   // The beacon turn this plans to ask about (server time), null for none; and
   // whether the listener has turned questions off in this tab. The band strip
@@ -242,7 +251,7 @@ export function useReceptionPrompt(
       setPrompt({ host: s.host, port: s.port ?? DEFAULT_KIWI_PORT, freqKhz: s.freqKhz, mode: s.mode, tx });
     }, wait);
     return () => clearTimeout(timer);
-  }, [key, askable, pickCall, band, update]);
+  }, [key, askable, pickCall, band, update, beaconClock]);
 
   // Unanswered for PROMPT_TTL_MS: the answer would no longer be taken.
   useEffect(() => {

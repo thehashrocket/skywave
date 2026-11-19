@@ -100,26 +100,6 @@
 **Priority:** P4
 **Depends on:** the #61 replay design
 
-### Re-measure the server clock after a jump
-
-**What:** Refresh the page's server-clock offset (`apps/web/src/lib/server-clock.ts`) after the browser's clock jumps: sleep and wake, a manual change, or an NTP step. Today it is measured once per visit.
-
-**Why:** After a jump, beacon slot math, the beacon strip and Pick best's pick times stay off for the rest of the visit. A beacon question can then be skipped or asked about a turn the listener didn't hear well, and a report's pick context can be dropped.
-
-**Context:** PR #74 tried a simple version and pulled it (owner, 2026-11-19). That version replaced the offset whenever a quick response (round trip under 1 s) moved it by more than 2 s. Its red-team review found two problems:
-- **It also fires on ordinary loads.** The first offset can come from a slow response (up to 5 s round trip, so up to about 3 s off), and the next quick response then moves it mid-visit.
-- **The strip and the question split.** After a move, the beacon strip follows the new offset while the planned beacon question stays on the old one, so the line can wrongly say "no question this time".
-
-A design that works should:
-- Let a quicker measurement replace a slower one at once, so load-time error is fixed before the listener acts.
-- Keep the 2 s rule only between quick measurements.
-- Have `use-reception-prompt` re-plan, or shift its audio start and asked slot, when the offset changes.
-- Re-check that a report's pick time and audio start sit on one offset.
-
-**Effort:** M
-**Priority:** P3
-**Depends on:** nothing
-
 ### Pick best follow-ups from the design-pass review
 
 **What:** Finish the refused-receiver memory and the Pick best edges the design-pass /ship reviews listed but didn't fix.
@@ -269,6 +249,16 @@ A design that works should:
 
 
 ## Completed
+
+### Re-measure the server clock after a jump
+
+**What:** Keep the page's server-clock offset right after the computer's clock jumps (sleep and wake, a manual change, an NTP step).
+
+**Completed:** fix/server-clock-monotonic (2026-11-19). How it works (owner: monotonic clock + re-plan):
+- **The clock base:** `serverNow()` counts from `performance.now()`, so a manual change or NTP step doesn't move it at all.
+- **After a sleep:** when the computer's clock and the monotonic clock drift apart by more than 2 s (as when some browsers pause `performance.now()` in sleep), the next response with a round trip under 1 s measures the offset again. It replaces the offset only if it moved by more than 2 s.
+- **Ordinary visits:** without such a jump, later responses are ignored, so a slow first measurement is never shifted mid-visit. That was the pulled version's bug.
+- **The beacon question:** when the offset changes, it starts its plan over on the new clock, so it and the band strip never work from two clocks. At worst it waits one more turn.
 
 ### Pick context edge cases, round 2 (#61)
 

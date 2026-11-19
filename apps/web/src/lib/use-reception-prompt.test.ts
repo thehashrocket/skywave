@@ -13,6 +13,7 @@ import {
   useReceptionPrompt,
 } from "./use-reception-prompt";
 import { LISTING_GRACE_MS, SAME_CHANNEL_MS, STREAM_LATENCY_MS, type BeaconPick } from "./reception";
+import { noteResponse, resetServerClock, serverNow } from "./server-clock";
 
 const allDay = (khz: number, station: string, lang = "E", target = "Eu"): Broadcast => ({
   khz,
@@ -275,6 +276,30 @@ describe("useReceptionPrompt", () => {
       expect(hook.result.current.prompt).toBeNull();
       wait(1);
       expect(hook.result.current.prompt?.tx.name).toBe("4U1UN");
+    });
+
+    // Value: protects=when the server-clock offset is replaced (a sleep the monotonic clock lagged through), the beacon question drops its old plan and starts over on the new clock: audio counted from then, the turn asked about and the band strip's inputs all on one clock, never asked at the old plan's time; fails_when=the plan ignores offset changes, so it fires on the old clock while the strip moved (PR #74 red team); why_new=clock TODO (owner: monotonic clock + re-plan); seam=fake timers, the real server clock fed a response; no_claim=how a browser's monotonic clock behaves in sleep
+    it("starts its plan over on a new clock when the offset is replaced", () => {
+      resetServerClock();
+      noteResponse(new Headers({ date: new Date(Date.now()).toUTCString() }), Date.now(), Date.now());
+      const hook = setup({ status: beaconStatus(), beacon: pick });
+      // Planned: 4U1UN's 12:00:00 turn, asked at 12:00:11.5.
+      expect(hook.result.current.beaconAskSlotMs).toBe(Date.UTC(2026, 10, 18, 12));
+      wait(5_000);
+      // A minute asleep: the computer's clock and the server moved on, performance.now() didn't.
+      vi.setSystemTime(Date.now() + 60_000);
+      act(() => noteResponse(new Headers({ date: new Date(Date.now()).toUTCString() }), Date.now() - 100, Date.now()));
+      const restarted = hook.result.current.beaconAudioStartMs!;
+      expect(Math.abs(restarted - serverNow())).toBeLessThan(10);
+      // Not at the old plan's time, but at 4U1UN's next turn on the new clock: 12:03:00, asked 12:03:11.5.
+      expect(hook.result.current.beaconAskSlotMs).toBe(Date.UTC(2026, 10, 18, 12, 3));
+      wait(6_500);
+      expect(hook.result.current.prompt).toBeNull();
+      wait(Date.UTC(2026, 10, 18, 12, 3) + 10_000 + STREAM_LATENCY_MS - serverNow() - 1);
+      expect(hook.result.current.prompt).toBeNull();
+      wait(1);
+      expect(hook.result.current.prompt?.tx).toMatchObject({ name: "4U1UN", slotStartMs: Date.UTC(2026, 10, 18, 12, 3) });
+      resetServerClock();
     });
 
     // Value: protects=the sent-answer record survives a reload in the tab (sessionStorage), like the gap; fails_when=it lives in memory only, so a reload asks again and the server drops the answer; why_new=owner: beacon answers dropped after thanks; seam=jsdom sessionStorage; no_claim=none
