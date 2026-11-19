@@ -418,8 +418,14 @@ export default function ListenPage() {
     [busy, radio],
   );
 
+  // Goes up on everything the listener does to what's playing: a receiver tuned
+  // (by hand, Pick best or a link), Stop, the dial, the mode, beacon mode, a run
+  // started. A beacon Listen waiting on the clock goes ahead only if it hasn't
+  // moved since the click, so it can never reopen a volunteer's receiver after Stop.
+  const acted = useRef(0);
   const changeFreq = useCallback(
     (khz: number, nextMode?: Mode) => {
+      acted.current++;
       const m = nextMode ?? mode;
       setFreqKhz(khz);
       if (nextMode) setMode(nextMode);
@@ -445,6 +451,7 @@ export default function ListenPage() {
   };
 
   const changeMode = (m: Mode) => {
+    acted.current++;
     setMode(m);
     sendRetune({ freqKhz, mode: m });
   };
@@ -473,6 +480,7 @@ export default function ListenPage() {
   const names = useRef(new Map<string, string>());
   const tuneReceiver = useCallback(
     (r: Target, fromList: boolean) => {
+      acted.current++;
       // A dial retune still waiting on its timer would otherwise go to the old
       // receiver after this tune and switch the service back.
       if (timer.current) clearTimeout(timer.current);
@@ -567,6 +575,7 @@ export default function ListenPage() {
    */
   const startPickBest = useCallback(
     (from: "listen" | "link"): boolean => {
+      acted.current++;
       if (receivers) {
         const khz = latest.current.freqKhz;
         return pickFrom(rankByNoise(rankReceivers(receivers, khz), noiseRef.current, khz), from);
@@ -578,7 +587,11 @@ export default function ListenPage() {
     },
     [receivers, pickFrom],
   );
+  // Beacon mode as last set; the strip can report it open again while open, which isn't a change.
+  const beaconOn = useRef(false);
   const changeBeaconMode = useCallback((on: boolean) => {
+    if (on !== beaconOn.current) acted.current++;
+    beaconOn.current = on;
     setBeaconMode(on);
     if (!on) setBeaconPick(null);
   }, []);
@@ -588,12 +601,6 @@ export default function ListenPage() {
    */
   // The latest beacon Listen waiting on the clock; an earlier click that's still waiting does nothing.
   const beaconWait = useRef(0);
-  // What the listener is doing, read when a beacon Listen's wait ends: any change
-  // since the click (Stop, another receiver, the dial, beacon mode off, a run)
-  // cancels it, so it can never reopen a volunteer's receiver after Stop.
-  const listening = JSON.stringify([status.state, status.host, status.port, freqKhz, mode, beaconMode, pickBest.running]);
-  const listeningNow = useRef(listening);
-  listeningNow.current = listening;
   const listenToBeaconNow = useCallback(
     (band: number) => {
       const now = serverNow();
@@ -629,11 +636,11 @@ export default function ListenPage() {
     (band: number) => {
       const ticket = ++beaconWait.current;
       if (serverClockSettled()) return listenToBeaconNow(band);
-      const at = listeningNow.current;
+      const at = acted.current;
       setPageMessage({ from: "clock" });
       void settleServerClock().then(() => {
         setPageMessage((m) => (m?.from === "clock" ? null : m));
-        if (beaconWait.current === ticket && listeningNow.current === at) listenToBeaconLatest.current(band);
+        if (beaconWait.current === ticket && acted.current === at) listenToBeaconLatest.current(band);
       });
     },
     [listenToBeaconNow],
@@ -650,6 +657,7 @@ export default function ListenPage() {
   }, [receivers]);
   // With nothing to go back to, stop the attempt that's still connecting too.
   const stopPicking = useCallback(() => {
+    acted.current++;
     if (!stopPickBest()) radio.stop();
   }, [stopPickBest, radio]);
   /** Ends any Pick best run (and beacon pick), then tunes. Leaves the pin as it is (pinTo sets it). */
@@ -1111,6 +1119,7 @@ export default function ListenPage() {
           className="receiver"
           onSubmit={(e) => {
             e.preventDefault();
+            acted.current++;
             cancelPickBest();
             if (busy) radio.stop();
             // A blank receiver is Auto: skywave picks one.

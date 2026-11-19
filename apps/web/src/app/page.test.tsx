@@ -2459,10 +2459,14 @@ describe("ListenPage", () => {
       act(() => fireEvent(details, new Event("toggle")));
     };
 
-    // Value: protects=a beacon Listen still waiting on the clock does nothing once the listener has pressed Stop (or changed anything else) meanwhile, so it can never reopen a volunteer's receiver after Stop; fails_when=the wait ends in listenToBeaconNow whatever happened since the click; why_new=round 4 specialist review (owner: cancel on any change); seam=MapPanel/picker/radio mocked, real server clock with a fetch answering after a delay; no_claim=the radio service's own Stop handling
-    it("drops a beacon Listen waiting on the clock once the listener presses Stop", async () => {
+    // Value: protects=a beacon Listen still waiting on the clock does nothing once the listener has pressed the real Stop meanwhile, including the cases where Stop leaves everything looking as it did at the click (a tune still starting; idle, then a receiver, then Stop), so it can never reopen a volunteer's receiver after Stop; fails_when=the wait compares what's playing rather than counting the listener's actions, or ends in listenToBeaconNow whatever happened; why_new=round 4 review passes 1 and 2 (owner: cancel on any change); seam=MapPanel/picker/radio mocked, real server clock with a fetch answering after a delay; no_claim=the radio service's own Stop handling
+    it.each([
+      ["a tune still starting", false],
+      ["idle, then a receiver started", true],
+    ])("drops a beacon Listen waiting on the clock once the listener presses Stop (%s)", async (_label, startOne) => {
       resetServerClock();
-      radio.status = { state: "listening", host: "nyc.example", port: 8073, freqKhz: 9_580, mode: "am" };
+      radio.status = { state: "idle" };
+      radio.tuning = !startOne;
       vi.stubGlobal(
         "fetch",
         vi.fn(
@@ -2476,13 +2480,21 @@ describe("ListenPage", () => {
       openStrip();
       act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
       expect(screen.getByText("Checking the time with the server…")).toBeTruthy();
-      // Stop while it waits.
-      radio.status = { state: "idle" };
+      if (startOne) {
+        // The listener starts something else while it waits; it's connecting.
+        act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+        radio.tuning = true;
+        page.rerender(<ListenPage />);
+      }
+      // Stop, the real button: back to idle, as at the click.
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Stop" })));
+      radio.tuning = false;
       page.rerender(<ListenPage />);
+      const tunesAtStop = radio.tune.mock.calls.length;
       await act(async () => {
         await vi.advanceTimersByTimeAsync(2_000);
       });
-      expect(radio.tune).not.toHaveBeenCalled();
+      expect(radio.tune.mock.calls.length).toBe(tunesAtStop);
       expect(screen.queryByText("Checking the time with the server…")).toBeNull();
       vi.unstubAllGlobals();
     });
