@@ -142,9 +142,12 @@ export function noteResponse(headers: { get(name: string): string | null }, sent
   const agreed = Math.abs(next - shown) <= Math.abs(next - before) ? shown : before;
   monoOffset = first || Math.abs(next - agreed) > REMEASURE_MS ? next : agreed;
   onWallClock = false;
-  // Listeners hear of a correction before it counts as a measurement, so one
-  // can tell a time that moved from a jump measured without moving it.
-  if (first || moved || Math.abs(monoOffset - shown) > REMEASURE_MS) notify();
+  // Measured: the next jump asks at once.
+  askedAt = -Infinity;
+  // Listeners hear of any move, before it counts as a measurement, so one can
+  // tell a time that moved from a jump measured without moving it (keeping the
+  // time shown, as after a sleep, moves nothing).
+  if (first || moved || monoOffset !== shown) notify();
   measurements++;
 }
 

@@ -211,6 +211,41 @@ describe("serverNow", () => {
     off();
   });
 
+  // Value: protects=a re-measure that moves the time by less than REMEASURE_MS still tells listeners (a 2.1 s step by hand, then 0.5 s back, corrected inside the 1-2 s band), so a pick or question planned on the wrong time is dropped or re-planned; fails_when=only moves over REMEASURE_MS notify; why_new=round 3 scoped fix-check (owner D4); seam=fake timers (setSystemTime moves only Date); no_claim=network asymmetry
+  it("tells listeners of a correction inside the 1-2 s band", async () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
+    const told = vi.fn();
+    const off = onServerOffset(told);
+    vi.setSystemTime(Date.now() + 2_100);
+    serverNow();
+    await Promise.resolve();
+    expect(told).toHaveBeenCalledTimes(1);
+    // Half a second back by hand: 1.6 s ahead, still on the computer's clock.
+    vi.setSystemTime(Date.now() - 500);
+    serverNow();
+    expect(serverClockSettled()).toBe(false);
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now() - 100, Date.now());
+    expect(Math.abs(serverNow() - TRUE_MS)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS + 50);
+    expect(told).toHaveBeenCalledTimes(2);
+    off();
+  });
+
+  // Value: protects=after a re-measure lands, the next jump asks the server at once rather than waiting out REMEASURE_RETRY_MS from the last ask; fails_when=the retry clock isn't reset when the clock settles; why_new=round 3 scoped fix-check (owner D4); seam=stubbed fetch, fake timers; no_claim=none beyond protects
+  it("asks at once on a second jump soon after a re-measure", async () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
+    const fetch = vi.fn(async () => new Response(null, { status: 204, headers: { date: new Date(TRUE_MS).toUTCString() } }));
+    vi.stubGlobal("fetch", fetch);
+    vi.setSystemTime(Date.now() + 3_600_000);
+    serverNow();
+    await vi.waitFor(() => expect(serverClockSettled()).toBe(true));
+    vi.advanceTimersByTime(1_000);
+    vi.setSystemTime(Date.now() + 3_600_000);
+    serverNow();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   // Value: protects=listeners hear when serverNow() switches to the computer's clock (a forward jump) and back (the jump undone before any response), after the caller has its value, so the beacon question never keeps a plan made on the other clock; fails_when=only a re-measure notifies, or the switch notifies synchronously inside serverNow; why_new=clock-edges TODO (adversarial review: silent switch); seam=fake timers (setSystemTime moves only Date); no_claim=none beyond protects
   it("tells listeners when it switches clocks, even with no response", async () => {
     vi.useFakeTimers({ now: TRUE_MS });
