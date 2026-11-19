@@ -2524,7 +2524,6 @@ describe("ListenPage", () => {
       vi.unstubAllGlobals();
     });
 
-    // Value: protects=two beacon Listen clicks while the clock check is pending tune only the latest band, once, so an earlier click can't tune a receiver after the later one; fails_when=the ticket guard is dropped and every waiting click tunes when the check ends; why_new=the unsure-clock test clicks once; seam=MapPanel/picker/radio mocked, real server clock with a fetch that never answers; no_claim=how long the real route takes
     // Value: protects=a waiting beacon Listen counts only what the listener does: Pick best moving on to its next receiver by itself doesn't drop it, and closing the drawer does; fails_when=every receiver tune counts (tuneReceiver bumps), or closing the drawer doesn't; why_new=round 4 adversarial review (owner: fix it); seam=MapPanel/picker/radio mocked, real server clock with a fetch that never answers; no_claim=none beyond protects
     it("lets a run's own next receiver pass, but not closing the drawer", async () => {
       resetServerClock();
@@ -2553,6 +2552,7 @@ describe("ListenPage", () => {
       vi.unstubAllGlobals();
     });
 
+    // Value: protects=two beacon Listen clicks while the clock check is pending tune only the latest band, once, so an earlier click can't tune a receiver after the later one; fails_when=the ticket guard is dropped and every waiting click tunes when the check ends; why_new=the unsure-clock test clicks once; seam=MapPanel/picker/radio mocked, real server clock with a fetch that never answers; no_claim=how long the real route takes
     it("tunes only the latest beacon Listen clicked while checking the time", async () => {
       resetServerClock();
       vi.setSystemTime(NOW + 8_000);

@@ -153,8 +153,14 @@ let onWallClock = false;
 let wallDrift = 0;
 /** Times the time shown was found wrong: a correction, or a jump undone before any measurement. */
 let corrections = 0;
-/** Measurable replies since the clock was last unmeasured or switched to the computer's clock. */
+/**
+ * Measurable replies to requests sent after the clock was last measured (so
+ * several sent together count once), since it was unmeasured or switched to
+ * the computer's clock.
+ */
 let replies = 0;
+/** Date.now() when the clock was last measured. */
+let measuredWall = -Infinity;
 /** Whether remeasure() is waiting on an answer. */
 let asking = false;
 let nextAsk: ReturnType<typeof setTimeout> | undefined;
@@ -213,8 +219,12 @@ export function noteResponse(headers: { get(name: string): string | null }, sent
   const first = monoOffset === null;
   const slow = receivedAt - sentAt > QUICK_ROUND_TRIP_MS;
   if (!first && slow && !wallClockNow() && m.error >= offsetError) {
-    // Not a better measurement, but the link was asked again: it's this slow.
-    replies++;
+    // Not a better measurement, but if the link was asked again since, it's this slow.
+    if (sentAt >= measuredWall) {
+      replies++;
+      measuredWall = receivedAt;
+      if (serverClockSettled()) settled();
+    }
     return;
   }
   // A switch to the computer's clock nothing had noticed yet still moved the time shown.
@@ -239,6 +249,7 @@ export function noteResponse(headers: { get(name: string): string | null }, sent
   }
   measuredAt = wlm;
   measuredPerf = performance.now();
+  measuredWall = receivedAt;
   onWallClock = false;
   if (corrected) corrections++;
   if (first || moved || corrected) notify();
@@ -387,6 +398,7 @@ export function resetServerClock() {
   wallDrift = 0;
   corrections = 0;
   replies = 0;
+  measuredWall = -Infinity;
   asking = false;
   clearTimeout(nextAsk);
   nextAsk = undefined;

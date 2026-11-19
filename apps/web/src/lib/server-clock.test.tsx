@@ -434,7 +434,6 @@ describe("serverNow", () => {
     expect(serverClockSettled()).toBe(false);
   });
 
-  // Value: protects=a listener that throws neither fails the response that measured the clock (a tRPC call) nor keeps the other listeners from hearing; fails_when=listeners run bare inside noteResponse; why_new=clock-edges TODO; seam=console.error spied; no_claim=none beyond protects
   // Value: protects=on a link slower than QUICK_ROUND_TRIP_MS every time, a later reply that measures better than the clock is known to is still taken, and the clock counts as settled once it's been asked again, so beacon Listen doesn't wait 2 s on every click for good; fails_when=every slow later reply is dropped, or settled requires a quick measurement; why_new=round 4 adversarial review (owner: fix slow links); seam=fake timers; no_claim=what counts as slow on a real network
   it("takes a better slow reply, and settles a slow link once asked again", () => {
     vi.useFakeTimers({ now: TRUE_MS });
@@ -448,13 +447,34 @@ describe("serverNow", () => {
     resetServerClock();
     reply(TRUE_MS, 3_000);
     expect(serverClockSettled()).toBe(false);
-    // As slow again: nothing better to be had on this link.
-    reply(TRUE_MS + 1_000, 3_000);
-    expect(serverNow()).toBe(TRUE_MS);
+    // Another reply to a request sent alongside the first isn't an ask again.
+    noteResponse(precise(TRUE_MS + 1_000), Date.now() - 3_000, Date.now());
+    expect(serverClockSettled()).toBe(false);
+    vi.advanceTimersByTime(3_000);
+    // As slow again, asked after the first landed: nothing better to be had on this link.
+    reply(TRUE_MS + 4_000, 3_000);
+    expect(serverNow()).toBe(TRUE_MS + 3_000);
     expect(serverClockSettled()).toBe(true);
   });
 
-  // Value: protects=after a sleep, a slow reply still corrects the time counted from the computer's clock (any measurement beats none), so a slow link isn't left on the computer's clock asking every 10 s; fails_when=slow later replies are dropped even on the computer's clock; why_new=round 4 adversarial review (owner: fix slow links); seam=fake timers, a fetch that never answers; no_claim=none beyond protects
+  // Value: protects=a beacon Listen waiting on a slow link's clock goes ahead as soon as a reply as slow as the first (a request sent after it landed) settles the link on its best, not after the full 2 s; fails_when=a dropped slow reply that settles the clock doesn't release the settle wait; why_new=round 4 fix-check of the slow-link fix; seam=fake timers, a fetch that never answers, the reply fed by hand; no_claim=none beyond protects
+  it("ends a settle wait when a slow link settles", async () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    reply(TRUE_MS, 3_000);
+    vi.advanceTimersByTime(3_000);
+    let done = false;
+    void settleServerClock().then(() => {
+      done = true;
+    });
+    // A request sent as the first reply landed answers, as slowly.
+    reply(TRUE_MS + 3_000, 3_000);
+    await Promise.resolve();
+    expect(serverClockSettled()).toBe(true);
+    expect(done).toBe(true);
+  });
+
+  // Value: protects=after a sleep, a slow reply still corrects the time counted from the computer's clock (any measurement beats none); fails_when=slow later replies are dropped even on the computer's clock; why_new=round 4 adversarial review (owner: fix slow links); seam=fake timers, a fetch that never answers; no_claim=none beyond protects
   it("takes a slow reply after a sleep", () => {
     vi.useFakeTimers({ now: TRUE_MS });
     reply(TRUE_MS);
@@ -481,6 +501,7 @@ describe("serverNow", () => {
     expect(serverNow()).toBe(stamp);
   });
 
+  // Value: protects=a listener that throws neither fails the response that measured the clock (a tRPC call) nor keeps the other listeners from hearing; fails_when=listeners run bare inside noteResponse; why_new=clock-edges TODO; seam=console.error spied; no_claim=none beyond protects
   it("keeps measuring when a listener throws", () => {
     vi.useFakeTimers({ now: TRUE_MS });
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
