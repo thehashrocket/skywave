@@ -14,6 +14,13 @@ export type PickSource = (typeof PICK_SOURCES)[number];
 /** How many of the ranked list's receivers a report keeps, best first. */
 export const MAX_CANDIDATES = 10;
 
+/**
+ * The most users a pick records; the list's own count has no upper bound, and
+ * an operator's odd value mustn't cost the whole context (reports.submit
+ * refuses more).
+ */
+export const MAX_USERS = 1_000;
+
 export type PickContext = {
   /** When Pick best tuned this receiver, by the server's clock (serverNow). */
   pickedAtMs: number;
@@ -53,6 +60,6 @@ export function pickContext(
     freqKhz,
     ...(chosen.lat !== undefined && chosen.lon !== undefined && { lat: chosen.lat, lon: chosen.lon }),
     snr: chosen.snr,
-    users: chosen.users,
+    users: Math.min(chosen.users, MAX_USERS),
   };
 }

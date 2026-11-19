@@ -181,6 +181,14 @@ export function usePickBest(
     },
     [tune],
   );
+  /**
+   * Forgets how the last run chose once the dial is somewhere it didn't rank
+   * for: coming back to that frequency later is the listener's own choice, and
+   * its pick time would be long before the listening an answer is about.
+   */
+  const forgetOffFrequency = useCallback((freqKhz: number) => {
+    if (picked.current && picked.current.context.freqKhz !== freqKhz) picked.current = null;
+  }, []);
   /** How a run chose the receiver at host:port, or null if no run chose it (a hand pick, the way back). */
   const pickedFor = useCallback((host: string, port: number): PickContext | null => {
     const p = picked.current;
@@ -375,5 +383,5 @@ export function usePickBest(
     tuneCandidate(c, next);
   }, [status, tune, tuneCandidate, finish, goBack]);
 
-  return { start, cancel, stop, note, running, settled, isRefused, pickedFor };
+  return { start, cancel, stop, note, running, settled, isRefused, pickedFor, forgetOffFrequency };
 }

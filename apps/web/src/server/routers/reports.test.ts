@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Broadcast } from "@/lib/eibi";
 import type { Receiver } from "@/lib/kiwi-list";
 import type { createContext } from "@/server/trpc";
-import { RECEIVER_REPORTS_PER_HOUR, REPORTS_PER_HOUR, SAME_CHANNEL_MS, type ReportInput } from "./reports";
+import {
+  PICK_IN_SLOT_MS,
+  RECEIVER_REPORTS_PER_HOUR,
+  REPORTS_PER_HOUR,
+  SAME_CHANNEL_MS,
+  type ReportInput,
+} from "./reports";
 
 // The real module opens a Prisma client at import; every test injects its own db.
 vi.mock("@/server/db", () => ({ db: {} }));
@@ -435,13 +441,18 @@ describe("reports.submit with Pick best's context (#61)", () => {
       cache.broadcasts = [];
     });
 
-    // Value: protects=a beacon's context counts only if Pick best chose before the slot asked about, so a replay never credits spots from after the choice; fails_when=the slot comparison is missing or off by one; why_new=decision-time bound (review finding 13); seam=fake clock; no_claim=the page's own clock offset
-    it("keeps context picked before the slot, drops it at or after the slot start", async () => {
+    // Value: protects=a beacon's context counts only if Pick best chose before the slot asked about could still be heard (slot + 3 s), including a Listen early in the beacon's own turn, so the replay keeps those picks and never credits a later one; fails_when=the bound is the slot start (drops early-turn picks) or missing/off by one; why_new=final-round review (specialist testing); seam=fake clock; no_claim=the page's own clock offset
+    it("keeps context picked before the asked slot could be heard, drops it from slot + 3 s", async () => {
       const before = await submit({ ...beacon, pick: { ...pick, freqKhz: 14_100, pickedAtMs: SLOT - 8_500 } });
       expect(before.data).toMatchObject({ pickedAtMs: BigInt(SLOT - 8_500), slotStartMs: BigInt(SLOT) });
-      const at = await submit({ ...beacon, pick: { ...pick, freqKhz: 14_100, pickedAtMs: SLOT } });
-      expect(at.data).not.toHaveProperty("pickedAtMs");
-      expect(at.data).toMatchObject({ slotStartMs: BigInt(SLOT) });
+      // Listen pressed 1 s into the beacon's turn, and that turn is the one asked about.
+      const early = await submit({ ...beacon, pick: { ...pick, freqKhz: 14_100, pickedAtMs: SLOT + 1_000 } });
+      expect(early.data).toMatchObject({ pickedAtMs: BigInt(SLOT + 1_000) });
+      const last = await submit({ ...beacon, pick: { ...pick, freqKhz: 14_100, pickedAtMs: SLOT + PICK_IN_SLOT_MS - 1 } });
+      expect(last.data).toMatchObject({ pickedAtMs: BigInt(SLOT + PICK_IN_SLOT_MS - 1) });
+      const late = await submit({ ...beacon, pick: { ...pick, freqKhz: 14_100, pickedAtMs: SLOT + PICK_IN_SLOT_MS } });
+      expect(late.data).not.toHaveProperty("pickedAtMs");
+      expect(late.data).toMatchObject({ slotStartMs: BigInt(SLOT) });
     });
   });
 });

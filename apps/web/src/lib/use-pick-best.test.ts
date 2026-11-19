@@ -458,6 +458,17 @@ describe("usePickBest", () => {
       expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
     });
 
+    // Value: protects=a dial move off the frequency the run ranked for forgets its choice for good, while staying on it keeps it; fails_when=forgetOffFrequency is a no-op, clears on the same frequency, or the choice comes back with the dial; why_new=final-round review (red team); seam=none; no_claim=the page calls it on every dial move (page test)
+    it("forgets its choice once the dial leaves the frequency it ranked for", () => {
+      const { hook } = setup();
+      act(() => hook.result.current.start(candidates, candidates, run));
+      act(() => hook.result.current.forgetOffFrequency(9_580));
+      expect(hook.result.current.pickedFor("a", 8073)).not.toBeNull();
+      act(() => hook.result.current.forgetOffFrequency(9_590));
+      act(() => hook.result.current.forgetOffFrequency(9_580));
+      expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
+    });
+
     // Value: protects=a caller that doesn't say what started the run stores no half-filled context; fails_when=start records context with an undefined source; why_new=run is optional on start; seam=none; no_claim=none beyond protects
     it("records nothing for a run started without a source", () => {
       const { hook } = setup();

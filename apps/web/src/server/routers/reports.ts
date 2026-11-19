@@ -2,9 +2,10 @@ import { z } from "zod";
 import { scheduledOn, type Broadcast } from "@/lib/eibi";
 import { beaconOnBand, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
 import { findReceiver, MAX_PLAUSIBLE_SNR, MAX_ROWS } from "@/lib/kiwi-list";
-import { MAX_CANDIDATES, PICK_SOURCES, pickKey } from "@/lib/pick-context";
+import { MAX_CANDIDATES, MAX_USERS, PICK_SOURCES, pickKey } from "@/lib/pick-context";
 import { MODES } from "@/lib/radio-types";
 import {
+  BEACON_MIN_HEARD_MS,
   COMMENT_MAX,
   LISTING_GRACE_MS,
   MAX_LISTED,
@@ -119,17 +120,25 @@ const pickInput = z
     lat: z.number().min(-90).max(90).optional(),
     lon: z.number().min(-180).max(180).optional(),
     snr: z.number().min(0).max(MAX_PLAUSIBLE_SNR).nullable(),
-    users: z.number().int().min(0).max(1_000),
+    users: z.number().int().min(0).max(MAX_USERS),
   })
   // pickContext keeps a position only when both halves are known.
   .refine((p) => (p.lat === undefined) === (p.lon === undefined), { path: ["lat"], message: "lat without lon" });
 type PickInput = z.infer<typeof pickInput>;
 
 /**
+ * The latest a pick can come in a beacon slot that's then asked about. The
+ * page asks about a slot only if BEACON_MIN_HEARD_MS of it played after audio
+ * started (beaconPromptAt), and the pick precedes the audio: so a pick after
+ * slot start + SLOT_MS - BEACON_MIN_HEARD_MS can't be the one that led to it.
+ */
+export const PICK_IN_SLOT_MS = SLOT_MS - BEACON_MIN_HEARD_MS;
+
+/**
  * Whether a well-formed pick fits the report it came with: ranked for the
- * frequency answered about, made before the beacon slot asked about (and not
- * in the future or long ago, by this server's clock), and naming the
- * answered receiver at its rank when that's among the candidates.
+ * frequency answered about, made before the beacon slot asked about could
+ * still be heard (and not in the future or long ago, by this server's clock),
+ * and naming the answered receiver at its rank when that's among the candidates.
  */
 export function pickChecks(
   pick: PickInput,
@@ -148,7 +157,9 @@ export function pickChecks(
     pick.freqKhz === report.freqKhz &&
     pickedAtMs <= ms + MAX_CLOCK_SKEW_MS &&
     pickedAtMs >= ms - MAX_PICK_AGE_MS &&
-    (report.slotStartMs === undefined || pickedAtMs < report.slotStartMs)
+    // Beacon Listen picks the beacon on the air, so the slot asked about can be
+    // the one that was already on when it picked.
+    (report.slotStartMs === undefined || pickedAtMs < report.slotStartMs + PICK_IN_SLOT_MS)
   );
 }
 

@@ -1605,6 +1605,22 @@ describe("ListenPage", () => {
       );
     });
 
+    // Value: protects=after the listener tunes away by hand and back, the answer carries no pick context (its time would be long before this listening); fails_when=the page never forgets the pick on a dial move, so returning revives it; why_new=final-round review (red team); seam=useRadio, picker and useSubmitReport mocked; no_claim=the server's checks (reports.test)
+    it("sends no pick context after the dial left the frequency and came back", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
+      const view = render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 9_580, mode: "am" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      const dial = screen.getByRole("slider", { name: "Tuning dial" });
+      act(() => fireEvent.keyDown(dial, { key: "ArrowUp" }));
+      act(() => fireEvent.keyDown(dial, { key: "ArrowDown" }));
+      act(() => vi.advanceTimersByTime(60_000));
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      expect(submitReport).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 9_580 }), "heard", "", undefined);
+    });
+
     // Value: protects=the context sent is the one in force when the question appeared, not one from a run started while it waited; fails_when=answerReception reads pickedFor at answer time, so a later run's time and list ride along; why_new=adversarial review (Codex structured P1) A2; seam=useRadio, picker and useSubmitReport mocked; no_claim=the server's checks (reports.test)
     it("sends the context from when the question appeared, not from a run started after it", () => {
       localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));

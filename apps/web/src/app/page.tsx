@@ -509,7 +509,10 @@ export default function ListenPage() {
     [isTarget],
   );
   const pickBest = usePickBest(status, tuneReceiver, coversDial, provenance);
-  const { cancel: cancelPickBest, stop: stopPickBest, start: startPicking } = pickBest;
+  const { cancel: cancelPickBest, stop: stopPickBest, start: startPicking, forgetOffFrequency } = pickBest;
+  // A dial move off the frequency Pick best ranked for ends its claim on the
+  // answer (issue #61), even if the dial comes back later.
+  useEffect(() => forgetOffFrequency(freqKhz), [freqKhz, forgetOffFrequency]);
   const list = useReceiverList();
   const receivers = list.data?.receivers;
   const listGone = listFailed(list);
