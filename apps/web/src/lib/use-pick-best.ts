@@ -174,8 +174,9 @@ export function usePickBest(
   /**
    * How many times a choice has been dropped. A question that snapshotted a
    * choice compares this when answered: any drop in between (a hand pick, a
-   * dial move, a failed or abandoned run) revokes the snapshot, even if a later
-   * run then picks the same receiver again on the same frequency.
+   * dial move, a failed or abandoned run, or a run moving to another receiver)
+   * revokes the snapshot, even if a later run or the same chain then picks the
+   * same receiver again on the same frequency.
    */
   const drops = useRef(0);
   const drop = useCallback(() => {
@@ -185,8 +186,14 @@ export function usePickBest(
   /** Tunes a candidate of `c` and notes how it was chosen. */
   const tuneCandidate = useCallback(
     (c: Chain, r: Receiver) => {
-      if (c.run) picked.current = { key: pickKey(r), context: pickContext(c.ranked, r, c.run.source, c.run.freqKhz, serverNow()) };
-      else drop();
+      if (!c.run) drop();
+      else {
+        const key = pickKey(r);
+        // Moving to another receiver leaves the one a question asked about, so
+        // it counts as a drop; the same receiver again just replaces it.
+        if (picked.current && picked.current.key !== key) drops.current++;
+        picked.current = { key, context: pickContext(c.ranked, r, c.run.source, c.run.freqKhz, serverNow()) };
+      }
       tune(r, true);
     },
     [tune, drop],

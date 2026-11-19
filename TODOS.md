@@ -88,6 +88,18 @@
 **Priority:** P3
 **Depends on:** #61 replay passing; #69 login (RBN half only)
 
+### Pick context: trust only what the page could have sent (#61)
+
+**What:** Two notes from round 2's review (Codex adversarial), left for later at the owner's call:
+- **Made-up candidates:** `candidateKeyOk` (`apps/web/src/server/routers/reports.ts`) checks a candidate's spelling, not that it could be a listed receiver. A forged request can store keys like `localhost:22`, port 1, or a bare IPv6 address read as address plus port. Checking each key against the cached public list closes it, but a receiver that left the list in the up-to-3 hours since the pick would then drop real context.
+- **Server-stamped version:** `pickVersion` is what the client sent, and a request can always send none. The replay splits rows by deploy time instead (deploy times are posted on #61).
+
+**Why:** Reports are anonymous writes, so a forger can already lie about the answer itself. This only matters if the replay should trust a context's candidate list more than the answer.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** the #61 replay design
+
 ### Re-measure the server clock after a jump
 
 **What:** Refresh the page's server-clock offset (`apps/web/src/lib/server-clock.ts`) after the browser's clock jumps: sleep and wake, a manual change, or an NTP step. Today it is measured once per visit.
@@ -268,6 +280,7 @@ A design that works should:
 - **Candidate keys:** the server accepts a candidate only in its canonical spelling (`candidateKeyOk`): lowercase, no trailing dot, compressed IPv6, a port from 1 to 65535 with no leading zero, and unchanged by a URL round trip. Two spellings of one receiver can no longer pass as two.
 - **The `pickVersion` null meaning:** the schema comment now says to split null rows by `createdAt` around PR #74's deploy (2026-11-19 02:52:57 UTC, also posted on #61).
 - **Version 0 and 1:** both are tested and drop the context.
+- **Review fixes:** a run that moves to another receiver counts a drop too, so a chain that leaves the question's receiver and comes back revokes the snapshot. Candidate keys longer than any real one (259 characters) are refused before parsing.
 - **Version 3:** these rules change what an answer keeps, so `PICK_CONTEXT_VERSION` is now 3. The server still takes 2 from tabs opened before the deploy and stores it as 2 (owner: post the deploy time on #61).
 
 ### Pick context edge cases (#61)

@@ -4,6 +4,7 @@ import type { Receiver } from "@/lib/kiwi-list";
 import { PICK_CONTEXT_VERSION } from "@/lib/pick-context";
 import type { createContext } from "@/server/trpc";
 import {
+  candidateKeyOk,
   PICK_IN_SLOT_MS,
   RECEIVER_REPORTS_PER_HOUR,
   REPORTS_PER_HOUR,
@@ -459,6 +460,14 @@ describe("reports.submit with Pick best's context (#61)", () => {
     const { data, warn } = await submit({ ...valid, pick: { ...pick, version: 2 } });
     expect(data).toMatchObject({ ...stored, pickVersion: 2 });
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=the longest key the page can write (a 253-character hostname and port 65535) still passes the length check that runs before any parsing, and a far longer forged key doesn't; fails_when=MAX_CANDIDATE_KEY is set too low and drops real long-hostname receivers; why_new=round 2 review (length cap); seam=none; no_claim=the CPU saved on forged keys
+  it("takes candidate keys up to the longest a receiver can have", () => {
+    const host = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
+    expect(host).toHaveLength(253);
+    expect(candidateKeyOk(`${host}:65535`)).toBe(true);
+    expect(candidateKeyOk(`${"1:".repeat(5_000)}:8073`)).toBe(false);
   });
 
   // Value: protects=candidate ports at both ends of the range are real receiver ports and keep the context; fails_when=the port check is off by one at 1 or 65535; why_new=round-2 edge cases (canonical keys); seam=none; no_claim=none beyond protects

@@ -93,6 +93,9 @@ export const RECEIVER_REPORTS_PER_HOUR = 30;
  */
 export const MAX_PICK_AGE_MS = 3 * 60 * MINUTE;
 
+/** The longest key pickKey writes: a 253-character hostname, a colon, a 5-digit port. */
+const MAX_CANDIDATE_KEY = 253 + 1 + 5;
+
 /**
  * Whether a candidate is a receiver key exactly as pickKey writes it, so two
  * spellings of one receiver can't pass as two: a lowercase hostname or IPv4
@@ -105,6 +108,8 @@ export const MAX_PICK_AGE_MS = 3 * 60 * MINUTE;
  * rankPos.
  */
 export function candidateKeyOk(key: string): boolean {
+  // Before any parsing: a forged key of any length mustn't cost a regex and a URL parse.
+  if (key.length > MAX_CANDIDATE_KEY) return false;
   const m = key.match(/^(.+):([1-9][0-9]{0,4})$/);
   if (!m || Number(m[2]) > 65_535) return false;
   const host = m[1]!;

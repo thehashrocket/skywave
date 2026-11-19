@@ -486,20 +486,23 @@ describe("usePickBest", () => {
     });
 
     // Value: protects=a run abandoned mid-way (Stop picking with nothing to go back to, or ended by a service failure) leaves no context behind for a tune still in flight; fails_when=those finish paths keep picked, so a late-landing tune is credited to Pick best; why_new=Codex adversarial (run 4); seam=none; no_claim=the watch-phase Stop, which keeps the playing choice (tested above)
-    it.each<[string, (h: ReturnType<typeof setup>) => void]>([
-      ["Stop picking with nothing to go back to", ({ hook }) => act(() => void hook.result.current.stop())],
+    it.each<[string, (h: ReturnType<typeof setup>) => void, number]>([
+      ["Stop picking with nothing to go back to", ({ hook }) => act(() => void hook.result.current.stop()), 1],
       [
         "a service failure that ends the run",
         ({ report }) => report({ state: "error", host: "a", port: 8073, message: "listener limit" }),
+        1,
       ],
       [
         "running out of receivers with nothing to go back to",
         ({ report }) => {
           for (const host of ["a", "b", "c", "d"]) report(fail(host, "busy"));
         },
+        // Moves to b and c, then the drop when the run gives up (MAX_ATTEMPTS).
+        3,
       ],
-    ])("forgets its choice when the run is abandoned: %s", (_, abandon) => {
-      // Value (round 2 extension): protects=each abandon path counts exactly one drop (moving between candidates replaces, so adds none); fails_when=an abandon path clears picked without drop(), or tuneCandidate counts a replacement; why_new=only forget's count was asserted; seam=none; no_claim=the page's comparison (page test)
+    ])("forgets its choice when the run is abandoned: %s", (_, abandon, dropped) => {
+      // Value (round 2 extension): protects=each abandon path counts its drops: one at the end, plus one per move to another receiver; fails_when=an abandon path clears picked without drop(), or a move between candidates isn't counted; why_new=only forget's count was asserted; seam=none; no_claim=the page's comparison (page test)
       const h = setup();
       act(() => h.hook.result.current.start(candidates, candidates, run));
       expect(h.hook.result.current.pickedFor("a", 8073)).not.toBeNull();
@@ -507,7 +510,22 @@ describe("usePickBest", () => {
       abandon(h);
       // Not the first candidate, nor whichever one the run tuned last.
       for (const host of ["a", "b", "c", "d"]) expect(h.hook.result.current.pickedFor(host, 8073)).toBeNull();
-      expect(h.hook.result.current.dropCount()).toBe(before + 1);
+      expect(h.hook.result.current.dropCount()).toBe(before + dropped);
+    });
+
+    // Value: protects=a new run that tunes another receiver first (it refused) and then comes back to the one a question asked about counts drops, so that question's snapshot is revoked as for a dial move away and back; fails_when=tuneCandidate replaces a choice for another receiver without counting it; why_new=round 2 review (state-machines specialist + adversarial); seam=none; no_claim=the page's comparison (page test covers the dial case)
+    it("counts a run moving to another receiver and back as drops", () => {
+      const { hook, report } = setup();
+      act(() => hook.result.current.start([rx("a")], undefined, run));
+      report({ state: "listening", host: "a", port: 8073 });
+      const before = hook.result.current.dropCount();
+      act(() => hook.result.current.start([rx("b"), rx("a")], undefined, run));
+      report(fail("b", "busy"));
+      expect(hook.result.current.pickedFor("a", 8073)).not.toBeNull();
+      expect(hook.result.current.dropCount()).toBe(before + 2);
+      // A run that picks the same receiver again just replaces the choice.
+      act(() => hook.result.current.start([rx("a")], undefined, run));
+      expect(hook.result.current.dropCount()).toBe(before + 2);
     });
 
     // Value: protects=Stop picking during the watch (the receiver already playing) keeps that choice, since it did play; fails_when=stop() clears picked on the watch path too; why_new=#73 proposed test 1; seam=none; no_claim=none beyond protects
