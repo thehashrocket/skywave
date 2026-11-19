@@ -16,10 +16,14 @@ export type PickSource = (typeof PICK_SOURCES)[number];
  * replay can tell them apart. None (null): PR #73, before the edge-case fixes
  * (a stale question could take a later run's context, case-variant hosts and
  * looser server checks); a tab loaded before a deploy keeps sending that
- * until reloaded. 2: those fixes. Raise it whenever what the page records, or
- * when it records it, changes.
+ * until reloaded. 2: those fixes (PR #74). 3: round 2, where an answer keeps
+ * its question's context only if no choice was dropped since the question
+ * appeared (a dial move away and back no longer keeps it), a beacon Listen
+ * with no receiver list drops the earlier choice, and candidates must be
+ * canonical. The server still accepts 2 from tabs opened before that deploy.
+ * Raise it whenever what the page records, or when it records it, changes.
  */
-export const PICK_CONTEXT_VERSION = 2;
+export const PICK_CONTEXT_VERSION = 3;
 
 /** How many of the ranked list's receivers a report keeps, best first. */
 export const MAX_CANDIDATES = 10;

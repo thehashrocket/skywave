@@ -268,6 +268,7 @@ A design that works should:
 - **Candidate keys:** the server accepts a candidate only in its canonical spelling (`candidateKeyOk`): lowercase, no trailing dot, compressed IPv6, a port from 1 to 65535 with no leading zero, and unchanged by a URL round trip. Two spellings of one receiver can no longer pass as two.
 - **The `pickVersion` null meaning:** the schema comment now says to split null rows by `createdAt` around PR #74's deploy (2026-11-19 02:52:57 UTC, also posted on #61).
 - **Version 0 and 1:** both are tested and drop the context.
+- **Version 3:** these rules change what an answer keeps, so `PICK_CONTEXT_VERSION` is now 3. The server still takes 2 from tabs opened before the deploy and stores it as 2 (owner: post the deploy time on #61).
 
 ### Pick context edge cases (#61)
 

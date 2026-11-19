@@ -451,6 +451,14 @@ describe("reports.submit with Pick best's context (#61)", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
+  // Value: protects=a tab opened before the round 2 deploy still sends version 2; its context is kept and stored as 2, so the replay can tell it from version 3; fails_when=the server accepts only the current version (old tabs lose context) or rewrites the version it stores; why_new=round 2 raised PICK_CONTEXT_VERSION to 3; seam=in-memory db; no_claim=Postgres
+  it("keeps context from a tab on the previous version, storing that version", async () => {
+    expect(PICK_CONTEXT_VERSION).toBe(3);
+    const { data, warn } = await submit({ ...valid, pick: { ...pick, version: 2 } });
+    expect(data).toMatchObject({ ...stored, pickVersion: 2 });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   // Value: protects=candidate ports at both ends of the range are real receiver ports and keep the context; fails_when=the port check is off by one at 1 or 65535; why_new=round-2 edge cases (canonical keys); seam=none; no_claim=none beyond protects
   it("keeps context whose candidates use ports 1 and 65535", async () => {
     const candidates = ["kiwi.example.org:8073", "low.example:1", "high.example:65535"];

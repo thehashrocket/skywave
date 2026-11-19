@@ -67,7 +67,8 @@ model ReceptionReport {
   /// present: the page sent no version. Saved before PR #74's deploy
   /// (2026-11-19 02:52:57 UTC), that's PR #73's first rules; saved after it,
   /// a tab opened before the deploy, whose context passed the newer server
-  /// checks. The replay splits null rows by createdAt.
+  /// checks. The replay splits null rows by createdAt. 2 saved after the
+  /// round 2 deploy is likewise a tab opened before it.
   pickVersion  Int?
 
   @@index([receiverHost, receiverPort, freqKhz])
