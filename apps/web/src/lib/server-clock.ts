@@ -54,6 +54,9 @@ export const REMEASURE_MS = 2_000;
 /** Back to the monotonic clock only once the drift falls under this, half of JUMP_MS, so the edge can't flap. */
 export const LEAVE_WALL_CLOCK_MS = JUMP_MS / 2;
 
+/** A re-measure that moves the time by no more than this kept it (clock-read jitter, not a move). */
+const SAME_TIME_MS = 100;
+
 /** How often the page asks the server for its time again while counting from the computer's clock. */
 export const REMEASURE_RETRY_MS = 10_000;
 
@@ -145,9 +148,10 @@ export function noteResponse(headers: { get(name: string): string | null }, sent
   // Measured: the next jump asks at once.
   askedAt = -Infinity;
   // Listeners hear of any move, before it counts as a measurement, so one can
-  // tell a time that moved from a jump measured without moving it (keeping the
-  // time shown, as after a sleep, moves nothing).
-  if (first || moved || monoOffset !== shown) notify();
+  // tell a time that moved from a jump measured without moving it. Keeping the
+  // time shown moves nothing; a real move is at least LEAVE_WALL_CLOCK_MS, so
+  // the microseconds between this function's two performance.now() reads don't count.
+  if (first || moved || Math.abs(monoOffset - shown) > SAME_TIME_MS) notify();
   measurements++;
 }
 

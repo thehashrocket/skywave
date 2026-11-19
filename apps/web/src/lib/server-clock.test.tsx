@@ -231,6 +231,21 @@ describe("serverNow", () => {
     off();
   });
 
+  // Value: protects=a re-measure after the computer's clock was set back keeps the time and tells no one, even though serverNow() and noteResponse read performance.now() microseconds apart, so a planned beacon question isn't re-planned for nothing; fails_when=noteResponse notifies on any difference between the kept offset and the time shown; why_new=round 3 scoped fix-check (owner D5); seam=fake timers, performance.now() spied to advance 10 µs per read; no_claim=real clock resolution
+  it("stays quiet when a re-measure after a clock set back keeps the time", () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
+    const told = vi.fn();
+    const off = onServerOffset(told);
+    vi.setSystemTime(Date.now() - 3_000);
+    let t = performance.now();
+    const now = vi.spyOn(performance, "now").mockImplementation(() => (t += 0.01));
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now() - 100, Date.now());
+    now.mockRestore();
+    expect(told).not.toHaveBeenCalled();
+    off();
+  });
+
   // Value: protects=after a re-measure lands, the next jump asks the server at once rather than waiting out REMEASURE_RETRY_MS from the last ask; fails_when=the retry clock isn't reset when the clock settles; why_new=round 3 scoped fix-check (owner D4); seam=stubbed fetch, fake timers; no_claim=none beyond protects
   it("asks at once on a second jump soon after a re-measure", async () => {
     vi.useFakeTimers({ now: TRUE_MS });
