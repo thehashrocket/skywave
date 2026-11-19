@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LIST_MAX_AGE_MS, receiverKey, type Receiver } from "./kiwi-list";
 import { pickContext, pickKey, type PickContext, type PickSource } from "./pick-context";
 import { DEFAULT_KIWI_PORT } from "./receiver";
-import { serverClockSettled, serverNow } from "./server-clock";
+import { onServerOffset, serverClockMeasurements, serverClockSettled, serverNow } from "./server-clock";
 import type { RadioErrorCode, RadioStatus } from "./use-radio";
 
 /**
@@ -170,7 +170,7 @@ export function usePickBest(
    * reception prompt comes a minute or more after the watch ends); a new run,
    * a hand pick (cancel) or the way back to the old receiver replaces or drops it.
    */
-  const picked = useRef<{ key: string; context: PickContext } | null>(null);
+  const picked = useRef<{ key: string; context: PickContext; unmeasured?: number } | null>(null);
   /**
    * How many times a choice has been dropped. A question that snapshotted a
    * choice compares this when answered: any drop in between (a hand pick, a
@@ -183,18 +183,34 @@ export function usePickBest(
     if (picked.current) drops.current++;
     picked.current = null;
   }, []);
+  // A choice made through a forward clock jump not yet re-measured carries the
+  // computer's time: right after a sleep, wrong after a change by hand. If the
+  // time then moves before any measurement (the re-measure corrects it, or the
+  // jump is undone), it was wrong: drop the choice. A measurement first that
+  // left the time alone (a sleep) proves it right.
+  useEffect(
+    () =>
+      onServerOffset(() => {
+        const p = picked.current;
+        if (!p || p.unmeasured === undefined) return;
+        if (serverClockMeasurements() !== p.unmeasured) p.unmeasured = undefined;
+        // Still counting through the jump: this was the switch into it.
+        else if (serverClockSettled()) drop();
+      }),
+    [drop],
+  );
   /** Tunes a candidate of `c` and notes how it was chosen. */
   const tuneCandidate = useCallback(
     (c: Chain, r: Receiver) => {
-      // A pick time taken through a forward clock jump not yet re-measured may be
-      // the computer's wrong time: no context rather than a wrong one.
-      if (!c.run || !serverClockSettled()) drop();
+      if (!c.run) drop();
       else {
         const key = pickKey(r);
         // Moving to another receiver leaves the one a question asked about, so
         // it counts as a drop; the same receiver again just replaces it.
         if (picked.current && picked.current.key !== key) drops.current++;
-        picked.current = { key, context: pickContext(c.ranked, r, c.run.source, c.run.freqKhz, serverNow()) };
+        const context = pickContext(c.ranked, r, c.run.source, c.run.freqKhz, serverNow());
+        // Unsettled: which measurement the effect above waits for.
+        picked.current = { key, context, unmeasured: serverClockSettled() ? undefined : serverClockMeasurements() };
       }
       tune(r, true);
     },

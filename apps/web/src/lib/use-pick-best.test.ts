@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Receiver } from "./kiwi-list";
 import { PICK_CONTEXT_VERSION } from "./pick-context";
 import { MAX_ATTEMPTS, REFUSED_MS, usePickBest, WATCH_MS } from "./use-pick-best";
-import { noteResponse, resetServerClock } from "./server-clock";
+import { noteResponse, resetServerClock, serverNow } from "./server-clock";
 import { RADIO_ERROR_CODES, type RadioErrorCode, type RadioStatus } from "./use-radio";
 
 function rx(host: string): Receiver {
@@ -418,22 +418,54 @@ describe("usePickBest", () => {
       expect(hook.result.current.pickedFor("C", 8073)).toMatchObject({ pickedAtMs: NOW + 4_000, rankPos: 2 });
     });
 
-    // Value: protects=a pick made while the page counts through a forward clock jump it hasn't re-measured keeps no context, so a wrong pick time never reaches a report, and picks keep context again once the clock is measured; fails_when=tuneCandidate records context whatever the clock's state; why_new=clock-edges TODO (owner: core set); seam=fake timers (setSystemTime moves only Date), the real server clock fed responses; no_claim=how a browser pauses performance.now in sleep
-    it("keeps no context for a pick made through an unmeasured clock jump", () => {
-      resetServerClock();
-      try {
-        noteResponse(new Headers({ date: new Date(NOW).toUTCString() }), Date.now(), Date.now());
-        vi.setSystemTime(Date.now() + 3_600_000);
-        const first = setup();
-        act(() => first.hook.result.current.start(candidates, candidates, run));
-        expect(first.hook.result.current.pickedFor("a", 8073)).toBeNull();
-        noteResponse(new Headers({ date: new Date(NOW).toUTCString() }), Date.now() - 100, Date.now());
-        const second = setup();
-        act(() => second.hook.result.current.start(candidates, candidates, run));
-        expect(second.hook.result.current.pickedFor("a", 8073)).toMatchObject({ rankPos: 0 });
-      } finally {
+    // Value: protects=a pick made through a forward clock jump not yet re-measured keeps its context when the jump was a sleep (a measurement that leaves the time alone, then later clock news), and drops it, counting a drop, when the time then moves before any measurement (a change by hand corrected, or a jump undone); fails_when=every pick through an unmeasured jump loses context (every laptop wake), or a corrected pick time is kept; why_new=owner: drop only if corrected; seam=fake timers (setSystemTime moves only Date), the real server clock fed responses; no_claim=how a browser pauses performance.now in sleep
+    describe("a pick made through an unmeasured clock jump", () => {
+      beforeEach(() => {
         resetServerClock();
-      }
+        noteResponse(new Headers({ date: new Date(NOW).toUTCString() }), Date.now(), Date.now());
+      });
+      afterEach(() => resetServerClock());
+
+      it("keeps its context after a sleep", async () => {
+        const { hook } = setup();
+        // Ten minutes asleep: the computer's clock and the server moved on, performance.now() didn't.
+        vi.setSystemTime(Date.now() + 600_000);
+        act(() => hook.result.current.start(candidates, candidates, run));
+        const drops = hook.result.current.dropCount();
+        const at = hook.result.current.pickedFor("a", 8073)!.pickedAtMs;
+        // The computer's time, which kept going through the sleep (the Date header's rounding aside).
+        expect(Math.abs(at - (NOW + 600_000))).toBeLessThanOrEqual(500);
+        await act(async () => {});
+        // The re-measure agrees with the time shown, then later clock news arrives.
+        noteResponse(new Headers({ date: new Date(Date.now()).toUTCString() }), Date.now() - 100, Date.now());
+        vi.setSystemTime(Date.now() + 600_000);
+        await act(async () => void serverNow());
+        expect(hook.result.current.pickedFor("a", 8073)).toMatchObject({ rankPos: 0, pickedAtMs: at });
+        expect(hook.result.current.dropCount()).toBe(drops);
+      });
+
+      it("drops it when the re-measure corrects a change by hand", async () => {
+        const { hook } = setup();
+        // An hour forward by hand: the server didn't move.
+        vi.setSystemTime(Date.now() + 3_600_000);
+        act(() => hook.result.current.start(candidates, candidates, run));
+        const drops = hook.result.current.dropCount();
+        await act(async () => {});
+        expect(hook.result.current.pickedFor("a", 8073)).not.toBeNull();
+        act(() => noteResponse(new Headers({ date: new Date(NOW).toUTCString() }), Date.now() - 100, Date.now()));
+        expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
+        expect(hook.result.current.dropCount()).toBe(drops + 1);
+      });
+
+      it("drops it when the jump is undone before any measurement", async () => {
+        const { hook } = setup();
+        vi.setSystemTime(Date.now() + 3_600_000);
+        act(() => hook.result.current.start(candidates, candidates, run));
+        await act(async () => {});
+        vi.setSystemTime(Date.now() - 3_600_000);
+        await act(async () => void serverNow());
+        expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
+      });
     });
 
     // Value: protects=the context outlives the run's watch (the prompt comes a minute in) but not a hand pick; fails_when=it's dropped with the chain, or cancel keeps it so a hand-picked receiver is credited to Pick best; why_new=pick context; seam=none; no_claim=none beyond protects

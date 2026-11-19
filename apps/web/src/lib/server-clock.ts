@@ -77,6 +77,8 @@ let monoOffset: number | null = null;
 let measuredAt = 0;
 /** Whether serverNow() last counted from the computer's clock (a forward jump not yet measured). */
 let onWallClock = false;
+/** Responses that measured the clock so far: the first, and each re-measure after a jump. */
+let measurements = 0;
 const listeners = new Set<() => void>();
 
 /** How far the computer's clock has moved ahead of the monotonic one since the offset was measured. */
@@ -126,7 +128,10 @@ export function noteResponse(headers: { get(name: string): string | null }, sent
   // so leftover error never piles up across jumps.
   monoOffset = first || Math.abs(next - shown) > REMEASURE_MS ? next : shown;
   onWallClock = false;
+  // Listeners hear of a correction before it counts as a measurement, so one
+  // can tell a time that moved from a jump measured without moving it.
   if (first || moved || Math.abs(monoOffset - shown) > REMEASURE_MS) notify();
+  measurements++;
 }
 
 /** The server's time now, in ms since the epoch: this browser's clock until an offset is known. */
@@ -153,6 +158,16 @@ export function serverClockSettled(): boolean {
   return !wallClockNow();
 }
 
+/**
+ * How many responses have measured the clock. A listener that sees the same
+ * count as when it noted something during a jump, with the clock now
+ * settled, knows the time moved before any measurement: a correction, or the
+ * jump undone.
+ */
+export function serverClockMeasurements(): number {
+  return measurements;
+}
+
 /** Calls `listener` when the time the page works from moves: the first offset, a switch between clocks, or a correction; returns the unsubscribe. */
 export function onServerOffset(listener: () => void): () => void {
   listeners.add(listener);
@@ -176,4 +191,5 @@ export function resetServerClock() {
   monoOffset = null;
   measuredAt = 0;
   onWallClock = false;
+  measurements = 0;
 }

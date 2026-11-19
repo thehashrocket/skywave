@@ -26,8 +26,9 @@ export type PickSource = (typeof PICK_SOURCES)[number];
  * offset changes. 5: a re-measure keeps the time shown unless it's over 2 s
  * off, every switch between the page's two clocks re-plans the beacon
  * question, a question whose turn is too old to be taken isn't asked, and a
- * pick made through a forward clock jump not yet re-measured keeps no
- * context. The server still accepts 2 to 4 from tabs opened before those
+ * pick made through a forward clock jump not yet re-measured loses its
+ * context if the time then moves before a measurement (a change by hand
+ * corrected; a sleep keeps it). The server still accepts 2 to 4 from tabs opened before those
  * deploys.
  * Raise it whenever what the page records, or when it records it, changes.
  */
