@@ -183,6 +183,22 @@ describe("useReceptionPrompt", () => {
     expect(hook.result.current.prompt).not.toBeNull();
   });
 
+  // Value: protects=the question gap runs on the server's clock, so setting the computer's clock back an hour mid-visit neither holds the next question back an hour nor brings it forward; fails_when=lastShownMs or the gap's wait is read off Date.now(); why_new=P4 TODO (owner: gap timers on server time); seam=fake timers (setSystemTime moves only Date), the real server clock fed a response, a fetch that never answers; no_claim=sessionStorage values saved by an older page (Date-based)
+  it("keeps the question gap when the computer's clock is set back", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    noteResponse(new Headers({ "x-server-ms": String(Date.now()) }), Date.now(), Date.now());
+    const hook = setup();
+    wait(DWELL_MS);
+    act(() => hook.result.current.answered());
+    vi.setSystemTime(Date.now() - 3_600_000);
+    hook.rerender({ status: listening(6_070), heard: true, schedule });
+    wait(PROMPT_GAP_MS - 1);
+    expect(hook.result.current.prompt).toBeNull();
+    wait(1);
+    expect(hook.result.current.prompt?.tx.name).toBe("CFRX");
+    vi.unstubAllGlobals();
+  });
+
   it("asks at most once per 10 minutes, waiting out the gap for the next station", () => {
     const hook = setup();
     wait(DWELL_MS);
@@ -312,6 +328,24 @@ describe("useReceptionPrompt", () => {
       expect(hook.result.current.beaconAskSlotMs).toBe(Date.UTC(2026, 10, 18, 12, 12));
       wait(Date.UTC(2026, 10, 18, 12, 12) + 10_000 + STREAM_LATENCY_MS - serverNow());
       expect(hook.result.current.prompt?.tx).toMatchObject({ name: "4U1UN", slotStartMs: Date.UTC(2026, 10, 18, 12, 12) });
+    });
+
+    // Value: protects=a beacon prompt left on screen through a sleep (its timer paused) closes when the clock moves past the server's window for its turn, so no thanks shows for an answer the server would refuse, while a fresh prompt survives a clock move; fails_when=the prompt only closes on its own timer; why_new=P4 TODO (owner: expire stale prompts on wake); seam=fake timers (setSystemTime models the wall clock moving on while performance.now paused), the real server clock fed a response, a fetch that never answers; no_claim=how a real browser runs timers across a sleep
+    it("closes a beacon prompt a sleep left too old, and keeps a fresh one", async () => {
+      vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+      noteResponse(new Headers({ "x-server-ms": String(Date.now()) }), Date.now(), Date.now());
+      const hook = setup({ status: beaconStatus(), beacon: pick });
+      wait(10_000 + STREAM_LATENCY_MS);
+      expect(hook.result.current.prompt?.tx.name).toBe("4U1UN");
+      // A small jump: the prompt's turn is still well inside the server's window.
+      vi.setSystemTime(Date.now() + 2_500);
+      await act(async () => void serverNow());
+      expect(hook.result.current.prompt?.tx.name).toBe("4U1UN");
+      // Ten minutes asleep: the server would no longer take an answer about that turn.
+      vi.setSystemTime(Date.now() + 600_000);
+      await act(async () => void serverNow());
+      expect(hook.result.current.prompt).toBeNull();
+      vi.unstubAllGlobals();
     });
 
     // Value: protects=when the server-clock offset is replaced (a sleep the monotonic clock lagged through), the beacon question drops its old plan and starts over on the new clock: audio counted from then, the turn asked about and the band strip's inputs all on one clock, never asked at the old plan's time; fails_when=the plan ignores offset changes, so it fires on the old clock while the strip moved (PR #74 red team); why_new=clock TODO (owner: monotonic clock + re-plan); seam=fake timers, the real server clock fed a response; no_claim=how a browser's monotonic clock behaves in sleep

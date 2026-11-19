@@ -14,7 +14,7 @@ import { AudioSpectrum } from "@/components/AudioSpectrum";
 import { BeaconStrip, focusBeaconStrip } from "@/components/BeaconStrip";
 import { rankForBeacon } from "@/lib/beacon-rank";
 import { beaconOnBand, IBP_BANDS_KHZ, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
-import { serverNow } from "@/lib/server-clock";
+import { serverClockSettled, serverNow, settleServerClock } from "@/lib/server-clock";
 import { sunPosition } from "@/lib/solar";
 import { useServerTick } from "@/lib/use-server-tick";
 import { Waterfall } from "@/components/Waterfall";
@@ -308,7 +308,7 @@ export default function ListenPage() {
   // object each press, so it's the newest message again; the text follows the
   // list as it loads or fails. `from` names the control to press again: after
   // the error link, Listen would redial the receiver that just failed.
-  const [pageMessage, setPageMessage] = useState<{ from: "listen" | "link" } | null>(null);
+  const [pageMessage, setPageMessage] = useState<{ from: "listen" | "link" | "clock" } | null>(null);
   // Where focus goes when the error link starts a run and goes away.
   const statusRef = useRef<HTMLDivElement>(null);
 
@@ -586,7 +586,9 @@ export default function ListenPage() {
    * Listen on a strip row: the beacon on that band now, tuned in CW, through
    * Pick best with receivers ranked for where that beacon is (beacon-rank).
    */
-  const listenToBeacon = useCallback(
+  // The latest beacon Listen waiting on the clock; an earlier click that's still waiting does nothing.
+  const beaconWait = useRef(0);
+  const listenToBeaconNow = useCallback(
     (band: number) => {
       const now = serverNow();
       const beacon = beaconOnBand(now, band);
@@ -608,6 +610,23 @@ export default function ListenPage() {
       if (!started) sendRetune({ freqKhz: khz, mode: "cw" });
     },
     [receivers, pickFrom, sendRetune, forgetPick],
+  );
+  /**
+   * Which beacon is on the air depends on the clock to the second, so while the
+   * page's clock is unsure (a forward jump not yet measured, or no measurement
+   * yet) Listen first asks the server for its time, briefly, then picks.
+   */
+  const listenToBeacon = useCallback(
+    (band: number) => {
+      const ticket = ++beaconWait.current;
+      if (serverClockSettled()) return listenToBeaconNow(band);
+      setPageMessage({ from: "clock" });
+      void settleServerClock().then(() => {
+        setPageMessage((m) => (m?.from === "clock" ? null : m));
+        if (beaconWait.current === ticket) listenToBeaconNow(band);
+      });
+    },
+    [listenToBeaconNow],
   );
   // What the map draws, once per slot while beacon mode is on.
   const beaconSlot = useServerTick(SLOT_MS, beaconMode);
@@ -875,9 +894,11 @@ export default function ListenPage() {
     service: serviceMessage,
     page:
       pageMessage &&
-      (listGone
-        ? `${LIST_FAILED_TEXT} Paste a receiver address, or try again below.`
-        : `The receiver list is still loading. Press ${pageMessage.from === "link" ? "Pick best receiver" : "Listen"} again in a moment.`),
+      (pageMessage.from === "clock"
+        ? "Checking the time with the server…"
+        : listGone
+          ? `${LIST_FAILED_TEXT} Paste a receiver address, or try again below.`
+          : `The receiver list is still loading. Press ${pageMessage.from === "link" ? "Pick best receiver" : "Listen"} again in a moment.`),
   };
   // While a run is going, only its note shows: it names each refusal and
   // what's next, and the bare refusal lands a render before the note does.

@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Broadcast } from "@/lib/eibi";
 import type { Receiver } from "@/lib/kiwi-list";
+import { noteResponse, resetServerClock } from "@/lib/server-clock";
 import type { RadioStatus, ScanState, Settled } from "@/lib/use-radio";
 
 const radio = {
@@ -2443,14 +2444,45 @@ describe("ListenPage", () => {
     beforeEach(() => {
       vi.useFakeTimers({ now: NOW });
       receiverList.data = { receivers: [nearby, london] };
+      // The receiver list's own response measures the server's clock in the app; here, the clock is right.
+      resetServerClock();
+      noteResponse(new Headers({ "x-server-ms": String(Date.now()) }), Date.now(), Date.now());
     });
-    afterEach(() => vi.useRealTimers());
+    afterEach(() => {
+      vi.useRealTimers();
+      resetServerClock();
+    });
 
     const openStrip = () => {
       const details = document.querySelector<HTMLDetailsElement>("details.beacons")!;
       details.open = true;
       act(() => fireEvent(details, new Event("toggle")));
     };
+
+    // Value: protects=beacon Listen while the page's clock is unsure (here never measured, the computer's clock 8 s fast) says it's checking the time, asks the server, and picks the beacon actually on the air by the server's clock, not the one the computer's clock names; fails_when=Listen picks at once off an unsure clock, latching the wrong beacon; why_new=P4 TODO (owner: beacon Listen waits for a measurement); seam=MapPanel/picker/radio mocked, real server clock with a stubbed fetch; no_claim=how long the real route takes
+    it("checks the time with the server before picking a beacon on an unsure clock", async () => {
+      resetServerClock();
+      vi.setSystemTime(NOW + 8_000);
+      const start = performance.now();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(null, { status: 204, headers: { "x-server-ms": String(NOW + performance.now() - start) } })),
+      );
+      render(<ListenPage />);
+      openStrip();
+      // By the computer's clock the next turn has begun: VE8AT on 14.100.
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to VE8AT on 14.100 MHz" })));
+      expect(screen.getByText("Checking the time with the server…")).toBeTruthy();
+      expect(radio.tune).not.toHaveBeenCalled();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      // By the server's clock it's still 4U1UN's turn on that band.
+      expect(screen.getByLabelText("map beacons").textContent).toBe("on, selected 4U1UN");
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 14_100, mode: "cw" }));
+      expect(screen.queryByText("Checking the time with the server…")).toBeNull();
+      vi.unstubAllGlobals();
+    });
 
     // Value: protects=the strip shows the beacon on each band now and turns on the map's beacon layer; Listen tunes the band in CW through Pick best with receivers ranked for that beacon (not the strongest or nearest), and the map gets the pick for its path; fails_when=Listen tunes another frequency or mode, ranks by SNR, bypasses Pick best, or the map isn't told; why_new=beacon mode (#59); seam=MapPanel/picker/radio mocked, real BeaconStrip and ranking; no_claim=what the map draws (ReceiverMap tests)
     it("listens to a beacon through a receiver placed to hear it", () => {

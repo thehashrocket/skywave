@@ -185,7 +185,22 @@ export function useReceptionPrompt(
   // question waits one more turn. Broadcasts run on this browser's clock and
   // aren't restarted.
   const [clockEpoch, setClockEpoch] = useState(0);
-  useEffect(() => onServerOffset(() => setClockEpoch((e) => e + 1)), []);
+  // On every clock move, also close a beacon prompt whose turn the server would
+  // no longer take (it sat on screen through a sleep, its timer paused).
+  useEffect(
+    () =>
+      onServerOffset(() => {
+        setClockEpoch((e) => e + 1);
+        setPrompt((p) =>
+          p?.tx.kind === "beacon" &&
+          p.tx.slotStartMs !== undefined &&
+          serverNow() > p.tx.slotStartMs + LISTING_GRACE_MS - LATE_ANSWER_SLACK_MS
+            ? null
+            : p,
+        );
+      }),
+    [],
+  );
   const beaconClock = pickCall !== null ? clockEpoch : 0;
   useEffect(() => {
     audioStart.current = key !== null && pickCall !== null ? serverNow() : null;
@@ -221,13 +236,9 @@ export function useReceptionPrompt(
           ? c.beacons?.[beaconAnswerKey(s.host, s.port ?? DEFAULT_KIWI_PORT, s.freqKhz, pickCall)]
           : undefined;
       if (sentAt !== undefined) notBefore = Math.max(notBefore, sentAt + SAME_CHANNEL_MS + SAME_CHANNEL_SLACK_MS);
-      // The schedule runs on the server's clock; the gap on this browser's.
+      // The schedule and the gaps all run on the server's clock.
       const server = serverNow();
-      const at = beaconPromptAt(
-        { call: pickCall, bandIndex: band },
-        audioStart.current,
-        notBefore + (server - Date.now()),
-      );
+      const at = beaconPromptAt({ call: pickCall, bandIndex: band }, audioStart.current, notBefore);
       if (at === null) return;
       setBeaconAskSlotMs(at.slotStartMs);
       const timer = setTimeout(() => {
@@ -241,7 +252,7 @@ export function useReceptionPrompt(
           return;
         }
         askedOn.current = askKey;
-        update((c) => ({ ...c, lastShownMs: Date.now() }));
+        update((c) => ({ ...c, lastShownMs: serverNow() }));
         setPrompt({
           host: s.host,
           port: s.port ?? DEFAULT_KIWI_PORT,
@@ -252,7 +263,7 @@ export function useReceptionPrompt(
       }, at.askAtMs - server);
       return () => clearTimeout(timer);
     }
-    const wait = Math.max(DWELL_MS, notBefore - Date.now());
+    const wait = Math.max(DWELL_MS, notBefore - serverNow());
     const timer = setTimeout(() => {
       const { status: s, schedule: sched } = latest.current;
       if (!sched || !s.host || s.freqKhz === undefined || !s.mode) return;
@@ -260,7 +271,7 @@ export function useReceptionPrompt(
       const tx = eibiTransmitter(scheduledOn(sched, s.freqKhz, Date.now()));
       if (!tx) return;
       askedOn.current = askKey;
-      update((c) => ({ ...c, lastShownMs: Date.now() }));
+      update((c) => ({ ...c, lastShownMs: serverNow() }));
       setPrompt({ host: s.host, port: s.port ?? DEFAULT_KIWI_PORT, freqKhz: s.freqKhz, mode: s.mode, tx });
     }, wait);
     return () => clearTimeout(timer);
@@ -288,7 +299,7 @@ export function useReceptionPrompt(
     // An answer about a beacon is sent: remember it, so this tab doesn't ask about
     // that beacon here again before the server would take another (SAME_CHANNEL_MS).
     if (p?.tx.kind === "beacon") {
-      const now = Date.now();
+      const now = serverNow();
       update((c) => ({
         ...c,
         beacons: {

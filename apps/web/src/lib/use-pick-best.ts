@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LIST_MAX_AGE_MS, receiverKey, type Receiver } from "./kiwi-list";
 import { pickContext, pickKey, type PickContext, type PickSource } from "./pick-context";
 import { DEFAULT_KIWI_PORT } from "./receiver";
-import { onServerOffset, serverClockMeasurements, serverClockSettled, serverNow } from "./server-clock";
+import { onServerOffset, serverClockCorrections, serverNow } from "./server-clock";
 import type { RadioErrorCode, RadioStatus } from "./use-radio";
 
 /**
@@ -170,7 +170,7 @@ export function usePickBest(
    * reception prompt comes a minute or more after the watch ends); a new run,
    * a hand pick (cancel) or the way back to the old receiver replaces or drops it.
    */
-  const picked = useRef<{ key: string; context: PickContext; unmeasured?: number } | null>(null);
+  const picked = useRef<{ key: string; context: PickContext; corrections: number } | null>(null);
   /**
    * How many times a choice has been dropped. A question that snapshotted a
    * choice compares this when answered: any drop in between (a hand pick, a
@@ -183,19 +183,14 @@ export function usePickBest(
     if (picked.current) drops.current++;
     picked.current = null;
   }, []);
-  // A choice made through a forward clock jump not yet re-measured carries the
-  // computer's time: right after a sleep, wrong after a change by hand. If the
-  // time then moves before any measurement (the re-measure corrects it, or the
-  // jump is undone), it was wrong: drop the choice. A measurement first that
-  // left the time alone (a sleep) proves it right.
+  // A choice's time is the page's server clock when it was made. If the clock
+  // is corrected after (a measurement found it off, or a jump was undone), that
+  // time may be off by as much, and a question's slot is on the corrected
+  // clock: drop the choice. A sleep the measurement confirms corrects nothing.
   useEffect(
     () =>
       onServerOffset(() => {
-        const p = picked.current;
-        if (!p || p.unmeasured === undefined) return;
-        if (serverClockMeasurements() !== p.unmeasured) p.unmeasured = undefined;
-        // Still counting through the jump: this was the switch into it.
-        else if (serverClockSettled()) drop();
+        if (picked.current && picked.current.corrections !== serverClockCorrections()) drop();
       }),
     [drop],
   );
@@ -209,8 +204,7 @@ export function usePickBest(
         // it counts as a drop; the same receiver again just replaces it.
         if (picked.current && picked.current.key !== key) drops.current++;
         const context = pickContext(c.ranked, r, c.run.source, c.run.freqKhz, serverNow());
-        // Unsettled: which measurement the effect above waits for.
-        picked.current = { key, context, unmeasured: serverClockSettled() ? undefined : serverClockMeasurements() };
+        picked.current = { key, context, corrections: serverClockCorrections() };
       }
       tune(r, true);
     },
@@ -227,7 +221,9 @@ export function usePickBest(
   /** How a run chose the receiver at host:port, or null if no run chose it (a hand pick, the way back). */
   const pickedFor = useCallback((host: string, port: number): PickContext | null => {
     const p = picked.current;
-    return p && p.key === pickKey({ host, port }) ? p.context : null;
+    // A correction whose notice hasn't run yet still leaves the time wrong.
+    if (!p || p.corrections !== serverClockCorrections()) return null;
+    return p.key === pickKey({ host, port }) ? p.context : null;
   }, []);
   /** Whether this receiver refused within REFUSED_MS, so neither a run nor a suggestion should offer it. */
   const isRefused = useCallback(
