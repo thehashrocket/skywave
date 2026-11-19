@@ -51,6 +51,12 @@ export const THANKS_MS = 4_000;
  */
 export const PROMPT_TTL_MS = LISTING_GRACE_MS - 60_000;
 
+/**
+ * How much earlier than the server's last chance a late beacon question gives
+ * up: the page's clock error (about a second) and the answer's trip.
+ */
+export const LATE_ANSWER_SLACK_MS = 5_000;
+
 // sessionStorage, so a reload in the same tab doesn't start the counts over.
 const STORAGE_KEY = "skywave.receptionPrompt";
 
@@ -227,9 +233,13 @@ export function useReceptionPrompt(
       const timer = setTimeout(() => {
         const s = latest.current.status;
         if (!s.host || s.freqKhz === undefined || !s.mode) return;
-        // A timer that outlived a sleep: an answer about that turn could arrive
-        // after the server stops taking it. The clock switch re-plans for a later turn.
-        if (serverNow() > at.slotStartMs + LISTING_GRACE_MS - PROMPT_TTL_MS) return;
+        // A timer that fired late (a sleep, or a frozen tab): an answer about that
+        // turn could reach the server after it stops taking it, allowing for the
+        // clock's error and the trip. Plan a later turn instead.
+        if (serverNow() > at.slotStartMs + LISTING_GRACE_MS - PROMPT_TTL_MS - LATE_ANSWER_SLACK_MS) {
+          setClockEpoch((e) => e + 1);
+          return;
+        }
         askedOn.current = askKey;
         update((c) => ({ ...c, lastShownMs: Date.now() }));
         setPrompt({

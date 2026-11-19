@@ -137,8 +137,13 @@ export function noteResponse(headers: { get(name: string): string | null }, sent
 /** The server's time now, in ms since the epoch: this browser's clock until an offset is known. */
 export function serverNow(): number {
   if (monoOffset === null) return Date.now();
-  // Listeners hear of a switch between the clocks after the caller is done with this value.
-  if (switched()) queueMicrotask(notify);
+  if (switched()) {
+    // Listeners hear of a switch between the clocks after the caller is done with this value.
+    queueMicrotask(notify);
+    // Onto the computer's clock: measure now, so a change by hand is corrected
+    // before anything the page records on it reaches the server.
+    if (onWallClock) remeasure();
+  }
   // A forward jump not yet measured: the computer's clock with the last offset.
   if (onWallClock) return Date.now() + monoOffset - measuredAt;
   return performance.now() + monoOffset;
@@ -185,6 +190,16 @@ export const clockedFetch: typeof fetch = async (input, init) => {
   noteResponse(res.headers, sentAt, Date.now());
   return res;
 };
+
+/**
+ * Asks the server for its time: any response's Date header measures the clock
+ * (noteResponse), even an error, and a HEAD touches no data. A failed request
+ * leaves the clock as it was until the page's next response.
+ */
+function remeasure() {
+  if (typeof window === "undefined") return;
+  clockedFetch("/api/trpc", { method: "HEAD", cache: "no-store" }).catch(() => {});
+}
 
 /** For tests: forget the offset. */
 export function resetServerClock() {

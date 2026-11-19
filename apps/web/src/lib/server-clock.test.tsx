@@ -178,6 +178,23 @@ describe("serverNow", () => {
     off();
   });
 
+  // Value: protects=a switch onto the computer's clock sends one HEAD to /api/trpc through the clock's own fetch, so the next measurement comes within a round trip rather than with the next answer: a change by hand is corrected before anything recorded on the wrong time is sent; fails_when=the switch only notifies, or every serverNow call sends a request; why_new=owner D1 in round 3's review (re-measure on a switch); seam=stubbed fetch, fake timers (setSystemTime moves only Date); no_claim=the deployed route's status (any response carries a Date header)
+  it("measures again at once when it switches to the computer's clock", async () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
+    const fetch = vi.fn(async () => new Response(null, { status: 405, headers: { date: new Date(TRUE_MS).toUTCString() } }));
+    vi.stubGlobal("fetch", fetch);
+    // An hour forward by hand: the server didn't move.
+    vi.setSystemTime(Date.now() + 3_600_000);
+    serverNow();
+    serverNow();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith("/api/trpc", expect.objectContaining({ method: "HEAD" }));
+    await vi.waitFor(() => expect(serverClockSettled()).toBe(true));
+    // Corrected back from an hour ahead (waitFor's own ticks moved the clock a little).
+    expect(Math.abs(serverNow() - TRUE_MS)).toBeLessThan(REMEASURE_MS);
+  });
+
   // Value: protects=a listener that throws neither fails the response that measured the clock (a tRPC call) nor keeps the other listeners from hearing; fails_when=listeners run bare inside noteResponse; why_new=clock-edges TODO (adversarial review); seam=console.error spied; no_claim=none beyond protects
   it("keeps measuring when a listener throws", () => {
     vi.useFakeTimers({ now: TRUE_MS });
