@@ -1,4 +1,5 @@
 import { LANGUAGES } from "./eibi-languages";
+import { siteKey } from "./eibi-sites";
 
 /**
  * The EiBi shortwave schedule (http://www.eibispace.de/dx/): who's scheduled
@@ -26,6 +27,19 @@ export type Broadcast = {
   from?: string;
   to?: string;
 };
+
+/**
+ * A broadcast as the server keeps it: with the row's country (EiBi's ITU
+ * column) and transmitter site key (lib/eibi-sites.ts; absent when the
+ * Remarks column isn't a site code). Never sent to the page (#72 eng review,
+ * D7/D13), which gets plain `Broadcast`s.
+ */
+export type ListedBroadcast = Broadcast & { country: string; site?: string };
+
+/** A listed broadcast as the page gets it. */
+export function forPage({ country: _c, site: _s, ...b }: ListedBroadcast): Broadcast {
+  return b;
+}
 
 /** The season a moment falls in: "a26" (summer, from the last Sunday of March) or "b26" (winter, from the last Sunday of October). */
 export function seasonFor(ms: number): string {
@@ -59,11 +73,11 @@ const dateIn = (field: string) => DATE.exec(field)?.[1];
  * alternative or spurious frequencies. Throws if the text isn't the
  * schedule, so a moved or broken file never replaces a good copy.
  */
-export function parseEibi(text: string, season: string): Broadcast[] {
+export function parseEibi(text: string, season: string): ListedBroadcast[] {
   const lines = text.split(/\r?\n/);
   if (!lines[0]?.startsWith("kHz:")) throw new Error("Not an EiBi schedule: the header is missing.");
   const winter = season.startsWith("b");
-  const out: Broadcast[] = [];
+  const out: ListedBroadcast[] = [];
   for (const line of lines.slice(1)) {
     const f = line.split(";");
     if (f.length < 9) continue;
@@ -82,7 +96,10 @@ export function parseEibi(text: string, season: string): Broadcast[] {
     if (persistence === 8 || (persistence === 4 && !winter) || (persistence === 5 && winter)) continue;
     const from = f[9]?.trim() ?? "";
     const to = f[10]?.trim() ?? "";
-    const b: Broadcast = { khz, start, end, days, station, lang: f[5]!.trim(), target: f[6]!.trim() };
+    const country = f[3]!.trim();
+    const b: ListedBroadcast = { khz, start, end, days, station, lang: f[5]!.trim(), target: f[6]!.trim(), country };
+    const site = siteKey(country, f[7] ?? "");
+    if (site !== undefined) b.site = site;
     // A start date on a lasting entry is only when it began; an end date ("[0326]",
     // the last time it was heard, isn't one) still ends it.
     const fromDate = dateIn(from);
@@ -196,6 +213,20 @@ function firstAtOrAbove(schedule: readonly Broadcast[], khz: number): number {
   return lo;
 }
 
+/** Every listing between two frequencies on the air now, one per transmitter site, lowest frequency first. */
+export function onAirBetween<B extends Broadcast>(
+  schedule: readonly B[],
+  loKhz: number,
+  hiKhz: number,
+  ms: number,
+): B[] {
+  const out: B[] = [];
+  for (let i = firstAtOrAbove(schedule, loKhz); i < schedule.length && schedule[i]!.khz <= hiKhz; i++) {
+    if (onAirAt(schedule[i]!, ms)) out.push(schedule[i]!);
+  }
+  return out;
+}
+
 /** Broadcasts on one frequency. */
 export type Channel = { khz: number; broadcasts: Broadcast[] };
 
@@ -206,9 +237,7 @@ export type Channel = { khz: number; broadcasts: Broadcast[] };
  */
 export function scheduledBetween(schedule: readonly Broadcast[], loKhz: number, hiKhz: number, ms: number): Channel[] {
   const out: Channel[] = [];
-  for (let i = firstAtOrAbove(schedule, loKhz); i < schedule.length && schedule[i]!.khz <= hiKhz; i++) {
-    const b = schedule[i]!;
-    if (!onAirAt(b, ms)) continue;
+  for (const b of onAirBetween(schedule, loKhz, hiKhz, ms)) {
     let channel = out.at(-1);
     if (channel?.khz !== b.khz) out.push((channel = { khz: b.khz, broadcasts: [] }));
     if (!channel.broadcasts.some((o) => o.station === b.station && o.lang === b.lang)) channel.broadcasts.push(b);

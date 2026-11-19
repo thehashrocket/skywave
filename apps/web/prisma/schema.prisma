@@ -95,6 +95,15 @@ model ReceptionReport {
   rbnSpots     Int?
   /// The UTC day ("YYYY-MM-DD") `rbnSpots` counts.
   rbnDay       String?
+  /// EiBi answers only (#72): every transmitter the named station(s) could
+  /// have been sent from, at the latest minute of the grace window each was
+  /// on the air, from this server's schedule and EiBi's site table
+  /// (lib/eibi-sites.ts). A list of {key, coords: [[lat, lon], ...]} (coords
+  /// empty when EiBi lists none; a key with several coords is a group of
+  /// transmitters), or {key: null, country, coords: []} when EiBi doesn't say
+  /// which site. Null for beacons, rows from before this column, or when the
+  /// lookup failed (logged; the answer is kept).
+  txSites      Json?
 
   @@index([receiverHost, receiverPort, freqKhz])
   @@index([listenerId, createdAt])

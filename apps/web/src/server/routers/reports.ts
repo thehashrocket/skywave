@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { scheduledOn, type Broadcast } from "@/lib/eibi";
+import { MATCH_KHZ, onAirBetween, scheduledOn, type Broadcast, type ListedBroadcast } from "@/lib/eibi";
+import { byKey, candidateFor, type SiteCandidate, type SiteTable } from "@/lib/eibi-sites";
 import { beaconOnBand, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
 import { findReceiver, MAX_PLAUSIBLE_SNR, MAX_ROWS, type Receiver } from "@/lib/kiwi-list";
 import { MAX_CANDIDATES, MAX_USERS, PICK_CONTEXT_VERSION, PICK_SOURCES, pickKey } from "@/lib/pick-context";
@@ -18,7 +19,7 @@ import {
 import { publicProcedure, router } from "../trpc";
 import { getBeaconStatus, rbnDays } from "./beacons";
 import { getReceivers, servedReceivers } from "./receivers";
-import { getSchedule } from "./stations";
+import { getSchedule, getSites } from "./stations";
 
 const MINUTE = 60_000;
 
@@ -35,6 +36,38 @@ export function scheduledRecently(schedule: readonly Broadcast[], txName: string
     for (const b of scheduledOn(schedule, freqKhz, t)) onAir.add(b.station);
   }
   return names.every((n) => onAir.has(n));
+}
+
+/**
+ * The transmitters an EiBi answer could have been about (#72 eng review,
+ * D8/D10/D12): for each station in txName, every listing on this frequency
+ * (within MATCH_KHZ, any language, every site) at the latest minute of the
+ * last LISTING_GRACE_MS it was on the air, so a changeover at :00 or :30
+ * doesn't add the outgoing slot's site. One candidate per distinct site,
+ * sorted for a stable row.
+ */
+export function sitesHeard(
+  schedule: readonly ListedBroadcast[],
+  sites: SiteTable,
+  txName: string,
+  freqKhz: number,
+  ms: number,
+): SiteCandidate[] {
+  const names = txName.split(TX_NAME_SEPARATOR);
+  const latest = new Map<string, ListedBroadcast[]>();
+  for (let t = ms - LISTING_GRACE_MS; t <= ms; t += MINUTE) {
+    const onAir = onAirBetween(schedule, freqKhz - MATCH_KHZ, freqKhz + MATCH_KHZ, t);
+    for (const name of names) {
+      const rows = onAir.filter((b) => b.station === name);
+      if (rows.length > 0) latest.set(name, rows);
+    }
+  }
+  const out = new Map<string, SiteCandidate>();
+  for (const b of [...latest.values()].flat()) {
+    const c = candidateFor(sites, b.site, b.country);
+    out.set(c.key ?? `?${c.country}`, c);
+  }
+  return [...out].sort(byKey).map(([, c]) => c);
 }
 
 /**
@@ -264,12 +297,13 @@ export const reportsRouter = router({
     // beacon the schedule had on that band in the slot asked about). From this
     // server's cached copies; neither fetches per request.
     const { slotStartMs, pick, ...report } = input;
+    let listed: readonly ListedBroadcast[] | undefined;
     if (input.txKind === "beacon") {
       if (slotStartMs === undefined || !beaconSlotChecks(input.txName, freqKhz, slotStartMs, now))
         return { accepted: false };
     } else {
-      const { broadcasts } = await getSchedule();
-      if (!scheduledRecently(broadcasts, input.txName, freqKhz, now)) return { accepted: false };
+      ({ listed } = await getSchedule());
+      if (!scheduledRecently(listed, input.txName, freqKhz, now)) return { accepted: false };
     }
     const served = await servedList();
     if (!served || !findReceiver(served, receiverHost, receiverPort)) return { accepted: false };
@@ -298,6 +332,16 @@ export const reportsRouter = router({
     // RBN's count for the last day this server has saved (never downloads here).
     const rbnDay = input.txKind === "beacon" ? await rbnDays.peek() : null;
     const rbn = rbnDay?.beacons.find((b) => b.call === input.txName);
+    // Where the station could have been sent from (#72). A failure here costs
+    // only the sites: the answer is kept (D1), and null means "lookup failed".
+    let txSites: SiteCandidate[] | undefined;
+    if (listed) {
+      try {
+        txSites = sitesHeard(listed, getSites(), input.txName, freqKhz, now);
+      } catch (error) {
+        console.warn("reports.submit: couldn't work out the transmitter sites:", error);
+      }
+    }
     let fit = pick;
     if (pick && !pickChecks(pick, { ...input, slotStartMs: slot }, now)) {
       console.warn("reports.submit: dropped pick context that doesn't fit the report");
@@ -310,6 +354,7 @@ export const reportsRouter = router({
         ...(slot !== undefined && { slotStartMs: BigInt(slot) }),
         ...(official && { beaconStatus: official.off ? "OFF" : "OK" }),
         ...(rbn && rbnDay && { rbnSpots: rbn.spots, rbnDay: rbnDay.day }),
+        ...(txSites && { txSites }),
         ...(fit && {
           pickVersion: fit.version,
           pickedAtMs: BigInt(fit.pickedAtMs),
