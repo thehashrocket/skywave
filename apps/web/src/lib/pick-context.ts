@@ -23,11 +23,15 @@ export type PickSource = (typeof PICK_SOURCES)[number];
  * canonical. 4: the clock behind `pickedAtMs` counts from this page's
  * monotonic clock and is measured again after the computer's clock jumps
  * (lib/server-clock.ts), and a beacon question starts its plan over when the
- * offset changes. The server still accepts 2 and 3 from tabs opened before
- * those deploys.
+ * offset changes. 5: a re-measure keeps the time shown unless it's over 2 s
+ * off, every switch between the page's two clocks re-plans the beacon
+ * question, a question whose turn is too old to be taken isn't asked, and a
+ * pick made through a forward clock jump not yet re-measured keeps no
+ * context. The server still accepts 2 to 4 from tabs opened before those
+ * deploys.
  * Raise it whenever what the page records, or when it records it, changes.
  */
-export const PICK_CONTEXT_VERSION = 4;
+export const PICK_CONTEXT_VERSION = 5;
 
 /** How many of the ranked list's receivers a report keeps, best first. */
 export const MAX_CANDIDATES = 10;

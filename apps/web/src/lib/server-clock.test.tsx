@@ -8,10 +8,12 @@ import {
   MAX_ROUND_TRIP_MS,
   noteResponse,
   onServerOffset,
+  JUMP_MS,
   REMEASURE_MS,
   REMEASURE_ROUND_TRIP_MS,
   offsetFromResponse,
   resetServerClock,
+  serverClockSettled,
   serverNow,
   serverOffset,
 } from "./server-clock";
@@ -91,32 +93,86 @@ describe("serverNow", () => {
     off();
   });
 
-  // Value: protects=after a sleep the monotonic clock lagged through, the page's server time is right at once (the computer's clock kept time), and the next quick response, never a slow one, re-measures the offset and tells listeners (the beacon strip, the beacon question); fails_when=the time lags by the sleep until a response (owner: use the computer's clock until re-measured), the offset is never measured again, a slow response replaces it, or listeners aren't told; why_new=clock TODO (owner: monotonic clock + re-plan) and its review; seam=fake timers (setSystemTime models the wall clock moving on while performance.now paused); no_claim=network asymmetry
-  it("measures again after a sleep, from a quick response only", () => {
+  // Value: protects=after a sleep the monotonic clock lagged through, the page's server time is right at once (the computer's clock kept time), listeners hear of the switch, the clock reads as unsettled until a quick response (never a slow one or one without a Date header) re-measures, and the re-measure keeps the right time without telling anyone again; fails_when=the time lags by the sleep until a response, the switch is silent, a slow or headerless response closes the jump, or the re-measure moves or re-announces a right time; why_new=clock TODO (owner: monotonic clock + re-plan) and the clock-edges TODO (owner: core set); seam=fake timers (setSystemTime models the wall clock moving on while performance.now paused); no_claim=network asymmetry
+  it("measures again after a sleep, from a quick response only", async () => {
     vi.useFakeTimers({ now: TRUE_MS });
     noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
     const told = vi.fn();
     const off = onServerOffset(told);
+    expect(serverClockSettled()).toBe(true);
     // Ten minutes asleep: the wall clock and the server moved on, performance.now() didn't.
     const woke = TRUE_MS + 600_000;
     vi.setSystemTime(woke);
     expect(Math.abs(serverNow() - woke)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS);
+    expect(serverClockSettled()).toBe(false);
+    await Promise.resolve();
+    expect(told).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(1_000);
     expect(Math.abs(serverNow() - (woke + 1_000))).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS);
     noteResponse(headers({ date: new Date(woke).toUTCString() }), Date.now() - REMEASURE_ROUND_TRIP_MS - 1, Date.now());
-    expect(told).not.toHaveBeenCalled();
-    // Value (extension): protects=a quick response with no usable Date header doesn't use up the re-measure; fails_when=the jump is marked measured before the header is checked, so the sleep's error stays; why_new=only a slow response was tried after the jump; seam=fake timers; no_claim=none beyond protects
     noteResponse(headers({}), Date.now() - 100, Date.now());
-    expect(told).not.toHaveBeenCalled();
+    expect(serverClockSettled()).toBe(false);
     noteResponse(headers({ date: new Date(woke + 1_000).toUTCString() }), Date.now() - 100, Date.now());
+    expect(serverClockSettled()).toBe(true);
+    await Promise.resolve();
     expect(told).toHaveBeenCalledTimes(1);
     expect(Math.abs(serverNow() - (woke + 1_000))).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS + 50);
-    // Value (extension): protects=once replaced, the offset holds again until the next jump; fails_when=the replacement doesn't mark the jump measured, so any quick response can move the clock under the strip; why_new=no response was sent after the replacement; seam=fake timers; no_claim=none beyond protects
-    const replaced = serverOffset();
+    // Measured again, the offset holds until the next jump.
+    const kept = serverOffset();
     vi.advanceTimersByTime(1_000);
     noteResponse(headers({ date: new Date(woke + 2_000 + 3 * REMEASURE_MS).toUTCString() }), Date.now() - 100, Date.now());
     expect(told).toHaveBeenCalledTimes(1);
-    expect(serverOffset()).toBe(replaced);
+    expect(serverOffset()).toBe(kept);
+    off();
+  });
+
+  // Value: protects=a re-measure within REMEASURE_MS of the time shown keeps that time, so a short (2-3 s) sleep never snaps back onto the lagging monotonic clock and leftover error can't pile up across jumps (drifts of 2.5 s then 1.9 s stay under JUMP_MS of the true time, not ~4.4 s); fails_when=the re-measure compares with the old offset instead of the time shown; why_new=clock-edges TODO (adversarial review: pile-up); seam=fake timers (setSystemTime moves only Date, as a monotonic clock lagging the true one); no_claim=real drift rates between performance.now and Date.now
+  it("keeps the time shown at a re-measure, so error doesn't pile up across jumps", () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
+    // The monotonic clock falls 2.5 s behind the true time (the computer's clock).
+    vi.setSystemTime(Date.now() + 2_500);
+    const truth = Date.now();
+    expect(Math.abs(serverNow() - truth)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS);
+    // A quick response whose header reads about 1.9 s past the old offset: within REMEASURE_MS.
+    noteResponse(headers({ date: new Date(TRUE_MS + 1_000).toUTCString() }), Date.now() - 100, Date.now());
+    expect(Math.abs(serverNow() - truth)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS);
+    // Another 1.9 s, under JUMP_MS: no re-measure, but the error doesn't stack on the first.
+    vi.setSystemTime(Date.now() + 1_900);
+    expect(Date.now() - serverNow()).toBeLessThan(JUMP_MS);
+  });
+
+  // Value: protects=listeners hear when serverNow() switches to the computer's clock (a forward jump) and back (the jump undone before any response), after the caller has its value, so the beacon question never keeps a plan made on the other clock; fails_when=only a re-measure notifies, or the switch notifies synchronously inside serverNow; why_new=clock-edges TODO (adversarial review: silent switch); seam=fake timers (setSystemTime moves only Date); no_claim=none beyond protects
+  it("tells listeners when it switches clocks, even with no response", async () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
+    const told = vi.fn();
+    const off = onServerOffset(told);
+    vi.setSystemTime(Date.now() + 60_000);
+    serverNow();
+    expect(told).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(told).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.now() - 60_000);
+    expect(Math.abs(serverNow() - TRUE_MS)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS);
+    await Promise.resolve();
+    expect(told).toHaveBeenCalledTimes(2);
+    off();
+  });
+
+  // Value: protects=a listener that throws neither fails the response that measured the clock (a tRPC call) nor keeps the other listeners from hearing; fails_when=listeners run bare inside noteResponse; why_new=clock-edges TODO (adversarial review); seam=console.error spied; no_claim=none beyond protects
+  it("keeps measuring when a listener throws", () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const offBad = onServerOffset(() => {
+      throw new Error("boom");
+    });
+    const told = vi.fn();
+    const off = onServerOffset(told);
+    expect(() => noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now())).not.toThrow();
+    expect(told).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalled();
+    offBad();
     off();
   });
 

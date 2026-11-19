@@ -227,6 +227,9 @@ export function useReceptionPrompt(
       const timer = setTimeout(() => {
         const s = latest.current.status;
         if (!s.host || s.freqKhz === undefined || !s.mode) return;
+        // A timer that outlived a sleep: an answer about that turn could arrive
+        // after the server stops taking it. The clock switch re-plans for a later turn.
+        if (serverNow() > at.slotStartMs + LISTING_GRACE_MS - PROMPT_TTL_MS) return;
         askedOn.current = askKey;
         update((c) => ({ ...c, lastShownMs: Date.now() }));
         setPrompt({

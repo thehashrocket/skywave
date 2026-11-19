@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LIST_MAX_AGE_MS, receiverKey, type Receiver } from "./kiwi-list";
 import { pickContext, pickKey, type PickContext, type PickSource } from "./pick-context";
 import { DEFAULT_KIWI_PORT } from "./receiver";
-import { serverNow } from "./server-clock";
+import { serverClockSettled, serverNow } from "./server-clock";
 import type { RadioErrorCode, RadioStatus } from "./use-radio";
 
 /**
@@ -186,7 +186,9 @@ export function usePickBest(
   /** Tunes a candidate of `c` and notes how it was chosen. */
   const tuneCandidate = useCallback(
     (c: Chain, r: Receiver) => {
-      if (!c.run) drop();
+      // A pick time taken through a forward clock jump not yet re-measured may be
+      // the computer's wrong time: no context rather than a wrong one.
+      if (!c.run || !serverClockSettled()) drop();
       else {
         const key = pickKey(r);
         // Moving to another receiver leaves the one a question asked about, so

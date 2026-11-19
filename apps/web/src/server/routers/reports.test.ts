@@ -355,6 +355,7 @@ describe("reports.submit with Pick best's context (#61)", () => {
     pickSource: "listen",
     rankPos: 0,
     candidates: ["kiwi.example.org:8073", "other.example:8073"],
+    candidatesListed: 2,
     pickLat: 44.5,
     pickLon: -72.6,
     pickSnr: 20,
@@ -374,6 +375,14 @@ describe("reports.submit with Pick best's context (#61)", () => {
   it("stores context that fits the report", async () => {
     const { data, warn } = await submit({ ...valid, pick });
     expect(data).toMatchObject(stored);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=context naming candidates the public list doesn't have (a forged key like localhost:22, or a real receiver that left the list since the pick) is kept, with the count of listed candidates stored so the replay can tell; fails_when=the count isn't stored, counts every candidate, or unlisted candidates drop real context; why_new=P4 TODO (owner: store a listed count); seam=getReceivers mocked, in-memory db; no_claim=the mirror's contents
+  it("stores how many candidates are on the list, keeping context with unlisted ones", async () => {
+    const candidates = ["kiwi.example.org:8073", "localhost:22", "gone.example:8073"];
+    const { data, warn } = await submit({ ...valid, pick: { ...pick, candidates } });
+    expect(data).toMatchObject({ ...stored, candidates, candidatesListed: 1 });
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -454,9 +463,9 @@ describe("reports.submit with Pick best's context (#61)", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  // Value: protects=a tab opened before the round 2 or clock deploy still sends version 2 or 3; its context is kept and stored as sent, so the replay can tell it from version 4; fails_when=the server accepts only the current version (old tabs lose context) or rewrites the version it stores; why_new=round 2 raised PICK_CONTEXT_VERSION to 3 and the monotonic clock to 4; seam=in-memory db; no_claim=Postgres
-  it.each([2, 3])("keeps context from a tab on earlier version %i, storing that version", async (version) => {
-    expect(PICK_CONTEXT_VERSION).toBe(4);
+  // Value: protects=a tab opened before the round 2, clock or round 3 deploy still sends version 2, 3 or 4; its context is kept and stored as sent, so the replay can tell it from version 5; fails_when=the server accepts only the current version (old tabs lose context) or rewrites the version it stores; why_new=round 2 raised PICK_CONTEXT_VERSION to 3, the monotonic clock to 4, round 3 to 5; seam=in-memory db; no_claim=Postgres
+  it.each([2, 3, 4])("keeps context from a tab on earlier version %i, storing that version", async (version) => {
+    expect(PICK_CONTEXT_VERSION).toBe(5);
     const { data, warn } = await submit({ ...valid, pick: { ...pick, version } });
     expect(data).toMatchObject({ ...stored, pickVersion: version });
     expect(warn).not.toHaveBeenCalled();

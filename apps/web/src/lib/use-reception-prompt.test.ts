@@ -295,6 +295,25 @@ describe("useReceptionPrompt", () => {
       expect(hook.result.current.prompt?.tx.name).toBe("4U1UN");
     });
 
+    // Value: protects=a beacon question whose timer outlived a sleep isn't asked about the long-gone turn (its answer could reach the server after it stops taking that slot), and the switch to the computer's clock re-plans for a turn on the corrected clock; fails_when=the timer asks whatever its slot's age, or the switch doesn't re-plan; why_new=clock-edges TODO (Codex adversarial: stale question after sleep, owner: core set); seam=fake timers (setSystemTime moves only Date while performance.now and the timer paused), the real server clock fed a response; no_claim=how a browser runs timers across a real sleep
+    it("skips a question a sleep made too old, and asks a later turn", async () => {
+      noteResponse(new Headers({ date: new Date(Date.now()).toUTCString() }), Date.now(), Date.now());
+      const hook = setup({ status: beaconStatus(), beacon: pick });
+      // Planned: 4U1UN's 12:00:00 turn, asked at 12:00:11.5.
+      expect(hook.result.current.beaconAskSlotMs).toBe(Date.UTC(2026, 10, 18, 12));
+      wait(5_000);
+      // Ten minutes asleep: the computer's clock and the server moved on; performance.now() and the timer didn't.
+      vi.setSystemTime(Date.now() + 600_000);
+      await act(async () => {
+        vi.advanceTimersByTime(6_500);
+      });
+      expect(hook.result.current.prompt).toBeNull();
+      // Re-planned from 12:10:11.5 on the corrected clock: 4U1UN's next turn on that band is 12:12:00.
+      expect(hook.result.current.beaconAskSlotMs).toBe(Date.UTC(2026, 10, 18, 12, 12));
+      wait(Date.UTC(2026, 10, 18, 12, 12) + 10_000 + STREAM_LATENCY_MS - serverNow());
+      expect(hook.result.current.prompt?.tx).toMatchObject({ name: "4U1UN", slotStartMs: Date.UTC(2026, 10, 18, 12, 12) });
+    });
+
     // Value: protects=when the server-clock offset is replaced (a sleep the monotonic clock lagged through), the beacon question drops its old plan and starts over on the new clock: audio counted from then, the turn asked about and the band strip's inputs all on one clock, never asked at the old plan's time; fails_when=the plan ignores offset changes, so it fires on the old clock while the strip moved (PR #74 red team); why_new=clock TODO (owner: monotonic clock + re-plan); seam=fake timers, the real server clock fed a response; no_claim=how a browser's monotonic clock behaves in sleep
     it("starts its plan over on a new clock when the offset is replaced", () => {
       noteResponse(new Headers({ date: new Date(Date.now()).toUTCString() }), Date.now(), Date.now());

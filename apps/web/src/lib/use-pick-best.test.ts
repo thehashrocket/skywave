@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Receiver } from "./kiwi-list";
 import { PICK_CONTEXT_VERSION } from "./pick-context";
 import { MAX_ATTEMPTS, REFUSED_MS, usePickBest, WATCH_MS } from "./use-pick-best";
+import { noteResponse, resetServerClock } from "./server-clock";
 import { RADIO_ERROR_CODES, type RadioErrorCode, type RadioStatus } from "./use-radio";
 
 function rx(host: string): Receiver {
@@ -415,6 +416,24 @@ describe("usePickBest", () => {
       report(fail("b", "busy"));
       expect(hook.result.current.pickedFor("b", 8073)).toBeNull();
       expect(hook.result.current.pickedFor("C", 8073)).toMatchObject({ pickedAtMs: NOW + 4_000, rankPos: 2 });
+    });
+
+    // Value: protects=a pick made while the page counts through a forward clock jump it hasn't re-measured keeps no context, so a wrong pick time never reaches a report, and picks keep context again once the clock is measured; fails_when=tuneCandidate records context whatever the clock's state; why_new=clock-edges TODO (owner: core set); seam=fake timers (setSystemTime moves only Date), the real server clock fed responses; no_claim=how a browser pauses performance.now in sleep
+    it("keeps no context for a pick made through an unmeasured clock jump", () => {
+      resetServerClock();
+      try {
+        noteResponse(new Headers({ date: new Date(NOW).toUTCString() }), Date.now(), Date.now());
+        vi.setSystemTime(Date.now() + 3_600_000);
+        const first = setup();
+        act(() => first.hook.result.current.start(candidates, candidates, run));
+        expect(first.hook.result.current.pickedFor("a", 8073)).toBeNull();
+        noteResponse(new Headers({ date: new Date(NOW).toUTCString() }), Date.now() - 100, Date.now());
+        const second = setup();
+        act(() => second.hook.result.current.start(candidates, candidates, run));
+        expect(second.hook.result.current.pickedFor("a", 8073)).toMatchObject({ rankPos: 0 });
+      } finally {
+        resetServerClock();
+      }
     });
 
     // Value: protects=the context outlives the run's watch (the prompt comes a minute in) but not a hand pick; fails_when=it's dropped with the chain, or cancel keeps it so a hand-picked receiver is credited to Pick best; why_new=pick context; seam=none; no_claim=none beyond protects

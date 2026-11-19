@@ -8,16 +8,19 @@
  * half a second plus half the round trip: plenty for 10 s slots.
  *
  * It's kept against this page's monotonic clock (`performance.now()`), not
- * `Date.now()`, so a manual change or an NTP step of the computer's clock
+ * `Date.now()`, so setting the computer's clock back (by hand or an NTP step)
  * doesn't move the server time the page works from. Some browsers pause the
  * monotonic clock while the computer sleeps, so when the two clocks drift apart
  * by more than JUMP_MS the offset is measured again from the next quick
- * response, and replaced only if that moves it by more than REMEASURE_MS.
- * Until then, a forward drift (what a sleep looks like, and the computer's clock
- * kept time through it) counts from `Date.now()` with the last measured offset,
- * as the page did before the monotonic clock; a backward one can't be a sleep
- * and stays on the monotonic clock. Without a jump, later responses are
- * ignored: an ordinary visit's clock never moves under the beacon strip.
+ * response. Until then, a forward drift (what a sleep looks like, and the
+ * computer's clock kept time through it) counts from `Date.now()` with the last
+ * measured offset, as the page did before the monotonic clock; a backward one
+ * can't be a sleep and stays on the monotonic clock. The re-measure keeps the
+ * time the page was showing unless it's more than REMEASURE_MS off, so a sleep
+ * doesn't move it at all and a forward change by hand is corrected. Listeners
+ * hear of every move: the first offset, a switch between the two clocks, and a
+ * correction. Without a jump, later responses are ignored: an ordinary visit's
+ * clock never moves under the beacon strip.
  */
 
 /**
@@ -72,15 +75,39 @@ const wallLessMono = () => Date.now() - performance.now();
 let monoOffset: number | null = null;
 /** wallLessMono() when the offset was last measured. */
 let measuredAt = 0;
+/** Whether serverNow() last counted from the computer's clock (a forward jump not yet measured). */
+let onWallClock = false;
 const listeners = new Set<() => void>();
 
 /** How far the computer's clock has moved ahead of the monotonic one since the offset was measured. */
 const drift = () => wallLessMono() - measuredAt;
 
+/** A forward jump not yet measured: serverNow() counts from the computer's clock. */
+const wallClockNow = () => monoOffset !== null && drift() > JUMP_MS;
+
+/** Tells every listener; one that throws can't stop the rest or fail the request that measured. */
+function notify() {
+  for (const l of listeners) {
+    try {
+      l();
+    } catch (e) {
+      console.error("server-clock: listener failed", e);
+    }
+  }
+}
+
+/** Whether serverNow() has switched clocks since it last looked; records the switch. */
+function switched(): boolean {
+  const now = wallClockNow();
+  if (now === onWallClock) return false;
+  onWallClock = now;
+  return true;
+}
+
 /**
  * Records the offset from a response (`sentAt` and `receivedAt` by
- * `Date.now()`): the first usable one, and after a jump a quick one that
- * moves it by more than REMEASURE_MS.
+ * `Date.now()`): the first usable one, and after a jump a quick one, which
+ * keeps the time shown unless it's more than REMEASURE_MS off.
  */
 export function noteResponse(headers: { get(name: string): string | null }, sentAt: number, receivedAt: number) {
   if (monoOffset !== null) {
@@ -90,31 +117,43 @@ export function noteResponse(headers: { get(name: string): string | null }, sent
   const o = offsetFromResponse(headers, sentAt, receivedAt);
   if (o === null) return;
   const next = o + wallLessMono();
-  const before = monoOffset;
-  const shown = serverNow();
+  const first = monoOffset === null;
+  // A switch to the computer's clock that nothing has noticed yet still moved the time shown.
+  const moved = switched();
+  const shown = serverNow() - performance.now();
   measuredAt = wallLessMono();
-  const replaced = before === null || Math.abs(next - before) > REMEASURE_MS;
-  if (replaced) monoOffset = next;
-  // Listeners re-plan when the offset is replaced, or when closing the jump
-  // moves the time the page showed (a forward clock change, not a sleep).
-  if (replaced || Math.abs(serverNow() - shown) > REMEASURE_MS) for (const l of listeners) l();
+  // Within REMEASURE_MS of the time shown is measurement error: keep showing it,
+  // so leftover error never piles up across jumps.
+  monoOffset = first || Math.abs(next - shown) > REMEASURE_MS ? next : shown;
+  onWallClock = false;
+  if (first || moved || Math.abs(monoOffset - shown) > REMEASURE_MS) notify();
 }
 
 /** The server's time now, in ms since the epoch: this browser's clock until an offset is known. */
 export function serverNow(): number {
   if (monoOffset === null) return Date.now();
+  // Listeners hear of a switch between the clocks after the caller is done with this value.
+  if (switched()) queueMicrotask(notify);
   // A forward jump not yet measured: the computer's clock with the last offset.
-  if (drift() > JUMP_MS) return Date.now() + monoOffset - measuredAt;
+  if (onWallClock) return Date.now() + monoOffset - measuredAt;
   return performance.now() + monoOffset;
 }
 
 /** How far ahead of this browser's clock the server's is now, or null before one is known. */
 export function serverOffset(): number | null {
   if (monoOffset === null) return null;
-  return drift() > JUMP_MS ? monoOffset - measuredAt : monoOffset - wallLessMono();
+  return serverNow() - Date.now();
 }
 
-/** Calls `listener` when the offset becomes known, or the time the page works from moves after a jump; returns the unsubscribe. */
+/**
+ * Whether serverNow() isn't counting from the computer's clock through a
+ * forward jump (a sleep or a change by hand) it hasn't re-measured.
+ */
+export function serverClockSettled(): boolean {
+  return !wallClockNow();
+}
+
+/** Calls `listener` when the time the page works from moves: the first offset, a switch between clocks, or a correction; returns the unsubscribe. */
 export function onServerOffset(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -136,4 +175,5 @@ export const clockedFetch: typeof fetch = async (input, init) => {
 export function resetServerClock() {
   monoOffset = null;
   measuredAt = 0;
+  onWallClock = false;
 }
