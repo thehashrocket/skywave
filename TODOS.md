@@ -100,23 +100,22 @@
 **Priority:** P4
 **Depends on:** the #61 replay design
 
-### Re-measure the server clock after a jump
+### Server clock: edges of the forward-jump fallback (#61)
 
-**What:** Refresh the page's server-clock offset (`apps/web/src/lib/server-clock.ts`) after the browser's clock jumps: sleep and wake, a manual change, or an NTP step. Today it is measured once per visit.
+**What:** Notes from the monotonic clock's fix-check and adversarial reviews, on the fallback to the computer's clock after a forward jump (`apps/web/src/lib/server-clock.ts`):
+- **Entering the fallback is silent:** a forward change by hand, a forward NTP step, or slow drift between `performance.now()` and `Date.now()` moves `serverNow()` by more than 2 s with no `onServerOffset` call. The beacon strip follows at its next tick while a planned beacon question keeps its plan until a quick response closes the jump. Main moved the same way, silently.
+- **A short sleep can close onto the lagging clock:** with a 2-3 s sleep the re-measure compares against the old offset, so measurement error can keep it and `serverNow()` drops back by the sleep, with no re-plan when the drop is under 2 s. Comparing against the time the page was showing would fix it.
+- **Pick time across the window:** a pick made inside a forward-change window carries the computer's (wrong) time, and a beacon slot asked after the re-measure is on the corrected clock, so the server drops that pick context (the answer is kept). A sleep is not affected.
+- **Error can pile up:** a re-measure that keeps the offset also resets the drift count, so up to ~2 s of leftover error stays and adds to the next drift (about 4-5 s at worst, enough to name the neighbouring beacon). Same fix as the short-sleep item: close a jump against the time shown.
+- **Stale question after a sleep (deferred, also on main):** an armed beacon question timer that outlives a sleep fires for a past slot, and the server refuses it after the thanks. Skip or re-plan at fire time when `serverNow()` is past the slot.
+- **Beacon pick after a forward change:** beacon Listen inside a forward-change window picks the beacon from the wrong slot and keeps it until a retune (main did the same).
+- **Gap timers:** the question gap and same-channel times are kept on `Date.now()` and converted with the current offset, so a clock change shifts them (mostly as on main).
+- **Listeners:** a listener that throws would fail the tRPC call that triggered it; today's listeners only set state.
+- The header comment's "a manual change or an NTP step ... doesn't move the server time" now holds only for a change backward.
 
-**Why:** After a jump, beacon slot math, the beacon strip and Pick best's pick times stay off for the rest of the visit. A beacon question can then be skipped or asked about a turn the listener didn't hear well, and a report's pick context can be dropped.
+**Why:** Rare (a forward clock change mid-visit, a 2-3 s sleep, or about 2 s of drift between the two clocks); none touches audio, and only the pile-up can mislabel a stored beacon report. Owner chose to ship with these noted (2026-11-19 /ship).
 
-**Context:** PR #74 tried a simple version and pulled it (owner, 2026-11-19). That version replaced the offset whenever a quick response (round trip under 1 s) moved it by more than 2 s. Its red-team review found two problems:
-- **It also fires on ordinary loads.** The first offset can come from a slow response (up to 5 s round trip, so up to about 3 s off), and the next quick response then moves it mid-visit.
-- **The strip and the question split.** After a move, the beacon strip follows the new offset while the planned beacon question stays on the old one, so the line can wrongly say "no question this time".
-
-A design that works should:
-- Let a quicker measurement replace a slower one at once, so load-time error is fixed before the listener acts.
-- Keep the 2 s rule only between quick measurements.
-- Have `use-reception-prompt` re-plan, or shift its audio start and asked slot, when the offset changes.
-- Re-check that a report's pick time and audio start sit on one offset.
-
-**Effort:** M
+**Effort:** S
 **Priority:** P3
 **Depends on:** nothing
 
@@ -269,6 +268,17 @@ A design that works should:
 
 
 ## Completed
+
+### Re-measure the server clock after a jump
+
+**What:** Keep the page's server-clock offset right after the computer's clock jumps (sleep and wake, a manual change, an NTP step).
+
+**Completed:** fix/server-clock-monotonic (2026-11-19). How it works (owner: monotonic clock + re-plan):
+- **The clock base:** `serverNow()` counts from `performance.now()`, so setting the computer's clock back (by hand or an NTP step) doesn't move it. A forward change looks like a sleep until the next quick response (below).
+- **After a sleep:** when the computer's clock and the monotonic clock drift apart by more than 2 s (as when some browsers pause `performance.now()` in sleep), the next response with a round trip under 1 s measures the offset again. It replaces the offset only if it moved by more than 2 s. Until then a forward drift counts from the computer's clock with the last offset, which kept time through the sleep (owner, review: right at once on wake, as before this change); a backward one can't be a sleep and stays on the monotonic clock. A forward change by hand is corrected at that response, and listeners are told.
+- **Ordinary visits:** without such a jump, later responses are ignored, so a slow first measurement is never shifted mid-visit. That was the pulled version's bug.
+- **The beacon question:** when listeners are told the time moved (an offset replaced, or a forward change corrected), it starts its plan over on the new clock, so it and the band strip work from one clock again. At worst it waits one more turn. Entering the forward fallback isn't announced yet (see "Server clock: edges of the forward-jump fallback").
+- **Version 4:** this changes the clock behind a report's `pickedAtMs` and when a beacon question comes after a correction, so `PICK_CONTEXT_VERSION` is now 4. The server still takes 2 and 3 from tabs opened before the deploy (owner: post the deploy time on #61).
 
 ### Pick context edge cases, round 2 (#61)
 

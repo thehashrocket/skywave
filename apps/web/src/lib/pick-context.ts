@@ -20,10 +20,14 @@ export type PickSource = (typeof PICK_SOURCES)[number];
  * its question's context only if no choice was dropped since the question
  * appeared (a dial move away and back no longer keeps it), a beacon Listen
  * with no receiver list drops the earlier choice, and candidates must be
- * canonical. The server still accepts 2 from tabs opened before that deploy.
+ * canonical. 4: the clock behind `pickedAtMs` counts from this page's
+ * monotonic clock and is measured again after the computer's clock jumps
+ * (lib/server-clock.ts), and a beacon question starts its plan over when the
+ * offset changes. The server still accepts 2 and 3 from tabs opened before
+ * those deploys.
  * Raise it whenever what the page records, or when it records it, changes.
  */
-export const PICK_CONTEXT_VERSION = 3;
+export const PICK_CONTEXT_VERSION = 4;
 
 /** How many of the ranked list's receivers a report keeps, best first. */
 export const MAX_CANDIDATES = 10;
