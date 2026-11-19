@@ -88,31 +88,6 @@
 **Priority:** P3
 **Depends on:** #61 replay passing; #69 login (RBN half only)
 
-### Pick context edge cases (#61)
-
-**What:** Close the rare cases where a reception report's Pick best context is dropped or mislabelled, before the #61 replay reads that data. The answer itself is never lost in any of them.
-
-**Why:** The owner capped the PR #73 review rounds so collection could start (2026-11-18). Every item below was noted, not fixed. Each one only drops or mislabels the optional pick columns.
-
-**Context:** The noted items:
-- A question left up after Stop or an error picks up a later run's context for the same receiver, even when that run is on another frequency. The fix is to compare the live `pickedFor()` frequency with the snapshot's.
-- List rows whose hosts differ only by case become duplicate candidates, so the whole context is dropped. The fix is to dedupe on the lowercased key.
-- A run that runs out of receivers with nothing to go back to leaves `picked` set.
-- A radio-side tuning correction drops context without logging it.
-- The retry timer keeps the first attempt's pick time (owner ruling: keep).
-- IPv6 keys are dropped.
-- A failed non-beacon start over-drops.
-- One bad candidate key drops the whole context.
-- The beacon bound is 1.5 s looser than it needs to be.
-- Candidate ports 0 and above 65535 pass the check.
-- pickSource isn't checked against the report kind.
-- The server-clock offset goes stale after the machine sleeps or the clock changes (`server-clock.ts`).
-- The listen, link and better source labels and the promptPick frequency guard have no tests.
-
-**Effort:** S
-**Priority:** P2
-**Depends on:** nothing; do before the #61 replay's count gate
-
 ### Pick best follow-ups from the design-pass review
 
 **What:** Finish the refused-receiver memory and the Pick best edges the design-pass /ship reviews listed but didn't fix.
@@ -262,6 +237,29 @@
 
 
 ## Completed
+
+### Pick context edge cases (#61)
+
+**What:** Close the rare cases where a reception report's Pick best context was dropped or mislabelled, before the #61 replay reads that data. The answer itself was never lost in any of them.
+
+**Completed:** fix/pick-context-edges (2026-11-19). How each item closed:
+- **A stale question:** an answer now sends its snapshot only while the hook's choice for that receiver is on the snapshot's frequency.
+- **A run that runs out of receivers:** it now clears its choice.
+- **A failed start:** it clears the old choice only for beacon Listen; a failed Listen, link or drawer start keeps the playing receiver's still-valid choice.
+- **Server checks:**
+  - It accepts bare IPv6 candidate keys.
+  - It accepts only candidate ports 1 to 65535.
+  - It requires beacon context on a beacon answer and no beacon context on any other answer.
+  - Its beacon bound is now slot start + 1.5 s, which includes the stream latency.
+- **The server-clock offset:** it is re-measured from responses with a round trip under 1 s when it moves by more than 2 s (owner).
+- **Tests:** the source-label and frequency tests were added.
+- **Versions:** each answer now stores `pickVersion` (2), so the replay can tell these answers from PR #73's, which have none, including answers from tabs loaded before the deploy (owner).
+
+**Closed without code:**
+- The retry pick time: the owner ruled to keep it.
+- One bad key drops the whole context: the owner chose to keep this, since dropping one key would shift rankPos.
+- The tuning-correction drop: correct by design (owner).
+- Case-variant hosts: these can't happen, because `new URL()` lowercases list hostnames.
 
 ### Refresh the bundled EiBi schedule each season
 
