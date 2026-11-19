@@ -101,6 +101,24 @@ describe("serverNow", () => {
     expect(serverClockSettled()).toBe(false);
   });
 
+  // Value: protects=before any measurement the page simply follows the computer's clock: a jump forward or back moves nothing else, counts no correction, tells no one, and a tab shown again asks nothing (the scheduler starts with the first measurement); fails_when=the jump logic or the visibility ask runs with no offset to keep; why_new=round 4 state-matrix review (unmeasured cells); seam=fake timers, a stubbed fetch; no_claim=none beyond protects
+  it("follows the computer's clock quietly before any measurement", () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    const fetch = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", fetch);
+    const told = vi.fn();
+    onServerOffset(told);
+    vi.setSystemTime(TRUE_MS + 600_000);
+    expect(serverNow()).toBe(TRUE_MS + 600_000);
+    vi.setSystemTime(TRUE_MS);
+    expect(serverNow()).toBe(TRUE_MS);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(fetch).not.toHaveBeenCalled();
+    expect(told).not.toHaveBeenCalled();
+    expect(serverClockCorrections()).toBe(0);
+    expect(serverClockSettled()).toBe(false);
+  });
+
   // Value: protects=a browser clock 5 s off still names the beacon on the air (issue #59's gotcha) from the first response, and listeners hear of it; fails_when=the IBP math uses the raw clock; why_new=server clock; seam=fake timers; no_claim=none
   it("corrects a 5-second skew so the right beacon is named", () => {
     vi.useFakeTimers({ now: TRUE_MS + SKEW_MS });
