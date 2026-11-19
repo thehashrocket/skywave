@@ -256,7 +256,7 @@ function AQuery() {
   return null;
 }
 
-// Value: protects=the re-measure path reaches the tRPC route handler (app/api/trpc/[trpc]), which answers every request fresh, not a bare /api/trpc that matches no route and can be served a cached not-found page with an Age header the clock refuses; fails_when=REMEASURE_PATH points anywhere but under /api/trpc/ or the route moves; why_new=round 3 fix-check (owner: fix the path); seam=none (reads the route file); no_claim=what Vercel's edge does with the handler's 404 (checked with curl on the preview)
+// Value: protects=the re-measure path reaches the tRPC route handler (app/api/trpc/[trpc]), which answers every request fresh, not a bare /api/trpc that matches no route and can be served a cached not-found page with an Age header the clock refuses; fails_when=REMEASURE_PATH points anywhere but under /api/trpc/ or the route moves; why_new=round 3 fix-check (owner: fix the path); seam=none (reads the route file); no_claim=what Vercel's edge does with the handler's 204 (checked with curl on the preview)
 it("re-measures through the tRPC route handler", async () => {
   const { existsSync } = await import("node:fs");
   const { resolve } = await import("node:path");

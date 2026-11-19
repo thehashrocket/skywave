@@ -193,7 +193,8 @@ export const clockedFetch: typeof fetch = async (input, init) => {
 
 /**
  * Where remeasure() asks. It must reach the tRPC route handler, which answers
- * every request fresh (here a 404 for a procedure that doesn't exist): a bare
+ * every request fresh (tRPC answers a HEAD with an empty 204 before looking up
+ * any procedure, so no database or context is touched): a bare
  * /api/trpc matches no route, and a prerendered not-found page can come from
  * a cache with an Age header, which noteResponse rightly refuses.
  */
