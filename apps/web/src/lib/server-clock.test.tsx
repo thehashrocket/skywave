@@ -69,8 +69,8 @@ describe("serverNow", () => {
     expect(serverOffset()).toBe(first);
   });
 
-  // Value: protects=a manual change or NTP step of the computer's clock doesn't move the server time the page works from, and the next response doesn't re-plan anything; fails_when=serverNow is tied to Date.now again, or a steady offset is replaced after the jump; why_new=clock TODO (owner: monotonic clock + re-plan); seam=fake timers (setSystemTime moves only Date); no_claim=browsers whose monotonic clock pauses in sleep (next test)
-  it("ignores a change of the computer's clock", () => {
+  // Value: protects=setting the computer's clock back (by hand or an NTP step; a sleep can't do that) doesn't move the server time the page works from, and the next response doesn't re-plan anything; fails_when=serverNow is tied to Date.now again, or a steady offset is replaced after the jump; why_new=clock TODO (owner: monotonic clock + re-plan); seam=fake timers (setSystemTime moves only Date); no_claim=browsers whose monotonic clock pauses in sleep (next test)
+  it("ignores the computer's clock being set back", () => {
     vi.useFakeTimers({ now: TRUE_MS });
     noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
     const told = vi.fn();
@@ -91,7 +91,7 @@ describe("serverNow", () => {
     off();
   });
 
-  // Value: protects=after a sleep the monotonic clock lagged through, the next quick response corrects the offset and tells listeners (the beacon strip, the beacon question), and a slow one can't; fails_when=the offset is never measured again, a slow response replaces it, or listeners aren't told; why_new=clock TODO (owner: monotonic clock + re-plan); seam=fake timers (setSystemTime models the wall clock moving on while performance.now paused); no_claim=network asymmetry
+  // Value: protects=after a sleep the monotonic clock lagged through, the page's server time is right at once (the computer's clock kept time), and the next quick response, never a slow one, re-measures the offset and tells listeners (the beacon strip, the beacon question); fails_when=the time lags by the sleep until a response (owner: use the computer's clock until re-measured), the offset is never measured again, a slow response replaces it, or listeners aren't told; why_new=clock TODO (owner: monotonic clock + re-plan) and its review; seam=fake timers (setSystemTime models the wall clock moving on while performance.now paused); no_claim=network asymmetry
   it("measures again after a sleep, from a quick response only", () => {
     vi.useFakeTimers({ now: TRUE_MS });
     noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
@@ -100,21 +100,38 @@ describe("serverNow", () => {
     // Ten minutes asleep: the wall clock and the server moved on, performance.now() didn't.
     const woke = TRUE_MS + 600_000;
     vi.setSystemTime(woke);
-    expect(woke - serverNow()).toBeGreaterThan(REMEASURE_MS);
+    expect(Math.abs(serverNow() - woke)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS);
+    vi.advanceTimersByTime(1_000);
+    expect(Math.abs(serverNow() - (woke + 1_000))).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS);
     noteResponse(headers({ date: new Date(woke).toUTCString() }), Date.now() - REMEASURE_ROUND_TRIP_MS - 1, Date.now());
     expect(told).not.toHaveBeenCalled();
     // Value (extension): protects=a quick response with no usable Date header doesn't use up the re-measure; fails_when=the jump is marked measured before the header is checked, so the sleep's error stays; why_new=only a slow response was tried after the jump; seam=fake timers; no_claim=none beyond protects
     noteResponse(headers({}), Date.now() - 100, Date.now());
     expect(told).not.toHaveBeenCalled();
-    noteResponse(headers({ date: new Date(woke).toUTCString() }), Date.now() - 100, Date.now());
+    noteResponse(headers({ date: new Date(woke + 1_000).toUTCString() }), Date.now() - 100, Date.now());
     expect(told).toHaveBeenCalledTimes(1);
-    expect(Math.abs(serverNow() - woke)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS + 50);
+    expect(Math.abs(serverNow() - (woke + 1_000))).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS + 50);
     // Value (extension): protects=once replaced, the offset holds again until the next jump; fails_when=the replacement doesn't mark the jump measured, so any quick response can move the clock under the strip; why_new=no response was sent after the replacement; seam=fake timers; no_claim=none beyond protects
     const replaced = serverOffset();
     vi.advanceTimersByTime(1_000);
-    noteResponse(headers({ date: new Date(woke + 1_000 + 3 * REMEASURE_MS).toUTCString() }), Date.now() - 100, Date.now());
+    noteResponse(headers({ date: new Date(woke + 2_000 + 3 * REMEASURE_MS).toUTCString() }), Date.now() - 100, Date.now());
     expect(told).toHaveBeenCalledTimes(1);
     expect(serverOffset()).toBe(replaced);
+    off();
+  });
+
+  // Value: protects=setting the computer's clock forward by hand (it looks like a sleep until the server answers) is corrected by the next quick response, and listeners are told because the time the page showed moved though the offset was kept; fails_when=closing the jump keeps the offset silently, so the beacon strip and the planned question split; why_new=review of the sleep fallback; seam=fake timers (setSystemTime moves only Date); no_claim=network asymmetry
+  it("corrects the computer's clock being set forward at the next quick response", () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
+    const told = vi.fn();
+    const off = onServerOffset(told);
+    // An hour forward by hand: the server didn't move, and neither did performance.now().
+    vi.setSystemTime(Date.now() + 3_600_000);
+    expect(serverNow() - TRUE_MS).toBeGreaterThan(3_000_000);
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now() - 100, Date.now());
+    expect(told).toHaveBeenCalledTimes(1);
+    expect(Math.abs(serverNow() - TRUE_MS)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS + 50);
     off();
   });
 

@@ -256,7 +256,7 @@
 
 **Completed:** fix/server-clock-monotonic (2026-11-19). How it works (owner: monotonic clock + re-plan):
 - **The clock base:** `serverNow()` counts from `performance.now()`, so a manual change or NTP step doesn't move it at all.
-- **After a sleep:** when the computer's clock and the monotonic clock drift apart by more than 2 s (as when some browsers pause `performance.now()` in sleep), the next response with a round trip under 1 s measures the offset again. It replaces the offset only if it moved by more than 2 s.
+- **After a sleep:** when the computer's clock and the monotonic clock drift apart by more than 2 s (as when some browsers pause `performance.now()` in sleep), the next response with a round trip under 1 s measures the offset again. It replaces the offset only if it moved by more than 2 s. Until then a forward drift counts from the computer's clock with the last offset, which kept time through the sleep (owner, review: right at once on wake, as before this change); a backward one can't be a sleep and stays on the monotonic clock. A forward change by hand is corrected at that response, and listeners are told.
 - **Ordinary visits:** without such a jump, later responses are ignored, so a slow first measurement is never shifted mid-visit. That was the pulled version's bug.
 - **The beacon question:** when the offset changes, it starts its plan over on the new clock, so it and the band strip never work from two clocks. At worst it waits one more turn.
 - **Version 4:** this changes the clock behind a report's `pickedAtMs` and when a beacon question comes after a correction, so `PICK_CONTEXT_VERSION` is now 4. The server still takes 2 and 3 from tabs opened before the deploy (owner: post the deploy time on #61).

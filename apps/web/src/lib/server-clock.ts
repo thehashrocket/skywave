@@ -13,8 +13,11 @@
  * monotonic clock while the computer sleeps, so when the two clocks drift apart
  * by more than JUMP_MS the offset is measured again from the next quick
  * response, and replaced only if that moves it by more than REMEASURE_MS.
- * Without such a jump, later responses are ignored: an ordinary visit's clock
- * never moves under the beacon strip.
+ * Until then, a forward drift (what a sleep looks like, and the computer's clock
+ * kept time through it) counts from `Date.now()` with the last measured offset,
+ * as the page did before the monotonic clock; a backward one can't be a sleep
+ * and stays on the monotonic clock. Without a jump, later responses are
+ * ignored: an ordinary visit's clock never moves under the beacon strip.
  */
 
 /**
@@ -71,6 +74,9 @@ let monoOffset: number | null = null;
 let measuredAt = 0;
 const listeners = new Set<() => void>();
 
+/** How far the computer's clock has moved ahead of the monotonic one since the offset was measured. */
+const drift = () => wallLessMono() - measuredAt;
+
 /**
  * Records the offset from a response (`sentAt` and `receivedAt` by
  * `Date.now()`): the first usable one, and after a jump a quick one that
@@ -78,30 +84,37 @@ const listeners = new Set<() => void>();
  */
 export function noteResponse(headers: { get(name: string): string | null }, sentAt: number, receivedAt: number) {
   if (monoOffset !== null) {
-    if (Math.abs(wallLessMono() - measuredAt) <= JUMP_MS) return;
+    if (Math.abs(drift()) <= JUMP_MS) return;
     if (receivedAt - sentAt > REMEASURE_ROUND_TRIP_MS) return;
   }
   const o = offsetFromResponse(headers, sentAt, receivedAt);
   if (o === null) return;
   const next = o + wallLessMono();
   const before = monoOffset;
+  const shown = serverNow();
   measuredAt = wallLessMono();
-  if (before !== null && Math.abs(next - before) <= REMEASURE_MS) return;
-  monoOffset = next;
-  for (const l of listeners) l();
+  const replaced = before === null || Math.abs(next - before) > REMEASURE_MS;
+  if (replaced) monoOffset = next;
+  // Listeners re-plan when the offset is replaced, or when closing the jump
+  // moves the time the page showed (a forward clock change, not a sleep).
+  if (replaced || Math.abs(serverNow() - shown) > REMEASURE_MS) for (const l of listeners) l();
 }
 
 /** The server's time now, in ms since the epoch: this browser's clock until an offset is known. */
 export function serverNow(): number {
-  return monoOffset === null ? Date.now() : performance.now() + monoOffset;
+  if (monoOffset === null) return Date.now();
+  // A forward jump not yet measured: the computer's clock with the last offset.
+  if (drift() > JUMP_MS) return Date.now() + monoOffset - measuredAt;
+  return performance.now() + monoOffset;
 }
 
 /** How far ahead of this browser's clock the server's is now, or null before one is known. */
 export function serverOffset(): number | null {
-  return monoOffset === null ? null : monoOffset - wallLessMono();
+  if (monoOffset === null) return null;
+  return drift() > JUMP_MS ? monoOffset - measuredAt : monoOffset - wallLessMono();
 }
 
-/** Calls `listener` when the offset becomes known or is replaced after a jump; returns the unsubscribe. */
+/** Calls `listener` when the offset becomes known, or the time the page works from moves after a jump; returns the unsubscribe. */
 export function onServerOffset(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
