@@ -454,11 +454,11 @@ describe("reports.submit with Pick best's context (#61)", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  // Value: protects=a tab opened before the round 2 deploy still sends version 2; its context is kept and stored as 2, so the replay can tell it from version 3; fails_when=the server accepts only the current version (old tabs lose context) or rewrites the version it stores; why_new=round 2 raised PICK_CONTEXT_VERSION to 3; seam=in-memory db; no_claim=Postgres
-  it("keeps context from a tab on the previous version, storing that version", async () => {
-    expect(PICK_CONTEXT_VERSION).toBe(3);
-    const { data, warn } = await submit({ ...valid, pick: { ...pick, version: 2 } });
-    expect(data).toMatchObject({ ...stored, pickVersion: 2 });
+  // Value: protects=a tab opened before the round 2 or clock deploy still sends version 2 or 3; its context is kept and stored as sent, so the replay can tell it from version 4; fails_when=the server accepts only the current version (old tabs lose context) or rewrites the version it stores; why_new=round 2 raised PICK_CONTEXT_VERSION to 3 and the monotonic clock to 4; seam=in-memory db; no_claim=Postgres
+  it.each([2, 3])("keeps context from a tab on earlier version %i, storing that version", async (version) => {
+    expect(PICK_CONTEXT_VERSION).toBe(4);
+    const { data, warn } = await submit({ ...valid, pick: { ...pick, version } });
+    expect(data).toMatchObject({ ...stored, pickVersion: version });
     expect(warn).not.toHaveBeenCalled();
   });
 
