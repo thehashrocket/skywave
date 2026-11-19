@@ -11,6 +11,7 @@ import {
   JUMP_MS,
   REMEASURE_MS,
   REMEASURE_PATH,
+  REMEASURE_RETRY_MS,
   REMEASURE_ROUND_TRIP_MS,
   offsetFromResponse,
   resetServerClock,
@@ -135,12 +136,79 @@ describe("serverNow", () => {
     vi.setSystemTime(Date.now() + 2_500);
     const truth = Date.now();
     expect(Math.abs(serverNow() - truth)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS);
-    // A quick response whose header reads about 1.9 s past the old offset: within REMEASURE_MS.
-    noteResponse(headers({ date: new Date(TRUE_MS + 1_000).toUTCString() }), Date.now() - 100, Date.now());
+    // A quick response measuring the true time 0.6 s short (header rounding and an
+    // uneven 0.8 s round trip): 1.9 s from the old offset, 0.6 s from the time shown.
+    noteResponse(headers({ date: new Date(TRUE_MS + 1_000).toUTCString() }), Date.now() - 800, Date.now());
     expect(Math.abs(serverNow() - truth)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS);
     // Another 1.9 s, under JUMP_MS: no re-measure, but the error doesn't stack on the first.
     vi.setSystemTime(Date.now() + 1_900);
     expect(Date.now() - serverNow()).toBeLessThan(JUMP_MS);
+  });
+
+  // Value: protects=a small forward change by hand (2.2 s, just past JUMP_MS) is corrected at the re-measure: the measurement agrees with the old offset, not the time shown, so the old offset stays and listeners hear the time move back; fails_when=the re-measure keeps the time shown whenever it's within REMEASURE_MS of the measurement (round 3's first rule); why_new=round 3 adversarial review (owner D3); seam=fake timers (setSystemTime moves only Date); no_claim=network asymmetry
+  it("corrects a small forward change by hand", () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
+    const told = vi.fn();
+    const off = onServerOffset(told);
+    // 2.2 s forward by hand: the server didn't move.
+    vi.setSystemTime(Date.now() + 2_200);
+    expect(serverNow() - TRUE_MS).toBeGreaterThan(2_000);
+    // A quick response with an uneven 0.8 s round trip: 1.8 s from the time shown
+    // (within REMEASURE_MS), 0.4 s from the old offset, which is the one it agrees with.
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now() - 800, Date.now());
+    expect(Math.abs(serverNow() - TRUE_MS)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS + 50);
+    expect(told).toHaveBeenCalled();
+    off();
+  });
+
+  // Value: protects=while on the computer's clock the page asks the server again every REMEASURE_RETRY_MS until a response lands (a lost or slow first one doesn't leave an idle tab on the wrong clock), never more often, and stops once measured; fails_when=the re-measure is one-shot, retries on every serverNow call, or keeps asking after the clock settles; why_new=round 3 Codex adversarial (owner D3); seam=stubbed fetch, fake timers; no_claim=the deployed route's latency
+  it("asks again every REMEASURE_RETRY_MS until the clock is measured", async () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
+    let answer = false;
+    const fetch = vi.fn(async () => {
+      if (!answer) throw new TypeError("offline");
+      return new Response(null, { status: 204, headers: { date: new Date(Date.now() - 3_600_000).toUTCString() } });
+    });
+    vi.stubGlobal("fetch", fetch);
+    vi.setSystemTime(Date.now() + 3_600_000);
+    serverNow();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(REMEASURE_RETRY_MS - 1);
+    serverNow();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    answer = true;
+    vi.advanceTimersByTime(1);
+    serverNow();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(serverClockSettled()).toBe(true));
+    vi.advanceTimersByTime(REMEASURE_RETRY_MS);
+    serverNow();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  // Value: protects=once on the computer's clock the page stays there until the drift falls under LEAVE_WALL_CLOCK_MS, so jitter at JUMP_MS can't flap between the clocks (each flap re-plans the question and drops picks), and a response is still taken inside that band; fails_when=the switch back uses the same threshold as the switch in, or noteResponse ignores responses while the drift is under JUMP_MS on the computer's clock; why_new=round 3 adversarial review (owner D3); seam=fake timers (setSystemTime moves only Date); no_claim=real clock jitter
+  it("doesn't flap between clocks at the edge", async () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
+    const told = vi.fn();
+    const off = onServerOffset(told);
+    vi.setSystemTime(Date.now() + JUMP_MS + 100);
+    serverNow();
+    await Promise.resolve();
+    expect(told).toHaveBeenCalledTimes(1);
+    expect(serverClockSettled()).toBe(false);
+    // Jitter back under JUMP_MS but not under LEAVE_WALL_CLOCK_MS: still on the computer's clock.
+    vi.setSystemTime(Date.now() - 300);
+    serverNow();
+    await Promise.resolve();
+    expect(told).toHaveBeenCalledTimes(1);
+    expect(serverClockSettled()).toBe(false);
+    // A quick response inside that band still measures and settles it.
+    noteResponse(headers({ date: new Date(Date.now()).toUTCString() }), Date.now() - 100, Date.now());
+    expect(serverClockSettled()).toBe(true);
+    off();
   });
 
   // Value: protects=listeners hear when serverNow() switches to the computer's clock (a forward jump) and back (the jump undone before any response), after the caller has its value, so the beacon question never keeps a plan made on the other clock; fails_when=only a re-measure notifies, or the switch notifies synchronously inside serverNow; why_new=clock-edges TODO (adversarial review: silent switch); seam=fake timers (setSystemTime moves only Date); no_claim=none beyond protects

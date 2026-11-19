@@ -61,6 +61,7 @@ model ReceptionReport {
   /// How many of `candidates` were on the server's public list when the answer
   /// arrived. Fewer than all: a forged key, or a receiver that left the list
   /// since the pick. Null without context, and on rows from before this column.
+  /// A full count proves nothing: a forger can name real listed receivers.
   candidatesListed Int?
   /// The receiver's position, listed SNR and users at pick time.
   pickLat      Float?
