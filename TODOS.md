@@ -88,6 +88,46 @@
 **Priority:** P3
 **Depends on:** #61 replay passing; #69 login (RBN half only)
 
+### Pick context edge cases, round 2 (#61)
+
+**What:** Close the rare pick-context cases PR #74's reviews noted. None of them loses an answer, and most need a forged or broken page.
+
+**Why:** Clean data matters before the #61 replay reads it. Under the owner's cap on review rounds these were noted, not fixed.
+
+**Context:**
+- A beacon Listen while the receiver list hasn't loaded never reaches `start()`, so an earlier beacon's same-band choice survives. The fix is to clear the hook's choice in `listenToBeacon` when no run starts.
+- Moving the dial away and back, then starting a new run that re-picks the same receiver, still sends the question's old snapshot. The fix is to revoke the snapshot once `picked` was cleared after the question appeared, for example with a generation counter.
+- Candidate keys are checked as raw strings:
+  - `host:080` and `host:80`, or `host.:80` and `host:80`, pass as different receivers.
+  - The IPv6 alternative accepts non-addresses and keys with no real port.
+  - The fix is to parse and normalize `host:port`, then dedupe.
+- **For the replay:** `pickVersion` null means "no version sent", not "PR #73's rules". Rows saved after PR #74's deploy (from old tabs) passed the new server checks, and a rollback would store version 2 context as null. Split null rows by `createdAt` against that deploy time.
+- `version` has no test for values below 2.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** nothing; do before the #61 replay's count gate
+
+### Re-measure the server clock after a jump
+
+**What:** Refresh the page's server-clock offset (`apps/web/src/lib/server-clock.ts`) after the browser's clock jumps: sleep and wake, a manual change, or an NTP step. Today it is measured once per visit.
+
+**Why:** After a jump, beacon slot math, the beacon strip and Pick best's pick times stay off for the rest of the visit. A beacon question can then be skipped or asked about a turn the listener didn't hear well, and a report's pick context can be dropped.
+
+**Context:** PR #74 tried a simple version and pulled it (owner, 2026-11-19). That version replaced the offset whenever a quick response (round trip under 1 s) moved it by more than 2 s. Its red-team review found two problems:
+- **It also fires on ordinary loads.** The first offset can come from a slow response (up to 5 s round trip, so up to about 3 s off), and the next quick response then moves it mid-visit.
+- **The strip and the question split.** After a move, the beacon strip follows the new offset while the planned beacon question stays on the old one, so the line can wrongly say "no question this time".
+
+A design that works should:
+- Let a quicker measurement replace a slower one at once, so load-time error is fixed before the listener acts.
+- Keep the 2 s rule only between quick measurements.
+- Have `use-reception-prompt` re-plan, or shift its audio start and asked slot, when the offset changes.
+- Re-check that a report's pick time and audio start sit on one offset.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** nothing
+
 ### Pick best follow-ups from the design-pass review
 
 **What:** Finish the refused-receiver memory and the Pick best edges the design-pass /ship reviews listed but didn't fix.
@@ -251,7 +291,7 @@
   - It accepts only candidate ports 1 to 65535.
   - It requires beacon context on a beacon answer and no beacon context on any other answer.
   - Its beacon bound is now slot start + 1.5 s, which includes the stream latency.
-- **The server-clock offset:** it is re-measured from responses with a round trip under 1 s when it moves by more than 2 s (owner).
+- **The server-clock offset:** not fixed here. Re-measuring was tried and pulled (owner), and it is now its own TODO, "Re-measure the server clock after a jump".
 - **Tests:** the source-label and frequency tests were added.
 - **Versions:** each answer now stores `pickVersion` (2), so the replay can tell these answers from PR #73's, which have none, including answers from tabs loaded before the deploy (owner).
 
