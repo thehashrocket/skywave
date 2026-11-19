@@ -100,6 +100,25 @@
 **Priority:** P4
 **Depends on:** the #61 replay design
 
+### Server clock: edges of the forward-jump fallback (#61)
+
+**What:** Notes from the monotonic clock's fix-check and adversarial reviews, on the fallback to the computer's clock after a forward jump (`apps/web/src/lib/server-clock.ts`):
+- **Entering the fallback is silent:** a forward change by hand, a forward NTP step, or slow drift between `performance.now()` and `Date.now()` moves `serverNow()` by more than 2 s with no `onServerOffset` call. The beacon strip follows at its next tick while a planned beacon question keeps its plan until a quick response closes the jump. Main moved the same way, silently.
+- **A short sleep can close onto the lagging clock:** with a 2-3 s sleep the re-measure compares against the old offset, so measurement error can keep it and `serverNow()` drops back by the sleep, with no re-plan when the drop is under 2 s. Comparing against the time the page was showing would fix it.
+- **Pick time across the window:** a pick made inside a forward-change window carries the computer's (wrong) time, and a beacon slot asked after the re-measure is on the corrected clock, so the server drops that pick context (the answer is kept). A sleep is not affected.
+- **Error can pile up:** a re-measure that keeps the offset also resets the drift count, so up to ~2 s of leftover error stays and adds to the next drift (about 4-5 s at worst, enough to name the neighbouring beacon). Same fix as the short-sleep item: close a jump against the time shown.
+- **Stale question after a sleep (deferred, also on main):** an armed beacon question timer that outlives a sleep fires for a past slot, and the server refuses it after the thanks. Skip or re-plan at fire time when `serverNow()` is past the slot.
+- **Beacon pick after a forward change:** beacon Listen inside a forward-change window picks the beacon from the wrong slot and keeps it until a retune (main did the same).
+- **Gap timers:** the question gap and same-channel times are kept on `Date.now()` and converted with the current offset, so a clock change shifts them (mostly as on main).
+- **Listeners:** a listener that throws would fail the tRPC call that triggered it; today's listeners only set state.
+- The header comment's "a manual change or an NTP step ... doesn't move the server time" now holds only for a change backward.
+
+**Why:** Rare (a forward clock change mid-visit, a 2-3 s sleep, or about 2 s of drift between the two clocks); none touches audio, and only the pile-up can mislabel a stored beacon report. Owner chose to ship with these noted (2026-11-19 /ship).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** nothing
+
 ### Pick best follow-ups from the design-pass review
 
 **What:** Finish the refused-receiver memory and the Pick best edges the design-pass /ship reviews listed but didn't fix.
@@ -255,10 +274,10 @@
 **What:** Keep the page's server-clock offset right after the computer's clock jumps (sleep and wake, a manual change, an NTP step).
 
 **Completed:** fix/server-clock-monotonic (2026-11-19). How it works (owner: monotonic clock + re-plan):
-- **The clock base:** `serverNow()` counts from `performance.now()`, so a manual change or NTP step doesn't move it at all.
+- **The clock base:** `serverNow()` counts from `performance.now()`, so setting the computer's clock back (by hand or an NTP step) doesn't move it. A forward change looks like a sleep until the next quick response (below).
 - **After a sleep:** when the computer's clock and the monotonic clock drift apart by more than 2 s (as when some browsers pause `performance.now()` in sleep), the next response with a round trip under 1 s measures the offset again. It replaces the offset only if it moved by more than 2 s. Until then a forward drift counts from the computer's clock with the last offset, which kept time through the sleep (owner, review: right at once on wake, as before this change); a backward one can't be a sleep and stays on the monotonic clock. A forward change by hand is corrected at that response, and listeners are told.
 - **Ordinary visits:** without such a jump, later responses are ignored, so a slow first measurement is never shifted mid-visit. That was the pulled version's bug.
-- **The beacon question:** when the offset changes, it starts its plan over on the new clock, so it and the band strip never work from two clocks. At worst it waits one more turn.
+- **The beacon question:** when listeners are told the time moved (an offset replaced, or a forward change corrected), it starts its plan over on the new clock, so it and the band strip work from one clock again. At worst it waits one more turn. Entering the forward fallback isn't announced yet (see "Server clock: edges of the forward-jump fallback").
 - **Version 4:** this changes the clock behind a report's `pickedAtMs` and when a beacon question comes after a correction, so `PICK_CONTEXT_VERSION` is now 4. The server still takes 2 and 3 from tabs opened before the deploy (owner: post the deploy time on #61).
 
 ### Pick context edge cases, round 2 (#61)
