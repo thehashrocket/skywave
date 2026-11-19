@@ -8,7 +8,7 @@
  *   pnpm eibi:snapshot          # the season it is now
  *   pnpm eibi:snapshot b26      # a given season
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { parseEibi, scheduleUrl, seasonFor } from "../src/lib/eibi";
 import { parseSites, SITES_URL, sitesFromJson, sitesToJson, type SiteTable } from "../src/lib/eibi-sites";
@@ -43,6 +43,16 @@ export async function snapshot(season: string, fetchImpl: typeof fetch = fetch, 
   return { json, count, siteCount: sites.size, sitesError };
 }
 
+/**
+ * How a kept site table is made visible in GitHub Actions: a `::warning::`
+ * annotation on the run, and a `sites_note` step output the workflow puts in
+ * the PR body, so a README that keeps failing can't freeze sites unnoticed.
+ */
+export function keptSitesNotice(sitesError: string) {
+  const note = `Kept the bundled transmitter sites: ${sitesError}`.replace(/[\r\n]+/g, " ");
+  return { warning: `::warning title=EiBi transmitter sites not refreshed::${note}`, output: `sites_note=${note}\n` };
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const season = process.argv[2] ?? seasonFor(Date.now());
   const file = new URL("../src/server/eibi-snapshot.json", import.meta.url);
@@ -53,7 +63,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     fetch,
     bundled ? sitesFromJson(bundled) : undefined,
   );
-  if (sitesError) console.warn(`Kept the bundled transmitter sites: ${sitesError}`);
+  if (sitesError) {
+    const { warning, output } = keptSitesNotice(sitesError);
+    console.log(warning);
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, output);
+  }
   writeFileSync(file, json);
   console.log(`Saved ${season}: ${count} broadcasts, ${siteCount} transmitter sites.`);
 }

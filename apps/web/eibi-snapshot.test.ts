@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { seasonFor } from "./src/lib/eibi";
-import { snapshot } from "./scripts/eibi-snapshot";
+import { keptSitesNotice, snapshot } from "./scripts/eibi-snapshot";
 import { MIN_SITES, sitesFromJson, sitesToJson } from "./src/lib/eibi-sites";
 
 const HEADER = "kHz:75;Time(UTC):93;Days:59;ITU:49;Station:201;Lng:49;Target:62;Remarks:135;P:35;Start:60;Stop:60;";
@@ -63,6 +63,21 @@ describe("eibi:snapshot", () => {
     // The season's own file failing still fails the run.
     const csvDown = vi.fn(async () => new Response("", { status: 404 }));
     await expect(snapshot("b26", csvDown as unknown as typeof fetch, bundled)).rejects.toThrow(/404/);
+  });
+
+  // Value: protects=a kept site table is visible in GitHub: a ::warning:: annotation on the run, and a one-line sites_note step output the workflow puts in the PR body instead of claiming both files were refreshed; fails_when=a README that keeps failing only leaves a plain log line, a multi-line reason breaks the step output, or the workflow stops passing the note; why_new=#72 /ship review (owner: fix now); seam=reads .github/workflows/eibi-snapshot.yml as text; no_claim=GitHub rendering the annotation
+  it("makes a kept site table visible on the run and in the PR", () => {
+    const { warning, output } = keptSitesNotice("EiBi README request failed: HTTP 503\nretry later");
+    expect(warning).toBe(
+      "::warning title=EiBi transmitter sites not refreshed::Kept the bundled transmitter sites: EiBi README request failed: HTTP 503 retry later",
+    );
+    expect(output).toBe(
+      "sites_note=Kept the bundled transmitter sites: EiBi README request failed: HTTP 503 retry later\n",
+    );
+    const workflow = readFileSync(new URL("../../.github/workflows/eibi-snapshot.yml", import.meta.url), "utf8");
+    expect(workflow).toMatch(/name: Fetch the season's schedule\n\s+id: snapshot\n/);
+    expect(workflow).toContain("SITES_NOTE: ${{ steps.snapshot.outputs.sites_note }}");
+    expect(workflow).toContain("The transmitter sites were NOT refreshed: $SITES_NOTE");
   });
 
   // Value: protects=the seasonal workflow runs the script package.json really has, its season check accepts every name seasonFor makes, and each scheduled run lands just after a season switch and asks for that new season; fails_when=the script is renamed and the workflow fails twice a year, the check rejects a real season, or a cron date drifts before a switch (fetching the old season again); why_new=TODOS: refresh the bundled schedule each season; seam=reads .github/workflows/eibi-snapshot.yml as text; no_claim=GitHub running it, or EiBi posting on time

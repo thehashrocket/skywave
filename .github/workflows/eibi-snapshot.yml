@@ -42,6 +42,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Fetch the season's schedule
+        id: snapshot
         env:
           SEASON: ${{ inputs.season }}
         run: |
@@ -55,6 +56,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ github.event.repository.default_branch }}
+          # Set when EiBi's README failed or was refused and the bundled sites were kept.
+          SITES_NOTE: ${{ steps.snapshot.outputs.sites_note }}
         run: |
           file=apps/web/src/server/eibi-snapshot.json
           if git diff --quiet -- "$file"; then
@@ -69,10 +72,14 @@ jobs:
           git add "$file"
           git commit -m "chore(web): refresh the bundled EiBi schedule and transmitter sites ($season)"
           git push --force origin "$branch"
+          checked="\`pnpm --filter web eibi:snapshot\` checked that both parse before saving them."
+          if [ -n "$SITES_NOTE" ]; then
+            checked="\`pnpm --filter web eibi:snapshot\` checked the schedule. The transmitter sites were NOT refreshed: $SITES_NOTE"
+          fi
           if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
             gh pr create --head "$branch" --base "$BASE" \
               --title "chore(web): refresh the bundled EiBi schedule and transmitter sites ($season)" \
-              --body "The station schedule and transmitter-site table the server falls back on when eibispace.de can't be reached, refreshed for season $season by the \`Refresh EiBi snapshot\` workflow. \`pnpm --filter web eibi:snapshot\` checked that both parse before saving them.
+              --body "The station schedule and transmitter-site table the server falls back on when eibispace.de can't be reached, refreshed for season $season by the \`Refresh EiBi snapshot\` workflow. $checked
 
           A PR opened by this workflow doesn't start CI on its own: close and reopen it, or push to it, to run the checks."
           fi
