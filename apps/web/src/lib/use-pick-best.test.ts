@@ -442,12 +442,12 @@ describe("usePickBest", () => {
         await act(async () => void serverNow());
         expect(hook.result.current.pickedFor("a", 8073)).toMatchObject({ rankPos: 0, pickedAtMs: at });
         expect(hook.result.current.dropCount()).toBe(drops);
-        // Value (extension): protects=a pick the sleep's re-measure proved right survives a later correction (this second jump was by hand) while the clock reads settled; fails_when=the effect drops on any settled notice, ignoring the measurement count or never clearing the flag; why_new=only unsettled notices reached the proven pick; seam=fake timers, the real server clock fed responses; no_claim=none beyond protects
+        // Value (extension): protects=any later correction drops even a pick the sleep's measurement proved right, since its time and a question's slot would then sit on different offsets; fails_when=a correction drops only picks made through an unmeasured jump; why_new=P4 TODO (owner: drop picks on any correction); seam=fake timers, the real server clock fed responses; no_claim=none beyond protects
         act(() =>
           noteResponse(new Headers({ date: new Date(Date.now() - 600_000).toUTCString() }), Date.now() - 100, Date.now()),
         );
-        expect(hook.result.current.pickedFor("a", 8073)).toMatchObject({ rankPos: 0, pickedAtMs: at });
-        expect(hook.result.current.dropCount()).toBe(drops);
+        expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
+        expect(hook.result.current.dropCount()).toBe(drops + 1);
       });
 
       it("drops it when the re-measure corrects a change by hand", async () => {
@@ -461,6 +461,20 @@ describe("usePickBest", () => {
         act(() => noteResponse(new Headers({ date: new Date(NOW).toUTCString() }), Date.now() - 100, Date.now()));
         expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
         expect(hook.result.current.dropCount()).toBe(drops + 1);
+      });
+
+      // Value: protects=a pick made before the page's first measurement (a cold server's slow replies) keeps its context when the first measurement agrees with the computer's clock, and loses it when that measurement corrects the time; fails_when=a pick before any measurement counts as settled whatever the first measurement finds; why_new=round 3 final review (pick before the first measurement); seam=fake timers, the real server clock fed responses; no_claim=none beyond protects
+      it.each([
+        ["keeps", 0],
+        ["drops", 3_000],
+      ])("%s a pick made before the first measurement as that measurement finds %i ms", (verb, off) => {
+        resetServerClock();
+        const { hook } = setup();
+        act(() => hook.result.current.start(candidates, candidates, run));
+        expect(hook.result.current.pickedFor("a", 8073)).not.toBeNull();
+        act(() => noteResponse(new Headers({ "x-server-ms": String(Date.now() + off) }), Date.now(), Date.now()));
+        if (verb === "keeps") expect(hook.result.current.pickedFor("a", 8073)).toMatchObject({ rankPos: 0 });
+        else expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
       });
 
       it("drops it when the jump is undone before any measurement", async () => {

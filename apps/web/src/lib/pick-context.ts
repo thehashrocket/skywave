@@ -29,11 +29,15 @@ export type PickSource = (typeof PICK_SOURCES)[number];
  * pick made through a forward clock jump not yet re-measured loses its
  * context if the time then moves before a measurement (a change by hand
  * corrected; a sleep keeps it); the page asks for that measurement as soon as
- * it switches clocks. The server still accepts 2 to 4 from tabs opened before those
- * deploys.
+ * it switches clocks. 6: the clock is measured to the millisecond (a server
+ * time header) every 5 minutes and on wake, corrected whenever it's off by more
+ * than its error (at least half a second), and any correction drops a held
+ * pick's context; the gap timers run on the server's clock; beacon Listen
+ * waits for a measurement while the clock is unsure. The server still accepts
+ * 2 to 5 from tabs opened before those deploys.
  * Raise it whenever what the page records, or when it records it, changes.
  */
-export const PICK_CONTEXT_VERSION = 5;
+export const PICK_CONTEXT_VERSION = 6;
 
 /** How many of the ranked list's receivers a report keeps, best first. */
 export const MAX_CANDIDATES = 10;

@@ -14,7 +14,7 @@ import { AudioSpectrum } from "@/components/AudioSpectrum";
 import { BeaconStrip, focusBeaconStrip } from "@/components/BeaconStrip";
 import { rankForBeacon } from "@/lib/beacon-rank";
 import { beaconOnBand, IBP_BANDS_KHZ, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
-import { serverNow } from "@/lib/server-clock";
+import { serverClockSettled, serverNow, settleServerClock } from "@/lib/server-clock";
 import { sunPosition } from "@/lib/solar";
 import { useServerTick } from "@/lib/use-server-tick";
 import { Waterfall } from "@/components/Waterfall";
@@ -308,7 +308,7 @@ export default function ListenPage() {
   // object each press, so it's the newest message again; the text follows the
   // list as it loads or fails. `from` names the control to press again: after
   // the error link, Listen would redial the receiver that just failed.
-  const [pageMessage, setPageMessage] = useState<{ from: "listen" | "link" } | null>(null);
+  const [pageMessage, setPageMessage] = useState<{ from: "listen" | "link" | "clock" } | null>(null);
   // Where focus goes when the error link starts a run and goes away.
   const statusRef = useRef<HTMLDivElement>(null);
 
@@ -418,8 +418,16 @@ export default function ListenPage() {
     [busy, radio],
   );
 
+  // Goes up on everything the listener does to what's playing: a receiver chosen
+  // (by hand, a typed address, Back), Pick best started, Stop, the dial, the mode,
+  // beacon mode, the drawer opened or closed. Not on what a run does by itself
+  // (its next receiver, a retry). A beacon Listen waiting on the clock goes ahead
+  // only if it hasn't moved since the click, so it can never reopen a volunteer's
+  // receiver after Stop or replace what the listener chose meanwhile.
+  const acted = useRef(0);
   const changeFreq = useCallback(
     (khz: number, nextMode?: Mode) => {
+      acted.current++;
       const m = nextMode ?? mode;
       setFreqKhz(khz);
       if (nextMode) setMode(nextMode);
@@ -445,6 +453,7 @@ export default function ListenPage() {
   };
 
   const changeMode = (m: Mode) => {
+    acted.current++;
     setMode(m);
     sendRetune({ freqKhz, mode: m });
   };
@@ -551,6 +560,7 @@ export default function ListenPage() {
   // change of receiver too, which ends a beacon pick (beacon Listen sets its own after).
   const pickFrom = useCallback(
     (ranked: Receiver[], source: PickSource, known?: readonly Receiver[]) => {
+      acted.current++;
       setPageMessage(null);
       setBeaconPick(null);
       // The dial is set before every run starts (beacon Listen sets it first), so this is what `ranked` is for.
@@ -567,6 +577,7 @@ export default function ListenPage() {
    */
   const startPickBest = useCallback(
     (from: "listen" | "link"): boolean => {
+      acted.current++;
       if (receivers) {
         const khz = latest.current.freqKhz;
         return pickFrom(rankByNoise(rankReceivers(receivers, khz), noiseRef.current, khz), from);
@@ -578,7 +589,11 @@ export default function ListenPage() {
     },
     [receivers, pickFrom],
   );
+  // Beacon mode as last set; the strip can report it open again while open, which isn't a change.
+  const beaconOn = useRef(false);
   const changeBeaconMode = useCallback((on: boolean) => {
+    if (on !== beaconOn.current) acted.current++;
+    beaconOn.current = on;
     setBeaconMode(on);
     if (!on) setBeaconPick(null);
   }, []);
@@ -586,7 +601,9 @@ export default function ListenPage() {
    * Listen on a strip row: the beacon on that band now, tuned in CW, through
    * Pick best with receivers ranked for where that beacon is (beacon-rank).
    */
-  const listenToBeacon = useCallback(
+  // The latest beacon Listen waiting on the clock; an earlier click that's still waiting does nothing.
+  const beaconWait = useRef(0);
+  const listenToBeaconNow = useCallback(
     (band: number) => {
       const now = serverNow();
       const beacon = beaconOnBand(now, band);
@@ -609,6 +626,27 @@ export default function ListenPage() {
     },
     [receivers, pickFrom, sendRetune, forgetPick],
   );
+  /**
+   * Which beacon is on the air depends on the clock to the second, so while the
+   * page's clock is unsure (a forward jump not yet measured, or no measurement
+   * yet) Listen first asks the server for its time, briefly, then picks.
+   */
+  // The current listenToBeaconNow, so a Listen after a wait uses the receiver list as it is then.
+  const listenToBeaconLatest = useRef(listenToBeaconNow);
+  listenToBeaconLatest.current = listenToBeaconNow;
+  const listenToBeacon = useCallback(
+    (band: number) => {
+      const ticket = ++beaconWait.current;
+      if (serverClockSettled()) return listenToBeaconNow(band);
+      const at = acted.current;
+      setPageMessage({ from: "clock" });
+      void settleServerClock().then(() => {
+        setPageMessage((m) => (m?.from === "clock" ? null : m));
+        if (beaconWait.current === ticket && acted.current === at) listenToBeaconLatest.current(band);
+      });
+    },
+    [listenToBeaconNow],
+  );
   // What the map draws, once per slot while beacon mode is on.
   const beaconSlot = useServerTick(SLOT_MS, beaconMode);
   const beaconLayer = useMemo(
@@ -621,11 +659,13 @@ export default function ListenPage() {
   }, [receivers]);
   // With nothing to go back to, stop the attempt that's still connecting too.
   const stopPicking = useCallback(() => {
+    acted.current++;
     if (!stopPickBest()) radio.stop();
   }, [stopPickBest, radio]);
   /** Ends any Pick best run (and beacon pick), then tunes. Leaves the pin as it is (pinTo sets it). */
   const switchTo = useCallback(
     (r: Target, fromList: boolean) => {
+      acted.current++;
       cancelPickBest();
       setBeaconPick(null);
       tuneReceiver(r, fromList);
@@ -875,9 +915,11 @@ export default function ListenPage() {
     service: serviceMessage,
     page:
       pageMessage &&
-      (listGone
-        ? `${LIST_FAILED_TEXT} Paste a receiver address, or try again below.`
-        : `The receiver list is still loading. Press ${pageMessage.from === "link" ? "Pick best receiver" : "Listen"} again in a moment.`),
+      (pageMessage.from === "clock"
+        ? "Checking the time with the server…"
+        : listGone
+          ? `${LIST_FAILED_TEXT} Paste a receiver address, or try again below.`
+          : `The receiver list is still loading. Press ${pageMessage.from === "link" ? "Pick best receiver" : "Listen"} again in a moment.`),
   };
   // While a run is going, only its note shows: it names each refusal and
   // what's next, and the bare refusal lands a render before the note does.
@@ -1038,7 +1080,10 @@ export default function ListenPage() {
             aria-label="Change receiver"
             aria-expanded={drawerOpen}
             aria-controls="receiver-drawer"
-            onClick={() => setDrawerOpen((o) => !o)}
+            onClick={() => {
+              acted.current++;
+              setDrawerOpen((o) => !o);
+            }}
           >
             change
           </button>
@@ -1080,6 +1125,7 @@ export default function ListenPage() {
           className="receiver"
           onSubmit={(e) => {
             e.preventDefault();
+            acted.current++;
             cancelPickBest();
             if (busy) radio.stop();
             // A blank receiver is Auto: skywave picks one.

@@ -50,7 +50,9 @@ model ReceptionReport {
   /// How Pick best chose this receiver (issue #61; lib/pick-context.ts).
   /// All null for a hand-picked receiver, a page from before this column,
   /// or context the server couldn't vouch for (the answer is kept anyway).
-  /// When it tuned the receiver, ms since the epoch by the server's clock.
+  /// When it tuned the receiver, ms since the epoch by the page's estimate of
+  /// the server's clock (version 5: good to about 2 s; version 6: to the
+  /// measurement's error, under 1.5 s on an ordinary visit).
   pickedAtMs   BigInt?
   /// "beacon" | "listen" | "link" | "drawer" | "better"; text, like txKind.
   pickSource   String?
@@ -73,8 +75,8 @@ model ReceptionReport {
   /// (2026-11-19 02:52:57 UTC), that's PR #73's first rules; saved after it,
   /// a tab opened before the deploy, whose context passed the newer server
   /// checks. The replay splits null rows by createdAt. 2 saved after the
-  /// round 2 deploy, 3 after the monotonic clock's, or 4 after round 3's, is
-  /// likewise a tab opened before it. The page sends this and the server
+  /// round 2 deploy, 3 after the monotonic clock's, 4 after round 3's, or 5
+  /// after the scheduled clock's, is likewise a tab opened before it. The page sends this and the server
   /// can't check it; createdAt against the deploy times posted on #61 says
   /// which server rules took the row.
   pickVersion  Int?

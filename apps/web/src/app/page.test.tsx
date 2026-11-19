@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Broadcast } from "@/lib/eibi";
 import type { Receiver } from "@/lib/kiwi-list";
+import { noteResponse, resetServerClock } from "@/lib/server-clock";
 import type { RadioStatus, ScanState, Settled } from "@/lib/use-radio";
 
 const radio = {
@@ -2443,14 +2444,133 @@ describe("ListenPage", () => {
     beforeEach(() => {
       vi.useFakeTimers({ now: NOW });
       receiverList.data = { receivers: [nearby, london] };
+      // The receiver list's own response measures the server's clock in the app; here, the clock is right.
+      resetServerClock();
+      noteResponse(new Headers({ "x-server-ms": String(Date.now()) }), Date.now(), Date.now());
     });
-    afterEach(() => vi.useRealTimers());
+    afterEach(() => {
+      vi.useRealTimers();
+      resetServerClock();
+    });
 
     const openStrip = () => {
       const details = document.querySelector<HTMLDetailsElement>("details.beacons")!;
       details.open = true;
       act(() => fireEvent(details, new Event("toggle")));
     };
+
+    // Value: protects=a beacon Listen still waiting on the clock does nothing once the listener has pressed the real Stop meanwhile, including the cases where Stop leaves everything looking as it did at the click (a tune still starting; idle, then a receiver, then Stop), so it can never reopen a volunteer's receiver after Stop; fails_when=the wait compares what's playing rather than counting the listener's actions, or ends in listenToBeaconNow whatever happened; why_new=round 4 review passes 1 and 2 (owner: cancel on any change); seam=MapPanel/picker/radio mocked, real server clock with a fetch answering after a delay; no_claim=the radio service's own Stop handling
+    it.each([
+      ["a tune still starting", false],
+      ["idle, then a receiver started", true],
+    ])("drops a beacon Listen waiting on the clock once the listener presses Stop (%s)", async (_label, startOne) => {
+      resetServerClock();
+      radio.status = { state: "idle" };
+      radio.tuning = !startOne;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          () =>
+            new Promise<Response>((resolve) =>
+              setTimeout(() => resolve(new Response(null, { status: 204, headers: { "x-server-ms": String(Date.now()) } })), 500),
+            ),
+        ),
+      );
+      const page = render(<ListenPage />);
+      openStrip();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+      expect(screen.getByText("Checking the time with the server…")).toBeTruthy();
+      if (startOne) {
+        // The listener starts something else while it waits; it's connecting.
+        act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+        radio.tuning = true;
+        page.rerender(<ListenPage />);
+      }
+      // Stop, the real button: back to idle, as at the click.
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Stop" })));
+      radio.tuning = false;
+      page.rerender(<ListenPage />);
+      const tunesAtStop = radio.tune.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(radio.tune.mock.calls.length).toBe(tunesAtStop);
+      expect(screen.queryByText("Checking the time with the server…")).toBeNull();
+      vi.unstubAllGlobals();
+    });
+
+    // Value: protects=beacon Listen while the page's clock is unsure (here never measured, the computer's clock 8 s fast) says it's checking the time, asks the server, and picks the beacon actually on the air by the server's clock, not the one the computer's clock names; fails_when=Listen picks at once off an unsure clock, latching the wrong beacon; why_new=P4 TODO (owner: beacon Listen waits for a measurement); seam=MapPanel/picker/radio mocked, real server clock with a stubbed fetch; no_claim=how long the real route takes
+    it("checks the time with the server before picking a beacon on an unsure clock", async () => {
+      resetServerClock();
+      vi.setSystemTime(NOW + 8_000);
+      const start = performance.now();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(null, { status: 204, headers: { "x-server-ms": String(NOW + performance.now() - start) } })),
+      );
+      render(<ListenPage />);
+      openStrip();
+      // By the computer's clock the next turn has begun: VE8AT on 14.100.
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to VE8AT on 14.100 MHz" })));
+      expect(screen.getByText("Checking the time with the server…")).toBeTruthy();
+      expect(radio.tune).not.toHaveBeenCalled();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      // By the server's clock it's still 4U1UN's turn on that band.
+      expect(screen.getByLabelText("map beacons").textContent).toBe("on, selected 4U1UN");
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 14_100, mode: "cw" }));
+      expect(screen.queryByText("Checking the time with the server…")).toBeNull();
+      vi.unstubAllGlobals();
+    });
+
+    // Value: protects=a waiting beacon Listen counts only what the listener does: Pick best moving on to its next receiver by itself doesn't drop it, and closing the drawer does; fails_when=every receiver tune counts (tuneReceiver bumps), or closing the drawer doesn't; why_new=round 4 adversarial review (owner: fix it); seam=MapPanel/picker/radio mocked, real server clock with a fetch that never answers; no_claim=none beyond protects
+    it("lets a run's own next receiver pass, but not closing the drawer", async () => {
+      resetServerClock();
+      vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+      const page = render(<ListenPage />);
+      openStrip();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+      const first = (radio.tune.mock.calls as unknown as [{ host: string; port: number }][])[0]![0];
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+      // The run moves on by itself while the beacon Listen waits.
+      radio.status = { state: "error", code: "busy", message: "full", host: first.host, port: first.port };
+      page.rerender(<ListenPage />);
+      expect(radio.tune).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 14_100, mode: "cw" }));
+      // Again, closing the drawer while it waits.
+      const tunes = radio.tune.mock.calls.length;
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Change receiver" })));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(radio.tune.mock.calls.length).toBe(tunes);
+      vi.unstubAllGlobals();
+    });
+
+    // Value: protects=two beacon Listen clicks while the clock check is pending tune only the latest band, once, so an earlier click can't tune a receiver after the later one; fails_when=the ticket guard is dropped and every waiting click tunes when the check ends; why_new=the unsure-clock test clicks once; seam=MapPanel/picker/radio mocked, real server clock with a fetch that never answers; no_claim=how long the real route takes
+    it("tunes only the latest beacon Listen clicked while checking the time", async () => {
+      resetServerClock();
+      vi.setSystemTime(NOW + 8_000);
+      vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+      render(<ListenPage />);
+      openStrip();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to VE8AT on 14.100 MHz" })));
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 18.110 MHz" })));
+      expect(radio.tune).not.toHaveBeenCalled();
+      // No answer: both waits give up together, and only the second click picks.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(radio.tune).toHaveBeenCalledTimes(1);
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 18_110, mode: "cw" }));
+      expect(screen.queryByText("Checking the time with the server…")).toBeNull();
+      vi.unstubAllGlobals();
+    });
 
     // Value: protects=the strip shows the beacon on each band now and turns on the map's beacon layer; Listen tunes the band in CW through Pick best with receivers ranked for that beacon (not the strongest or nearest), and the map gets the pick for its path; fails_when=Listen tunes another frequency or mode, ranks by SNR, bypasses Pick best, or the map isn't told; why_new=beacon mode (#59); seam=MapPanel/picker/radio mocked, real BeaconStrip and ranking; no_claim=what the map draws (ReceiverMap tests)
     it("listens to a beacon through a receiver placed to hear it", () => {
