@@ -968,7 +968,11 @@ export default function ListenPage() {
   // strip, or the status row beside the line (moving to the other would scroll the page).
   const focusAfterPrompt = (inStrip: boolean) => (inStrip ? focusBeaconStrip() : statusRef.current?.focus());
   const answerReception = (outcome: Outcome, comment: string) => {
-    if (reception.prompt) submitReport(reception.prompt, outcome, comment, promptPick);
+    const p = reception.prompt;
+    // Anything that has since cleared the hook's choice for this receiver (a
+    // hand pick of it, a failed or abandoned run, a dial move) revokes the
+    // snapshot too; a newer run that picked it again leaves the snapshot as is.
+    if (p) submitReport(p, outcome, comment, promptPick && pickedFor(p.host, p.port) ? promptPick : undefined);
     reception.answered();
     if (promptInStrip) setThanksBand(promptBand);
     focusAfterPrompt(promptInStrip);

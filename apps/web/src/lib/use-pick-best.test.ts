@@ -469,6 +469,21 @@ describe("usePickBest", () => {
       expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
     });
 
+    // Value: protects=a run abandoned mid-way (Stop picking with nothing to go back to, or ended by a service failure) leaves no context behind for a tune still in flight; fails_when=those finish paths keep picked, so a late-landing tune is credited to Pick best; why_new=Codex adversarial (run 4); seam=none; no_claim=the watch-phase Stop, which keeps the playing choice (tested above)
+    it.each<[string, (h: ReturnType<typeof setup>) => void]>([
+      ["Stop picking with nothing to go back to", ({ hook }) => act(() => void hook.result.current.stop())],
+      [
+        "a service failure that ends the run",
+        ({ report }) => report({ state: "error", host: "a", port: 8073, message: "listener limit" }),
+      ],
+    ])("forgets its choice when the run is abandoned: %s", (_, abandon) => {
+      const h = setup();
+      act(() => h.hook.result.current.start(candidates, candidates, run));
+      expect(h.hook.result.current.pickedFor("a", 8073)).not.toBeNull();
+      abandon(h);
+      expect(h.hook.result.current.pickedFor("a", 8073)).toBeNull();
+    });
+
     // Value: protects=a caller that doesn't say what started the run stores no half-filled context; fails_when=start records context with an undefined source; why_new=run is optional on start; seam=none; no_claim=none beyond protects
     it("records nothing for a run started without a source", () => {
       const { hook } = setup();

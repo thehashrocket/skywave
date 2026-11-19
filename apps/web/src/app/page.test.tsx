@@ -1605,6 +1605,20 @@ describe("ListenPage", () => {
       );
     });
 
+    // Value: protects=hand-picking the receiver that is already playing while the question is up revokes the earlier Pick best context, so the answer is not credited to Pick best; fails_when=answerReception sends the prompt-time snapshot without checking the hook still holds a choice for that receiver; why_new=Codex adversarial (run 4); seam=useRadio, picker and useSubmitReport mocked; no_claim=the server's checks (reports.test)
+    it("sends no pick context after the same receiver is picked by hand while the question waits", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
+      const view = render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 9_580, mode: "am" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(60_000));
+      act(() => fireEvent.click(screen.getByRole("button", { name: "choose listed" })));
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      expect(submitReport).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 9_580 }), "heard", "", undefined);
+    });
+
     // Value: protects=after the listener tunes away by hand and back, the answer carries no pick context (its time would be long before this listening); fails_when=the page never forgets the pick on a dial move, so returning revives it; why_new=final-round review (red team); seam=useRadio, picker and useSubmitReport mocked; no_claim=the server's checks (reports.test)
     it("sends no pick context after the dial left the frequency and came back", () => {
       localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));

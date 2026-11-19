@@ -299,6 +299,8 @@ export function usePickBest(
       return true;
     }
     if (c && goBack(c, "Stopped.")) return true;
+    // Abandoned mid-run: a tune still in flight mustn't count as its choice.
+    if (c) picked.current = null;
     finish();
     return false;
   }, [finish, goBack]);
@@ -357,7 +359,11 @@ export function usePickBest(
     // without trying to go back. One of them, a lookup still stuck on an
     // earlier dead name, says when to try the same receiver again; do that once.
     if (!status.code) {
-      if (!status.retryAfterMs || c.retried) return finish();
+      if (!status.retryAfterMs || c.retried) {
+        // The run ends on the service's failure, not on a choice that played.
+        picked.current = null;
+        return finish();
+      }
       c.retried = true;
       setNote(`Waiting on an earlier address lookup; trying ${current.name} again…`);
       c.retryTimer = setTimeout(() => {
