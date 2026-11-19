@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Broadcast } from "@/lib/eibi";
+import type { ListedBroadcast } from "@/lib/eibi";
+import type { SiteTable } from "@/lib/eibi-sites";
 import type { IbpStatus } from "@/lib/ibp-status";
 import type { RbnDay } from "@/lib/rbn";
 import type { Receiver } from "@/lib/kiwi-list";
@@ -7,6 +8,7 @@ import { PICK_CONTEXT_VERSION } from "@/lib/pick-context";
 import type { createContext } from "@/server/trpc";
 import {
   candidateKeyOk,
+  sitesHeard,
   PICK_IN_SLOT_MS,
   RECEIVER_REPORTS_PER_HOUR,
   REPORTS_PER_HOUR,
@@ -19,7 +21,8 @@ vi.mock("@/server/db", () => ({ db: {} }));
 
 // The server's cached schedule and receiver list, as stations.schedule and receivers.list serve them.
 const cache = {
-  broadcasts: [] as Broadcast[],
+  broadcasts: [] as ListedBroadcast[],
+  sites: new Map() as SiteTable,
   receivers: [] as Receiver[],
   listDown: false,
   beaconStatus: null as IbpStatus | null,
@@ -32,7 +35,13 @@ vi.mock("./beacons", async (actual) => ({
 }));
 vi.mock("./stations", async (actual) => ({
   ...(await actual<typeof import("./stations")>()),
-  getSchedule: vi.fn(async () => ({ season: "b26", bundled: false, broadcasts: cache.broadcasts })),
+  getSchedule: vi.fn(async () => ({
+    season: "b26",
+    bundled: false,
+    broadcasts: cache.broadcasts,
+    listed: cache.broadcasts,
+  })),
+  getSites: vi.fn(() => cache.sites),
 }));
 vi.mock("./receivers", async (actual) => ({
   ...(await actual<typeof import("./receivers")>()),
@@ -43,13 +52,15 @@ vi.mock("./receivers", async (actual) => ({
 }));
 
 const { appRouter } = await import("@/server/root");
-const { getSchedule } = await import("./stations");
+const { getSchedule, getSites } = await import("./stations");
 const { getReceivers } = await import("./receivers");
 
 /** A broadcast between two UTC times ("HHMM"), daily. */
-const on = (khz: number, station: string, from = "0000", to = "2400"): Broadcast => {
+const on = (khz: number, station: string, from = "0000", to = "2400", site?: string): ListedBroadcast => {
   const min = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(2));
-  return { khz, start: min(from), end: min(to), days: "", station, lang: "E", target: "NAm" };
+  const b: ListedBroadcast = { khz, start: min(from), end: min(to), days: "", station, lang: "E", target: "NAm", country: "KOR" };
+  if (site !== undefined) b.site = site;
+  return b;
 };
 const rx = (host: string, port = 8073): Receiver => ({
   id: `${host}:${port}`,
@@ -71,6 +82,7 @@ beforeEach(() => {
   cache.broadcasts = LIMIT_FREQS.map((khz) => on(khz, "KBS World Radio")).sort((a, b) => a.khz - b.khz);
   cache.receivers = [rx("kiwi.example.org"), rx("kiwi.example.org", 8074), rx("other.example")];
   cache.listDown = false;
+  cache.sites = new Map();
 });
 
 type Context = Awaited<ReturnType<typeof createContext>>;
@@ -114,12 +126,17 @@ describe("reports.submit", () => {
   beforeEach(() => vi.useFakeTimers({ now: Date.UTC(2026, 10, 18, 12) }));
   afterEach(() => vi.useRealTimers());
 
-  // Value: protects=a report is stored as one receiver (lowercase host) with a blank comment as none, and nothing beyond the fields asked for; fails_when=the host isn't normalised, a blank comment is stored, or extra fields slip in; why_new=reception reports; seam=in-memory db; no_claim=Postgres behaviour
+  // Value: protects=a report is stored as one receiver (lowercase host) with a blank comment as none, and nothing beyond the fields asked for plus the server's own transmitter lookup (#72: here EiBi gives no site); fails_when=the host isn't normalised, a blank comment is stored, or extra fields slip in; why_new=reception reports; seam=in-memory db; no_claim=Postgres behaviour
   it("stores a report, the host lowercased and a blank comment dropped", async () => {
     const { caller, receptionReport } = setup();
     await expect(caller.reports.submit({ ...valid, comment: "   " })).resolves.toEqual({ accepted: true });
     expect(receptionReport.create).toHaveBeenCalledWith({
-      data: { ...valid, receiverHost: "kiwi.example.org", comment: undefined },
+      data: {
+        ...valid,
+        receiverHost: "kiwi.example.org",
+        comment: undefined,
+        txSites: [{ key: null, country: "KOR", coords: [] }],
+      },
     });
   });
 
@@ -582,6 +599,114 @@ describe("reports.submit with Pick best's context (#61)", () => {
       expect(data).not.toHaveProperty("pickedAtMs");
       expect(data).toMatchObject({ txKind: "beacon", slotStartMs: BigInt(SLOT) });
       expect(warn).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+describe("transmitter sites on an EiBi answer (#72)", () => {
+  const NOW = Date.UTC(2026, 10, 18, 12);
+  const sites: SiteTable = new Map([
+    ["KOR-k", { country: "KOR", coords: [[37.5, 127]] }],
+    ["KOR-h", { country: "KOR", coords: [[35.1, 129]] }],
+    ["USA-uc", { country: "USA", coords: [[38.3, -123.1], [37.8, -122.5]] }],
+    ["KOR-xx", { country: "KOR", coords: [] }],
+  ]);
+  const usa = (b: ListedBroadcast): ListedBroadcast => ({ ...b, country: "USA" });
+
+  // Value: protects=an answer keeps every site its station was listed on at the latest on-air minute, each with every coordinate EiBi gives (a group stays a group), sorted by key; fails_when=sites are deduped to one, coordinates averaged, or only the first listing is read; why_new=#72 D8 (txSites keeps all candidates); seam=none; no_claim=which site the listener heard
+  it("keeps every site and every coordinate", () => {
+    const schedule = [
+      on(9_580, "KBS World Radio", "0000", "2400", "KOR-k"),
+      on(9_580, "KBS World Radio", "0000", "2400", "KOR-h"),
+      usa(on(9_580, "Radio Group", "0000", "2400", "USA-uc")),
+    ];
+    expect(sitesHeard(schedule, sites, "KBS World Radio", 9_580, NOW)).toEqual([
+      { key: "KOR-h", coords: [[35.1, 129]] },
+      { key: "KOR-k", coords: [[37.5, 127]] },
+    ]);
+    expect(sitesHeard(schedule, sites, "Radio Group", 9_580, NOW)).toEqual([
+      { key: "USA-uc", coords: [[38.3, -123.1], [37.8, -122.5]] },
+    ]);
+  });
+
+  // Value: protects=sites come from the latest minute each station was on the air, so an answer just after a :00/:30 changeover doesn't carry the outgoing slot's site; fails_when=sites are collected over the whole grace window; why_new=#72 D10; seam=none; no_claim=a prompt left open across a site change
+  it("takes the latest on-air minute, not the whole grace window", () => {
+    const schedule = [
+      on(9_580, "KBS World Radio", "1100", "1158", "KOR-k"),
+      on(9_580, "KBS World Radio", "1158", "1300", "KOR-h"),
+    ];
+    expect(sitesHeard(schedule, sites, "KBS World Radio", 9_580, NOW).map((c) => c.key)).toEqual(["KOR-h"]);
+    // Gone off the air 3 minutes ago: its last minute still counts.
+    const ended = [on(9_580, "KBS World Radio", "1100", "1157", "KOR-k")];
+    expect(sitesHeard(ended, sites, "KBS World Radio", 9_580, NOW).map((c) => c.key)).toEqual(["KOR-k"]);
+  });
+
+  // Value: protects=an answer about two stations pools both stations' sites, listings within MATCH_KHZ count, and other stations on the channel don't; fails_when=only the first station is read, the half-kHz window is dropped, or a co-channel station's site is added; why_new=#72 review N3; seam=none; no_claim=none beyond protects
+  it("pools the stations asked about, within half a kHz", () => {
+    const schedule = [
+      on(9_580, "KBS World Radio", "0000", "2400", "KOR-k"),
+      on(9_580.4, "Other", "0000", "2400", "KOR-h"),
+      usa(on(9_580, "Not asked", "0000", "2400", "USA-uc")),
+    ];
+    expect(sitesHeard(schedule, sites, "KBS World Radio / Other", 9_580, NOW).map((c) => c.key)).toEqual([
+      "KOR-h",
+      "KOR-k",
+    ]);
+  });
+
+  // Value: protects=EiBi not saying which site (blank Remarks, no default) is an explicit entry with the country, a code the table lacks or gives no coordinates for keeps its key with none, so null txSites only ever means our lookup failed; fails_when=unknown sites save nothing or null; why_new=#72 D12; seam=none; no_claim=none beyond protects
+  it("records sites EiBi doesn't place", () => {
+    const schedule = [
+      on(9_580, "Sound of Hope", "0000", "2400", "KOR"),
+      on(9_580, "Sound of Hope", "0000", "2400", "KOR-zz"),
+      on(9_580, "Sound of Hope", "0000", "2400", "KOR-xx"),
+      on(9_580, "Sound of Hope"),
+    ];
+    expect(sitesHeard(schedule, sites, "Sound of Hope", 9_580, NOW)).toEqual([
+      { key: null, country: "KOR", coords: [] },
+      { key: "KOR-xx", coords: [] },
+      { key: "KOR-zz", coords: [] },
+    ]);
+  });
+
+  describe("on submit", () => {
+    beforeEach(() => vi.useFakeTimers({ now: NOW }));
+    afterEach(() => vi.useRealTimers());
+
+    // Value: protects=reports.submit saves the server's own site lookup with an EiBi answer, and none with a beacon; fails_when=txSites isn't stored, comes from the page, or lands on beacon rows; why_new=#72 D1; seam=getSchedule/getSites mocked, in-memory db; no_claim=Postgres JSON round trip
+    it("saves the sites with the answer", async () => {
+      cache.broadcasts = [on(9_580, "KBS World Radio", "0000", "2400", "KOR-k")];
+      cache.sites = sites;
+      const { caller, receptionReport } = setup();
+      await expect(caller.reports.submit(valid)).resolves.toEqual({ accepted: true });
+      expect((receptionReport.create.mock.calls[0]![0].data as Record<string, unknown>).txSites).toEqual([{ key: "KOR-k", coords: [[37.5, 127]] }]);
+      // A beacon answer (4U1UN's 14.100 slot that opened at 11:57) carries no txSites, not even an empty list.
+      const beacon = setup();
+      await expect(
+        beacon.caller.reports.submit({
+          ...valid,
+          freqKhz: 14_100,
+          mode: "cw",
+          txKind: "beacon",
+          txName: "4U1UN",
+          txDetail: "14100",
+          slotStartMs: NOW - 180_000,
+        }),
+      ).resolves.toEqual({ accepted: true });
+      expect(beacon.receptionReport.create.mock.calls[0]![0].data).not.toHaveProperty("txSites");
+    });
+
+    // Value: protects=a site lookup that throws costs only the sites: the answer is saved without txSites and the failure is logged; fails_when=the error rejects the answer or is swallowed silently; why_new=#72 D1/D12; seam=getSites mocked to throw; no_claim=none beyond protects
+    it("keeps the answer when the lookup fails", async () => {
+      cache.broadcasts = [on(9_580, "KBS World Radio", "0000", "2400", "KOR-k")];
+      vi.mocked(getSites).mockImplementationOnce(() => {
+        throw new Error("broken table");
+      });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { caller, receptionReport } = setup();
+      await expect(caller.reports.submit(valid)).resolves.toEqual({ accepted: true });
+      expect(receptionReport.create.mock.calls[0]![0].data).not.toHaveProperty("txSites");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("transmitter sites"), expect.any(Error));
     });
   });
 });
