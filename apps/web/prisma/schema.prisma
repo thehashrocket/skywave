@@ -80,6 +80,13 @@ model ReceptionReport {
   /// can't check it; createdAt against the deploy times posted on #61 says
   /// which server rules took the row.
   pickVersion  Int?
+  /// Beacons only (#69): NCDXF's official status for the beacon when the
+  /// answer arrived, "OK" or "OFF", from the server's cached copy of
+  /// IBPStatus.csv (an unknown status there counts as "OK"). Null for a
+  /// station, when the server hadn't fetched the file yet, or on rows from
+  /// before this column. The list can lag the air by days, and a beacon off
+  /// for a contest still reads "OK".
+  beaconStatus String?
 
   @@index([receiverHost, receiverPort, freqKhz])
   @@index([listenerId, createdAt])

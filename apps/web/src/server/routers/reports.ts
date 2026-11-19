@@ -16,6 +16,7 @@ import {
   TX_NAME_SEPARATOR,
 } from "@/lib/reception";
 import { publicProcedure, router } from "../trpc";
+import { getBeaconStatus } from "./beacons";
 import { getReceivers, servedReceivers } from "./receivers";
 import { getSchedule } from "./stations";
 
@@ -291,6 +292,9 @@ export const reportsRouter = router({
     if (lastHour >= REPORTS_PER_HOUR || receiverHour >= RECEIVER_REPORTS_PER_HOUR || sameChannel > 0)
       return { accepted: false };
     const slot = input.txKind === "beacon" ? slotStartMs : undefined;
+    // NCDXF's word on the beacon now, from this server's cached copy (null until it has one).
+    const official =
+      input.txKind === "beacon" ? (await getBeaconStatus())?.beacons.find((b) => b.call === input.txName) : undefined;
     let fit = pick;
     if (pick && !pickChecks(pick, { ...input, slotStartMs: slot }, now)) {
       console.warn("reports.submit: dropped pick context that doesn't fit the report");
@@ -301,6 +305,7 @@ export const reportsRouter = router({
         ...report,
         // The slot is kept for beacons only.
         ...(slot !== undefined && { slotStartMs: BigInt(slot) }),
+        ...(official && { beaconStatus: official.off ? "OFF" : "OK" }),
         ...(fit && {
           pickVersion: fit.version,
           pickedAtMs: BigInt(fit.pickedAtMs),

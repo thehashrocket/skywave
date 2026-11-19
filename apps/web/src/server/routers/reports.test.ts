@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Broadcast } from "@/lib/eibi";
+import type { IbpStatus } from "@/lib/ibp-status";
 import type { Receiver } from "@/lib/kiwi-list";
 import { PICK_CONTEXT_VERSION } from "@/lib/pick-context";
 import type { createContext } from "@/server/trpc";
@@ -16,7 +17,16 @@ import {
 vi.mock("@/server/db", () => ({ db: {} }));
 
 // The server's cached schedule and receiver list, as stations.schedule and receivers.list serve them.
-const cache = { broadcasts: [] as Broadcast[], receivers: [] as Receiver[], listDown: false };
+const cache = {
+  broadcasts: [] as Broadcast[],
+  receivers: [] as Receiver[],
+  listDown: false,
+  beaconStatus: null as IbpStatus | null,
+};
+vi.mock("./beacons", async (actual) => ({
+  ...(await actual<typeof import("./beacons")>()),
+  getBeaconStatus: vi.fn(async () => cache.beaconStatus),
+}));
 vi.mock("./stations", async (actual) => ({
   ...(await actual<typeof import("./stations")>()),
   getSchedule: vi.fn(async () => ({ season: "b26", bundled: false, broadcasts: cache.broadcasts })),
@@ -253,6 +263,20 @@ describe("reports.submit checks what it's told", () => {
     };
     beforeEach(() => {
       cache.broadcasts = [];
+      cache.beaconStatus = null;
+    });
+
+    // Value: protects=each beacon report stores NCDXF's official status for that beacon from the server's own cached copy ("OFF" or "OK"), and nothing when the server has no copy yet; fails_when=the status isn't stored, is taken for the wrong beacon, or a missing copy is stored as "OK"; why_new=issue #69 v1 (store each beacon report's official status); seam=getBeaconStatus mocked, in-memory db; no_claim=that NCDXF's list is current
+    it.each([
+      ["OFF", { stampedAt: null, beacons: [{ call: "4U1UN", off: true, note: null }, { call: "VE8AT", off: false, note: null }] }],
+      ["OK", { stampedAt: null, beacons: [{ call: "4U1UN", off: false, note: null }, { call: "VE8AT", off: true, note: null }] }],
+      [undefined, null],
+    ])("stores the beacon's official status (%s)", async (stored, status) => {
+      cache.beaconStatus = status as IbpStatus | null;
+      const { caller, receptionReport } = setup();
+      await expect(caller.reports.submit(beacon)).resolves.toEqual({ accepted: true });
+      const { data } = receptionReport.create.mock.calls[0]![0] as { data: Record<string, unknown> };
+      expect(data.beaconStatus).toBe(stored);
     });
 
     // Value: protects=a beacon report is kept when the schedule had that beacon on that band in the slot it names, judged by the server's clock (not EiBi), and the slot is stored with it; fails_when=the slot isn't checked or stored, or beacon reports go through the EiBi check; why_new=tightened beacon check (owner: the 5-minute window passed any beacon); seam=getSchedule mocked empty, in-memory db; no_claim=that the listener heard it

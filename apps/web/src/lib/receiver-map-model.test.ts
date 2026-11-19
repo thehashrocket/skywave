@@ -214,6 +214,15 @@ describe("beacon layer", () => {
     expect(props("CS3B", { atMs: NOON + SLOT_MS, selected: null }).onAir).toBe(false);
   });
 
+  // Value: protects=a beacon NCDXF lists as off the air is marked dim on the map, never filled as on the air even in its own turn, and its turn's label says "off"; others are untouched; fails_when=an OFF beacon is drawn as transmitting, or the dim mark spills onto beacons that are on; why_new=issue #69 v1 (dim OFF beacons on the map); seam=none; no_claim=how MapLibre renders opacity
+  it("dims beacons off the air", () => {
+    const layer = { atMs: NOON, selected: null, off: ["YV5B", "VR2B"] };
+    expect(props("YV5B", layer)).toMatchObject({ off: true, onAir: false, label: "YV5B 18.110 off" });
+    expect(props("VR2B", layer)).toMatchObject({ off: true, onAir: false, label: "" });
+    expect(props("4U1UN", layer)).toMatchObject({ off: false, onAir: true, label: "4U1UN 14.100" });
+    expect(props("YV5B")).toMatchObject({ off: false, onAir: true });
+  });
+
   // Value: protects=the path runs from the selected beacon to the receiver playing or being tried, and only when both are known and placed; fails_when=a path is drawn with no pick, to an unplaced or unlisted receiver, or to the wrong end; why_new=beacon path (#59); seam=none; no_claim=the path's geometry (great-circle tests)
   it("draws the path from the selected beacon to the receiver playing", () => {
     const here = rx("here", { lat: 51.5, lon: -0.1 });

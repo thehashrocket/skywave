@@ -160,15 +160,22 @@ export function hitGroup(
  * time in the slot to show (server clock), `selected` the callsign picked with
  * Listen, if any.
  */
-export type BeaconLayer = { atMs: number; selected: string | null };
+export type BeaconLayer = {
+  atMs: number;
+  selected: string | null;
+  /** Callsigns NCDXF lists as off the air (issue #69): drawn dim. */
+  off?: readonly string[];
+};
 
 /**
  * All 18 beacons as points. The five on the air in the slot carry their
  * frequency in MHz, which the map shows beside the callsign; the rest are
  * drawn faint. The selected one is labeled whether it's on the air or not.
+ * One NCDXF lists as off the air is dimmed, and never filled as on the air.
  */
 export function beaconFeatures(layer: BeaconLayer) {
   const onAir = new Map(IBP_BANDS_KHZ.map((khz, b) => [beaconOnBand(layer.atMs, b).call, khz]));
+  const off = new Set(layer.off ?? []);
   return {
     type: "FeatureCollection" as const,
     features: BEACONS.map((b) => {
@@ -179,9 +186,15 @@ export function beaconFeatures(layer: BeaconLayer) {
         geometry: { type: "Point" as const, coordinates: [b.lon, b.lat] },
         properties: {
           call: b.call,
-          onAir: khz !== undefined,
+          onAir: khz !== undefined && !off.has(b.call),
+          off: off.has(b.call),
           selected,
-          label: khz !== undefined ? `${b.call} ${(khz / 1000).toFixed(3)}` : selected ? b.call : "",
+          label:
+            khz !== undefined
+              ? `${b.call} ${(khz / 1000).toFixed(3)}${off.has(b.call) ? " off" : ""}`
+              : selected
+                ? b.call
+                : "",
         },
       };
     }),
