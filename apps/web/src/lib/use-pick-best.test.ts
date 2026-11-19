@@ -2,6 +2,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Receiver } from "./kiwi-list";
+import { PICK_CONTEXT_VERSION } from "./pick-context";
 import { MAX_ATTEMPTS, REFUSED_MS, usePickBest, WATCH_MS } from "./use-pick-best";
 import { RADIO_ERROR_CODES, type RadioErrorCode, type RadioStatus } from "./use-radio";
 
@@ -399,6 +400,7 @@ describe("usePickBest", () => {
       report(fail("a", "busy"));
       act(() => hook.result.current.start(candidates, candidates, run));
       expect(hook.result.current.pickedFor("b", 8073)).toEqual({
+        version: PICK_CONTEXT_VERSION,
         pickedAtMs: NOW,
         pickSource: "listen",
         rankPos: 1,
@@ -442,8 +444,12 @@ describe("usePickBest", () => {
       expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
     });
 
-    // Value: protects=a run that can't start (every candidate refused) still drops the previous run's context, so a failed beacon Listen can't lend another beacon's ranking to the receiver still playing; fails_when=start's early returns leave picked set; why_new=adversarial review (native + Codex) A1; seam=none; no_claim=none beyond protects
-    it("forgets the last run's choice when a new run can't start", () => {
+    // Value: protects=a beacon Listen that can't start (every candidate refused) drops the previous run's context, so it can't lend another beacon's ranking to the receiver still playing, while any other run that can't start leaves the playing receiver's still-valid choice; fails_when=start's early returns keep picked for a beacon run, or clear it for the others; why_new=adversarial review A1, narrowed in the edge-case fixes; seam=none; no_claim=a dial move, which forgetOffFrequency handles
+    it.each([
+      ["beacon", null],
+      ["listen", { rankPos: 0 }],
+      ["drawer", { rankPos: 0 }],
+    ] as const)("when a %s run can't start, the last run's choice is %o", (source, expected) => {
       const { hook, report } = setup();
       act(() => hook.result.current.start([rx("a")], undefined, run));
       report({ state: "listening", host: "a", port: 8073 });
@@ -452,10 +458,11 @@ describe("usePickBest", () => {
       report(fail("b", "busy"));
       let started = true;
       act(() => {
-        started = hook.result.current.start([rx("b")], undefined, { source: "beacon", freqKhz: 14_100 });
+        started = hook.result.current.start([rx("b")], undefined, { source, freqKhz: 9_580 });
       });
       expect(started).toBe(false);
-      expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
+      if (expected) expect(hook.result.current.pickedFor("a", 8073)).toMatchObject(expected);
+      else expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
     });
 
     // Value: protects=a dial move off the frequency the run ranked for forgets its choice for good, while staying on it keeps it; fails_when=forgetOffFrequency is a no-op, clears on the same frequency, or the choice comes back with the dial; why_new=final-round review (red team); seam=none; no_claim=the page calls it on every dial move (page test)
@@ -476,12 +483,29 @@ describe("usePickBest", () => {
         "a service failure that ends the run",
         ({ report }) => report({ state: "error", host: "a", port: 8073, message: "listener limit" }),
       ],
+      [
+        "running out of receivers with nothing to go back to",
+        ({ report }) => {
+          for (const host of ["a", "b", "c", "d"]) report(fail(host, "busy"));
+        },
+      ],
     ])("forgets its choice when the run is abandoned: %s", (_, abandon) => {
       const h = setup();
       act(() => h.hook.result.current.start(candidates, candidates, run));
       expect(h.hook.result.current.pickedFor("a", 8073)).not.toBeNull();
       abandon(h);
-      expect(h.hook.result.current.pickedFor("a", 8073)).toBeNull();
+      // Not the first candidate, nor whichever one the run tuned last.
+      for (const host of ["a", "b", "c", "d"]) expect(h.hook.result.current.pickedFor(host, 8073)).toBeNull();
+    });
+
+    // Value: protects=Stop picking during the watch (the receiver already playing) keeps that choice, since it did play; fails_when=stop() clears picked on the watch path too; why_new=#73 proposed test 1; seam=none; no_claim=none beyond protects
+    it("keeps its choice when Stop picking ends only the watch", () => {
+      const { hook, report } = setup();
+      act(() => hook.result.current.start(candidates, candidates, run));
+      report({ state: "listening", host: "a", port: 8073 });
+      act(() => void hook.result.current.stop());
+      expect(hook.result.current.settled).toBe(true);
+      expect(hook.result.current.pickedFor("a", 8073)).toMatchObject({ rankPos: 0 });
     });
 
     // Value: protects=a caller that doesn't say what started the run stores no half-filled context; fails_when=start records context with an undefined source; why_new=run is optional on start; seam=none; no_claim=none beyond protects

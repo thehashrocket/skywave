@@ -11,6 +11,16 @@ import { receiverKey, type Receiver } from "./kiwi-list";
 export const PICK_SOURCES = ["beacon", "listen", "link", "drawer", "better"] as const;
 export type PickSource = (typeof PICK_SOURCES)[number];
 
+/**
+ * Which rules made a report's context, stored with it as pickVersion so the
+ * replay can tell them apart. None (null): PR #73, before the edge-case fixes
+ * (a stale question could take a later run's context, case-variant hosts and
+ * looser server checks); a tab loaded before a deploy keeps sending that
+ * until reloaded. 2: those fixes. Raise it whenever what the page records, or
+ * when it records it, changes.
+ */
+export const PICK_CONTEXT_VERSION = 2;
+
 /** How many of the ranked list's receivers a report keeps, best first. */
 export const MAX_CANDIDATES = 10;
 
@@ -22,6 +32,8 @@ export const MAX_CANDIDATES = 10;
 export const MAX_USERS = 1_000;
 
 export type PickContext = {
+  /** PICK_CONTEXT_VERSION when it was made. */
+  version: number;
   /** When Pick best tuned this receiver, by the server's clock (serverNow). */
   pickedAtMs: number;
   pickSource: PickSource;
@@ -51,6 +63,7 @@ export function pickContext(
 ): PickContext {
   const key = pickKey(chosen);
   return {
+    version: PICK_CONTEXT_VERSION,
     // serverNow() carries half a millisecond when the clock offset came from an
     // odd round trip; the server takes whole milliseconds only.
     pickedAtMs: Math.round(pickedAtMs),
