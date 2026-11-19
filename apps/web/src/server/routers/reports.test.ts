@@ -404,6 +404,8 @@ describe("reports.submit with Pick best's context (#61)", () => {
     ["malformed: an IPv6 candidate written out in full", { candidates: ["kiwi.example.org:8073", "2001:0db8::1:8073"] }],
     ["malformed: a candidate that only looks like IPv6", { candidates: ["kiwi.example.org:8073", "::::::8073"] }],
     ["malformed: a candidate with no port", { candidates: ["kiwi.example.org:8073", "other.example"] }],
+    // Value: protects=an IPv4 candidate a URL rewrites (leading zero, read as octal) isn't canonical and drops the context; fails_when=candidateKeyOk skips the URL round trip for non-IPv6 hosts; why_new=the other rows reject non-IPv6 keys by regex alone; seam=none; no_claim=none beyond protects
+    ["malformed: an IPv4 candidate with a leading zero", { candidates: ["kiwi.example.org:8073", "010.0.0.1:8073"] }],
     ["malformed: a latitude without a longitude", { lon: undefined }],
     [
       "a rank past the head for a receiver the head names",

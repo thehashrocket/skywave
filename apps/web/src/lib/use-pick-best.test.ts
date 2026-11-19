@@ -418,14 +418,17 @@ describe("usePickBest", () => {
     });
 
     // Value: protects=the context outlives the run's watch (the prompt comes a minute in) but not a hand pick; fails_when=it's dropped with the chain, or cancel keeps it so a hand-picked receiver is credited to Pick best; why_new=pick context; seam=none; no_claim=none beyond protects
+    // Value (round 2 extension): protects=a hand pick counts as a drop, so a question's snapshot stays revoked even if a later run re-picks the same receiver; fails_when=cancel clears picked without drop(); why_new=only forget's count was asserted; seam=none; no_claim=the page's comparison (page test)
     it("keeps it after the watch ends, and forgets it on a hand pick", () => {
       const { hook, report } = setup();
       act(() => hook.result.current.start(candidates, candidates, run));
       report({ state: "listening", host: "a", port: 8073 });
       act(() => vi.advanceTimersByTime(WATCH_MS + 60_000));
       expect(hook.result.current.pickedFor("a", 8073)).toMatchObject({ rankPos: 0 });
+      const before = hook.result.current.dropCount();
       act(() => hook.result.current.cancel());
       expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
+      expect(hook.result.current.dropCount()).toBe(before + 1);
     });
 
     // Value: protects=the receiver a failed run goes back to is never credited to this run, nor to an earlier run whose list was for another moment; fails_when=goBack's tune records context, or an earlier run's context survives the return; why_new=approach A over B (review); seam=none; no_claim=none beyond protects
@@ -438,10 +441,13 @@ describe("usePickBest", () => {
       expect(hook.result.current.pickedFor("home", 8073)).not.toBeNull();
       // A new run fails and goes back to it.
       act(() => hook.result.current.start([rx("a")], [rx("home"), rx("a")], run));
+      // Value (round 2 extension): protects=going back counts as a drop; fails_when=goBack clears picked without drop(); why_new=only forget's count was asserted; seam=none; no_claim=the page's comparison (page test)
+      const before = hook.result.current.dropCount();
       report(fail("a", "busy"));
       expect(hook.result.current.note).toContain("Going back to HOME");
       expect(hook.result.current.pickedFor("home", 8073)).toBeNull();
       expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
+      expect(hook.result.current.dropCount()).toBe(before + 1);
     });
 
     // Value: protects=a beacon Listen that can't start (every candidate refused) drops the previous run's context, so it can't lend another beacon's ranking to the receiver still playing, while any other run that can't start leaves the playing receiver's still-valid choice; fails_when=start's early returns keep picked for a beacon run, or clear it for the others; why_new=adversarial review A1, narrowed in the edge-case fixes; seam=none; no_claim=a dial move, which forgetOffFrequency handles
@@ -456,6 +462,8 @@ describe("usePickBest", () => {
       act(() => vi.advanceTimersByTime(WATCH_MS));
       expect(hook.result.current.pickedFor("a", 8073)).not.toBeNull();
       report(fail("b", "busy"));
+      // Value (round 2 extension): protects=a beacon run that can't start counts its drop, the others count none; fails_when=start's beacon branch clears picked without drop(); why_new=only forget's count was asserted; seam=none; no_claim=the page's comparison (page test)
+      const before = hook.result.current.dropCount();
       let started = true;
       act(() => {
         started = hook.result.current.start([rx("b")], undefined, { source, freqKhz: 9_580 });
@@ -463,6 +471,7 @@ describe("usePickBest", () => {
       expect(started).toBe(false);
       if (expected) expect(hook.result.current.pickedFor("a", 8073)).toMatchObject(expected);
       else expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
+      expect(hook.result.current.dropCount()).toBe(before + (expected ? 0 : 1));
     });
 
     // Value: protects=a dial move off the frequency the run ranked for forgets its choice for good, while staying on it keeps it; fails_when=forgetOffFrequency is a no-op, clears on the same frequency, or the choice comes back with the dial; why_new=final-round review (red team); seam=none; no_claim=the page calls it on every dial move (page test)
@@ -490,12 +499,15 @@ describe("usePickBest", () => {
         },
       ],
     ])("forgets its choice when the run is abandoned: %s", (_, abandon) => {
+      // Value (round 2 extension): protects=each abandon path counts exactly one drop (moving between candidates replaces, so adds none); fails_when=an abandon path clears picked without drop(), or tuneCandidate counts a replacement; why_new=only forget's count was asserted; seam=none; no_claim=the page's comparison (page test)
       const h = setup();
       act(() => h.hook.result.current.start(candidates, candidates, run));
       expect(h.hook.result.current.pickedFor("a", 8073)).not.toBeNull();
+      const before = h.hook.result.current.dropCount();
       abandon(h);
       // Not the first candidate, nor whichever one the run tuned last.
       for (const host of ["a", "b", "c", "d"]) expect(h.hook.result.current.pickedFor(host, 8073)).toBeNull();
+      expect(h.hook.result.current.dropCount()).toBe(before + 1);
     });
 
     // Value: protects=Stop picking during the watch (the receiver already playing) keeps that choice, since it did play; fails_when=stop() clears picked on the watch path too; why_new=#73 proposed test 1; seam=none; no_claim=none beyond protects
