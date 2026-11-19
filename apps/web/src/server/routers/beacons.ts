@@ -1,6 +1,8 @@
 import { after } from "next/server";
 import { IBP_FOOTNOTES_URL, IBP_STATUS_URL, parseFootnotes, parseIbpStatus, type IbpStatus } from "@/lib/ibp-status";
+import { countBeaconSpots, dayBefore, RBN_DAY_URL, rbnDayFor, type RbnDay } from "@/lib/rbn";
 import { readCapped } from "../read-capped";
+import { unzipFile } from "../unzip";
 import { publicProcedure, router } from "../trpc";
 
 // NCDXF checks the list daily; every few hours is plenty.
@@ -102,6 +104,116 @@ export function beaconStatusSource({ fetchImpl = (...args) => fetch(...args), no
 /** The one cached status for this server: `beacons.status` serves it, and `reports.submit` records it. */
 export const getBeaconStatus = beaconStatusSource();
 
+// RBN's daily zip is about 6 MB (41 MB of CSV); leave room to grow.
+const RBN_MAX_ZIP_BYTES = 40_000_000;
+const RBN_MAX_CSV_BYTES = 300_000_000;
+const RBN_TIMEOUT_MS = 60_000;
+
+/** Where the counted days are kept: the database, so one server's download serves them all. */
+export type RbnStore = {
+  load: (day: string) => Promise<RbnDay | null>;
+  save: (day: RbnDay) => Promise<void>;
+};
+
+const dbStore: RbnStore = {
+  async load(day) {
+    const { db } = await import("../db");
+    const row = await db.rbnBeaconDay.findUnique({ where: { day } });
+    return row ? { day: row.day, total: row.total, beacons: row.beacons as RbnDay["beacons"] } : null;
+  },
+  async save(d) {
+    const { db } = await import("../db");
+    // Two servers can count the same day at once; the second write changes nothing.
+    await db.rbnBeaconDay.upsert({
+      where: { day: d.day },
+      create: { day: d.day, total: d.total, beacons: d.beacons },
+      update: {},
+    });
+  },
+};
+
+type RbnOptions = Omit<Options, "now"> & { now?: () => number; store?: RbnStore };
+
+/**
+ * RBN's IBP spot counts for the last whole UTC day (issue #69 v2). The day's
+ * file is downloaded once, after 01:00 UTC, by whichever server first asks,
+ * and counted and saved in the database; every server reads the saved day.
+ * No request waits on the download: until the day is saved, `get` serves the
+ * day before (or null) and downloads in the background (backing off ten
+ * minutes after a failure). `peek` never downloads, for `reports.submit`.
+ * Anything older than the day before is too stale to show: null.
+ */
+export function rbnSource({
+  fetchImpl = (...args) => fetch(...args),
+  now = () => Date.now(),
+  defer = after,
+  store = dbStore,
+}: RbnOptions = {}) {
+  const memory = new Map<string, RbnDay>();
+  let inflight: Promise<void> | null = null;
+  let lastFailureAt: number | null = null;
+
+  async function load(day: string): Promise<RbnDay | null> {
+    const kept = memory.get(day);
+    if (kept) return kept;
+    try {
+      const found = await store.load(day);
+      if (found) memory.set(day, found);
+      return found;
+    } catch (error) {
+      console.warn("beacons.rbn: couldn't read the saved day:", error);
+      return null;
+    }
+  }
+
+  async function download(day: string): Promise<void> {
+    const res = await fetchImpl(RBN_DAY_URL(day), {
+      redirect: "error",
+      signal: AbortSignal.timeout(RBN_TIMEOUT_MS),
+      headers: { "user-agent": "skywave (+https://github.com/thehashrocket/skywave)" },
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`RBN's file for ${day}: HTTP ${res.status}`);
+    const zip = await readCapped(res, RBN_MAX_ZIP_BYTES, `RBN's file for ${day}`);
+    const counted = countBeaconSpots(unzipFile(zip, ".csv", RBN_MAX_CSV_BYTES).toString("utf8"), day);
+    memory.set(day, counted);
+    await store.save(counted);
+  }
+
+  function startDownload(day: string) {
+    if (inflight || (lastFailureAt !== null && now() - lastFailureAt < RETRY_AFTER_MS)) return;
+    inflight = download(day)
+      .then(
+        () => {
+          lastFailureAt = null;
+        },
+        (error: unknown) => {
+          lastFailureAt = now();
+          console.warn("beacons.rbn: download failed:", error);
+        },
+      )
+      .finally(() => {
+        inflight = null;
+      });
+    defer(inflight);
+  }
+
+  /** The target day if saved, else the day before (or null); downloads the target day in the background if `fetch`. */
+  async function read(fetch: boolean): Promise<RbnDay | null> {
+    const day = rbnDayFor(now());
+    const found = await load(day);
+    if (found) return found;
+    if (fetch) startDownload(day);
+    return load(dayBefore(day));
+  }
+
+  return { get: () => read(true), peek: () => read(false) };
+}
+
+/** The one RBN source for this server: `beacons.rbn` serves it, and `reports.submit` records it. */
+export const rbnDays = rbnSource();
+
 export const beaconsRouter = router({
   status: publicProcedure.query(() => getBeaconStatus()),
+  rbn: publicProcedure.query(() => rbnDays.get()),
 });

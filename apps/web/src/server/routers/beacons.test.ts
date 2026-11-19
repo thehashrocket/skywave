@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 // The real module opens a Prisma client at import; this router never uses it.
 vi.mock("@/server/db", () => ({ db: {} }));
 
-const { beaconStatusSource } = await import("./beacons");
+const { beaconStatusSource, rbnSource } = await import("./beacons");
+type RbnDay = import("@/lib/rbn").RbnDay;
 const { IBP_FOOTNOTES_URL, IBP_STATUS_URL } = await import("@/lib/ibp-status");
 
 const STATUS = readFileSync(new URL("../../lib/fixtures/IBPStatus.csv", import.meta.url), "utf8");
@@ -109,5 +110,114 @@ describe("beaconStatusSource", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     serve(ok(STATUS), () => Promise.reject(new TypeError("fetch failed")));
     expect(await off()).toEqual(["VR2B: -", "YV5B: -"]);
+  });
+});
+
+describe("rbnSource", () => {
+  // RBN's real file for 2026-11-18, cut down (fixtures/rbn-20261118-sample.zip).
+  const ZIP = readFileSync(new URL("../../lib/fixtures/rbn-20261118-sample.zip", import.meta.url));
+  const saved = (day: string, total = 20_000): RbnDay => ({ day, total, beacons: [{ call: "VR2B", spots: 0 }] });
+
+  function setupRbn(at = "2026-11-19T12:00:00Z") {
+    let clock = Date.parse(at);
+    const rows = new Map<string, RbnDay>();
+    const store = {
+      load: vi.fn(async (day: string) => rows.get(day) ?? null),
+      save: vi.fn(async (d: RbnDay) => {
+        rows.set(d.day, d);
+      }),
+    };
+    let reply: () => Promise<Response> = async () => new Response(ZIP);
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => reply());
+    const tasks: Promise<unknown>[] = [];
+    const defer = vi.fn((task: Promise<unknown>) => {
+      tasks.push(task);
+    });
+    const source = rbnSource({ fetchImpl: fetchImpl as unknown as typeof fetch, now: () => clock, defer, store });
+    return {
+      ...source,
+      rows,
+      store,
+      fetchImpl,
+      defer,
+      drain: () => Promise.all(tasks),
+      advance: (ms: number) => (clock += ms),
+      serve: (r: () => Promise<Response>) => {
+        reply = r;
+      },
+    };
+  }
+
+  // Value: protects=a day already saved (by any server) is served from the database with no download, and then from memory; fails_when=every server downloads RBN's 6 MB file, or the database is read on every request; why_new=issue #69 v2 (owner: database, once a day); seam=store and fetch injected; no_claim=Postgres itself
+  it("serves a saved day without downloading", async () => {
+    const r = setupRbn();
+    r.rows.set("2026-11-18", saved("2026-11-18"));
+    expect((await r.get())?.day).toBe("2026-11-18");
+    expect((await r.get())?.day).toBe("2026-11-18");
+    expect(r.fetchImpl).not.toHaveBeenCalled();
+    expect(r.store.load).toHaveBeenCalledTimes(1);
+  });
+
+  // Value: protects=when yesterday isn't saved yet, the request is answered at once from the day before (never waiting on the download) while yesterday's file is downloaded once in the background, counted and saved; later requests get yesterday; fails_when=a request waits on RBN, the download repeats, or the count isn't saved for other servers; why_new=issue #69 v2; seam=store, fetch and defer injected, RBN's real file (cut down); no_claim=RBN's availability
+  it("downloads yesterday in the background and saves it", async () => {
+    const r = setupRbn();
+    r.rows.set("2026-11-17", saved("2026-11-17"));
+    expect((await r.get())?.day).toBe("2026-11-17");
+    expect(r.fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(r.fetchImpl.mock.calls[0]![0])).toBe("https://data.reversebeacon.net/rbn_history/20261118.zip");
+    expect(r.fetchImpl.mock.calls[0]![1]).toMatchObject({ redirect: "error" });
+    expect((await r.get())?.day).toBe("2026-11-17"); // still downloading: no second request
+    expect(r.fetchImpl).toHaveBeenCalledTimes(1);
+    await r.drain();
+    const day = r.rows.get("2026-11-18")!;
+    expect(day.beacons.filter((b) => b.spots === 0).map((b) => b.call)).toEqual(["VR2B", "YV5B"]);
+    expect((await r.get())?.day).toBe("2026-11-18");
+  });
+
+  // Value: protects=before 01:00 UTC the day before yesterday is the latest asked for (RBN posts just after midnight), and anything older than the day before the target is never shown; fails_when=a half-posted day is asked for, or a stale day keeps marking beacons quiet; why_new=issue #69 v2; seam=store and fetch injected; no_claim=none beyond protects
+  it("waits until 01:00 UTC for yesterday, and never serves an older day", async () => {
+    const early = setupRbn("2026-11-19T00:30:00Z");
+    early.rows.set("2026-11-17", saved("2026-11-17"));
+    expect((await early.get())?.day).toBe("2026-11-17");
+    expect(early.fetchImpl).not.toHaveBeenCalled();
+    const stale = setupRbn();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    stale.serve(() => Promise.reject(new TypeError("fetch failed")));
+    stale.rows.set("2026-11-16", saved("2026-11-16"));
+    expect(await stale.get()).toBeNull();
+  });
+
+  // Value: protects=a failed or wrong download (RBN's 502 body, an HTTP error) saves nothing, keeps serving the day before, and isn't retried for ten minutes; fails_when=an error page is stored as a day of zeros (every beacon quiet), or RBN is asked on every request while it's down; why_new=issue #69 v2 (RBN answered 502 bodies in testing); seam=store, fetch and defer injected; no_claim=none beyond protects
+  it.each([
+    ["a 502 body", async () => new Response("error code: 502")],
+    ["an HTTP error", async () => new Response("no", { status: 502 })],
+    ["the site down", () => Promise.reject(new TypeError("fetch failed"))],
+  ])("keeps the day before after %s, and backs off", async (_, failure) => {
+    const r = setupRbn();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    r.rows.set("2026-11-17", saved("2026-11-17"));
+    r.serve(failure as () => Promise<Response>);
+    await r.get();
+    await r.drain();
+    expect(r.store.save).not.toHaveBeenCalled();
+    expect((await r.get())?.day).toBe("2026-11-17");
+    expect(r.fetchImpl).toHaveBeenCalledTimes(1);
+    r.advance(10 * 60_000);
+    r.serve(async () => new Response(ZIP));
+    await r.get();
+    await r.drain();
+    expect((await r.get())?.day).toBe("2026-11-18");
+  });
+
+  // Value: protects=peek (what reports.submit uses) reads only what's saved and never starts a download, and a database error reads as nothing rather than failing; fails_when=submitting a report triggers RBN's 6 MB download, or a database hiccup throws into the caller; why_new=issue #69 v2; seam=store and fetch injected; no_claim=none beyond protects
+  it("peeks without downloading, and survives a database error", async () => {
+    const r = setupRbn();
+    r.rows.set("2026-11-17", saved("2026-11-17"));
+    expect((await r.peek())?.day).toBe("2026-11-17");
+    expect(r.fetchImpl).not.toHaveBeenCalled();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const broken = setupRbn();
+    broken.store.load.mockRejectedValue(new Error("db down"));
+    expect(await broken.peek()).toBeNull();
   });
 });

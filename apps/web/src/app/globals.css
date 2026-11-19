@@ -1952,7 +1952,9 @@ html,
 /* A beacon NCDXF lists as off the air (#69): greyed, with its note on a line of its own.
    Listen stays, so a listener can report it back on the air. */
 .beacons-strip tr[data-off] .beacons-call,
-.beacons-strip tr[data-off] .beacons-freq {
+.beacons-strip tr[data-off] .beacons-freq,
+.beacons-strip tr[data-quiet] .beacons-call,
+.beacons-strip tr[data-quiet] .beacons-freq {
   color: var(--muted);
 }
 

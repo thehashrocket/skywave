@@ -16,7 +16,7 @@ import {
   TX_NAME_SEPARATOR,
 } from "@/lib/reception";
 import { publicProcedure, router } from "../trpc";
-import { getBeaconStatus } from "./beacons";
+import { getBeaconStatus, rbnDays } from "./beacons";
 import { getReceivers, servedReceivers } from "./receivers";
 import { getSchedule } from "./stations";
 
@@ -295,6 +295,9 @@ export const reportsRouter = router({
     // NCDXF's word on the beacon now, from this server's cached copy (null until it has one).
     const official =
       input.txKind === "beacon" ? (await getBeaconStatus())?.beacons.find((b) => b.call === input.txName) : undefined;
+    // RBN's count for the last day this server has saved (never downloads here).
+    const rbnDay = input.txKind === "beacon" ? await rbnDays.peek() : null;
+    const rbn = rbnDay?.beacons.find((b) => b.call === input.txName);
     let fit = pick;
     if (pick && !pickChecks(pick, { ...input, slotStartMs: slot }, now)) {
       console.warn("reports.submit: dropped pick context that doesn't fit the report");
@@ -306,6 +309,7 @@ export const reportsRouter = router({
         // The slot is kept for beacons only.
         ...(slot !== undefined && { slotStartMs: BigInt(slot) }),
         ...(official && { beaconStatus: official.off ? "OFF" : "OK" }),
+        ...(rbn && rbnDay && { rbnSpots: rbn.spots, rbnDay: rbnDay.day }),
         ...(fit && {
           pickVersion: fit.version,
           pickedAtMs: BigInt(fit.pickedAtMs),

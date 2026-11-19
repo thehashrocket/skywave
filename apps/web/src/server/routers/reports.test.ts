@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Broadcast } from "@/lib/eibi";
 import type { IbpStatus } from "@/lib/ibp-status";
+import type { RbnDay } from "@/lib/rbn";
 import type { Receiver } from "@/lib/kiwi-list";
 import { PICK_CONTEXT_VERSION } from "@/lib/pick-context";
 import type { createContext } from "@/server/trpc";
@@ -22,10 +23,12 @@ const cache = {
   receivers: [] as Receiver[],
   listDown: false,
   beaconStatus: null as IbpStatus | null,
+  rbn: null as RbnDay | null,
 };
 vi.mock("./beacons", async (actual) => ({
   ...(await actual<typeof import("./beacons")>()),
   getBeaconStatus: vi.fn(async () => cache.beaconStatus),
+  rbnDays: { get: vi.fn(async () => cache.rbn), peek: vi.fn(async () => cache.rbn) },
 }));
 vi.mock("./stations", async (actual) => ({
   ...(await actual<typeof import("./stations")>()),
@@ -264,6 +267,22 @@ describe("reports.submit checks what it's told", () => {
     beforeEach(() => {
       cache.broadcasts = [];
       cache.beaconStatus = null;
+      cache.rbn = null;
+    });
+
+    // Value: protects=each beacon report stores RBN's spot count for that beacon and the day it counts, from what the server has saved, read without downloading (peek, never get); nothing without a saved day; fails_when=the count isn't stored, is another beacon's, has no day, or submitting starts RBN's 6 MB download; why_new=issue #69 v2 (owner: store the day's RBN count on each beacon report); seam=rbnDays mocked, in-memory db; no_claim=RBN's accuracy
+    it.each([
+      [{ rbnSpots: 0, rbnDay: "2026-11-17" }, { day: "2026-11-17", total: 20_000, beacons: [{ call: "4U1UN", spots: 0 }, { call: "VE8AT", spots: 9 }] }],
+      [{ rbnSpots: 4534, rbnDay: "2026-11-17" }, { day: "2026-11-17", total: 20_000, beacons: [{ call: "4U1UN", spots: 4534 }] }],
+      [{ rbnSpots: undefined, rbnDay: undefined }, null],
+    ])("stores RBN's count for the beacon (%o)", async (stored, day) => {
+      cache.rbn = day as RbnDay | null;
+      const { caller, receptionReport } = setup();
+      await expect(caller.reports.submit(beacon)).resolves.toEqual({ accepted: true });
+      const { data } = receptionReport.create.mock.calls[0]![0] as { data: Record<string, unknown> };
+      expect({ rbnSpots: data.rbnSpots, rbnDay: data.rbnDay }).toEqual(stored);
+      const { rbnDays } = await import("./beacons");
+      expect(rbnDays.get).not.toHaveBeenCalled();
     });
 
     // Value: protects=each beacon report stores NCDXF's official status for that beacon from the server's own cached copy ("OFF" or "OK"), and nothing when the server has no copy yet; fails_when=the status isn't stored, is taken for the wrong beacon, or a missing copy is stored as "OK"; why_new=issue #69 v1 (store each beacon report's official status); seam=getBeaconStatus mocked, in-memory db; no_claim=that NCDXF's list is current
