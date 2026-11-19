@@ -226,7 +226,10 @@ export function useReceptionPrompt(
       setQuestionsOff(true);
       return;
     }
-    let notBefore = c.lastShownMs + PROMPT_GAP_MS;
+    // Times saved by an older build were on the computer's clock, which can be
+    // far ahead of the server's: none can be later than now.
+    const asOfNow = (ms: number) => Math.min(ms, serverNow());
+    let notBefore = asOfNow(c.lastShownMs) + PROMPT_GAP_MS;
     if (pickCall !== null && audioStart.current !== null) {
       const s = latest.current.status;
       // An answer this tab sent about this beacon here: the server takes the next
@@ -235,7 +238,7 @@ export function useReceptionPrompt(
         s.host && s.freqKhz !== undefined
           ? c.beacons?.[beaconAnswerKey(s.host, s.port ?? DEFAULT_KIWI_PORT, s.freqKhz, pickCall)]
           : undefined;
-      if (sentAt !== undefined) notBefore = Math.max(notBefore, sentAt + SAME_CHANNEL_MS + SAME_CHANNEL_SLACK_MS);
+      if (sentAt !== undefined) notBefore = Math.max(notBefore, asOfNow(sentAt) + SAME_CHANNEL_MS + SAME_CHANNEL_SLACK_MS);
       // The schedule and the gaps all run on the server's clock.
       const server = serverNow();
       const at = beaconPromptAt({ call: pickCall, bandIndex: band }, audioStart.current, notBefore);

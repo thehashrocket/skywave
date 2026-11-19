@@ -22,6 +22,7 @@ import {
   onServerOffset,
   resetServerClock,
   serverClockCorrections,
+  clockedFetch,
   serverClockSettled,
   serverNow,
   serverOffset,
@@ -434,6 +435,52 @@ describe("serverNow", () => {
   });
 
   // Value: protects=a listener that throws neither fails the response that measured the clock (a tRPC call) nor keeps the other listeners from hearing; fails_when=listeners run bare inside noteResponse; why_new=clock-edges TODO; seam=console.error spied; no_claim=none beyond protects
+  // Value: protects=on a link slower than QUICK_ROUND_TRIP_MS every time, a later reply that measures better than the clock is known to is still taken, and the clock counts as settled once it's been asked again, so beacon Listen doesn't wait 2 s on every click for good; fails_when=every slow later reply is dropped, or settled requires a quick measurement; why_new=round 4 adversarial review (owner: fix slow links); seam=fake timers; no_claim=what counts as slow on a real network
+  it("takes a better slow reply, and settles a slow link once asked again", () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    reply(TRUE_MS + 1_900, 4_000);
+    expect(serverNow()).toBe(TRUE_MS + 1_900);
+    expect(serverClockSettled()).toBe(false);
+    // 1.2 s: still slow, but good to 0.6 s against the first's 2 s.
+    reply(TRUE_MS, 1_200);
+    expect(serverNow()).toBe(TRUE_MS);
+    expect(serverClockCorrections()).toBe(1);
+    resetServerClock();
+    reply(TRUE_MS, 3_000);
+    expect(serverClockSettled()).toBe(false);
+    // As slow again: nothing better to be had on this link.
+    reply(TRUE_MS + 1_000, 3_000);
+    expect(serverNow()).toBe(TRUE_MS);
+    expect(serverClockSettled()).toBe(true);
+  });
+
+  // Value: protects=after a sleep, a slow reply still corrects the time counted from the computer's clock (any measurement beats none), so a slow link isn't left on the computer's clock asking every 10 s; fails_when=slow later replies are dropped even on the computer's clock; why_new=round 4 adversarial review (owner: fix slow links); seam=fake timers, a fetch that never answers; no_claim=none beyond protects
+  it("takes a slow reply after a sleep", () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    reply(TRUE_MS);
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    const woke = TRUE_MS + 600_000;
+    vi.setSystemTime(woke);
+    expect(serverClockSettled()).toBe(false);
+    reply(woke + 2_000, 3_000);
+    expect(serverNow()).toBe(woke + 2_000);
+  });
+
+  // Value: protects=the round trip is timed on the monotonic clock, so the computer's clock stepped while a request is out doesn't skew the measurement; fails_when=clockedFetch times the round trip with Date.now(); why_new=round 4 adversarial review (owner: fix it); seam=fake timers (setSystemTime moves only Date), a stubbed fetch that steps the clock; no_claim=none beyond protects
+  it("times the round trip on the monotonic clock", async () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    const stamp = TRUE_MS + 7_000;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        vi.setSystemTime(Date.now() + 3_000);
+        return new Response(null, { status: 204, headers: { [SERVER_MS_HEADER]: String(stamp) } });
+      }),
+    );
+    await clockedFetch("/api/trpc/clock");
+    expect(serverNow()).toBe(stamp);
+  });
+
   it("keeps measuring when a listener throws", () => {
     vi.useFakeTimers({ now: TRUE_MS });
     const error = vi.spyOn(console, "error").mockImplementation(() => {});

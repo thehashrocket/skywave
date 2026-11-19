@@ -47,7 +47,11 @@ export const DATE_HEADER_ROUNDING_MS = 500;
 /** The slowest response the first measurement may come from: it beats having none. */
 export const MAX_ROUND_TRIP_MS = 5_000;
 
-/** The slowest response a later measurement may come from. */
+/**
+ * The slowest response a later measurement may come from, unless it measures
+ * better than the clock is known to (a slow link) or the page is counting
+ * from the computer's clock (any measurement beats none).
+ */
 export const QUICK_ROUND_TRIP_MS = 1_000;
 
 /** How far the computer's clock must drift ahead of the monotonic one to count as a jump (a sleep, a clock change). */
@@ -149,6 +153,8 @@ let onWallClock = false;
 let wallDrift = 0;
 /** Times the time shown was found wrong: a correction, or a jump undone before any measurement. */
 let corrections = 0;
+/** Measurable replies since the clock was last unmeasured or switched to the computer's clock. */
+let replies = 0;
 /** Whether remeasure() is waiting on an answer. */
 let asking = false;
 let nextAsk: ReturnType<typeof setTimeout> | undefined;
@@ -188,6 +194,7 @@ function switched(): boolean {
   const now = wallClockNow();
   if (now === onWallClock) return false;
   onWallClock = now;
+  if (now) replies = 0;
   if (!now) {
     corrections++;
     settled();
@@ -204,9 +211,15 @@ export function noteResponse(headers: { get(name: string): string | null }, sent
   const m = measureFromResponse(headers, sentAt, receivedAt);
   if (m === null) return;
   const first = monoOffset === null;
-  if (!first && receivedAt - sentAt > QUICK_ROUND_TRIP_MS) return;
+  const slow = receivedAt - sentAt > QUICK_ROUND_TRIP_MS;
+  if (!first && slow && !wallClockNow() && m.error >= offsetError) {
+    // Not a better measurement, but the link was asked again: it's this slow.
+    replies++;
+    return;
+  }
   // A switch to the computer's clock nothing had noticed yet still moved the time shown.
   const moved = switched();
+  replies++;
   const wlm = wallLessMono();
   const next = m.offset + wlm;
   // The time shown, as an offset from performance.now().
@@ -232,7 +245,7 @@ export function noteResponse(headers: { get(name: string): string | null }, sent
   settled();
   if (first) watchVisibility();
   // A slow first measurement is worth bettering soon; otherwise the next is due on schedule.
-  if (!asking) scheduleAsk(receivedAt - sentAt > QUICK_ROUND_TRIP_MS ? REMEASURE_RETRY_MS : REMEASURE_EVERY_MS);
+  if (!asking) scheduleAsk(first && slow ? REMEASURE_RETRY_MS : REMEASURE_EVERY_MS);
 }
 
 /** The server's time now, in ms since the epoch: this browser's clock until an offset is known. */
@@ -264,12 +277,13 @@ export function serverOffset(): number | null {
 }
 
 /**
- * Whether serverNow() is measured well (to within QUICK_ROUND_TRIP_MS, not a
- * slow first reply) and not counting from the computer's clock through a
- * forward jump (a sleep or a change by hand) it hasn't re-measured.
+ * Whether serverNow() is measured as well as this link allows (to within
+ * QUICK_ROUND_TRIP_MS, or asked again at least once, so a slow link settles
+ * on its best) and not counting from the computer's clock through a forward
+ * jump (a sleep or a change by hand) it hasn't re-measured.
  */
 export function serverClockSettled(): boolean {
-  return monoOffset !== null && offsetError <= QUICK_ROUND_TRIP_MS && !wallClockNow();
+  return monoOffset !== null && (offsetError <= QUICK_ROUND_TRIP_MS || replies >= 2) && !wallClockNow();
 }
 
 /**
@@ -312,9 +326,12 @@ export function onServerOffset(listener: () => void): () => void {
  * decides which count). Given to the tRPC links, so every request measures.
  */
 export const clockedFetch: typeof fetch = async (input, init) => {
-  const sentAt = Date.now();
+  // The round trip on the monotonic clock: setting the computer's clock while
+  // the request is out can't shorten it or skew its middle.
+  const sentPerf = performance.now();
   const res = await fetch(input, init);
-  noteResponse(res.headers, sentAt, Date.now());
+  const receivedAt = Date.now();
+  noteResponse(res.headers, receivedAt - (performance.now() - sentPerf), receivedAt);
   return res;
 };
 
@@ -369,6 +386,7 @@ export function resetServerClock() {
   onWallClock = false;
   wallDrift = 0;
   corrections = 0;
+  replies = 0;
   asking = false;
   clearTimeout(nextAsk);
   nextAsk = undefined;

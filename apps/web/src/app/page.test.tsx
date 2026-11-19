@@ -2525,6 +2525,34 @@ describe("ListenPage", () => {
     });
 
     // Value: protects=two beacon Listen clicks while the clock check is pending tune only the latest band, once, so an earlier click can't tune a receiver after the later one; fails_when=the ticket guard is dropped and every waiting click tunes when the check ends; why_new=the unsure-clock test clicks once; seam=MapPanel/picker/radio mocked, real server clock with a fetch that never answers; no_claim=how long the real route takes
+    // Value: protects=a waiting beacon Listen counts only what the listener does: Pick best moving on to its next receiver by itself doesn't drop it, and closing the drawer does; fails_when=every receiver tune counts (tuneReceiver bumps), or closing the drawer doesn't; why_new=round 4 adversarial review (owner: fix it); seam=MapPanel/picker/radio mocked, real server clock with a fetch that never answers; no_claim=none beyond protects
+    it("lets a run's own next receiver pass, but not closing the drawer", async () => {
+      resetServerClock();
+      vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+      const page = render(<ListenPage />);
+      openStrip();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+      const first = (radio.tune.mock.calls as unknown as [{ host: string; port: number }][])[0]![0];
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+      // The run moves on by itself while the beacon Listen waits.
+      radio.status = { state: "error", code: "busy", message: "full", host: first.host, port: first.port };
+      page.rerender(<ListenPage />);
+      expect(radio.tune).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 14_100, mode: "cw" }));
+      // Again, closing the drawer while it waits.
+      const tunes = radio.tune.mock.calls.length;
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Change receiver" })));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(radio.tune.mock.calls.length).toBe(tunes);
+      vi.unstubAllGlobals();
+    });
+
     it("tunes only the latest beacon Listen clicked while checking the time", async () => {
       resetServerClock();
       vi.setSystemTime(NOW + 8_000);

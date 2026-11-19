@@ -199,6 +199,14 @@ describe("useReceptionPrompt", () => {
     vi.unstubAllGlobals();
   });
 
+  // Value: protects=a question time saved by an older build on a computer clock far ahead of the server's can't hold questions back for that long: saved times are taken as no later than now; fails_when=stored lastShownMs is used as saved; why_new=round 4 adversarial review (owner: fix it); seam=fake timers, sessionStorage; no_claim=a saved time on a clock behind (can't be told apart; the server's per-callsign limit still holds)
+  it("doesn't hold questions back for a time saved on a clock far ahead", () => {
+    sessionStorage.setItem("skywave.receptionPrompt", JSON.stringify({ lastShownMs: Date.now() + 3_600_000, dismissals: 0 }));
+    const hook = setup();
+    wait(PROMPT_GAP_MS + 2 * DWELL_MS);
+    expect(hook.result.current.prompt).not.toBeNull();
+  });
+
   it("asks at most once per 10 minutes, waiting out the gap for the next station", () => {
     const hook = setup();
     wait(DWELL_MS);

@@ -418,10 +418,12 @@ export default function ListenPage() {
     [busy, radio],
   );
 
-  // Goes up on everything the listener does to what's playing: a receiver tuned
-  // (by hand, Pick best or a link), Stop, the dial, the mode, beacon mode, a run
-  // started. A beacon Listen waiting on the clock goes ahead only if it hasn't
-  // moved since the click, so it can never reopen a volunteer's receiver after Stop.
+  // Goes up on everything the listener does to what's playing: a receiver chosen
+  // (by hand, a typed address, Back), Pick best started, Stop, the dial, the mode,
+  // beacon mode, the drawer opened or closed. Not on what a run does by itself
+  // (its next receiver, a retry). A beacon Listen waiting on the clock goes ahead
+  // only if it hasn't moved since the click, so it can never reopen a volunteer's
+  // receiver after Stop or replace what the listener chose meanwhile.
   const acted = useRef(0);
   const changeFreq = useCallback(
     (khz: number, nextMode?: Mode) => {
@@ -480,7 +482,6 @@ export default function ListenPage() {
   const names = useRef(new Map<string, string>());
   const tuneReceiver = useCallback(
     (r: Target, fromList: boolean) => {
-      acted.current++;
       // A dial retune still waiting on its timer would otherwise go to the old
       // receiver after this tune and switch the service back.
       if (timer.current) clearTimeout(timer.current);
@@ -559,6 +560,7 @@ export default function ListenPage() {
   // change of receiver too, which ends a beacon pick (beacon Listen sets its own after).
   const pickFrom = useCallback(
     (ranked: Receiver[], source: PickSource, known?: readonly Receiver[]) => {
+      acted.current++;
       setPageMessage(null);
       setBeaconPick(null);
       // The dial is set before every run starts (beacon Listen sets it first), so this is what `ranked` is for.
@@ -663,6 +665,7 @@ export default function ListenPage() {
   /** Ends any Pick best run (and beacon pick), then tunes. Leaves the pin as it is (pinTo sets it). */
   const switchTo = useCallback(
     (r: Target, fromList: boolean) => {
+      acted.current++;
       cancelPickBest();
       setBeaconPick(null);
       tuneReceiver(r, fromList);
@@ -1077,7 +1080,10 @@ export default function ListenPage() {
             aria-label="Change receiver"
             aria-expanded={drawerOpen}
             aria-controls="receiver-drawer"
-            onClick={() => setDrawerOpen((o) => !o)}
+            onClick={() => {
+              acted.current++;
+              setDrawerOpen((o) => !o);
+            }}
           >
             change
           </button>
