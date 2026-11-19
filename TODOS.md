@@ -88,35 +88,18 @@
 **Priority:** P3
 **Depends on:** #61 replay passing; #69 login (RBN half only)
 
-### Pick context: trust only what the page could have sent (#61)
+### Server clock: edges left after round 3 (#61)
 
-**What:** Two notes from round 2's review (Codex adversarial), left for later at the owner's call:
-- **Made-up candidates:** `candidateKeyOk` (`apps/web/src/server/routers/reports.ts`) checks a candidate's spelling, not that it could be a listed receiver. A forged request can store keys like `localhost:22`, port 1, or a bare IPv6 address read as address plus port. Checking each key against the cached public list closes it, but a receiver that left the list in the up-to-3 hours since the pick would then drop real context.
-- **Server-stamped version:** `pickVersion` is what the client sent, and a request can always send none. The replay splits rows by deploy time instead (deploy times are posted on #61).
+**What:** Two items round 3 left out of its core set (owner, 2026-11-19), and two notes from its adversarial review:
+- **Beacon pick after a forward change:** beacon Listen while the computer's clock is set forward and not yet re-measured picks the beacon from the wrong slot and keeps it until a retune (main did the same). Re-check the pick when the clock corrects.
+- **Gap timers:** the question gap and same-channel times are kept on `Date.now()` and converted with the current offset, so a clock change shifts them (mostly as on main). Keep them on `serverNow()` or `performance.now()`.
+- **A settled pick across a big correction:** a pick made on the monotonic clock keeps its time when a later correction of over 2 s moves the clock (a slow backward drift past 2 s, or a paused clock plus a change by hand), so its `pickedAtMs` and the question's slot can sit on different offsets. Decide whether every correction should drop the pick.
+- **A prompt on screen through a sleep:** the prompt's `PROMPT_TTL_MS` timer runs on the monotonic clock, which some browsers pause in sleep, so after waking a beacon prompt can outlive the server's window; the answer is refused after the thanks. Expire it on a clock switch once `serverNow()` is past the slot plus `LISTING_GRACE_MS`, less a slack.
 
-**Why:** Reports are anonymous writes, so a forger can already lie about the answer itself. This only matters if the replay should trust a context's candidate list more than the answer.
+**Why:** The first two need a forward clock change by hand mid-visit, the last two a rare clock move or a sleep with a question on screen; none touches audio, and only the last can lose an answer.
 
 **Effort:** S
 **Priority:** P4
-**Depends on:** the #61 replay design
-
-### Server clock: edges of the forward-jump fallback (#61)
-
-**What:** Notes from the monotonic clock's fix-check and adversarial reviews, on the fallback to the computer's clock after a forward jump (`apps/web/src/lib/server-clock.ts`):
-- **Entering the fallback is silent:** a forward change by hand, a forward NTP step, or slow drift between `performance.now()` and `Date.now()` moves `serverNow()` by more than 2 s with no `onServerOffset` call. The beacon strip follows at its next tick while a planned beacon question keeps its plan until a quick response closes the jump. Main moved the same way, silently.
-- **A short sleep can close onto the lagging clock:** with a 2-3 s sleep the re-measure compares against the old offset, so measurement error can keep it and `serverNow()` drops back by the sleep, with no re-plan when the drop is under 2 s. Comparing against the time the page was showing would fix it.
-- **Pick time across the window:** a pick made inside a forward-change window carries the computer's (wrong) time, and a beacon slot asked after the re-measure is on the corrected clock, so the server drops that pick context (the answer is kept). A sleep is not affected.
-- **Error can pile up:** a re-measure that keeps the offset also resets the drift count, so up to ~2 s of leftover error stays and adds to the next drift (about 4-5 s at worst, enough to name the neighbouring beacon). Same fix as the short-sleep item: close a jump against the time shown.
-- **Stale question after a sleep (deferred, also on main):** an armed beacon question timer that outlives a sleep fires for a past slot, and the server refuses it after the thanks. Skip or re-plan at fire time when `serverNow()` is past the slot.
-- **Beacon pick after a forward change:** beacon Listen inside a forward-change window picks the beacon from the wrong slot and keeps it until a retune (main did the same).
-- **Gap timers:** the question gap and same-channel times are kept on `Date.now()` and converted with the current offset, so a clock change shifts them (mostly as on main).
-- **Listeners:** a listener that throws would fail the tRPC call that triggered it; today's listeners only set state.
-- The header comment's "a manual change or an NTP step ... doesn't move the server time" now holds only for a change backward.
-
-**Why:** Rare (a forward clock change mid-visit, a 2-3 s sleep, or about 2 s of drift between the two clocks); none touches audio, and only the pile-up can mislabel a stored beacon report. Owner chose to ship with these noted (2026-11-19 /ship).
-
-**Effort:** S
-**Priority:** P3
 **Depends on:** nothing
 
 ### Pick best follow-ups from the design-pass review
@@ -268,6 +251,22 @@
 
 
 ## Completed
+
+### Pick context edge cases, round 3 (#61)
+
+**What:** Close the two #61 TODOs "Pick context: trust only what the page could have sent" and "Server clock: edges of the forward-jump fallback".
+
+**Completed:** fix/pick-context-round3 (2026-11-19). How each item closed:
+- **Made-up candidates:** each report with context stores `candidatesListed`, how many of its candidates were on the server's public list when the answer arrived. The context is kept either way, so a receiver that left the list since the pick costs nothing; the replay filters (owner: store a listed count).
+- **Server-stamped version:** closed with a note (owner). The server can't check the page's version; `createdAt` against the deploy times posted on #61 says which server rules took a row (schema comment, README).
+- **Error pile-up and short sleeps:** a re-measure keeps whichever of the time shown and the old offset it agrees with within 2 s, so leftover error never stacks, a short sleep never snaps back onto the lagging clock, and a small forward change by hand (2-3 s, an NTP step) is still corrected (owner D3).
+- **Flapping at the edge:** the page switches to the computer's clock past 2 s of drift and back only under 1 s, and takes a response inside that band, so jitter at 2 s can't flap between the clocks (owner D3).
+- **Silent switches:** listeners hear every switch between the page's two clocks, so the beacon question re-plans when the clock moves, not only at a re-measure.
+- **Stale question after a sleep:** a beacon question whose timer fired too late for the server to take the answer (with 5 s to spare for clock error and the trip) isn't asked; it plans a later turn, with or without a clock switch (a frozen tab).
+- **Picks through a jump:** a pick made during a forward jump not yet re-measured keeps its context unless the time then moves before any measurement (a change by hand corrected, or the jump undone), so a pick right after a laptop wake keeps it and a wrong pick time doesn't (owner: drop only if corrected). The page asks for that measurement as soon as it switches clocks, and again every 10 s until one lands (a HEAD to `/api/trpc/clock`, which reaches the tRPC handler so the reply is never a cached page; tRPC answers it with a 204 whose Date header measures), so the correction lands before an answer (owner: re-measure on a switch, retried per D3). Offline, the context of a pick made through a forward change by hand can still go out with the computer's time, off by the change: the server's checks can't see it, since the slot is off by the same amount.
+- **Listeners:** one that throws can't fail the tRPC call that measured the clock or keep the others from hearing.
+- **Version 5:** these change when the page records a pick, so `PICK_CONTEXT_VERSION` is now 5; the server still takes 2 to 4 (owner: post the deploy time on #61).
+- Left for later: the beacon pick after a forward change, the gap timers and two review notes ("Server clock: edges left after round 3").
 
 ### Re-measure the server clock after a jump
 
