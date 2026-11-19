@@ -192,13 +192,22 @@ export const clockedFetch: typeof fetch = async (input, init) => {
 };
 
 /**
- * Asks the server for its time: any response's Date header measures the clock
- * (noteResponse), even an error, and a HEAD touches no data. A failed request
- * leaves the clock as it was until the page's next response.
+ * Where remeasure() asks. It must reach the tRPC route handler, which answers
+ * every request fresh (here a 404 for a procedure that doesn't exist): a bare
+ * /api/trpc matches no route, and a prerendered not-found page can come from
+ * a cache with an Age header, which noteResponse rightly refuses.
+ */
+export const REMEASURE_PATH = "/api/trpc/clock";
+
+/**
+ * Asks the server for its time: any fresh response's Date header measures the
+ * clock (noteResponse), even an error, and a HEAD touches no data. A request
+ * that fails, or takes over REMEASURE_ROUND_TRIP_MS, leaves the clock as it
+ * was until the page's next quick response.
  */
 function remeasure() {
   if (typeof window === "undefined") return;
-  clockedFetch("/api/trpc", { method: "HEAD", cache: "no-store" }).catch(() => {});
+  clockedFetch(REMEASURE_PATH, { method: "HEAD", cache: "no-store" }).catch(() => {});
 }
 
 /** For tests: forget the offset. */

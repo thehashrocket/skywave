@@ -10,6 +10,7 @@ import {
   onServerOffset,
   JUMP_MS,
   REMEASURE_MS,
+  REMEASURE_PATH,
   REMEASURE_ROUND_TRIP_MS,
   offsetFromResponse,
   resetServerClock,
@@ -189,7 +190,7 @@ describe("serverNow", () => {
     serverNow();
     serverNow();
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(fetch).toHaveBeenCalledWith("/api/trpc", expect.objectContaining({ method: "HEAD" }));
+    expect(fetch).toHaveBeenCalledWith(REMEASURE_PATH, expect.objectContaining({ method: "HEAD" }));
     await vi.waitFor(() => expect(serverClockSettled()).toBe(true));
     // Corrected back from an hour ahead (waitFor's own ticks moved the clock a little).
     expect(Math.abs(serverNow() - TRUE_MS)).toBeLessThan(REMEASURE_MS);
@@ -254,6 +255,14 @@ function AQuery() {
   useQuery(trpc.presets.list.queryOptions());
   return null;
 }
+
+// Value: protects=the re-measure path reaches the tRPC route handler (app/api/trpc/[trpc]), which answers every request fresh, not a bare /api/trpc that matches no route and can be served a cached not-found page with an Age header the clock refuses; fails_when=REMEASURE_PATH points anywhere but under /api/trpc/ or the route moves; why_new=round 3 fix-check (owner: fix the path); seam=none (reads the route file); no_claim=what Vercel's edge does with the handler's 404 (checked with curl on the preview)
+it("re-measures through the tRPC route handler", async () => {
+  const { existsSync } = await import("node:fs");
+  const { resolve } = await import("node:path");
+  expect(REMEASURE_PATH).toMatch(/^\/api\/trpc\/[a-z]+$/);
+  expect(existsSync(resolve(__dirname, "../app/api/trpc/[trpc]/route.ts"))).toBe(true);
+});
 
 // Value: protects=the tRPC client really reads the server's Date header (the wiring, not just the math); fails_when=Providers stops passing clockedFetch to its links; why_new=server clock; seam=stubbed fetch; no_claim=that Vercel sends a Date header (HTTP requires one)
 it("takes the server's time from a tRPC response", async () => {
