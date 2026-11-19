@@ -971,8 +971,11 @@ export default function ListenPage() {
     const p = reception.prompt;
     // Anything that has since cleared the hook's choice for this receiver (a
     // hand pick of it, a failed or abandoned run, a dial move) revokes the
-    // snapshot too; a newer run that picked it again leaves the snapshot as is.
-    if (p) submitReport(p, outcome, comment, promptPick && pickedFor(p.host, p.port) ? promptPick : undefined);
+    // snapshot too. A newer run that picked it again on the same frequency
+    // leaves the snapshot as is; one on another frequency (a question left up
+    // after Stop or an error) doesn't vouch for it.
+    const live = p && promptPick ? pickedFor(p.host, p.port) : null;
+    if (p) submitReport(p, outcome, comment, live && live.freqKhz === promptPick?.freqKhz ? promptPick : undefined);
     reception.answered();
     if (promptInStrip) setThanksBand(promptBand);
     focusAfterPrompt(promptInStrip);

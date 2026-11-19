@@ -63,6 +63,10 @@ model ReceptionReport {
   pickLon      Float?
   pickSnr      Float?
   pickUsers    Int?
+  /// Which rules made the context (PICK_CONTEXT_VERSION). Null with context
+  /// present: PR #73's first rules, from before the edge-case fixes; the
+  /// replay checks or skips those.
+  pickVersion  Int?
 
   @@index([receiverHost, receiverPort, freqKhz])
   @@index([listenerId, createdAt])

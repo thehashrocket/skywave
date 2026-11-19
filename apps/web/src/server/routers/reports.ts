@@ -2,7 +2,7 @@ import { z } from "zod";
 import { scheduledOn, type Broadcast } from "@/lib/eibi";
 import { beaconOnBand, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
 import { findReceiver, MAX_PLAUSIBLE_SNR, MAX_ROWS } from "@/lib/kiwi-list";
-import { MAX_CANDIDATES, MAX_USERS, PICK_SOURCES, pickKey } from "@/lib/pick-context";
+import { MAX_CANDIDATES, MAX_USERS, PICK_CONTEXT_VERSION, PICK_SOURCES, pickKey } from "@/lib/pick-context";
 import { MODES } from "@/lib/radio-types";
 import {
   BEACON_MIN_HEARD_MS,
@@ -11,6 +11,7 @@ import {
   MAX_LISTED,
   OUTCOMES,
   SAME_CHANNEL_MS,
+  STREAM_LATENCY_MS,
   TX_KINDS,
   TX_NAME_SEPARATOR,
 } from "@/lib/reception";
@@ -94,9 +95,19 @@ export const MAX_PICK_AGE_MS = 3 * 60 * MINUTE;
 
 /**
  * A candidate as pickKey writes it: a lowercase hostname or IPv4 address (at
- * most 253 characters), a colon, a port. Anything else isn't a receiver key.
+ * most 253 characters) or a bare IPv6 address (parseReceiver drops the
+ * brackets), a colon, a port. Anything else isn't a receiver key. Every key
+ * the page writes passes, so one that doesn't comes from a broken or forged
+ * page, and the whole context goes: dropping just that key would shift the
+ * list under rankPos.
  */
-const CANDIDATE_KEY = /^[a-z0-9._-]{1,253}:[0-9]{1,5}$/;
+const CANDIDATE_KEY = /^(?:[a-z0-9._-]{1,253}|[0-9a-f:.]{2,45}):([0-9]{1,5})$/;
+
+/** Whether a candidate key ends in a port a receiver can have. */
+const candidatePortOk = (key: string) => {
+  const port = Number(key.match(CANDIDATE_KEY)?.[1]);
+  return port >= 1 && port <= 65_535;
+};
 
 /**
  * How Pick best chose the receiver (issue #61, lib/pick-context.ts). The page
@@ -107,12 +118,14 @@ const CANDIDATE_KEY = /^[a-z0-9._-]{1,253}:[0-9]{1,5}$/;
  */
 const pickInput = z
   .object({
+    // Absent from pages built before PICK_CONTEXT_VERSION existed (stored as null).
+    version: z.number().int().min(2).max(PICK_CONTEXT_VERSION).optional(),
     pickedAtMs: z.number().int().positive(),
     pickSource: z.enum(PICK_SOURCES),
     // A place in a list of at most MAX_ROWS receivers, from 0.
     rankPos: z.number().int().min(0).max(MAX_ROWS - 1),
     candidates: z
-      .array(z.string().regex(CANDIDATE_KEY))
+      .array(z.string().regex(CANDIDATE_KEY).refine(candidatePortOk, "port out of range"))
       .min(1)
       .max(MAX_CANDIDATES)
       .refine((keys) => new Set(keys).size === keys.length, "duplicate candidate"),
@@ -128,21 +141,26 @@ type PickInput = z.infer<typeof pickInput>;
 
 /**
  * The latest a pick can come in a beacon slot that's then asked about. The
- * page asks about a slot only if BEACON_MIN_HEARD_MS of it played after audio
- * started (beaconPromptAt), and the pick precedes the audio: so a pick after
- * slot start + SLOT_MS - BEACON_MIN_HEARD_MS can't be the one that led to it.
+ * page asks about a slot only if BEACON_MIN_HEARD_MS of it played after first
+ * audio plus STREAM_LATENCY_MS (heardEnough), and the pick precedes the audio:
+ * so a pick at or after slot start + SLOT_MS - BEACON_MIN_HEARD_MS -
+ * STREAM_LATENCY_MS can't be the one that led to it. Both times are the page's
+ * serverNow(), so its clock error cancels.
  */
-export const PICK_IN_SLOT_MS = SLOT_MS - BEACON_MIN_HEARD_MS;
+export const PICK_IN_SLOT_MS = SLOT_MS - BEACON_MIN_HEARD_MS - STREAM_LATENCY_MS;
 
 /**
  * Whether a well-formed pick fits the report it came with: ranked for the
  * frequency answered about, made before the beacon slot asked about could
  * still be heard (and not in the future or long ago, by this server's clock),
- * and naming the answered receiver at its rank when that's among the candidates.
+ * naming the answered receiver at its rank when that's among the candidates,
+ * and from the button that can lead to this kind of question: the page asks
+ * about a beacon only after beacon Listen chose the receiver (any other run
+ * clears that choice first), and beacon Listen leads to no other question.
  */
 export function pickChecks(
   pick: PickInput,
-  report: { receiverHost: string; receiverPort: number; freqKhz: number; slotStartMs?: number },
+  report: { receiverHost: string; receiverPort: number; freqKhz: number; txKind: string; slotStartMs?: number },
   ms: number,
 ): boolean {
   const { rankPos, candidates, pickedAtMs } = pick;
@@ -155,6 +173,7 @@ export function pickChecks(
   return (
     named &&
     pick.freqKhz === report.freqKhz &&
+    (pick.pickSource === "beacon") === (report.txKind === "beacon") &&
     pickedAtMs <= ms + MAX_CLOCK_SKEW_MS &&
     pickedAtMs >= ms - MAX_PICK_AGE_MS &&
     // Beacon Listen picks the beacon on the air, so the slot asked about can be
@@ -258,6 +277,7 @@ export const reportsRouter = router({
         // The slot is kept for beacons only.
         ...(slot !== undefined && { slotStartMs: BigInt(slot) }),
         ...(fit && {
+          pickVersion: fit.version,
           pickedAtMs: BigInt(fit.pickedAtMs),
           pickSource: fit.pickSource,
           rankPos: fit.rankPos,

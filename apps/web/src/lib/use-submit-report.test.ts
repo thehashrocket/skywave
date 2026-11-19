@@ -21,6 +21,7 @@ const prompt: ReceptionPromptData = {
 };
 
 const pick: PickContext = {
+  version: 2,
   pickedAtMs: 1_000,
   pickSource: "drawer",
   rankPos: 0,

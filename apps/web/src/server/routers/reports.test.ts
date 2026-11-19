@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Broadcast } from "@/lib/eibi";
 import type { Receiver } from "@/lib/kiwi-list";
+import { PICK_CONTEXT_VERSION } from "@/lib/pick-context";
 import type { createContext } from "@/server/trpc";
 import {
   PICK_IN_SLOT_MS,
@@ -337,6 +338,7 @@ describe("reports.submit with Pick best's context (#61)", () => {
 
   // Picked a minute ago from a list where the answered receiver came first.
   const pick = {
+    version: PICK_CONTEXT_VERSION,
     pickedAtMs: NOON - 60_000,
     pickSource: "listen" as const,
     rankPos: 0,
@@ -356,6 +358,7 @@ describe("reports.submit with Pick best's context (#61)", () => {
     pickLon: -72.6,
     pickSnr: 20,
     pickUsers: 1,
+    pickVersion: PICK_CONTEXT_VERSION,
   };
   const pickColumns = Object.keys(stored);
   const submit = async (input: ReportInput) => {
@@ -390,6 +393,9 @@ describe("reports.submit with Pick best's context (#61)", () => {
     ["malformed: a rank no list can reach", { rankPos: 3_000 }],
     ["malformed: a candidate that isn't host:port", { candidates: ["kiwi.example.org:8073", "<b>not a key</b>"] }],
     ["malformed: a candidate listed twice", { candidates: ["kiwi.example.org:8073", "kiwi.example.org:8073"] }],
+    ["malformed: a candidate on port 0", { candidates: ["kiwi.example.org:8073", "other.example:0"] }],
+    ["malformed: a candidate past the last port", { candidates: ["kiwi.example.org:8073", "other.example:99999"] }],
+    ["malformed: a version this server doesn't know", { version: PICK_CONTEXT_VERSION + 1 }],
     ["malformed: a latitude without a longitude", { lon: undefined }],
     [
       "a rank past the head for a receiver the head names",
@@ -404,6 +410,7 @@ describe("reports.submit with Pick best's context (#61)", () => {
     ["picked over three hours ago", { pickedAtMs: NOON - 3 * 3_600_000 - 1 }],
     ["naming another receiver at its rank", { rankPos: 1 }],
     ["a rank past a short list", { rankPos: 5 }],
+    ["from beacon Listen, about a broadcast", { pickSource: "beacon" }],
   ])("drops context %s, keeps the answer, and logs it", async (_, override) => {
     const { data, warn } = await submit({ ...valid, pick: { ...pick, ...override } } as ReportInput);
     for (const k of pickColumns) expect(data).not.toHaveProperty(k);
@@ -426,6 +433,31 @@ describe("reports.submit with Pick best's context (#61)", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
+  // Value: protects=context from a tab loaded before versions existed (PR #73's rules) is still stored but with no pickVersion, so the replay can tell it from fixed context; fails_when=version becomes required (old tabs lose context) or a default version is written; why_new=pickVersion (owner: version on each answer); seam=in-memory db; no_claim=Postgres NULL handling
+  it("keeps context from a page before versions, with no version", async () => {
+    const { version: _, ...old } = pick;
+    const { data, warn } = await submit({ ...valid, pick: old });
+    const { pickVersion: __, ...rest } = stored;
+    expect(data).toMatchObject(rest);
+    expect(data.pickVersion).toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=a ranked list holding an IPv6 receiver (keyed bare, as parseReceiver gives it) keeps its context; fails_when=the candidate check refuses colons in the host again; why_new=edge-case fixes (IPv6 keys); seam=none; no_claim=that IPv6 receivers appear on the list
+  it("keeps context whose list holds an IPv6 receiver", async () => {
+    const candidates = ["kiwi.example.org:8073", "2001:db8::1:8073"];
+    const { data, warn } = await submit({ ...valid, pick: { ...pick, candidates } });
+    expect(data).toMatchObject({ candidates });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=the beacon slot bound applies only to beacon answers: a broadcast answer that also carries a slot keeps context picked long after it; fails_when=pickChecks reads slotStartMs for non-beacon reports; why_new=#73 proposed test 5; seam=fake clock; no_claim=none beyond protects
+  it("doesn't hold a broadcast answer's context to a slot it carries", async () => {
+    const { data, warn } = await submit({ ...valid, slotStartMs: NOON - 180_000, pick });
+    expect(data).toMatchObject(stored);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   describe("about a beacon", () => {
     const SLOT = NOON - 180_000;
     const beacon = {
@@ -441,18 +473,28 @@ describe("reports.submit with Pick best's context (#61)", () => {
       cache.broadcasts = [];
     });
 
-    // Value: protects=a beacon's context counts only if Pick best chose before the slot asked about could still be heard (slot + 3 s), including a Listen early in the beacon's own turn, so the replay keeps those picks and never credits a later one; fails_when=the bound is the slot start (drops early-turn picks) or missing/off by one; why_new=final-round review (specialist testing); seam=fake clock; no_claim=the page's own clock offset
-    it("keeps context picked before the asked slot could be heard, drops it from slot + 3 s", async () => {
-      const before = await submit({ ...beacon, pick: { ...pick, freqKhz: 14_100, pickedAtMs: SLOT - 8_500 } });
+    // Value: protects=a beacon's context counts only if beacon Listen chose before the slot asked about could still be heard (slot + 1.5 s: 7 s heard after audio + 1.5 s latency), including a Listen early in the beacon's own turn, so the replay keeps those picks and never credits a later one; fails_when=the bound is the slot start (drops early-turn picks), ignores the stream latency, or is off by one; why_new=final-round review, tightened in the edge-case fixes; seam=fake clock; no_claim=the page's own clock offset
+    it("keeps context picked before the asked slot could be heard, drops it from slot + 1.5 s", async () => {
+      const at = (pickedAtMs: number) => ({ ...pick, pickSource: "beacon" as const, freqKhz: 14_100, pickedAtMs });
+      expect(PICK_IN_SLOT_MS).toBe(1_500);
+      const before = await submit({ ...beacon, pick: at(SLOT - 8_500) });
       expect(before.data).toMatchObject({ pickedAtMs: BigInt(SLOT - 8_500), slotStartMs: BigInt(SLOT) });
       // Listen pressed 1 s into the beacon's turn, and that turn is the one asked about.
-      const early = await submit({ ...beacon, pick: { ...pick, freqKhz: 14_100, pickedAtMs: SLOT + 1_000 } });
+      const early = await submit({ ...beacon, pick: at(SLOT + 1_000) });
       expect(early.data).toMatchObject({ pickedAtMs: BigInt(SLOT + 1_000) });
-      const last = await submit({ ...beacon, pick: { ...pick, freqKhz: 14_100, pickedAtMs: SLOT + PICK_IN_SLOT_MS - 1 } });
+      const last = await submit({ ...beacon, pick: at(SLOT + PICK_IN_SLOT_MS - 1) });
       expect(last.data).toMatchObject({ pickedAtMs: BigInt(SLOT + PICK_IN_SLOT_MS - 1) });
-      const late = await submit({ ...beacon, pick: { ...pick, freqKhz: 14_100, pickedAtMs: SLOT + PICK_IN_SLOT_MS } });
+      const late = await submit({ ...beacon, pick: at(SLOT + PICK_IN_SLOT_MS) });
       expect(late.data).not.toHaveProperty("pickedAtMs");
       expect(late.data).toMatchObject({ slotStartMs: BigInt(SLOT) });
+    });
+
+    // Value: protects=a beacon answer keeps only beacon Listen's context, since only beacon Listen leads to a beacon question; fails_when=pickChecks stops comparing the source with the report kind; why_new=edge-case fixes (source vs kind); seam=console.warn spied; no_claim=none beyond protects
+    it("drops a beacon answer's context from any other button, keeping the answer", async () => {
+      const { data, warn } = await submit({ ...beacon, pick: { ...pick, pickSource: "drawer", freqKhz: 14_100, pickedAtMs: SLOT - 8_500 } });
+      expect(data).not.toHaveProperty("pickedAtMs");
+      expect(data).toMatchObject({ txKind: "beacon", slotStartMs: BigInt(SLOT) });
+      expect(warn).toHaveBeenCalledTimes(1);
     });
   });
 });

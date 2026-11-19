@@ -88,30 +88,45 @@
 **Priority:** P3
 **Depends on:** #61 replay passing; #69 login (RBN half only)
 
-### Pick context edge cases (#61)
+### Pick context edge cases, round 2 (#61)
 
-**What:** Close the rare cases where a reception report's Pick best context is dropped or mislabelled, before the #61 replay reads that data. The answer itself is never lost in any of them.
+**What:** Close the rare pick-context cases PR #74's reviews noted. None of them loses an answer, and most need a forged or broken page.
 
-**Why:** The owner capped the PR #73 review rounds so collection could start (2026-11-18). Every item below was noted, not fixed. Each one only drops or mislabels the optional pick columns.
+**Why:** Clean data matters before the #61 replay reads it. Under the owner's cap on review rounds these were noted, not fixed.
 
-**Context:** The noted items:
-- A question left up after Stop or an error picks up a later run's context for the same receiver, even when that run is on another frequency. The fix is to compare the live `pickedFor()` frequency with the snapshot's.
-- List rows whose hosts differ only by case become duplicate candidates, so the whole context is dropped. The fix is to dedupe on the lowercased key.
-- A run that runs out of receivers with nothing to go back to leaves `picked` set.
-- A radio-side tuning correction drops context without logging it.
-- The retry timer keeps the first attempt's pick time (owner ruling: keep).
-- IPv6 keys are dropped.
-- A failed non-beacon start over-drops.
-- One bad candidate key drops the whole context.
-- The beacon bound is 1.5 s looser than it needs to be.
-- Candidate ports 0 and above 65535 pass the check.
-- pickSource isn't checked against the report kind.
-- The server-clock offset goes stale after the machine sleeps or the clock changes (`server-clock.ts`).
-- The listen, link and better source labels and the promptPick frequency guard have no tests.
+**Context:**
+- A beacon Listen while the receiver list hasn't loaded never reaches `start()`, so an earlier beacon's same-band choice survives. The fix is to clear the hook's choice in `listenToBeacon` when no run starts.
+- Moving the dial away and back, then starting a new run that re-picks the same receiver, still sends the question's old snapshot. The fix is to revoke the snapshot once `picked` was cleared after the question appeared, for example with a generation counter.
+- Candidate keys are checked as raw strings:
+  - `host:080` and `host:80`, or `host.:80` and `host:80`, pass as different receivers.
+  - The IPv6 alternative accepts non-addresses and keys with no real port.
+  - The fix is to parse and normalize `host:port`, then dedupe.
+- **For the replay:** `pickVersion` null means "no version sent", not "PR #73's rules". Rows saved after PR #74's deploy (from old tabs) passed the new server checks, and a rollback would store version 2 context as null. Split null rows by `createdAt` against that deploy time.
+- `version` has no test for values below 2.
 
 **Effort:** S
 **Priority:** P2
 **Depends on:** nothing; do before the #61 replay's count gate
+
+### Re-measure the server clock after a jump
+
+**What:** Refresh the page's server-clock offset (`apps/web/src/lib/server-clock.ts`) after the browser's clock jumps: sleep and wake, a manual change, or an NTP step. Today it is measured once per visit.
+
+**Why:** After a jump, beacon slot math, the beacon strip and Pick best's pick times stay off for the rest of the visit. A beacon question can then be skipped or asked about a turn the listener didn't hear well, and a report's pick context can be dropped.
+
+**Context:** PR #74 tried a simple version and pulled it (owner, 2026-11-19). That version replaced the offset whenever a quick response (round trip under 1 s) moved it by more than 2 s. Its red-team review found two problems:
+- **It also fires on ordinary loads.** The first offset can come from a slow response (up to 5 s round trip, so up to about 3 s off), and the next quick response then moves it mid-visit.
+- **The strip and the question split.** After a move, the beacon strip follows the new offset while the planned beacon question stays on the old one, so the line can wrongly say "no question this time".
+
+A design that works should:
+- Let a quicker measurement replace a slower one at once, so load-time error is fixed before the listener acts.
+- Keep the 2 s rule only between quick measurements.
+- Have `use-reception-prompt` re-plan, or shift its audio start and asked slot, when the offset changes.
+- Re-check that a report's pick time and audio start sit on one offset.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** nothing
 
 ### Pick best follow-ups from the design-pass review
 
@@ -262,6 +277,29 @@
 
 
 ## Completed
+
+### Pick context edge cases (#61)
+
+**What:** Close the rare cases where a reception report's Pick best context was dropped or mislabelled, before the #61 replay reads that data. The answer itself was never lost in any of them.
+
+**Completed:** fix/pick-context-edges (2026-11-19). How each item closed:
+- **A stale question:** an answer now sends its snapshot only while the hook's choice for that receiver is on the snapshot's frequency.
+- **A run that runs out of receivers:** it now clears its choice.
+- **A failed start:** it clears the old choice only for beacon Listen; a failed Listen, link or drawer start keeps the playing receiver's still-valid choice.
+- **Server checks:**
+  - It accepts bare IPv6 candidate keys.
+  - It accepts only candidate ports 1 to 65535.
+  - It requires beacon context on a beacon answer and no beacon context on any other answer.
+  - Its beacon bound is now slot start + 1.5 s, which includes the stream latency.
+- **The server-clock offset:** not fixed here. Re-measuring was tried and pulled (owner), and it is now its own TODO, "Re-measure the server clock after a jump".
+- **Tests:** the source-label and frequency tests were added.
+- **Versions:** each answer now stores `pickVersion` (2), so the replay can tell these answers from PR #73's, which have none, including answers from tabs loaded before the deploy (owner).
+
+**Closed without code:**
+- The retry pick time: the owner ruled to keep it.
+- One bad key drops the whole context: the owner chose to keep this, since dropping one key would shift rankPos.
+- The tuning-correction drop: correct by design (owner).
+- Case-variant hosts: these can't happen, because `new URL()` lowercases list hostnames.
 
 ### Refresh the bundled EiBi schedule each season
 

@@ -1653,6 +1653,57 @@ describe("ListenPage", () => {
       expect(pick).toMatchObject({ pickSource: "drawer", pickedAtMs: firstPickAt });
     });
 
+    // Value: protects=a question left up while a later run picks the same receiver on another frequency sends no context, since that run's choice doesn't vouch for the snapshot; fails_when=answerReception checks only that the hook holds some choice for the receiver, not one on the snapshot's frequency; why_new=edge-case fixes (Codex adversarial, #73 run 5); seam=useRadio, picker and useSubmitReport mocked; no_claim=the server's checks (reports.test)
+    it("sends no pick context once a run on another frequency picked the same receiver", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
+      const view = render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 9_580, mode: "am" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(screen.getByRole("button", { name: "Heard" })).toBeTruthy();
+      // The dial moves and a new run picks the same receiver there, while the question is still up.
+      act(() => fireEvent.keyDown(screen.getByRole("slider", { name: "Tuning dial" }), { key: "ArrowUp" }));
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      expect(submitReport).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 9_580 }), "heard", "", undefined);
+    });
+
+    // Value: protects=a blank Listen's run is labelled "listen" on the answer; fails_when=the Listen call site passes another source or none; why_new=#73 proposed test 2; seam=useRadio and useSubmitReport mocked, list hook mocked; no_claim=the link path (same startPickBest(from) call)
+    it("labels the context of a blank Listen's run", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
+      receiverList.data = { receivers: [listed, { ...backup, snr: 10 }] };
+      const view = render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 9_580, mode: "am" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(60_000));
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      const [, , , pick] = submitReport.mock.lastCall!;
+      expect(pick).toMatchObject({ pickSource: "listen", rankPos: 0, freqKhz: 9_580 });
+    });
+
+    // Value: protects=a switch to the offered receiver is labelled "better" with that receiver first, so the replay can leave hand-ordered runs out; fails_when=the offer path passes another source; why_new=#73 proposed test 3; seam=useRadio and useSubmitReport mocked, list hook mocked; no_claim=the offer's own rule (better-receiver tests)
+    it("labels the context of a switch to a better receiver", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
+      // K1VL stops short of 9,580 kHz, so Backup is offered.
+      receiverList.data = { receivers: [{ ...listed, maxKhz: 9_000 }, backup] };
+      savePin({ host: listed.host, port: listed.port, fromList: true, label: "K1VL" });
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 9_580, mode: "am" };
+      const view = render(<ListenPage />);
+      act(() => vi.advanceTimersByTime(1_500));
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Switch to Backup" })));
+      radio.status = { state: "listening", host: backup.host, port: backup.port, freqKhz: 9_580, mode: "am" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(60_000));
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      const [, , , pick] = submitReport.mock.lastCall!;
+      expect(pick).toMatchObject({ pickSource: "better", rankPos: 0, candidates: [`${backup.host}:${backup.port}`] });
+    });
+
     // Value: protects=the page asks only about a receiver on the public list it was served, since the server drops reports about any other; fails_when=the page passes onList as always true, or reads it from something other than the served list; why_new=PR #63 review; seam=receiver list hook mocked; no_claim=the server's own check (reports.test)
     it("asks nothing about a receiver typed in that isn't on the list", () => {
       localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));

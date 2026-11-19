@@ -239,10 +239,12 @@ export function usePickBest(
    */
   const start = useCallback(
     (covering: Receiver[], known: readonly Receiver[] = covering, run?: PickRun): boolean => {
-      // A new attempt supersedes how the last run chose, even if this one never
-      // tunes anything: a failed beacon Listen leaves the old receiver playing
-      // on a band where another beacon is now asked about.
-      picked.current = null;
+      // A beacon Listen that tunes nothing still ends the last run's claim: the
+      // old receiver keeps playing on a band where another beacon is now asked
+      // about. Any other run that can't start leaves the playing receiver's
+      // choice standing; a dial move drops it anyway (forgetOffFrequency), and
+      // a run that does start replaces it.
+      if (run?.source === "beacon") picked.current = null;
       if (!covering.length) {
         finish("No listed receiver covers this frequency.");
         return false;
@@ -381,6 +383,8 @@ export function usePickBest(
           ? "Tried 1 receiver and it didn't work."
           : `Tried ${c.tried.length} receivers and none worked.`;
       if (goBack(c, summary)) return;
+      // Out of receivers and nowhere to go back to: the last one tried refused, so nothing was chosen.
+      picked.current = null;
       return finish(`${summary} Pick one from the list.`);
     }
     c.tried.push(next);
