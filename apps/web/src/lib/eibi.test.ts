@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import snapshot from "@/server/eibi-snapshot.json";
 import {
   type Broadcast,
+  forPage,
   languageNames,
   onAirAt,
   onDay,
@@ -29,6 +30,34 @@ const b = (over: Partial<Broadcast>): Broadcast => ({
 });
 
 describe("EiBi schedule", () => {
+  // Value: protects=each parsed row keeps its country (ITU column) and site key from Remarks (own country, "/ABC-x" relay, blank as the country, non-codes as none), and the page's copy drops both; fails_when=a relay site is keyed to the station's country, or site data reaches the page; why_new=#72 sites; seam=none; no_claim=the README knowing the key
+  it("keeps each row's country and transmitter site, for the server only", () => {
+    const parsed = parseEibi(
+      csv(
+        "9580;0000-2400;;KOR;KBS World Radio;E;NAm;k;1;;",
+        "9600;0000-2400;;G;BBC;E;Eu;/RUS-s;1;;",
+        "9610;0000-2400;;TWN;Sound of Hope;M;CHN;;1;;",
+        "9620;0000-2400;;USA;Unknown note;E;NAm;[0923];1;;",
+      ),
+      "b26",
+    );
+    expect(parsed.map((p) => [p.country, p.site])).toEqual([
+      ["KOR", "KOR-k"],
+      ["G", "RUS-s"],
+      ["TWN", "TWN"],
+      ["USA", undefined],
+    ]);
+    expect(forPage(parsed[1]!)).toEqual({
+      khz: 9600,
+      start: 0,
+      end: 1440,
+      days: "",
+      station: "BBC",
+      lang: "E",
+      target: "Eu",
+    });
+  });
+
   // Value: protects=the season names EiBi publishes under switch on the last Sundays of March and October, and January to March belongs to the winter that began the year before; fails_when=the server fetches a file that doesn't exist (wrong letter or year) around a switch; why_new=station names; seam=none; no_claim=EiBi publishing on time
   it("names the season by EiBi's dates", () => {
     expect(seasonFor(at("2026-11-10T00:00:00Z"))).toBe("b26");
@@ -73,6 +102,8 @@ describe("EiBi schedule", () => {
       station: "Voice of Korea",
       lang: "J",
       target: "J",
+      country: "KRE",
+      site: "KRE-k",
     });
     expect(parsed[2]).toMatchObject({ from: "2810", to: "3012" });
     expect(parsed[3]).toMatchObject({ to: "3110" });
