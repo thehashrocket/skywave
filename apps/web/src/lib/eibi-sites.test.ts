@@ -87,13 +87,14 @@ describe("EiBi transmitter sites", () => {
     expect(sitesToJson(sites)).toEqual(snapshot.sites);
   });
 
-  // Value: protects=a schedule row's Remarks become the README's keys: a plain code in the station's country, "/ABC" and "/ABC-x" in the host country, blank as the country itself, and anything else as no key; fails_when=a relay site is looked up in the station's country or a remark is misread as a code; why_new=#72 site keys; seam=none; no_claim=none beyond protects
+  // Value: protects=a schedule row's Remarks become the README's keys: a plain code in the station's country (also written "-x", as on 4346 kHz NMC Fax "-pr" in b26), "/ABC" and "/ABC-x" in the host country, blank as the country itself, and anything else as no key; fails_when=a relay site is looked up in the station's country or a remark is misread as a code; why_new=#72 site keys; seam=none; no_claim=none beyond protects
   it("keys a schedule row's site", () => {
     expect(siteKey("RUS", "s")).toBe("RUS-s");
     expect(siteKey("G", "/RUS-s")).toBe("RUS-s");
     expect(siteKey("TWN", "/UZB")).toBe("UZB");
     expect(siteKey("TWN", " ")).toBe("TWN");
     expect(siteKey("CHN", "B")).toBe("CHN-B");
+    expect(siteKey("USA", "-pr")).toBe("USA-pr");
     expect(siteKey("USA", "[0923]")).toBeUndefined();
   });
 

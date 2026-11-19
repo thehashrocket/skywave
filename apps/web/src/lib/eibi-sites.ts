@@ -111,16 +111,18 @@ export function parseSites(readme: string, previous?: SiteTable): SiteTable {
 
 /**
  * A schedule row's site key from its ITU (station country) and Remarks
- * fields: "s" is a site in the station's own country ("RUS-s"), "/ABC" or
- * "/ABC-s" one in host country ABC, and a blank the country's default site
- * if it has one. Undefined when Remarks isn't a site code.
+ * fields: "s" is a site in the station's own country ("RUS-s"; EiBi
+ * occasionally writes it "-s"), "/ABC" or "/ABC-s" one in host country ABC,
+ * and a blank the country's default site if it has one. Undefined when
+ * Remarks isn't a site code.
  */
 export function siteKey(itu: string, remark: string): string | undefined {
   const r = remark.trim();
   if (!r) return itu || undefined;
   const host = /^\/([A-Z]{1,3})(?:-([A-Za-z0-9]{1,3}))?$/.exec(r);
   if (host) return host[2] ? `${host[1]}-${host[2]}` : host[1];
-  return /^[A-Za-z0-9]{1,3}$/.test(r) && itu ? `${itu}-${r}` : undefined;
+  const own = /^-?([A-Za-z0-9]{1,3})$/.exec(r);
+  return own && itu ? `${itu}-${own[1]}` : undefined;
 }
 
 /**
