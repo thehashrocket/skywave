@@ -396,6 +396,14 @@ describe("reports.submit with Pick best's context (#61)", () => {
     ["malformed: a candidate on port 0", { candidates: ["kiwi.example.org:8073", "other.example:0"] }],
     ["malformed: a candidate past the last port", { candidates: ["kiwi.example.org:8073", "other.example:99999"] }],
     ["malformed: a version this server doesn't know", { version: PICK_CONTEXT_VERSION + 1 }],
+    ["malformed: a version before the first numbered rules", { version: 1 }],
+    ["malformed: version 0", { version: 0 }],
+    ["malformed: a candidate with a padded port", { candidates: ["kiwi.example.org:8073", "other.example:08073"] }],
+    ["malformed: a candidate with a trailing dot", { candidates: ["kiwi.example.org:8073", "other.example.:8073"] }],
+    ["malformed: a candidate in capitals", { candidates: ["kiwi.example.org:8073", "Other.Example:8073"] }],
+    ["malformed: an IPv6 candidate written out in full", { candidates: ["kiwi.example.org:8073", "2001:0db8::1:8073"] }],
+    ["malformed: a candidate that only looks like IPv6", { candidates: ["kiwi.example.org:8073", "::::::8073"] }],
+    ["malformed: a candidate with no port", { candidates: ["kiwi.example.org:8073", "other.example"] }],
     ["malformed: a latitude without a longitude", { lon: undefined }],
     [
       "a rank past the head for a receiver the head names",
@@ -440,6 +448,14 @@ describe("reports.submit with Pick best's context (#61)", () => {
     const { pickVersion: __, ...rest } = stored;
     expect(data).toMatchObject(rest);
     expect(data.pickVersion).toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=candidate ports at both ends of the range are real receiver ports and keep the context; fails_when=the port check is off by one at 1 or 65535; why_new=round-2 edge cases (canonical keys); seam=none; no_claim=none beyond protects
+  it("keeps context whose candidates use ports 1 and 65535", async () => {
+    const candidates = ["kiwi.example.org:8073", "low.example:1", "high.example:65535"];
+    const { data, warn } = await submit({ ...valid, pick: { ...pick, candidates } });
+    expect(data).toMatchObject({ candidates });
     expect(warn).not.toHaveBeenCalled();
   });
 

@@ -508,6 +508,24 @@ describe("usePickBest", () => {
       expect(hook.result.current.pickedFor("a", 8073)).toMatchObject({ rankPos: 0 });
     });
 
+    // Value: protects=the drop count rises when a choice is dropped (here by forget, as a beacon Listen with no list does) and not when a new run replaces it, so an answer can tell a snapshot was revoked even if the same receiver is picked again; fails_when=forget leaves the choice, the count misses a drop, or counts a replacement; why_new=round-2 edge cases (away-and-back re-pick, no-list beacon Listen); seam=none; no_claim=the page compares it (page test)
+    it("counts a dropped choice, not a replaced one, and forgets on request", () => {
+      const { hook, report } = setup();
+      act(() => hook.result.current.start([rx("a")], undefined, run));
+      report({ state: "listening", host: "a", port: 8073 });
+      act(() => vi.advanceTimersByTime(WATCH_MS));
+      const before = hook.result.current.dropCount();
+      // A new run that picks the same receiver replaces the choice: no drop.
+      act(() => hook.result.current.start([rx("a")], undefined, run));
+      expect(hook.result.current.dropCount()).toBe(before);
+      act(() => hook.result.current.forget());
+      expect(hook.result.current.pickedFor("a", 8073)).toBeNull();
+      expect(hook.result.current.dropCount()).toBe(before + 1);
+      // Nothing left to drop: no count.
+      act(() => hook.result.current.forget());
+      expect(hook.result.current.dropCount()).toBe(before + 1);
+    });
+
     // Value: protects=a caller that doesn't say what started the run stores no half-filled context; fails_when=start records context with an undefined source; why_new=run is optional on start; seam=none; no_claim=none beyond protects
     it("records nothing for a run started without a source", () => {
       const { hook } = setup();

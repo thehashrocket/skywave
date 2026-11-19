@@ -171,15 +171,25 @@ export function usePickBest(
    * a hand pick (cancel) or the way back to the old receiver replaces or drops it.
    */
   const picked = useRef<{ key: string; context: PickContext } | null>(null);
+  /**
+   * How many times a choice has been dropped. A question that snapshotted a
+   * choice compares this when answered: any drop in between (a hand pick, a
+   * dial move, a failed or abandoned run) revokes the snapshot, even if a later
+   * run then picks the same receiver again on the same frequency.
+   */
+  const drops = useRef(0);
+  const drop = useCallback(() => {
+    if (picked.current) drops.current++;
+    picked.current = null;
+  }, []);
   /** Tunes a candidate of `c` and notes how it was chosen. */
   const tuneCandidate = useCallback(
     (c: Chain, r: Receiver) => {
-      picked.current = c.run
-        ? { key: pickKey(r), context: pickContext(c.ranked, r, c.run.source, c.run.freqKhz, serverNow()) }
-        : null;
+      if (c.run) picked.current = { key: pickKey(r), context: pickContext(c.ranked, r, c.run.source, c.run.freqKhz, serverNow()) };
+      else drop();
       tune(r, true);
     },
-    [tune],
+    [tune, drop],
   );
   /**
    * Forgets how the last run chose once the dial is somewhere it didn't rank
@@ -187,8 +197,8 @@ export function usePickBest(
    * its pick time would be long before the listening an answer is about.
    */
   const forgetOffFrequency = useCallback((freqKhz: number) => {
-    if (picked.current && picked.current.context.freqKhz !== freqKhz) picked.current = null;
-  }, []);
+    if (picked.current && picked.current.context.freqKhz !== freqKhz) drop();
+  }, [drop]);
   /** How a run chose the receiver at host:port, or null if no run chose it (a hand pick, the way back). */
   const pickedFor = useCallback((host: string, port: number): PickContext | null => {
     const p = picked.current;
@@ -223,13 +233,13 @@ export function usePickBest(
       clearTimeout(c.retryTimer);
       c.returning = { receiver: back.receiver, why };
       // The receiver it goes back to wasn't chosen by this run (and maybe not by any).
-      picked.current = null;
+      drop();
       setRunning(false);
       setNote(`${why} Going back to ${back.receiver.name}…`);
       tune(back.receiver, back.fromList);
       return true;
     },
-    [tune],
+    [tune, drop],
   );
 
   /**
@@ -244,7 +254,7 @@ export function usePickBest(
       // about. Any other run that can't start leaves the playing receiver's
       // choice standing; a dial move drops it anyway (forgetOffFrequency), and
       // a run that does start replaces it.
-      if (run?.source === "beacon") picked.current = null;
+      if (run?.source === "beacon") drop();
       if (!covering.length) {
         finish("No listed receiver covers this frequency.");
         return false;
@@ -278,14 +288,14 @@ export function usePickBest(
       tuneCandidate(c, first);
       return true;
     },
-    [finish, tuneCandidate, isRefused],
+    [finish, tuneCandidate, isRefused, drop],
   );
 
   /** The user chose something else (a row, Listen): just stop following, and forget how the last run chose. */
   const cancel = useCallback(() => {
-    picked.current = null;
+    drop();
     finish();
-  }, [finish]);
+  }, [finish, drop]);
 
   /**
    * The user pressed Stop picking: stop, and don't leave them in silence.
@@ -302,10 +312,10 @@ export function usePickBest(
     }
     if (c && goBack(c, "Stopped.")) return true;
     // Abandoned mid-run: a tune still in flight mustn't count as its choice.
-    if (c) picked.current = null;
+    if (c) drop();
     finish();
     return false;
-  }, [finish, goBack]);
+  }, [finish, goBack, drop]);
 
   useEffect(() => {
     // A coded refusal is the receiver's own answer, however it was dialed; a
@@ -363,7 +373,7 @@ export function usePickBest(
     if (!status.code) {
       if (!status.retryAfterMs || c.retried) {
         // The run ends on the service's failure, not on a choice that played.
-        picked.current = null;
+        drop();
         return finish();
       }
       c.retried = true;
@@ -384,14 +394,17 @@ export function usePickBest(
           : `Tried ${c.tried.length} receivers and none worked.`;
       if (goBack(c, summary)) return;
       // Out of receivers and nowhere to go back to: the last one tried refused, so nothing was chosen.
-      picked.current = null;
+      drop();
       return finish(`${summary} Pick one from the list.`);
     }
     c.tried.push(next);
     c.retried = false;
     setNote(`${current.name} ${WHY_SKIPPED[status.code]}; trying ${next.name}…`);
     tuneCandidate(c, next);
-  }, [status, tune, tuneCandidate, finish, goBack]);
+  }, [status, tune, tuneCandidate, finish, goBack, drop]);
 
-  return { start, cancel, stop, note, running, settled, isRefused, pickedFor, forgetOffFrequency };
+  /** How many choices have been dropped so far (see `drops`). */
+  const dropCount = useCallback(() => drops.current, []);
+
+  return { start, cancel, stop, note, running, settled, isRefused, pickedFor, forgetOffFrequency, forget: drop, dropCount };
 }

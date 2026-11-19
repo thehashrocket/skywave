@@ -88,26 +88,6 @@
 **Priority:** P3
 **Depends on:** #61 replay passing; #69 login (RBN half only)
 
-### Pick context edge cases, round 2 (#61)
-
-**What:** Close the rare pick-context cases PR #74's reviews noted. None of them loses an answer, and most need a forged or broken page.
-
-**Why:** Clean data matters before the #61 replay reads it. Under the owner's cap on review rounds these were noted, not fixed.
-
-**Context:**
-- A beacon Listen while the receiver list hasn't loaded never reaches `start()`, so an earlier beacon's same-band choice survives. The fix is to clear the hook's choice in `listenToBeacon` when no run starts.
-- Moving the dial away and back, then starting a new run that re-picks the same receiver, still sends the question's old snapshot. The fix is to revoke the snapshot once `picked` was cleared after the question appeared, for example with a generation counter.
-- Candidate keys are checked as raw strings:
-  - `host:080` and `host:80`, or `host.:80` and `host:80`, pass as different receivers.
-  - The IPv6 alternative accepts non-addresses and keys with no real port.
-  - The fix is to parse and normalize `host:port`, then dedupe.
-- **For the replay:** `pickVersion` null means "no version sent", not "PR #73's rules". Rows saved after PR #74's deploy (from old tabs) passed the new server checks, and a rollback would store version 2 context as null. Split null rows by `createdAt` against that deploy time.
-- `version` has no test for values below 2.
-
-**Effort:** S
-**Priority:** P2
-**Depends on:** nothing; do before the #61 replay's count gate
-
 ### Re-measure the server clock after a jump
 
 **What:** Refresh the page's server-clock offset (`apps/web/src/lib/server-clock.ts`) after the browser's clock jumps: sleep and wake, a manual change, or an NTP step. Today it is measured once per visit.
@@ -277,6 +257,17 @@ A design that works should:
 
 
 ## Completed
+
+### Pick context edge cases, round 2 (#61)
+
+**What:** Close the rare pick-context cases PR #74's reviews noted. None of them lost an answer.
+
+**Completed:** fix/pick-context-round2 (2026-11-19). How each item closed:
+- **No-list beacon Listen:** a beacon Listen while the receiver list is missing now drops the earlier choice (`forget`).
+- **Away-and-back re-pick:** the hook counts dropped choices. An answer sends its question's snapshot only if nothing was dropped since the question appeared, so a dial move away and back followed by a re-pick no longer revives it.
+- **Candidate keys:** the server accepts a candidate only in its canonical spelling (`candidateKeyOk`): lowercase, no trailing dot, compressed IPv6, a port from 1 to 65535 with no leading zero, and unchanged by a URL round trip. Two spellings of one receiver can no longer pass as two.
+- **The `pickVersion` null meaning:** the schema comment now says to split null rows by `createdAt` around PR #74's deploy (2026-11-19 02:52:57 UTC, also posted on #61).
+- **Version 0 and 1:** both are tested and drop the context.
 
 ### Pick context edge cases (#61)
 
