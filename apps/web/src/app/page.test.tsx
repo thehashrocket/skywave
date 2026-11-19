@@ -2584,7 +2584,9 @@ describe("ListenPage", () => {
       openStrip();
       const off = screen.getByRole("button", { name: "Listen to YV5B on 18.110 MHz" }) as HTMLButtonElement;
       expect(off.closest("tr")!.getAttribute("data-off")).toBe("true");
-      expect(off.closest("tr")!.textContent).toContain("Listed off the air. The beacon is off the air temporarily.");
+      expect(off.closest("tr")!.textContent).toContain(
+        "Listed off the air. The beacon is off the air temporarily. Heard it anyway? Answer the question after its turn; NCDXF wants to know.",
+      );
       expect(document.getElementById(off.getAttribute("aria-describedby")!)!.textContent).toContain(
         "Listed off the air",
       );

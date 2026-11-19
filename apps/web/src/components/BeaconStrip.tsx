@@ -184,7 +184,8 @@ export function BeaconStrip({
                         {picked && <span className="beacons-picked"> · picked</span>}
                         {isOff && (
                           <span className="beacons-off" id={`beacons-off-${b}`}>
-                            Listed off the air{note ? `. ${note}` : " by NCDXF."}
+                            Listed off the air{note ? `. ${note}` : " by NCDXF."} Heard it anyway? Answer the
+                            question after its turn; NCDXF wants to know.
                           </span>
                         )}
                       </td>
