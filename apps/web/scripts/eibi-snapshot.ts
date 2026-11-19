@@ -23,13 +23,24 @@ async function latin1(url: string, fetchImpl: typeof fetch) {
 /**
  * A season's file and the site table as the snapshot's JSON, each checked to
  * be what it says; the site table also against `previous`, the bundled one it
- * replaces.
+ * replaces. A README that can't be fetched or is refused keeps `previous`, so
+ * it never holds up the season's schedule (the server's offline fallback);
+ * `sitesError` says why. With no `previous` there's nothing to keep, and it throws.
  */
 export async function snapshot(season: string, fetchImpl: typeof fetch = fetch, previous?: SiteTable) {
   const csv = await latin1(scheduleUrl(season), fetchImpl);
   const count = parseEibi(csv, season).length; // throws if it isn't the schedule
-  const sites = parseSites(await latin1(SITES_URL, fetchImpl), previous); // throws if it isn't the whole table
-  return { json: JSON.stringify({ season, csv, sites: sitesToJson(sites) }) + "\n", count, siteCount: sites.size };
+  let sites: SiteTable;
+  let sitesError: string | undefined;
+  try {
+    sites = parseSites(await latin1(SITES_URL, fetchImpl), previous); // throws if it isn't the whole table
+  } catch (error) {
+    if (!previous) throw error;
+    sites = previous;
+    sitesError = error instanceof Error ? error.message : String(error);
+  }
+  const json = JSON.stringify({ season, csv, sites: sitesToJson(sites) }) + "\n";
+  return { json, count, siteCount: sites.size, sitesError };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -37,7 +48,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const file = new URL("../src/server/eibi-snapshot.json", import.meta.url);
   // The bundled table is the last good one; a snapshot from before #72 has none.
   const bundled = JSON.parse(readFileSync(file, "utf8")).sites;
-  const { json, count, siteCount } = await snapshot(season, fetch, bundled ? sitesFromJson(bundled) : undefined);
+  const { json, count, siteCount, sitesError } = await snapshot(
+    season,
+    fetch,
+    bundled ? sitesFromJson(bundled) : undefined,
+  );
+  if (sitesError) console.warn(`Kept the bundled transmitter sites: ${sitesError}`);
   writeFileSync(file, json);
   console.log(`Saved ${season}: ${count} broadcasts, ${siteCount} transmitter sites.`);
 }
