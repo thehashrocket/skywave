@@ -88,6 +88,30 @@
 **Priority:** P3
 **Depends on:** #61 replay passing; #69 login (RBN half only)
 
+### Rank receivers for a broadcaster by transmitter site (#72)
+
+**What:** Order Pick best's receivers for an EiBi broadcast by where they sit relative to its transmitter site, the way `rankForBeacon` does for beacons (`apps/web/src/lib/beacon-rank.ts:67`): past the skip zone, within one or two hops, sunlit midpoint.
+
+**Why:** #72 gives each broadcast a transmitter site, but only the server uses it (to save `txSites` on answers). Broadcast listening still picks receivers by listed SNR alone.
+
+**Context:** Named as a later use in issue #72. The #72 eng review (2026-11-19, D7 and D13) keeps sites and the server-only `ListedBroadcast` type off the page, so this needs site coordinates added to the page payload on purpose. Broadcast sites are often a group or unknown (about 25% of b26 listings have no coordinates; see D8 and D12), so receivers for those stations keep today's order. Start only if the #61 replay shows that distance and daylight predict "heard".
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** #72 shipped; #61 replay verdict
+
+### Harden the EiBi site table refresh (#72 follow-up)
+
+**What:** Four small fixes from #72's /ship review, noted rather than fixed in that PR: (1) give `scripts/eibi-snapshot.ts`'s fetches a timeout (an `AbortSignal`, like the server's `fetchLatin1`) so a stalled README can't hang the seasonal job until GitHub's 6-hour limit; (2) when the seasonal job reruns with its PR still open, update the PR body (`gh pr edit`) so the "sites refreshed / NOT refreshed" line matches the commit it just pushed; (3) cap coordinates per site in `parseSites` (today's README has at most 6) so a malformed README can't bloat every `txSites` row; (4) fix the stale `onAirBetween` comment ("one per transmitter site").
+
+**Why:** None of these breaks anything today, but each lets a bad EiBi day quietly degrade the site data #61's replay depends on.
+
+**Context:** #72 /ship review, run 2 (2026-11-19): owner chose notes plus this one TODO under the standing "cap review rounds for optional data" rule. Other notes from that review are in the #72 PR body.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** #72 shipped
+
 ### Server clock: a backward change then a short sleep (#61)
 
 **What:** Left from the scheduled-clock /ship (owner, 2026-11-19). Set the computer's clock back by hand, then sleep for less than that change before the next measurement: the drift never reads as a forward jump, so the clock sits off by up to the sleep, reading settled, until the next scheduled measurement (5 min, or the tab shown again). Re-measure on any drift past `JUMP_MS` in either direction. Also: the Codex outside review couldn't run on that branch (the session blocked sending code out), so a Codex pass on `server-clock.ts` is still owed.
@@ -329,7 +353,7 @@
 
 ### Refresh the bundled EiBi schedule each season
 
-**What:** The `Refresh EiBi snapshot` workflow (`.github/workflows/eibi-snapshot.yml`) runs on 1 April and 1 November, a few days after EiBi's season switches, fetches the new season's file with `pnpm --filter web eibi:snapshot`, and opens a PR if `apps/web/src/server/eibi-snapshot.json` changed. It can also be run by hand from the Actions tab, with or without a season (`a27`).
+**What:** The `Refresh EiBi snapshot` workflow (`.github/workflows/eibi-snapshot.yml`) runs on 1 April and 1 November, a few days after EiBi's season switches, fetches the new season's file and EiBi's README (transmitter sites, #72) with `pnpm --filter web eibi:snapshot`, and opens a PR if `apps/web/src/server/eibi-snapshot.json` changed. It can also be run by hand from the Actions tab, with or without a season (`a27`).
 
 **Watch for:** a failed run means EiBi hadn't posted the season's file yet; run it again once it has. A PR this workflow opens doesn't start CI by itself (GitHub's rule for its own token): close and reopen it to run the checks. The repo setting "Allow GitHub Actions to create and approve pull requests" must be on. GitHub can disable the schedule in a quiet public repo; see "Check the EiBi snapshot workflow each March and October" above.
 
