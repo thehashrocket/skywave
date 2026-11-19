@@ -1,11 +1,12 @@
 name: Refresh EiBi snapshot
 
-# The bundled station schedule (apps/web/src/server/eibi-snapshot.json) is what
-# the server falls back on when eibispace.de can't be reached. EiBi's seasons
-# switch on the last Sundays of March and October; a few days after each, this
-# fetches the new season's file and opens a PR if it changed. A season file
-# that isn't up yet fails the run (and GitHub emails about it): run it again by
-# hand from the Actions tab once EiBi has posted it.
+# The bundled station schedule and transmitter-site table
+# (apps/web/src/server/eibi-snapshot.json) are what the server falls back on
+# when eibispace.de can't be reached. EiBi's seasons switch on the last Sundays
+# of March and October; a few days after each, this fetches the new season's
+# file and EiBi's README (the site table) and opens a PR if either changed. A
+# season file that isn't up yet fails the run (and GitHub emails about it): run
+# it again by hand from the Actions tab once EiBi has posted it.
 on:
   schedule:
     - cron: "0 6 1 4 *" # 1 April
@@ -57,7 +58,7 @@ jobs:
         run: |
           file=apps/web/src/server/eibi-snapshot.json
           if git diff --quiet -- "$file"; then
-            echo "The bundled schedule is already current."
+            echo "The bundled schedule and transmitter sites are already current."
             exit 0
           fi
           season=$(node -p "require('./$file').season")
@@ -66,12 +67,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -C "$branch"
           git add "$file"
-          git commit -m "chore(web): refresh the bundled EiBi schedule ($season)"
+          git commit -m "chore(web): refresh the bundled EiBi schedule and transmitter sites ($season)"
           git push --force origin "$branch"
           if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
             gh pr create --head "$branch" --base "$BASE" \
-              --title "chore(web): refresh the bundled EiBi schedule ($season)" \
-              --body "The station schedule the server falls back on when eibispace.de can't be reached, refreshed for season $season by the \`Refresh EiBi snapshot\` workflow. \`pnpm --filter web eibi:snapshot\` checked that it parses before saving it.
+              --title "chore(web): refresh the bundled EiBi schedule and transmitter sites ($season)" \
+              --body "The station schedule and transmitter-site table the server falls back on when eibispace.de can't be reached, refreshed for season $season by the \`Refresh EiBi snapshot\` workflow. \`pnpm --filter web eibi:snapshot\` checked that both parse before saving them.
 
           A PR opened by this workflow doesn't start CI on its own: close and reopen it, or push to it, to run the checks."
           fi
