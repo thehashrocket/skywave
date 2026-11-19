@@ -88,6 +88,22 @@
 **Priority:** P3
 **Depends on:** #61 replay passing; #69 login (RBN half only)
 
+### Server clock: re-measure on a schedule, not only after a forward jump (#61)
+
+**What:** Round 3's final full review (Claude and Codex, after the D3-D5 fixes) found no blocker but several Medium edges in `apps/web/src/lib/server-clock.ts` that share one root: the page re-measures only after it notices a forward jump. A re-measure every few minutes while the tab is visible (and on `visibilitychange`), adopting the measurement whenever it is off by more than its own uncertainty (about 1 s), would close most of them:
+- **Backward change, then a sleep:** a backward step over 2 s is never re-measured on purpose; a later sleep of about the same size cancels the drift and the page stays behind by the sleep, settled and silent.
+- **Error kept up to 2 s:** a re-measure within 2 s of the time shown or the old offset keeps it, so real error up to 2 s stays; `performance.now()` isn't slewed by NTP, so a long-open tab can wander by ~0.2 s/hour and saw-tooth up to ~4 s before a correction.
+- **Pick before the first measurement:** on a cold server the first tRPC responses can be too slow to measure; a Pick best choice then keeps `Date.now()` as its pick time, counted as settled.
+- **Moves while on the computer's clock:** a second change to `Date.now()` while already counting from it moves the time with no notice; the planned beacon question isn't re-planned.
+- **Slow links:** with every round trip over 1 s the page never settles and sends a HEAD every 10 s for the life of the tab, with no backoff or timeout.
+- **Retry clock:** `askedAt` isn't reset when a jump is undone without a measurement, so a second jump within 10 s waits for its first ask; and a tRPC response that is first to see a jump fires one wasted HEAD.
+
+**Why:** Version 5 pick times can be off by up to about 2 s in ordinary use, more in these rare cases; with 10 s beacon slots that can name the neighbouring beacon. The #61 replay should treat v5 `pickedAtMs` as accurate to about 2 s until this lands. None of it touches audio.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** nothing
+
 ### Server clock: edges left after round 3 (#61)
 
 **What:** Two items round 3 left out of its core set (owner, 2026-11-19), and two notes from its adversarial review:
