@@ -16,7 +16,7 @@ import { rankForBeacon } from "@/lib/beacon-rank";
 import { beaconOnBand, IBP_BANDS_KHZ, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
 import { serverClockSettled, serverNow, settleServerClock } from "@/lib/server-clock";
 import { sunPosition } from "@/lib/solar";
-import { useBeaconStatus } from "@/lib/use-beacon-status";
+import { useBeaconStatus, useRbnQuiet } from "@/lib/use-beacon-status";
 import { useServerTick } from "@/lib/use-server-tick";
 import { Waterfall } from "@/components/Waterfall";
 import { WideWaterfall } from "@/components/WideWaterfall";
@@ -554,6 +554,8 @@ export default function ListenPage() {
   // the strip and dimmed on the map. They can still be picked and asked about, so
   // a listener can report one back on the air before the list catches up (owner).
   const offBeacons = useBeaconStatus(beaconMode);
+  // And the beacons RBN's skimmers didn't spot all yesterday (#69 v2), marked the same way.
+  const rbnQuiet = useRbnQuiet(beaconMode);
   // The beacon picked with Listen on the strip, its band, and when (server
   // time): the map draws its path, the strip follows it, and it's the only
   // beacon the reception prompt asks about. It lasts until the listener
@@ -658,8 +660,12 @@ export default function ListenPage() {
     () =>
       beaconSlot === null
         ? null
-        : { atMs: beaconSlot, selected: beaconPick?.call ?? null, off: [...offBeacons.keys()] },
-    [beaconSlot, beaconPick, offBeacons],
+        : {
+            atMs: beaconSlot,
+            selected: beaconPick?.call ?? null,
+            off: [...new Set([...offBeacons.keys(), ...rbnQuiet.quiet])],
+          },
+    [beaconSlot, beaconPick, offBeacons, rbnQuiet],
   );
   // The list arriving (or coming back) answers "still loading" and "couldn't load".
   useEffect(() => {
@@ -1225,6 +1231,7 @@ export default function ListenPage() {
                 tunedBand={ibpBandIndex(freqKhz)}
                 pick={beaconPick}
                 off={offBeacons}
+                rbn={rbnQuiet}
                 audioStartMs={reception.beaconAudioStartMs}
                 askSlotMs={reception.beaconAskSlotMs}
                 questionsOff={reception.questionsOff}

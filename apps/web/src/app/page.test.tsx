@@ -125,7 +125,14 @@ const schedule: { data?: { season: string; bundled: boolean; broadcasts: Broadca
 vi.mock("@/lib/use-schedule", () => ({ useSchedule: () => schedule }));
 // NCDXF's beacons off the air (#69), as useBeaconStatus hands them to the page.
 const beaconsOff: { current: ReadonlyMap<string, string | null> } = { current: new Map() };
-vi.mock("@/lib/use-beacon-status", () => ({ useBeaconStatus: () => beaconsOff.current }));
+// And RBN's quiet beacons (#69 v2), as useRbnQuiet hands them over.
+const rbnQuiet: { current: { day: string | null; quiet: ReadonlySet<string> } } = {
+  current: { day: null, quiet: new Set() },
+};
+vi.mock("@/lib/use-beacon-status", () => ({
+  useBeaconStatus: () => beaconsOff.current,
+  useRbnQuiet: () => rbnQuiet.current,
+}));
 const submitReport = vi.fn();
 vi.mock("@/lib/use-submit-report", () => ({ useSubmitReport: () => submitReport }));
 // The radio service's measured noise floors (issue #67), as useNoise hands them to the page.
@@ -198,6 +205,7 @@ beforeEach(() => {
   schedule.data = undefined;
   noise.current = null;
   beaconsOff.current = new Map();
+  rbnQuiet.current = { day: null, quiet: new Set() };
   radio.showView.mockClear();
   radio.startScan.mockClear();
   radio.tune.mockClear();
@@ -2578,6 +2586,31 @@ describe("ListenPage", () => {
     });
 
     // Value: protects=a beacon NCDXF lists as off the air is marked in the strip ("Listed off the air" and its note, tied to its Listen for screen readers), the map is told to dim it, and its Listen still tunes it in CW so a listener can report it back on the air (owner); other rows are unmarked; fails_when=the strip ignores the official status, the mark isn't described to the Listen, the map isn't told, or Listen on an OFF beacon is blocked; why_new=issue #69 v1 (owner: ask, marked as off); seam=useBeaconStatus, MapPanel, picker and radio mocked, real BeaconStrip; no_claim=how the dimmed map looks (map style)
+    // Value: protects=a beacon RBN didn't spot all yesterday is marked in the strip ("Not spotted by RBN yesterday." and an invitation to report it, tied to its Listen), dimmed on the map with NCDXF's own, and still listenable; a beacon both off and unspotted gets both lines and one invitation; a day older than yesterday is named by date; fails_when=the RBN mark is missing, says "yesterday" for an older day, duplicates the invitation, isn't sent to the map, or blocks Listen; why_new=issue #69 v2 (owner: mark only, like v1); seam=useBeaconStatus/useRbnQuiet, MapPanel, picker and radio mocked, real BeaconStrip; no_claim=RBN's accuracy
+    it("marks a beacon RBN didn't spot, and still listens to it", () => {
+      beaconsOff.current = new Map([["YV5B", null]]);
+      rbnQuiet.current = { day: "2026-11-17", quiet: new Set(["4U1UN", "YV5B"]) };
+      const page = render(<ListenPage />);
+      openStrip();
+      const quiet = screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" });
+      expect(quiet.closest("tr")!.getAttribute("data-quiet")).toBe("true");
+      expect(document.getElementById(quiet.getAttribute("aria-describedby")!)!.textContent).toBe(
+        "Not spotted by RBN yesterday. Heard it anyway? Answer the question after its turn.",
+      );
+      const both = screen.getByRole("button", { name: "Listen to YV5B on 18.110 MHz" });
+      expect(document.getElementById(both.getAttribute("aria-describedby")!)!.textContent).toBe(
+        "Listed off the air by NCDXF. Not spotted by RBN yesterday. Heard it anyway? Answer the question after its turn; NCDXF wants to know.",
+      );
+      expect(screen.getByLabelText("map beacons off").textContent!.split(" ").sort()).toEqual(["4U1UN", "YV5B"]);
+      act(() => fireEvent.click(quiet));
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 14_100, mode: "cw" }));
+      rbnQuiet.current = { day: "2026-11-16", quiet: new Set(["4U1UN"]) };
+      page.rerender(<ListenPage />);
+      expect(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" }).closest("tr")!.textContent).toContain(
+        "Not spotted by RBN on 16 Nov.",
+      );
+    });
+
     it("marks a beacon listed off the air, and still listens to it", () => {
       beaconsOff.current = new Map([["YV5B", "The beacon is off the air temporarily."]]);
       render(<ListenPage />);
