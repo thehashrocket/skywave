@@ -8,15 +8,21 @@
  * half a second plus half the round trip: plenty for 10 s slots.
  *
  * It's kept against this page's monotonic clock (`performance.now()`), not
- * `Date.now()`, so a manual change or an NTP step of the computer's clock
+ * `Date.now()`, so setting the computer's clock back (by hand or an NTP step)
  * doesn't move the server time the page works from. Some browsers pause the
  * monotonic clock while the computer sleeps, so when the two clocks drift apart
  * by more than JUMP_MS the offset is measured again from the next quick
- * response, and replaced only if that moves it by more than REMEASURE_MS.
- * Until then, a forward drift (what a sleep looks like, and the computer's clock
- * kept time through it) counts from `Date.now()` with the last measured offset,
- * as the page did before the monotonic clock; a backward one can't be a sleep
- * and stays on the monotonic clock. Without a jump, later responses are
+ * response, asked for at once and again every REMEASURE_RETRY_MS until one
+ * comes back. Until then, a forward drift (what a sleep looks like, and the
+ * computer's clock kept time through it) counts from `Date.now()` with the last
+ * measured offset, as the page did before the monotonic clock, and goes back to
+ * the monotonic clock only when the drift falls under LEAVE_WALL_CLOCK_MS, so
+ * jitter at the edge can't flap between the two; a backward drift can't be a
+ * sleep and stays on the monotonic clock. The re-measure keeps whichever of the
+ * time shown and the old offset it agrees with within REMEASURE_MS, so a sleep
+ * doesn't move the time and a forward change by hand, even a small one, is
+ * corrected. Listeners hear of every move: the first offset, a switch between
+ * the two clocks, and a correction. Without a jump, later responses are
  * ignored: an ordinary visit's clock never moves under the beacon strip.
  */
 
@@ -45,6 +51,15 @@ export const REMEASURE_ROUND_TRIP_MS = 1_000;
 /** How far a measurement after a jump must move the offset to replace it; less is measurement error. */
 export const REMEASURE_MS = 2_000;
 
+/** Back to the monotonic clock only once the drift falls under this, half of JUMP_MS, so the edge can't flap. */
+export const LEAVE_WALL_CLOCK_MS = JUMP_MS / 2;
+
+/** A re-measure that moves the time by no more than this kept it (clock-read jitter, not a move). */
+const SAME_TIME_MS = 100;
+
+/** How often the page asks the server for its time again while counting from the computer's clock. */
+export const REMEASURE_RETRY_MS = 10_000;
+
 /**
  * How far ahead of this browser the server's clock is, in ms, from one
  * response: its Date header against the middle of the round trip. Null when
@@ -72,49 +87,113 @@ const wallLessMono = () => Date.now() - performance.now();
 let monoOffset: number | null = null;
 /** wallLessMono() when the offset was last measured. */
 let measuredAt = 0;
+/** Whether serverNow() last counted from the computer's clock (a forward jump not yet measured). */
+let onWallClock = false;
+/** Responses that measured the clock so far: the first, and each re-measure after a jump. */
+let measurements = 0;
+/** performance.now() when remeasure() last asked. */
+let askedAt = -Infinity;
 const listeners = new Set<() => void>();
 
 /** How far the computer's clock has moved ahead of the monotonic one since the offset was measured. */
 const drift = () => wallLessMono() - measuredAt;
 
+/** A forward jump not yet measured: serverNow() counts from the computer's clock (entered past JUMP_MS, left under LEAVE_WALL_CLOCK_MS). */
+const wallClockNow = () => monoOffset !== null && drift() > (onWallClock ? LEAVE_WALL_CLOCK_MS : JUMP_MS);
+
+/** Tells every listener; one that throws can't stop the rest or fail the request that measured. */
+function notify() {
+  for (const l of listeners) {
+    try {
+      l();
+    } catch (e) {
+      console.error("server-clock: listener failed", e);
+    }
+  }
+}
+
+/** Whether serverNow() has switched clocks since it last looked; records the switch. */
+function switched(): boolean {
+  const now = wallClockNow();
+  if (now === onWallClock) return false;
+  onWallClock = now;
+  return true;
+}
+
 /**
  * Records the offset from a response (`sentAt` and `receivedAt` by
- * `Date.now()`): the first usable one, and after a jump a quick one that
- * moves it by more than REMEASURE_MS.
+ * `Date.now()`): the first usable one, and after a jump a quick one, which
+ * keeps the time shown or the old offset when it agrees with one of them.
  */
 export function noteResponse(headers: { get(name: string): string | null }, sentAt: number, receivedAt: number) {
   if (monoOffset !== null) {
-    if (Math.abs(drift()) <= JUMP_MS) return;
+    if (Math.abs(drift()) <= JUMP_MS && !onWallClock) return;
     if (receivedAt - sentAt > REMEASURE_ROUND_TRIP_MS) return;
   }
   const o = offsetFromResponse(headers, sentAt, receivedAt);
   if (o === null) return;
   const next = o + wallLessMono();
-  const before = monoOffset;
-  const shown = serverNow();
+  const first = monoOffset === null;
+  // A switch to the computer's clock that nothing has noticed yet still moved the time shown.
+  const moved = switched();
+  const shown = serverNow() - performance.now();
   measuredAt = wallLessMono();
-  const replaced = before === null || Math.abs(next - before) > REMEASURE_MS;
-  if (replaced) monoOffset = next;
-  // Listeners re-plan when the offset is replaced, or when closing the jump
-  // moves the time the page showed (a forward clock change, not a sleep).
-  if (replaced || Math.abs(serverNow() - shown) > REMEASURE_MS) for (const l of listeners) l();
+  // The time shown is right after a sleep (the computer's clock kept time), the
+  // old offset after a change by hand; whichever the measurement agrees with
+  // within REMEASURE_MS stays, so leftover error never piles up across jumps.
+  const before = monoOffset ?? next;
+  const agreed = Math.abs(next - shown) <= Math.abs(next - before) ? shown : before;
+  monoOffset = first || Math.abs(next - agreed) > REMEASURE_MS ? next : agreed;
+  onWallClock = false;
+  // Measured: the next jump asks at once.
+  askedAt = -Infinity;
+  // Listeners hear of any move, before it counts as a measurement, so one can
+  // tell a time that moved from a jump measured without moving it. Keeping the
+  // time shown moves nothing; a real move is at least LEAVE_WALL_CLOCK_MS, so
+  // the microseconds between this function's two performance.now() reads don't count.
+  if (first || moved || Math.abs(monoOffset - shown) > SAME_TIME_MS) notify();
+  measurements++;
 }
 
 /** The server's time now, in ms since the epoch: this browser's clock until an offset is known. */
 export function serverNow(): number {
   if (monoOffset === null) return Date.now();
+  // Listeners hear of a switch between the clocks after the caller is done with this value.
+  if (switched()) queueMicrotask(notify);
+  // On the computer's clock: measure now and every REMEASURE_RETRY_MS until a
+  // response lands, so a change by hand is corrected before anything the page
+  // records on it reaches the server.
+  if (onWallClock && performance.now() - askedAt >= REMEASURE_RETRY_MS) remeasure();
   // A forward jump not yet measured: the computer's clock with the last offset.
-  if (drift() > JUMP_MS) return Date.now() + monoOffset - measuredAt;
+  if (onWallClock) return Date.now() + monoOffset - measuredAt;
   return performance.now() + monoOffset;
 }
 
 /** How far ahead of this browser's clock the server's is now, or null before one is known. */
 export function serverOffset(): number | null {
   if (monoOffset === null) return null;
-  return drift() > JUMP_MS ? monoOffset - measuredAt : monoOffset - wallLessMono();
+  return serverNow() - Date.now();
 }
 
-/** Calls `listener` when the offset becomes known, or the time the page works from moves after a jump; returns the unsubscribe. */
+/**
+ * Whether serverNow() isn't counting from the computer's clock through a
+ * forward jump (a sleep or a change by hand) it hasn't re-measured.
+ */
+export function serverClockSettled(): boolean {
+  return !wallClockNow();
+}
+
+/**
+ * How many responses have measured the clock. A listener that sees the same
+ * count as when it noted something during a jump, with the clock now
+ * settled, knows the time moved before any measurement: a correction, or the
+ * jump undone.
+ */
+export function serverClockMeasurements(): number {
+  return measurements;
+}
+
+/** Calls `listener` when the time the page works from moves: the first offset, a switch between clocks, or a correction; returns the unsubscribe. */
 export function onServerOffset(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -132,8 +211,32 @@ export const clockedFetch: typeof fetch = async (input, init) => {
   return res;
 };
 
+/**
+ * Where remeasure() asks. It must reach the tRPC route handler, which answers
+ * every request fresh (tRPC answers a HEAD with an empty 204 before looking up
+ * any procedure, so no database or context is touched): a bare
+ * /api/trpc matches no route, and a prerendered not-found page can come from
+ * a cache with an Age header, which noteResponse rightly refuses.
+ */
+export const REMEASURE_PATH = "/api/trpc/clock";
+
+/**
+ * Asks the server for its time: any fresh response's Date header measures the
+ * clock (noteResponse), even an error, and a HEAD touches no data. A request
+ * that fails, or takes over REMEASURE_ROUND_TRIP_MS, leaves the clock as it
+ * was; serverNow() asks again after REMEASURE_RETRY_MS.
+ */
+function remeasure() {
+  if (typeof window === "undefined") return;
+  askedAt = performance.now();
+  clockedFetch(REMEASURE_PATH, { method: "HEAD", cache: "no-store" }).catch(() => {});
+}
+
 /** For tests: forget the offset. */
 export function resetServerClock() {
   monoOffset = null;
   measuredAt = 0;
+  onWallClock = false;
+  measurements = 0;
+  askedAt = -Infinity;
 }

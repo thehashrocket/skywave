@@ -58,6 +58,11 @@ model ReceptionReport {
   rankPos      Int?
   /// The ranked list's first 10 receivers, "host:port", best first.
   candidates   Json?
+  /// How many of `candidates` were on the server's public list when the answer
+  /// arrived. Fewer than all: a forged key, or a receiver that left the list
+  /// since the pick. Null without context, and on rows from before this column.
+  /// A full count proves nothing: a forger can name real listed receivers.
+  candidatesListed Int?
   /// The receiver's position, listed SNR and users at pick time.
   pickLat      Float?
   pickLon      Float?
@@ -68,8 +73,10 @@ model ReceptionReport {
   /// (2026-11-19 02:52:57 UTC), that's PR #73's first rules; saved after it,
   /// a tab opened before the deploy, whose context passed the newer server
   /// checks. The replay splits null rows by createdAt. 2 saved after the
-  /// round 2 deploy, or 3 after the monotonic clock's, is likewise a tab
-  /// opened before it.
+  /// round 2 deploy, 3 after the monotonic clock's, or 4 after round 3's, is
+  /// likewise a tab opened before it. The page sends this and the server
+  /// can't check it; createdAt against the deploy times posted on #61 says
+  /// which server rules took the row.
   pickVersion  Int?
 
   @@index([receiverHost, receiverPort, freqKhz])

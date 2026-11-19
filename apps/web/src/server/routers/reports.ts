@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { scheduledOn, type Broadcast } from "@/lib/eibi";
 import { beaconOnBand, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
-import { findReceiver, MAX_PLAUSIBLE_SNR, MAX_ROWS } from "@/lib/kiwi-list";
+import { findReceiver, MAX_PLAUSIBLE_SNR, MAX_ROWS, type Receiver } from "@/lib/kiwi-list";
 import { MAX_CANDIDATES, MAX_USERS, PICK_CONTEXT_VERSION, PICK_SOURCES, pickKey } from "@/lib/pick-context";
 import { MODES } from "@/lib/radio-types";
 import {
@@ -62,14 +62,24 @@ export function beaconSlotChecks(call: string, freqKhz: number, slotStartMs: num
   );
 }
 
-/** Whether the receiver is on the public list as the page is served it (opted-out owners left out). */
-async function listed(host: string, port: number): Promise<boolean> {
+/** The public list as the page is served it (opted-out owners left out), or null with none to check against. */
+async function servedList(): Promise<readonly Receiver[] | null> {
   try {
-    return findReceiver(servedReceivers((await getReceivers()).receivers), host, port) !== undefined;
+    return servedReceivers((await getReceivers()).receivers);
   } catch {
-    // No list to check against (the mirror is down on a fresh server): can't vouch for it.
-    return false;
+    // The mirror is down on a fresh server: can't vouch for any receiver.
+    return null;
   }
+}
+
+/**
+ * How many of a context's candidates are on the public list now. A forged key
+ * can't be; a real receiver that left the list since the pick (up to 3 hours
+ * ago) isn't either, so the context is kept and the replay decides.
+ */
+export function listedCandidates(candidates: readonly string[], served: readonly Receiver[]): number {
+  const keys = new Set(served.map(pickKey));
+  return candidates.filter((k) => keys.has(k)).length;
 }
 
 /** Reports one listener may send in a rolling hour. */
@@ -260,7 +270,8 @@ export const reportsRouter = router({
       const { broadcasts } = await getSchedule();
       if (!scheduledRecently(broadcasts, input.txName, freqKhz, now)) return { accepted: false };
     }
-    if (!(await listed(receiverHost, receiverPort))) return { accepted: false };
+    const served = await servedList();
+    if (!served || !findReceiver(served, receiverHost, receiverPort)) return { accepted: false };
     const hourAgo = new Date(now - 60 * MINUTE);
     const [lastHour, receiverHour, sameChannel] = await Promise.all([
       ctx.db.receptionReport.count({ where: { listenerId, createdAt: { gte: hourAgo } } }),
@@ -296,6 +307,7 @@ export const reportsRouter = router({
           pickSource: fit.pickSource,
           rankPos: fit.rankPos,
           candidates: fit.candidates,
+          candidatesListed: listedCandidates(fit.candidates, served),
           pickLat: fit.lat,
           pickLon: fit.lon,
           pickSnr: fit.snr,
