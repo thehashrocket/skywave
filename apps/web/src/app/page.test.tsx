@@ -2484,6 +2484,26 @@ describe("ListenPage", () => {
       vi.unstubAllGlobals();
     });
 
+    // Value: protects=two beacon Listen clicks while the clock check is pending tune only the latest band, once, so an earlier click can't tune a receiver after the later one; fails_when=the ticket guard is dropped and every waiting click tunes when the check ends; why_new=the unsure-clock test clicks once; seam=MapPanel/picker/radio mocked, real server clock with a fetch that never answers; no_claim=how long the real route takes
+    it("tunes only the latest beacon Listen clicked while checking the time", async () => {
+      resetServerClock();
+      vi.setSystemTime(NOW + 8_000);
+      vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+      render(<ListenPage />);
+      openStrip();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to VE8AT on 14.100 MHz" })));
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 18.110 MHz" })));
+      expect(radio.tune).not.toHaveBeenCalled();
+      // No answer: both waits give up together, and only the second click picks.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(radio.tune).toHaveBeenCalledTimes(1);
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 18_110, mode: "cw" }));
+      expect(screen.queryByText("Checking the time with the server…")).toBeNull();
+      vi.unstubAllGlobals();
+    });
+
     // Value: protects=the strip shows the beacon on each band now and turns on the map's beacon layer; Listen tunes the band in CW through Pick best with receivers ranked for that beacon (not the strongest or nearest), and the map gets the pick for its path; fails_when=Listen tunes another frequency or mode, ranks by SNR, bypasses Pick best, or the map isn't told; why_new=beacon mode (#59); seam=MapPanel/picker/radio mocked, real BeaconStrip and ranking; no_claim=what the map draws (ReceiverMap tests)
     it("listens to a beacon through a receiver placed to hear it", () => {
       render(<ListenPage />);

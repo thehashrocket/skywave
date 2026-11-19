@@ -375,6 +375,61 @@ describe("serverNow", () => {
     expect(serverClockSettled()).toBe(true);
   });
 
+  // Value: protects=a settleServerClock wait ends as soon as the jump is undone (the clock is settled again without a reply), so beacon Listen doesn't sit out its full timeout; fails_when=leaving the computer's clock doesn't release the waiters; why_new=the settle test only settles by a reply or the timeout; seam=fake timers, a fetch that never answers; no_claim=none beyond protects
+  it("ends a settle wait when the jump is undone", async () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    reply(TRUE_MS);
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    vi.setSystemTime(Date.now() + 60_000);
+    let done = false;
+    void settleServerClock(10_000).then(() => (done = true));
+    vi.setSystemTime(Date.now() - 60_000);
+    serverNow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done).toBe(true);
+    expect(serverClockSettled()).toBe(true);
+  });
+
+  // Value: protects=a quick reply that agrees with a poorly measured clock (a Date-header first reading) tightens what the clock is known to, so the visit then gets the ordinary ORDINARY_CORRECTION_MS band instead of re-planning on every sub-1.5 s difference; fails_when=a kept measurement leaves offsetError as it was; why_new=no test reads the band after a kept measurement; seam=fake timers; no_claim=none beyond protects
+  it("tightens a poorly measured clock when a reply agrees", () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    // Date header after a 400 ms round trip: good only to 700 ms.
+    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now() - 400, Date.now());
+    const shown = serverNow();
+    reply(shown, 100);
+    expect(serverNow()).toBe(shown);
+    reply(shown + 1_000, 100);
+    expect(serverNow()).toBe(shown);
+    expect(serverClockCorrections()).toBe(0);
+  });
+
+  // Value: protects=a reply that is the first to see a sleep (nothing called serverNow since) still tells listeners the time shown moved, while counting no correction; fails_when=noteResponse notifies only on the first offset or a correction, so a planned beacon question stays on the old clock; why_new=the sleep tests call serverNow before the reply; seam=fake timers (setSystemTime models the wall clock moving on while performance.now paused); no_claim=none beyond protects
+  it("tells listeners of a sleep first seen by a reply", () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    reply(TRUE_MS);
+    const told = vi.fn();
+    onServerOffset(told);
+    vi.setSystemTime(Date.now() + 600_000);
+    reply(Date.now(), 100);
+    expect(serverNow()).toBe(Date.now());
+    expect(told).toHaveBeenCalledTimes(1);
+    expect(serverClockCorrections()).toBe(0);
+  });
+
+  // Value: protects=a tab shown after a sleep the monotonic clock paused through (so it looks recently measured) still switches to the computer's clock and asks the server at once; fails_when=the visibility handler skips serverNow and judges only by performance.now since the last measurement; why_new=the visibility test advances both clocks, never a paused monotonic one; seam=fake timers (setSystemTime models a sleep), stubbed fetch, visibility stubbed; no_claim=browser event order on wake
+  it("asks when the tab is shown after a sleep the monotonic clock missed", () => {
+    vi.useFakeTimers({ now: TRUE_MS });
+    reply(TRUE_MS);
+    const fetch = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", fetch);
+    visibility = "hidden";
+    vi.setSystemTime(Date.now() + 600_000);
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(serverClockSettled()).toBe(false);
+  });
+
   // Value: protects=a listener that throws neither fails the response that measured the clock (a tRPC call) nor keeps the other listeners from hearing; fails_when=listeners run bare inside noteResponse; why_new=clock-edges TODO; seam=console.error spied; no_claim=none beyond protects
   it("keeps measuring when a listener throws", () => {
     vi.useFakeTimers({ now: TRUE_MS });
