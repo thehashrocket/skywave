@@ -8,9 +8,6 @@ import {
   MAX_ROUND_TRIP_MS,
   noteResponse,
   offsetFromResponse,
-  onServerOffset,
-  REMEASURE_MS,
-  REMEASURE_ROUND_TRIP_MS,
   resetServerClock,
   serverNow,
   serverOffset,
@@ -53,7 +50,7 @@ describe("offsetFromResponse", () => {
 });
 
 describe("serverNow", () => {
-  // Value: protects=a browser clock 5 s off still names the beacon on the air (issue #59's gotcha), and a later response that agrees within REMEASURE_MS doesn't move it; fails_when=the IBP math uses the raw clock, or jitter shifts the offset; why_new=server clock; seam=fake system time; no_claim=sub-second accuracy
+  // Value: protects=a browser clock 5 s off still names the beacon on the air (issue #59's gotcha), and only the first usable response sets the offset; fails_when=the IBP math uses the raw clock, or a later response moves it; why_new=server clock; seam=fake system time; no_claim=sub-second accuracy
   it("corrects a 5-second skew so the right beacon is named", () => {
     vi.useFakeTimers({ now: TRUE_MS + SKEW_MS });
     // Uncorrected, the slow clock names the beacon from the slot before.
@@ -63,30 +60,10 @@ describe("serverNow", () => {
     expect(Math.abs(serverNow() - TRUE_MS)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS);
     expect(beaconOnBand(serverNow(), 0).call).toBe(beaconOnBand(TRUE_MS, 0).call);
 
-    // A later response off by a second (header rounding, a slower trip) doesn't move it.
+    // A later response doesn't move it.
     const first = serverOffset();
-    noteResponse(headers({ date: new Date(TRUE_MS + 1_000).toUTCString() }), Date.now(), Date.now());
+    noteResponse(headers({ date: new Date(TRUE_MS + 60_000).toUTCString() }), Date.now(), Date.now());
     expect(serverOffset()).toBe(first);
-  });
-
-  // Value: protects=after the browser's clock jumps (sleep, a manual change, an NTP step) a quick response corrects the offset and tells the beacon strip, while a slow one can't; fails_when=the offset is measured once only, a slow round trip replaces it, or listeners aren't told; why_new=edge-case fixes (stale offset, owner: re-measure); seam=fake system time; no_claim=network asymmetry
-  it("re-measures after the browser's clock jumps, from a quick response only", () => {
-    vi.useFakeTimers({ now: TRUE_MS });
-    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now(), Date.now());
-    expect(Math.abs(serverNow() - TRUE_MS)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS);
-    const told = vi.fn();
-    const off = onServerOffset(told);
-
-    // The browser's clock steps 60 s back while the server's keeps time.
-    vi.setSystemTime(TRUE_MS - 60_000);
-    expect(serverNow() - TRUE_MS).toBeLessThan(-REMEASURE_MS);
-    // A slow response can't be trusted to that degree.
-    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now() - REMEASURE_ROUND_TRIP_MS - 1, Date.now());
-    expect(told).not.toHaveBeenCalled();
-    noteResponse(headers({ date: new Date(TRUE_MS).toUTCString() }), Date.now() - 100, Date.now());
-    expect(told).toHaveBeenCalledTimes(1);
-    expect(Math.abs(serverNow() - TRUE_MS)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS + 50);
-    off();
   });
 
   // Value: protects=before any response, the page's own clock is used rather than nothing; fails_when=serverNow throws or returns NaN with no offset; why_new=server clock; seam=fake system time; no_claim=none

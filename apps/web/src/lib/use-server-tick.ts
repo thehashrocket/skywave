@@ -12,7 +12,7 @@ const PAST_BOUNDARY_MS = 20;
 /**
  * The server's time, rounded down to `stepMs` and updated on each boundary:
  * SLOT_MS for what's on the air, 1 s for a countdown. Starts over when the
- * server's offset becomes known or is replaced, so a skewed clock is corrected at once. Null
+ * server's offset becomes known, so a skewed clock is corrected at once. Null
  * while `enabled` is false, and until mounted (the server's render has no
  * viewer's clock).
  */

@@ -3,12 +3,9 @@
  * so a phone clock 5 s off would name the wrong beacon half the time (issue
  * #59); the IBP math reads `serverNow()` instead of `Date.now()`.
  *
- * The offset comes from the Date header of the first usable tRPC response
- * (lib/trpc.tsx). That header is in whole seconds, so this is good to about
- * half a second plus half the round trip: plenty for 10 s slots. Later quick
- * responses replace it only when it has moved by more than REMEASURE_MS (the
- * machine slept, or its clock was changed or stepped), so ordinary jitter
- * never shifts the beacon strip.
+ * The offset comes once, from the Date header of the first usable tRPC
+ * response (lib/trpc.tsx). That header is in whole seconds, so this is good to
+ * about half a second plus half the round trip: plenty for 10 s slots.
  */
 
 /**
@@ -43,31 +40,14 @@ export function offsetFromResponse(
   return serverMs + DATE_HEADER_ROUNDING_MS - (sentAt + roundTrip / 2);
 }
 
-/**
- * How far a later measurement must move the known offset to replace it: a
- * clock that jumped, not jitter. Above twice a quick measurement's error
- * (REMEASURE_ROUND_TRIP_MS / 2 plus DATE_HEADER_ROUNDING_MS), so two honest
- * measurements of a steady clock never trip it.
- */
-export const REMEASURE_MS = 2_000;
-
-/**
- * The slowest round trip a re-measurement may take: a 5 s one could be off by
- * 3 s on its own and move a steady clock past REMEASURE_MS.
- */
-export const REMEASURE_ROUND_TRIP_MS = 1_000;
-
 let offset: number | null = null;
 const listeners = new Set<() => void>();
 
-/**
- * Records the offset from a response: the first usable one, then a quick one
- * that says the browser's clock has jumped by more than REMEASURE_MS.
- */
+/** Records the offset from a response, if none is known yet. Later responses are ignored. */
 export function noteResponse(headers: { get(name: string): string | null }, sentAt: number, receivedAt: number) {
-  if (offset !== null && receivedAt - sentAt > REMEASURE_ROUND_TRIP_MS) return;
+  if (offset !== null) return;
   const o = offsetFromResponse(headers, sentAt, receivedAt);
-  if (o === null || (offset !== null && Math.abs(o - offset) <= REMEASURE_MS)) return;
+  if (o === null) return;
   offset = o;
   for (const l of listeners) l();
 }
@@ -82,14 +62,14 @@ export function serverOffset(): number | null {
   return offset;
 }
 
-/** Calls `listener` when the offset becomes known or is replaced; returns the unsubscribe. */
+/** Calls `listener` when the offset becomes known; returns the unsubscribe. */
 export function onServerOffset(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
 
 /**
- * `fetch`, noting the server's clock from each usable response (noteResponse). Given to
+ * `fetch`, noting the server's clock from the first usable response. Given to
  * the tRPC links, so whichever request answers first sets the offset.
  */
 export const clockedFetch: typeof fetch = async (input, init) => {
