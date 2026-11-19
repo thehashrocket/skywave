@@ -82,6 +82,12 @@ describe("serverNow", () => {
     noteResponse(headers({ date: new Date(TRUE_MS + 1_000).toUTCString() }), Date.now() - 100, Date.now());
     expect(told).not.toHaveBeenCalled();
     expect(Math.abs(serverNow() - (TRUE_MS + 1_000))).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS);
+    // Value (extension): protects=a measurement after a jump that keeps the offset still ends the jump, so later quick responses are ignored again; fails_when=the jump is marked measured only when the offset is replaced; why_new=no test sent a response after the small re-measure; seam=fake timers; no_claim=none beyond protects
+    const kept = serverOffset();
+    vi.advanceTimersByTime(1_000);
+    noteResponse(headers({ date: new Date(TRUE_MS + 2_000 + 3 * REMEASURE_MS).toUTCString() }), Date.now() - 100, Date.now());
+    expect(told).not.toHaveBeenCalled();
+    expect(serverOffset()).toBe(kept);
     off();
   });
 
@@ -97,9 +103,18 @@ describe("serverNow", () => {
     expect(woke - serverNow()).toBeGreaterThan(REMEASURE_MS);
     noteResponse(headers({ date: new Date(woke).toUTCString() }), Date.now() - REMEASURE_ROUND_TRIP_MS - 1, Date.now());
     expect(told).not.toHaveBeenCalled();
+    // Value (extension): protects=a quick response with no usable Date header doesn't use up the re-measure; fails_when=the jump is marked measured before the header is checked, so the sleep's error stays; why_new=only a slow response was tried after the jump; seam=fake timers; no_claim=none beyond protects
+    noteResponse(headers({}), Date.now() - 100, Date.now());
+    expect(told).not.toHaveBeenCalled();
     noteResponse(headers({ date: new Date(woke).toUTCString() }), Date.now() - 100, Date.now());
     expect(told).toHaveBeenCalledTimes(1);
     expect(Math.abs(serverNow() - woke)).toBeLessThanOrEqual(DATE_HEADER_ROUNDING_MS + 50);
+    // Value (extension): protects=once replaced, the offset holds again until the next jump; fails_when=the replacement doesn't mark the jump measured, so any quick response can move the clock under the strip; why_new=no response was sent after the replacement; seam=fake timers; no_claim=none beyond protects
+    const replaced = serverOffset();
+    vi.advanceTimersByTime(1_000);
+    noteResponse(headers({ date: new Date(woke + 1_000 + 3 * REMEASURE_MS).toUTCString() }), Date.now() - 100, Date.now());
+    expect(told).toHaveBeenCalledTimes(1);
+    expect(serverOffset()).toBe(replaced);
     off();
   });
 

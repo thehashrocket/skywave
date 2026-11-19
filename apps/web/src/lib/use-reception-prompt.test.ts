@@ -131,6 +131,23 @@ describe("useReceptionPrompt", () => {
     expect(hook.result.current.prompt).not.toBeNull();
   });
 
+  // Value: protects=on a broadcast (not a beacon) a server-clock offset becoming known or replaced doesn't start the minute over, as the hook's doc says (broadcasts run on this browser's clock); fails_when=the plan restarts on every clock epoch, not only on a beacon frequency, so a broadcast question slips a minute; why_new=the clock-epoch test covers a beacon pick only; seam=fake timers, the real server clock fed responses; no_claim=how a browser's monotonic clock behaves in sleep
+  it("doesn't start a broadcast's minute over when the server clock changes", () => {
+    resetServerClock();
+    const hook = setup();
+    wait(DWELL_MS - 20_000);
+    // The first offset arrives mid-minute, then a sleep the monotonic clock lagged through replaces it.
+    act(() => noteResponse(new Headers({ date: new Date(Date.now()).toUTCString() }), Date.now(), Date.now()));
+    wait(5_000);
+    vi.setSystemTime(Date.now() + 60_000);
+    act(() => noteResponse(new Headers({ date: new Date(Date.now()).toUTCString() }), Date.now() - 100, Date.now()));
+    wait(15_000 - 1);
+    expect(hook.result.current.prompt).toBeNull();
+    wait(1);
+    expect(hook.result.current.prompt?.tx.name).toBe("KBS World Radio");
+    resetServerClock();
+  });
+
   it("hides a showing prompt on a retune, but keeps it after Stop", () => {
     const hook = setup();
     wait(DWELL_MS);
