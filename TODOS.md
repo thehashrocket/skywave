@@ -93,6 +93,24 @@ RBN live goes through #69's single connection in the radio service once its logi
 **Priority:** P3
 **Depends on:** #61 replay passing (D10's 0.03 floor); #69 login (RBN live half only, not needed for the daily-batch path)
 
+### Harden the #61 grid probe's input checks
+
+**What:** Make `apps/radio/spikes/spots/kiwi_grid_probe.py` refuse (exit 2) every malformed input the /ship review found, instead of skipping, crashing or reading it as a short count:
+- a row with an unparseable or negative `answers` (today counted as "skipped" with no position), and a file where every row is unusable;
+- a JSON list that isn't skimmers but holds 100 grid-looking entries (require a `call` on each row);
+- a CSV with an unclosed quote (`csv.Error` exits 1 today), and rows silently merged by a stray quote;
+- `--wspr-days` of 0 or less (today reads as "wspr.live missing");
+- cache I/O under a non-UTF-8 locale (open with `encoding="utf-8"`, catch `ValueError` in `_save_cache`), and a cache name that doesn't include the query;
+- `--list` printing an RBN-only list when wspr.live is missing (mark it), and a SQL console that caps the block 9 download (print the expected row count).
+
+**Why:** The probe's D12 count goes to the #61 Step 1 freeze. These all fail loudly or show a "skipped N rows" line, so none reads a missing source as zero, but a bad export could still skew or stop the count.
+
+**Context:** Owner D1 in the second /ship run of PR #85 (2026-11-20): ruled below the blocking floor for a by-hand optional-data probe and recorded as notes plus this TODO. Each finding is listed in PR #85's review notes. Tests live beside the probe (`apps/radio/spikes/spots/test_kiwi_grid_probe.py`, run by hand).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** Before running the probe for the #61 Step 1 freeze
+
 ### Rank receivers for a broadcaster by transmitter site (#72)
 
 **What:** Order Pick best's receivers for an EiBi broadcast by where they sit relative to its transmitter site, the way `rankForBeacon` does for beacons (`apps/web/src/lib/beacon-rank.ts:67`): past the skip zone, within one or two hops, sunlit midpoint.
