@@ -148,7 +148,9 @@ type SiteOptions = Pick<Options, "fetchImpl" | "now" | "defer"> & {
  * succeeds, and refreshes README.TXT in the background at most once a day,
  * so no answer and no page load waits on eibispace.de (#72 eng review, D9).
  * A failed or broken fetch keeps the last good table and asks again in ten
- * minutes (D6, D11).
+ * minutes (D6, D11). A new table is checked against the largest one this
+ * server has accepted, the bundled one included, so a run of slightly short
+ * READMEs can't step the bar down one refresh at a time (#72 follow-up, D6).
  */
 export function siteSource({
   fetchImpl = (...args) => fetch(...args),
@@ -157,17 +159,19 @@ export function siteSource({
   bundled = () => sitesFromJson(snapshot.sites),
 }: SiteOptions = {}) {
   let table: SiteTable | null = null;
+  /** The largest table accepted so far: the bar a new one must clear. */
+  let best: SiteTable | null = null;
   let fetchedAt = -Infinity;
   let lastFailureAt: number | null = null;
   let inflight: Promise<void> | null = null;
 
   async function refresh(): Promise<SiteTable> {
-    // Checked against the table it would replace (the bundled one at first).
-    return parseSites(await fetchLatin1(fetchImpl, SITES_URL, "EiBi README"), table ?? undefined);
+    return parseSites(await fetchLatin1(fetchImpl, SITES_URL, "EiBi README"), best ?? undefined);
   }
 
   return function get(): SiteTable {
     table ??= bundled();
+    best ??= table;
     const t = now();
     const backingOff = lastFailureAt !== null && t - lastFailureAt < RETRY_AFTER_MS;
     if (!inflight && !backingOff && t - fetchedAt >= TTL_MS) {
@@ -175,6 +179,7 @@ export function siteSource({
         .then(
           (fresh) => {
             table = fresh;
+            if (fresh.size > best!.size) best = fresh;
             fetchedAt = now();
             lastFailureAt = null;
           },

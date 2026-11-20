@@ -27,6 +27,13 @@ export const MIN_SITES = 1_000;
  */
 export const MIN_SHARE = 0.8;
 
+/**
+ * The most coordinates one site keeps. A site with several is a group of
+ * transmitters (the 2026-11-19 README's largest has 6); the cap bounds what
+ * each answer saves in txSites if a broken README runs one entry on and on.
+ */
+export const MAX_SITE_COORDS = 20;
+
 /** One site code: its host country (ITU code) and every coordinate EiBi lists for it, as [lat, lon]. */
 export type Site = { country: string; coords: [number, number][] };
 
@@ -98,9 +105,11 @@ export function parseSites(readme: string, previous?: SiteTable): SiteTable {
     last = { country, coords: coordsIn(coded[2]!) };
     sites.set(`${country}-${coded[1]}`, last);
   }
+  // After wrapped lines, so a long group is capped as a whole.
+  for (const site of sites.values()) site.coords.length = Math.min(site.coords.length, MAX_SITE_COORDS);
   if (previous && sites.size < previous.size * MIN_SHARE)
     throw new Error(
-      `EiBi README refused: ${sites.size} transmitter sites, under ${MIN_SHARE * 100}% of the last good table's ${previous.size}.`,
+      `EiBi README refused: ${sites.size} transmitter sites, under ${MIN_SHARE * 100}% of the largest good table's ${previous.size}.`,
     );
   if (!previous && sites.size < MIN_SITES)
     throw new Error(

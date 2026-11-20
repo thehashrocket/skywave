@@ -58,6 +58,8 @@ jobs:
           BASE: ${{ github.event.repository.default_branch }}
           # Set when EiBi's README failed or was refused and the bundled sites were kept.
           SITES_NOTE: ${{ steps.snapshot.outputs.sites_note }}
+          # The bundled table's site count and the new one's ("1,698 → 1,690").
+          SITE_COUNTS: ${{ steps.snapshot.outputs.site_counts }}
         run: |
           file=apps/web/src/server/eibi-snapshot.json
           if git diff --quiet -- "$file"; then
@@ -74,12 +76,15 @@ jobs:
           git push --force origin "$branch"
           checked="\`pnpm --filter web eibi:snapshot\` checked that both parse before saving them."
           if [ -n "$SITES_NOTE" ]; then
-            checked="\`pnpm --filter web eibi:snapshot\` checked the schedule. The transmitter sites were NOT refreshed: $SITES_NOTE"
+            checked="\`pnpm --filter web eibi:snapshot\` checked the schedule. The transmitter sites were NOT refreshed: $SITES_NOTE If the README is refused as under 80% season after season, EiBi may have really dropped sites, and the README's Station names section says how to take the smaller list."
           fi
-          if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
-            gh pr create --head "$branch" --base "$BASE" \
-              --title "chore(web): refresh the bundled EiBi schedule and transmitter sites ($season)" \
-              --body "The station schedule and transmitter-site table the server falls back on when eibispace.de can't be reached, refreshed for season $season by the \`Refresh EiBi snapshot\` workflow. $checked
+          title="chore(web): refresh the bundled EiBi schedule and transmitter sites ($season)"
+          body="The station schedule and transmitter-site table the server falls back on when eibispace.de can't be reached, refreshed for season $season by the \`Refresh EiBi snapshot\` workflow. $checked $SITE_COUNTS
 
           A PR opened by this workflow doesn't start CI on its own: close and reopen it, or push to it, to run the checks."
+          # A rerun pushes a new commit to an open PR: refresh its body too, so it describes that commit.
+          if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            gh pr create --head "$branch" --base "$BASE" --title "$title" --body "$body"
+          else
+            gh pr edit "$branch" --body "$body"
           fi

@@ -116,7 +116,8 @@ const readmeFile = (lat: number, n = MIN_SITES) =>
   [
     "   IV) Transmitter site codes.",
     `   KOR: k-Kimjae ${lat}N00-126E50`,
-    ...Array.from({ length: n - 1 }, (_, i) => `        f${i.toString(36)}-Filler 10N00-010E00`),
+    // Three-character codes, so up to 46,656 fillers stay distinct site codes.
+    ...Array.from({ length: n - 1 }, (_, i) => `        ${i.toString(36).padStart(3, "0")}-Filler 10N00-010E00`),
   ].join("\r\n");
 
 describe("siteSource", () => {
@@ -195,8 +196,29 @@ describe("siteSource", () => {
     await settled();
     expect(kimjae()).toBe(35);
     expect(String(warn.mock.calls.at(-1)![1])).toMatch(
-      /500 transmitter sites, under 80% of the last good table's 1000/,
+      /500 transmitter sites, under 80% of the largest good table's 1000/,
     );
+  });
+
+  // Value: protects=the refusal bar is the largest table this server has accepted, so a run of slightly short READMEs can't step it down (2,500 accepted, then 2,000, then 1,600 refused though it is 80% of 2,000); fails_when=a new README is compared with the current table only (or the larger of bundled and current); why_new=#72 follow-up, outside voice OV4 (owner D6); seam=fetch, defer, console.warn; no_claim=a real permanent shrink in EiBi's list (refused until the next deploy, by choice)
+  it("never lets the refusal bar step down", async () => {
+    const { kimjae, fetchImpl, advance } = sites();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const refreshWith = async (lat: number, n: number) => {
+      fetchImpl.mockImplementation(async () => new Response(readmeFile(lat, n)));
+      advance(25 * HOUR);
+      kimjae();
+      await settled();
+    };
+    kimjae(); // starts the first refresh (1,000 sites)
+    await settled();
+    await refreshWith(36, 2_500);
+    expect(kimjae()).toBe(36);
+    await refreshWith(37, 2_000);
+    expect(kimjae()).toBe(37);
+    await refreshWith(38, 1_600);
+    expect(kimjae()).toBe(37);
+    expect(String(warn.mock.calls.at(-1)![1])).toMatch(/1600 transmitter sites, under 80% of the largest good table's 2500/);
   });
 
   // Value: protects=the page's schedule request never fetches the README, so a slow eibispace.de README can't delay a page load; fails_when=the README fetch moves onto the schedule path; why_new=#72 D9; seam=fetch; no_claim=none

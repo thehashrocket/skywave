@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import snapshot from "@/server/eibi-snapshot.json";
-import { candidateFor, MIN_SHARE, MIN_SITES, parseSites, siteKey, sitesFromJson, sitesToJson } from "./eibi-sites";
+import { candidateFor, MAX_SITE_COORDS, MIN_SHARE, MIN_SITES, parseSites, siteKey, sitesFromJson, sitesToJson } from "./eibi-sites";
 
 /** EiBi's README around the given site lines, padded past MIN_SITES with made-up sites in country "ZZZ". */
 function readme(lines: string[], filler = MIN_SITES) {
@@ -70,13 +70,26 @@ describe("EiBi transmitter sites", () => {
     const lines = readme([], 1_500).split("\r\n");
     const cut = lines.slice(0, Math.floor(lines.length * 0.6)).join("\r\n");
     expect(() => parseSites(cut, last)).toThrow(
-      new RegExp(`\\d+ transmitter sites, under ${MIN_SHARE * 100}% of the last good table's ${last.size}`),
+      new RegExp(`\\d+ transmitter sites, under ${MIN_SHARE * 100}% of the largest good table's ${last.size}`),
     );
     expect(parseSites(readme([], 1_480), last).size).toBe(1_481);
     expect(parseSites(readme([], 1_520), last).size).toBe(1_521);
     // A smaller table than the floor is fine once there's a last good one to compare with.
     const small = new Map(Array.from({ length: 450 }, (_, i) => [`ZZZ-${i}`, { country: "ZZZ", coords: [] }]));
     expect(parseSites(readme([], 400), small).size).toBe(401);
+  });
+
+  // Value: protects=a site keeps at most MAX_SITE_COORDS coordinates, counted across its own line and its wrapped lines, so a broken README can't make each answer's txSites row grow without bound, and the real table sits well under the cap; fails_when=the cap is missing, or applied per line so a long wrapped group gets past it; why_new=#72 follow-up TODO (owner D5); seam=reads eibi-snapshot.json; no_claim=which 20 of a longer group EiBi would want kept (the first 20 in the file)
+  it("caps the coordinates one site keeps", () => {
+    const at = (i: number) => `${i}N00-010E00`;
+    const coords = Array.from({ length: 25 }, (_, i) => at(i + 1));
+    const sites = parseSites(
+      readme([`   USA: gr-Group ${coords.slice(0, 15).join(", ")}`, `        ${coords.slice(15).join(", ")}`]),
+    );
+    expect(sites.get("USA-gr")!.coords).toHaveLength(MAX_SITE_COORDS);
+    expect(sites.get("USA-gr")!.coords.at(-1)).toEqual([MAX_SITE_COORDS, 10]);
+    const largest = Math.max(...[...sitesFromJson(snapshot.sites).values()].map((s) => s.coords.length));
+    expect(largest).toBeLessThan(MAX_SITE_COORDS);
   });
 
   // Value: protects=the bundled table is a parsed README: past MIN_SITES, case kept (CHN b and B differ), and stored in the exact form sitesToJson writes; fails_when=the snapshot is written by a broken parser, merges case, or loses its sites; why_new=#72 D2 (bundled fallback); seam=reads eibi-snapshot.json; no_claim=that the bundled table is current, or any one site's coordinates (they change with EiBi)

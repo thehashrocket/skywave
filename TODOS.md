@@ -100,17 +100,17 @@
 **Priority:** P3
 **Depends on:** #72 shipped; #61 replay verdict
 
-### Harden the EiBi site table refresh (#72 follow-up)
+### Make the EiBi site-table checks smarter than a count (#72 follow-up)
 
-**What:** Four small fixes from #72's /ship review, noted rather than fixed in that PR: (1) give `scripts/eibi-snapshot.ts`'s fetches a timeout (an `AbortSignal`, like the server's `fetchLatin1`) so a stalled README can't hang the seasonal job until GitHub's 6-hour limit; (2) when the seasonal job reruns with its PR still open, update the PR body (`gh pr edit`) so the "sites refreshed / NOT refreshed" line matches the commit it just pushed; (3) cap coordinates per site in `parseSites` (today's README has at most 6) so a malformed README can't bloat every `txSites` row; (4) fix the stale `onAirBetween` comment ("one per transmitter site").
+**What:** Notes from the hardening PR's review, none blocking: (1) `parseSites` reads every line after section IV, so a README with a new section after the site list, or two versions glued together, can inflate the count, and that inflated table then becomes the server's high-water mark until the instance restarts (stop at the next section header, or raise the mark only within a ceiling such as 1.5x the bundled table); (2) a README refused for its size is fetched again every 10 minutes per instance for good (back off on the 24 h TTL after a size refusal, keep the 10-minute retry for network errors); (3) the count is the only check, so a coordinate-format change that leaves every site with no coordinates still passes (also refuse a table whose share of placed sites drops sharply); (4) the documented recovery dead-ends if EiBi falls under the 1,000-site first-parse floor, and fails near a season change if the new schedule isn't posted yet; (5) the snapshot workflow's early exit (file unchanged) leaves an open snapshot PR's body as it was.
 
-**Why:** None of these breaks anything today, but each lets a bad EiBi day quietly degrade the site data #61's replay depends on.
+**Why:** Each lets a bad or changed EiBi file quietly keep stale or empty site data in the answers #61's replay counts.
 
-**Context:** #72 /ship review, run 2 (2026-11-19): owner chose notes plus this one TODO under the standing "cap review rounds for optional data" rule. Other notes from that review are in the #72 PR body.
+**Context:** Hardening PR /ship review (2026-11-19), adversarial passes; owner rule "cap review rounds for optional data" (notes plus one TODO). The per-instance mark (D6), the 20-coordinate cap (D5) and the manual recovery (D11) are owner decisions, not part of this TODO.
 
 **Effort:** S
 **Priority:** P3
-**Depends on:** #72 shipped
+**Depends on:** None
 
 ### Server clock: a backward change then a short sleep (#61)
 
@@ -210,7 +210,7 @@
 
 ### Check the EiBi snapshot workflow each March and October
 
-**What:** In late March and late October, before the 1 April and 1 November runs, open the Actions tab and make sure "Refresh EiBi snapshot" is still enabled; re-enable it if GitHub turned it off. If a run was missed or failed, run it by hand (with the season, like `a27`), or run `pnpm --filter web eibi:snapshot` locally and commit `apps/web/src/server/eibi-snapshot.json`.
+**What:** In late March and late October, before the 1 April and 1 November runs, open the Actions tab and make sure "Refresh EiBi snapshot" is still enabled; re-enable it if GitHub turned it off. If a run was missed or failed, run it by hand (with the season, like `a27`), or run `pnpm --filter web eibi:snapshot` locally and commit `apps/web/src/server/eibi-snapshot.json`. If the snapshot PRs say the transmitter sites were refused as under 80% for two seasons in a row, EiBi has probably dropped sites for good, and only a hand step brings the new list in. Do it locally, never through the workflow. Delete the `sites` key from the bundled file, run `pnpm --filter web eibi:snapshot`, check the new count, and commit only if the script saved new sites. If it fails, restore the file with `git checkout` (README, Station names).
 
 **Why:** skywave is a public repo, and GitHub disables scheduled workflows in public repos after 60 days without activity, silently: no run and no failure email. A quiet winter would let 1 April pass and leave the server's fallback schedule a season out of date.
 
@@ -271,6 +271,19 @@
 
 
 ## Completed
+
+### Harden the EiBi site table refresh (#72 follow-up)
+
+**What:** Four small fixes from #72's /ship review, noted rather than fixed in that PR: (1) give `scripts/eibi-snapshot.ts`'s fetches a timeout (an `AbortSignal`, like the server's `fetchLatin1`) so a stalled README can't hang the seasonal job until GitHub's 6-hour limit; (2) when the seasonal job reruns with its PR still open, update the PR body (`gh pr edit`) so the "sites refreshed / NOT refreshed" line matches the commit it just pushed; (3) cap coordinates per site in `parseSites` (today's README has at most 6) so a malformed README can't bloat every `txSites` row; (4) fix the stale `onAirBetween` comment ("one per transmitter site").
+
+**Why:** None of these breaks anything today, but each lets a bad EiBi day quietly degrade the site data #61's replay depends on.
+
+**Context:** #72 /ship review, run 2 (2026-11-19): owner chose notes plus this one TODO under the standing "cap review rounds for optional data" rule. Other notes from that review are in the #72 PR body.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** #72 shipped
+**Completed:** feat/eibi-hardening (2026-11-19), with a 3 MB download cap, previous→new site counts in the snapshot PR, and a refusal bar that can't step down added.
 
 ### Server clock on a schedule, and the edges left after round 3 (#61)
 
