@@ -213,7 +213,7 @@ function firstAtOrAbove(schedule: readonly Broadcast[], khz: number): number {
   return lo;
 }
 
-/** Every listing between two frequencies on the air now, one per transmitter site, lowest frequency first. */
+/** Every listing between two frequencies on the air now, lowest frequency first. */
 export function onAirBetween<B extends Broadcast>(
   schedule: readonly B[],
   loKhz: number,

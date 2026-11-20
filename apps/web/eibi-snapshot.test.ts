@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { seasonFor } from "./src/lib/eibi";
-import { keptSitesNotice, snapshot } from "./scripts/eibi-snapshot";
+import { keptSitesNotice, siteCountsOutput, snapshot, SNAPSHOT_FETCH_TIMEOUT_MS, SNAPSHOT_MAX_BYTES } from "./scripts/eibi-snapshot";
 import { MIN_SITES, sitesFromJson, sitesToJson } from "./src/lib/eibi-sites";
 
 const HEADER = "kHz:75;Time(UTC):93;Days:59;ITU:49;Station:201;Lng:49;Target:62;Remarks:135;P:35;Start:60;Stop:60;";
@@ -20,9 +20,10 @@ describe("eibi:snapshot", () => {
       async (url: string) => new Response(Buffer.from(url.endsWith("README.TXT") ? readme(MIN_SITES) : file, "latin1")),
     );
     const run = () => snapshot("b26", fetchImpl as unknown as typeof fetch);
-    const { json, count, siteCount } = await run();
-    expect(fetchImpl).toHaveBeenCalledWith("http://www.eibispace.de/dx/sked-b26.csv", { redirect: "error" });
-    expect(fetchImpl).toHaveBeenCalledWith("http://www.eibispace.de/dx/README.TXT", { redirect: "error" });
+    const { json, count, siteCount, previousSiteCount } = await run();
+    expect(previousSiteCount).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledWith("http://www.eibispace.de/dx/sked-b26.csv", { redirect: "error", signal: expect.any(AbortSignal) });
+    expect(fetchImpl).toHaveBeenCalledWith("http://www.eibispace.de/dx/README.TXT", { redirect: "error", signal: expect.any(AbortSignal) });
     expect([count, siteCount]).toEqual([1, MIN_SITES]);
     const saved = JSON.parse(json);
     expect(saved).toMatchObject({ season: "b26", csv: file });
@@ -33,7 +34,8 @@ describe("eibi:snapshot", () => {
     const bundled = sitesFromJson(saved.sites);
     fetchImpl.mockImplementation(async (url: string) => new Response(url.endsWith("README.TXT") ? readme(990) : file));
     const smaller = await snapshot("b26", fetchImpl as unknown as typeof fetch, bundled);
-    expect([smaller.siteCount, smaller.sitesError]).toEqual([990, undefined]);
+    // Value: protects=snapshot reports the bundled table's size as previousSiteCount, the "before" in the PR's site_counts line; fails_when=it reports the new size or drops the field, so a shrink reads "990 → 990" or "(none bundled before)"; why_new=siteCountsOutput is tested only with literal counts; seam=fetch; no_claim=the CLI block passing it on to GITHUB_OUTPUT
+    expect([smaller.previousSiteCount, smaller.siteCount, smaller.sitesError]).toEqual([MIN_SITES, 990, undefined]);
     fetchImpl.mockImplementation(async () => new Response("<html>moved</html>"));
     await expect(run()).rejects.toThrow(/header/);
     fetchImpl.mockImplementation(async () => new Response("", { status: 404 }));
@@ -53,7 +55,7 @@ describe("eibi:snapshot", () => {
       [async () => new Response("", { status: 503 }), /HTTP 503/],
       [
         async () => new Response("   IV) Transmitter site codes.\r\n   B:   Brasília 15S47-47W55"),
-        /under 80% of the last good table's 2/,
+        /under 80% of the largest good table's 2/,
       ],
     ] as const) {
       const { json, sitesError } = await snapshot("b26", csvOk(readme) as unknown as typeof fetch, bundled);
@@ -63,6 +65,53 @@ describe("eibi:snapshot", () => {
     // The season's own file failing still fails the run.
     const csvDown = vi.fn(async () => new Response("", { status: 404 }));
     await expect(snapshot("b26", csvDown as unknown as typeof fetch, bundled)).rejects.toThrow(/404/);
+  });
+
+  // Value: protects=each download gives up after the timeout, the body read included: a README that stalls keeps the bundled sites and still saves the season, while a schedule that stalls fails the run instead of saving a partial snapshot; fails_when=a fetch has no timeout (the job hangs until GitHub's six-hour limit), the signal doesn't reach the body read, or a stalled README fails the season; why_new=#72 follow-up TODO (owner D5); seam=fetch (a fake that stalls until its signal aborts); no_claim=real network stalls, or the 30 s value
+  it("gives up on a download that stalls", async () => {
+    expect(SNAPSHOT_FETCH_TIMEOUT_MS).toBe(30_000);
+    const file = `${HEADER}\r\n9580;0000-2400;;B;Rádio Nacional;P;SAm;;1;;\r\n`;
+    const bundled = sitesFromJson({ B: { country: "B", coords: [[-15.8, -47.9]] } });
+    const stalled = (signal: AbortSignal) =>
+      new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+    // Headers arrive, then the body never finishes.
+    const stalledBody = (signal: AbortSignal) =>
+      new Response(new ReadableStream({ start: (c) => signal.addEventListener("abort", () => c.error(signal.reason)) }));
+    for (const readme of [stalled, stalledBody]) {
+      const fetchImpl = vi.fn(async (url: string, init: RequestInit) =>
+        url.endsWith("README.TXT") ? readme(init.signal!) : new Response(Buffer.from(file, "latin1")),
+      );
+      const { json, sitesError } = await snapshot("b26", fetchImpl as unknown as typeof fetch, bundled, 20);
+      expect(sitesError).toMatch(/timeout|aborted/i);
+      expect(JSON.parse(json)).toEqual({ season: "b26", csv: file, sites: sitesToJson(bundled) });
+    }
+    const csvStalled = vi.fn(async (_url: string, init: RequestInit) => stalled(init.signal!));
+    await expect(snapshot("b26", csvStalled as unknown as typeof fetch, bundled, 20)).rejects.toThrow(/timeout|aborted/i);
+  });
+
+  // Value: protects=a response far larger than EiBi's real files is refused instead of buffered whole: an oversized README keeps the bundled sites, an oversized schedule fails the run; fails_when=the script reads bodies with no size cap (a huge or endless body exhausts the runner's memory); why_new=#72 follow-up, /ship Step 11 outside-voice finding (owner D10); seam=fetch; no_claim=the exact 3 MB value, or memory behaviour on GitHub's runners
+  it("refuses a download larger than EiBi's files", async () => {
+    expect(SNAPSHOT_MAX_BYTES).toBe(3_000_000);
+    const file = `${HEADER}\r\n9580;0000-2400;;B;Rádio Nacional;P;SAm;;1;;\r\n`;
+    const bundled = sitesFromJson({ B: { country: "B", coords: [[-15.8, -47.9]] } });
+    const huge = () => new Response(Buffer.alloc(SNAPSHOT_MAX_BYTES + 1, 0x20));
+    const readmeHuge = vi.fn(async (url: string) => (url.endsWith("README.TXT") ? huge() : new Response(Buffer.from(file, "latin1"))));
+    const { json, sitesError } = await snapshot("b26", readmeHuge as unknown as typeof fetch, bundled);
+    expect(sitesError).toMatch(/README\.TXT is larger than expected/);
+    expect(JSON.parse(json)).toEqual({ season: "b26", csv: file, sites: sitesToJson(bundled) });
+    const csvHuge = vi.fn(async () => huge());
+    await expect(snapshot("b26", csvHuge as unknown as typeof fetch, bundled)).rejects.toThrow(/sked-b26\.csv is larger than expected/);
+  });
+
+  // Value: protects=the seasonal PR shows the bundled table's site count and the new one's, and an open PR's body is refreshed (with the same composed text) when a rerun pushes to it; fails_when=a shrinking table is invisible in review, the workflow stops passing the counts, or a rerun leaves the PR describing an older commit; why_new=#72 follow-up TODO and review note (owner D5); seam=reads .github/workflows/eibi-snapshot.yml as text; no_claim=GitHub accepting the edit
+  it("puts the site counts in the PR and refreshes an open PR's body", () => {
+    expect(siteCountsOutput(1698, 1690)).toBe("site_counts=Transmitter sites: 1,698 → 1,690.\n");
+    expect(siteCountsOutput(undefined, 1690)).toBe("site_counts=Transmitter sites: 1,690 (none bundled before).\n");
+    const workflow = readFileSync(new URL("../../.github/workflows/eibi-snapshot.yml", import.meta.url), "utf8");
+    expect(workflow).toContain("SITE_COUNTS: ${{ steps.snapshot.outputs.site_counts }}");
+    expect(workflow).toMatch(/body="[^"]*\$checked \$SITE_COUNTS/);
+    expect(workflow).toContain('gh pr create --head "$branch" --base "$BASE" --title "$title" --body "$body"');
+    expect(workflow).toContain('gh pr edit "$branch" --body "$body"');
   });
 
   // Value: protects=a kept site table is visible in GitHub: a ::warning:: annotation on the run, and a one-line sites_note step output the workflow puts in the PR body instead of claiming both files were refreshed; fails_when=a README that keeps failing only leaves a plain log line, a multi-line reason breaks the step output, or the workflow stops passing the note; why_new=#72 /ship review (owner: fix now); seam=reads .github/workflows/eibi-snapshot.yml as text; no_claim=GitHub rendering the annotation
