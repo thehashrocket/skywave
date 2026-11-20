@@ -2,7 +2,18 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { unzipFile } from "@/server/unzip";
 import { BEACONS } from "./ibp";
-import { countBeaconSpots, dayBefore, quietBeacons, RBN_DAY_URL, RBN_MIN_DAY_SPOTS, rbnDayFor, type RbnDay } from "./rbn";
+import {
+  countBeaconSpots,
+  dayBefore,
+  maidenhead,
+  parseSkimmerList,
+  quietBeacons,
+  RBN_DAY_URL,
+  RBN_MIN_DAY_SPOTS,
+  RBN_MIN_SKIMMERS,
+  rbnDayFor,
+  type RbnDay,
+} from "./rbn";
 
 // A sample of RBN's real file for 2026-11-18: ordinary and BEACON-mode spots,
 // every 40th NCDXF B spot, and each beacon's last one (VR2B and YV5B had none).
@@ -77,5 +88,77 @@ describe("days", () => {
     expect(rbnDayFor(Date.parse("2026-11-19T23:59:59Z"))).toBe("2026-11-18");
     expect(dayBefore("2026-03-01")).toBe("2026-02-28");
     expect(RBN_DAY_URL("2026-11-18")).toBe("https://data.reversebeacon.net/rbn_history/20261118.zip");
+  });
+});
+
+// Four rows of RBN's real skimmer list, 2026-11-19 (status.php?t=skt), plus
+// rows made in the same shape to reach the floor.
+const SKIMMERS = readFileSync(new URL("./fixtures/rbn-skimmers-20261119-sample.html", import.meta.url), "utf8");
+const skimmerRow = (call: string, grid: string, seconds: number, bands = "20m") =>
+  `<tr class="online"><td><a href="/dxsd1.php?f=0&c=${call}&t=de">${call}</a></td><td class="right">${bands}</td>` +
+  `<td>${grid}</td><td><a href="/dxsd1.php?t=x&id_dxcc_de=1&de=dxcc">ZZ</a></td>` +
+  `<td><a href="/dxsd1.php?t=x&id_cont_de=EU&de=dxcc">EU</a></td><td><a href="/dxsd1.php?t=x&id_itu_z_de=1">1</a></td>` +
+  `<td><a href="/dxsd1.php?t=x&id_cq_z_de=1">1</a></td><td><b class="hide">0001000000</b> 11 days ago</td>` +
+  `<td><b class="hide">${String(seconds).padStart(10, "0")}</b> online</td></tr>`;
+const filler = (n: number, grid = "JO22AB") =>
+  Array.from({ length: n }, (_, i) => skimmerRow(`F${i.toString(36).toUpperCase()}1X`, grid, 60)).join("\n");
+const FETCHED = Date.parse("2026-11-19T01:30:00Z");
+
+describe("RBN skimmer list", () => {
+  // Value: protects=each skimmer's callsign, bands, grid (upper-cased) and last-seen time come out of RBN's real rows, with last seen as fetch time minus the page's seconds-ago; fails_when=a cell shifts, a grid keeps RBN's lower case, the seconds are added or kept relative, or a slash/dash callsign or empty band list is dropped; why_new=#61 D14 skimmer snapshots; seam=none; no_claim=whether operators typed the right grid
+  it("reads RBN's rows", () => {
+    const skimmers = parseSkimmerList(SKIMMERS + filler(RBN_MIN_SKIMMERS), FETCHED);
+    expect(skimmers.slice(0, 4)).toEqual([
+      { call: "HA5E", grid: "JN86QQ", bands: ["40m", "80m"], lastSeen: FETCHED - 2_000 },
+      { call: "VE2SUS", grid: "FN35DL", bands: ["40m"], lastSeen: FETCHED - 4_000 },
+      { call: "ON6URE-2", grid: "JO11JD", bands: ["40m", "80m"], lastSeen: FETCHED - 5_000 },
+      { call: "DK8NE/0", grid: "JO50AL", bands: [], lastSeen: FETCHED - 7_000 },
+    ]);
+    expect(skimmers).toHaveLength(4 + RBN_MIN_SKIMMERS);
+  });
+
+  // Value: protects=an operator-typed grid that isn't a 4-, 6- or 8-character Maidenhead locator is kept as null (the callsign still listed), an 8-character one is kept to its 6-character square, and a callsign listed twice keeps its most recent row; fails_when=a bad grid is saved as a location, a valid extended locator is lost, drops the skimmer, or a stale duplicate wins; why_new=#61 D14 plan Section 1 #4, /ship Step 11 (owner D6); seam=none; no_claim=a valid but wrong grid
+  it("keeps only real locators, and the latest row per callsign", () => {
+    expect(["FN35dl", " jn86 ", "JN86qq42", "XX99", "JN8", "JN86QQ1", "JN86QQ4", ""].map(maidenhead)).toEqual([
+      "FN35DL",
+      "JN86",
+      "JN86QQ",
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
+    const skimmers = parseSkimmerList(
+      [skimmerRow("W1BAD", "nowhere", 10), skimmerRow("K1DUP", "FN42AA", 500), skimmerRow("K1DUP", "FN42BB", 20), filler(RBN_MIN_SKIMMERS)].join("\n"),
+      FETCHED,
+    );
+    expect(skimmers.find((s) => s.call === "W1BAD")).toEqual({ call: "W1BAD", grid: null, bands: ["20m"], lastSeen: FETCHED - 10_000 });
+    expect(skimmers.filter((s) => s.call === "K1DUP")).toEqual([
+      { call: "K1DUP", grid: "FN42BB", bands: ["20m"], lastSeen: FETCHED - 20_000 },
+    ]);
+  });
+
+  // Value: protects=a page that isn't RBN's list (error page, a row missing a cell, columns moved, a row whose callsign or last-seen seconds can't be read, too few skimmers with a usable grid) throws instead of becoming a day's list, including a reordered table whose rows still have 9 cells; fails_when=a partial or reshuffled page is saved, freezing that day with wrong or empty locations, or a blank callsign or NaN last-seen is saved; why_new=#61 D14, outside voice OV3; the callsign/last-seen rows were added by the /ship coverage audit; seam=none; no_claim=a layout change that keeps every column's link and meaning but changes the grid's format
+  it("refuses a page that isn't the whole list", () => {
+    expect(() => parseSkimmerList("<html>Service unavailable</html>", FETCHED)).toThrow(/0 skimmers with a usable grid/);
+    const short = filler(RBN_MIN_SKIMMERS).replace("<td>JO22AB</td>", "");
+    expect(() => parseSkimmerList(short, FETCHED)).toThrow(/expected columns/);
+    // The two time columns swapped: last seen would read older than first seen.
+    const swapped = filler(RBN_MIN_SKIMMERS).replace("0001000000</b> 11 days ago", "0000000001</b> 1 s ago");
+    expect(() => parseSkimmerList(swapped, FETCHED)).toThrow(/older than its first-seen/);
+    // Cut off partway through the last row.
+    const cut = filler(RBN_MIN_SKIMMERS + 1);
+    expect(() => parseSkimmerList(cut.slice(0, cut.lastIndexOf("</td>")), FETCHED)).toThrow(/partway through a row/);
+    const moved = filler(RBN_MIN_SKIMMERS).replace("id_cont_de=", "id_itu_z_de=");
+    expect(() => parseSkimmerList(moved, FETCHED)).toThrow(/expected columns/);
+    const noLastSeen = filler(RBN_MIN_SKIMMERS).replace('<b class="hide">0000000060</b> online', "online");
+    expect(() => parseSkimmerList(noLastSeen, FETCHED)).toThrow(/callsign or last-seen time can't be read/);
+    const noCall = [skimmerRow("", "JO22AB", 60), filler(RBN_MIN_SKIMMERS)].join("\n");
+    expect(() => parseSkimmerList(noCall, FETCHED)).toThrow(/callsign or last-seen time can't be read/);
+    expect(() => parseSkimmerList(filler(RBN_MIN_SKIMMERS, "nowhere"), FETCHED)).toThrow(
+      new RegExp(`0 skimmers with a usable grid, under ${RBN_MIN_SKIMMERS}`),
+    );
+    expect(parseSkimmerList(filler(RBN_MIN_SKIMMERS), FETCHED)).toHaveLength(RBN_MIN_SKIMMERS);
   });
 });

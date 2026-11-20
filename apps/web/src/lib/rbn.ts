@@ -16,6 +16,13 @@
  * beacon can go unspotted for 16 hours just from propagation (checked
  * against RBN's files for 2026-11-15 and 2026-11-18). A day with few beacon
  * spots overall is RBN's own outage, so it marks nothing.
+ *
+ * Also RBN's skimmer list (#61, owner decision D14): where each skimmer is.
+ * The daily file names skimmers by callsign only, and RBN publishes their
+ * grids only as a live list (status.php?t=skt, the table behind its map,
+ * covering skimmers seen in the last 7 days) with no history. The server
+ * saves it twice a day (server/routers/beacons.ts, from a Vercel cron) so
+ * the #61 replay can place each day's spotters.
  */
 
 import { BEACONS, IBP_BANDS_KHZ } from "./ibp";
@@ -101,4 +108,86 @@ export function countBeaconSpots(csv: string, day: string): RbnDay {
 export function quietBeacons(day: RbnDay | null | undefined): ReadonlySet<string> {
   if (!day || day.total < RBN_MIN_DAY_SPOTS) return new Set();
   return new Set(day.beacons.filter((b) => b.spots === 0).map((b) => b.call));
+}
+
+/** RBN's live skimmer list: an HTML table, one row per skimmer seen in the last 7 days. */
+export const RBN_SKIMMERS_URL = "https://www.reversebeacon.net/cont_includes/status.php?t=skt";
+
+/**
+ * Fewer skimmers with a usable grid than this and the page is broken or not
+ * the list: the 2026-11-19 list had 350, every grid valid.
+ */
+export const RBN_MIN_SKIMMERS = 100;
+
+/** One skimmer as the list gives it: grid null when RBN's isn't a Maidenhead locator. */
+export type Skimmer = { call: string; grid: string | null; bands: string[]; lastSeen: number };
+
+const ROW = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+const CELL = /<td[^>]*>([\s\S]*?)<\/td>/g;
+// 4, 6 or 8 characters; an 8-character (extended) square is kept to its 6-character subsquare.
+const LOCATOR = /^[A-R]{2}[0-9]{2}(?:[A-X]{2}(?:[0-9]{2})?)?$/;
+// Each data cell links a filter on that column; checking them tells a moved
+// or renamed column from a valid one, since the table has no header row.
+const CELL_MARKS: [number, string][] = [
+  [0, "t=de"],
+  [3, "id_dxcc_de="],
+  [4, "id_cont_de="],
+  [5, "id_itu_z_de="],
+  [6, "id_cq_z_de="],
+];
+
+const HIDDEN_SECONDS = /<b class="hide">\s*(\d+)\s*<\/b>/;
+
+const text = (html: string) => html.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+
+/** A grid as RBN gives it (operators type their own), upper-cased (8 characters kept to 6), or null when it isn't a Maidenhead locator. */
+export function maidenhead(raw: string): string | null {
+  const grid = raw.trim().toUpperCase();
+  return LOCATOR.test(grid) ? grid.slice(0, 6) : null;
+}
+
+/**
+ * The skimmers in RBN's list page, fetched at `fetchedAt` (ms): each row's
+ * callsign, bands, grid and last-seen time (the page gives it as seconds
+ * before the fetch). Throws if a row isn't the 9 cells RBN's table has, or
+ * its column links don't match, or fewer than RBN_MIN_SKIMMERS skimmers
+ * have a usable grid, so a changed or broken page is never saved as a day.
+ */
+export function parseSkimmerList(html: string, fetchedAt: number): Skimmer[] {
+  const byCall = new Map<string, Skimmer>();
+  for (const [, row] of html.matchAll(ROW)) {
+    const cells = [...row!.matchAll(CELL)].map((m) => m[1]!);
+    if (cells.length !== 9 || CELL_MARKS.some(([i, mark]) => !cells[i]!.includes(mark)))
+      throw new Error("Not RBN's skimmer list: a row doesn't have the expected columns.");
+    const firstSeen = HIDDEN_SECONDS.exec(cells[7]!);
+    const seconds = HIDDEN_SECONDS.exec(cells[8]!);
+    const call = text(cells[0]!).toUpperCase();
+    if (!firstSeen || !seconds || !/^[A-Z0-9/-]+$/.test(call))
+      throw new Error("Not RBN's skimmer list: a row's callsign or last-seen time can't be read.");
+    // First seen can't be more recent than last seen: catches the two time columns swapped.
+    if (Number(seconds[1]) > Number(firstSeen[1]))
+      throw new Error("Not RBN's skimmer list: a row's last-seen time is older than its first-seen time.");
+    const skimmer: Skimmer = {
+      call,
+      grid: maidenhead(text(cells[2]!)),
+      bands: text(cells[1]!)
+        .split(",")
+        .map((b) => b.trim())
+        .filter((b) => /^\d+c?m$/.test(b)),
+      lastSeen: fetchedAt - Number(seconds[1]) * 1000,
+    };
+    // A callsign listed twice keeps its most recent row.
+    const seen = byCall.get(call);
+    if (!seen || skimmer.lastSeen > seen.lastSeen) byCall.set(call, skimmer);
+  }
+  // A page cut off partway leaves its last row unclosed: refuse it rather than
+  // save the rows before the cut as the whole list.
+  const opened = html.match(/<tr[\s>]/g)?.length ?? 0;
+  if (opened !== (html.match(/<\/tr>/g)?.length ?? 0))
+    throw new Error("Not RBN's whole skimmer list: the page ends partway through a row.");
+  const skimmers = [...byCall.values()];
+  const placed = skimmers.filter((s) => s.grid !== null).length;
+  if (placed < RBN_MIN_SKIMMERS)
+    throw new Error(`RBN skimmer list refused: ${placed} skimmers with a usable grid, under ${RBN_MIN_SKIMMERS}.`);
+  return skimmers;
 }

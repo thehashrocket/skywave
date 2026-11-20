@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertRadioTokenGuarded } from "./next.config";
+import { assertCronSecretSet, assertRadioTokenGuarded } from "./next.config";
 
 describe("assertRadioTokenGuarded", () => {
   it("fails a Vercel build with the token and no password", () => {
@@ -26,5 +26,16 @@ describe("assertRadioTokenGuarded", () => {
 
   it("passes a Vercel build with no token", () => {
     expect(() => assertRadioTokenGuarded({ VERCEL: "1" })).not.toThrow();
+  });
+});
+
+describe("assertCronSecretSet", () => {
+  // Value: protects=a Production Vercel build without CRON_SECRET fails loudly instead of deploying a cron route that refuses every run (each lost skimmer day is unrecoverable), while previews and local builds still pass; fails_when=the guard is removed, checks the wrong environment, or accepts an empty value; why_new=/ship Step 11, both Codex passes (owner D5); seam=none; no_claim=Vercel exposing the variable at build time
+  it("fails only a Production build without the secret", () => {
+    expect(() => assertCronSecretSet({ VERCEL_ENV: "production", CRON_SECRET: "" })).toThrow(/CRON_SECRET/);
+    expect(() => assertCronSecretSet({ VERCEL_ENV: "production" })).toThrow(/CRON_SECRET/);
+    expect(() => assertCronSecretSet({ VERCEL_ENV: "production", CRON_SECRET: "s" })).not.toThrow();
+    expect(() => assertCronSecretSet({ VERCEL_ENV: "preview" })).not.toThrow();
+    expect(() => assertCronSecretSet({})).not.toThrow();
   });
 });
