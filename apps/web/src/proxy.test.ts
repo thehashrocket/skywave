@@ -20,6 +20,14 @@ describe("proxy", () => {
     expect(passedThrough(await proxy(request("/api/trpc/presets.delete")))).toBe(true);
   });
 
+  // Value: protects=Vercel's cron, which sends its own bearer secret and never the site password, still reaches /api/cron/ routes on a password-locked Production (each route checks CRON_SECRET itself), while every other path, including look-alikes, still asks for the password; fails_when=the gate 401s the cron (skimmer days lost for good) or the exemption leaks to other paths such as /api/cronx or /api/trpc; why_new=#61 skimmer snapshots, owner decision D1 in /ship; seam=none; no_claim=the cron route's own secret check (route.test.ts)
+  it("lets Vercel's cron reach /api/cron/ routes, and nothing else, past the password", async () => {
+    vi.stubEnv("APP_PASSWORD", "hunter2");
+    expect(passedThrough(await proxy(request("/api/cron/rbn-skimmers", "Bearer cron-secret")))).toBe(true);
+    for (const path of ["/api/cron", "/api/cronx/rbn-skimmers", "/api/trpc/cron", "/x/api/cron/rbn-skimmers"])
+      expect((await proxy(request(path, "Bearer cron-secret"))).status).toBe(401);
+  });
+
   it.each(["/", "/api/trpc/presets.delete", "/_next/static/chunks/app.js", "/worklets/radio-player.js"])(
     "asks for the password on %s",
     async (path) => {

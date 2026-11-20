@@ -1,15 +1,20 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { sameSecret } from "@/lib/same-secret";
 
 /**
  * Optional password for the whole app: pages, the tRPC API, and the JS bundle
  * that carries NEXT_PUBLIC_RADIO_TOKEN. Off unless APP_PASSWORD is set. Uses
  * HTTP Basic auth; any username works.
  *
- * No `matcher` on purpose, so static assets are covered too.
+ * No `matcher` on purpose, so static assets are covered too. The one
+ * exception is `/api/cron/`: Vercel's cron calls it with its own bearer
+ * secret, never the site password, and each cron route refuses any call
+ * without CRON_SECRET itself. Gating it here too would silently stop the
+ * daily RBN skimmer snapshots whenever Production is password-locked (#61, D1).
  */
 export async function proxy(request: NextRequest) {
   const password = process.env.APP_PASSWORD;
-  if (!password) return NextResponse.next();
+  if (!password || request.nextUrl.pathname.startsWith("/api/cron/")) return NextResponse.next();
   const supplied = basicAuthPassword(request.headers.get("authorization"));
   if (supplied !== null && (await sameSecret(supplied, password))) return NextResponse.next();
   return new NextResponse("Password required.", {
@@ -31,15 +36,4 @@ function basicAuthPassword(header: string | null): string | null {
   }
   const colon = decoded.indexOf(":");
   return colon === -1 ? null : decoded.slice(colon + 1);
-}
-
-/** Constant-time comparison; hashing first makes both sides the same length. */
-async function sameSecret(a: string, b: string): Promise<boolean> {
-  const digest = async (s: string) =>
-    new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)));
-  const ha = await digest(a);
-  const hb = await digest(b);
-  let diff = 0;
-  ha.forEach((byte, i) => (diff |= byte ^ hb[i]!));
-  return diff === 0;
 }

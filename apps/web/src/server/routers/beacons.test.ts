@@ -4,7 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 // The real module opens a Prisma client at import; this router never uses it.
 vi.mock("@/server/db", () => ({ db: {} }));
 
-const { beaconStatusSource, rbnSource } = await import("./beacons");
+const { beaconStatusSource, rbnSource, saveSkimmerDay } = await import("./beacons");
+type SkimmerDay = import("./beacons").SkimmerDay;
+type SkimmerRefusal = import("./beacons").SkimmerRefusal;
+const { RBN_MIN_SKIMMERS, RBN_SKIMMERS_URL } = await import("@/lib/rbn");
+const { gunzipSync } = await import("node:zlib");
 type RbnDay = import("@/lib/rbn").RbnDay;
 const { IBP_FOOTNOTES_URL, IBP_STATUS_URL } = await import("@/lib/ibp-status");
 
@@ -219,5 +223,134 @@ describe("rbnSource", () => {
     const broken = setupRbn();
     broken.store.load.mockRejectedValue(new Error("db down"));
     expect(await broken.peek()).toBeNull();
+  });
+});
+
+describe("saveSkimmerDay", () => {
+  const row = (call: string) =>
+    `<tr><td><a href="/x?c=${call}&t=de">${call}</a></td><td>20m</td><td>jo22ab</td><td><a href="?id_dxcc_de=1">ZZ</a></td>` +
+    `<td><a href="?id_cont_de=EU">EU</a></td><td><a href="?id_itu_z_de=1">1</a></td><td><a href="?id_cq_z_de=1">1</a></td>` +
+    `<td><b class="hide">0000000100</b> 1 day ago</td><td><b class="hide">0000000030</b> online</td></tr>`;
+  const PAGE = Array.from({ length: RBN_MIN_SKIMMERS }, (_, i) => row(`S${i}X`)).join("\n");
+
+  function setupSkimmers(at = "2026-11-20T01:30:00Z") {
+    let clock = Date.parse(at);
+    const days = new Map<string, SkimmerDay>();
+    const refusals: SkimmerRefusal[] = [];
+    const store = {
+      has: vi.fn(async (day: string) => days.has(day)),
+      lastTotal: vi.fn(async () => {
+        const last = [...days.keys()].sort().at(-1);
+        return last ? days.get(last)!.skimmers.length : null;
+      }),
+      save: vi.fn(async (d: SkimmerDay) => {
+        if (!days.has(d.day)) days.set(d.day, d);
+      }),
+      refuse: vi.fn(async (r: SkimmerRefusal) => {
+        refusals.push(r);
+      }),
+      lastShortTotal: vi.fn(async (day: string) => {
+        const short = refusals.filter((r) => r.day === day && r.reason.startsWith("RBN skimmer list refused: under "));
+        return short.at(-1)?.total ?? null;
+      }),
+    };
+    let reply: () => Promise<Response> = async () => new Response(PAGE);
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => reply());
+    const run = () => saveSkimmerDay({ fetchImpl: fetchImpl as unknown as typeof fetch, now: () => clock, store });
+    return {
+      run,
+      days,
+      refusals,
+      store,
+      fetchImpl,
+      clock,
+      nextDay: () => (clock += 24 * 60 * 60_000),
+      serve: (r: () => Promise<Response>) => (reply = r),
+    };
+  }
+
+  // Value: protects=the cron saves today's UTC list once, with the fetch time, the parsed skimmers and the exact page gzipped, and a second run the same day fetches nothing; fails_when=the day key isn't the UTC date of the fetch, the raw page isn't the bytes RBN served, the second run refetches or overwrites, or the fetch drops its redirect guard or timeout; why_new=#61 D14 (D3, D4, D5); seam=fetch, store; no_claim=Postgres's upsert
+  it("saves today's list once, with the page it came from", async () => {
+    const { run, days, fetchImpl, clock } = setupSkimmers();
+    expect(await run()).toEqual({ status: "saved", day: "2026-11-20", total: RBN_MIN_SKIMMERS });
+    expect(fetchImpl.mock.calls[0]![0]).toBe(RBN_SKIMMERS_URL);
+    expect(fetchImpl.mock.calls[0]![1]).toMatchObject({ redirect: "error", signal: expect.any(AbortSignal) });
+    const saved = days.get("2026-11-20")!;
+    expect(saved.fetchedAt).toBe(clock);
+    expect(saved.skimmers[0]).toEqual({ call: "S0X", grid: "JO22AB", bands: ["20m"], lastSeen: clock - 30_000 });
+    expect(gunzipSync(saved.raw).toString("utf8")).toBe(PAGE);
+    expect(await run()).toEqual({ status: "kept", day: "2026-11-20" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  // Value: protects=an RBN error, a broken page or an oversized body throws with nothing saved, so the day stays open and the next run (13:30 UTC) can still save it; fails_when=a failed run marks the day saved, or saves a partial or error page; why_new=#61 D14 (D4 retry run); seam=fetch, store; no_claim=RBN's uptime
+  it("saves nothing when the fetch or page fails, so a later run can", async () => {
+    const { run, days, serve } = setupSkimmers();
+    serve(async () => new Response("down", { status: 503 }));
+    await expect(run()).rejects.toThrow(/HTTP 503/);
+    serve(async () => new Response("<html>maintenance</html>"));
+    await expect(run()).rejects.toThrow(/usable grid/);
+    serve(async () => new Response(Buffer.alloc(2_000_001, 0x20)));
+    await expect(run()).rejects.toThrow(/larger than expected/);
+    expect(days.size).toBe(0);
+    serve(async () => new Response(PAGE));
+    expect(await run()).toMatchObject({ status: "saved" });
+  });
+
+  // Value: protects=a list under 80% of the last saved day's (a page cut off partway) is refused instead of becoming the day's permanent list, and the refused page is kept gzipped with its reason so the day can be parsed again later; an HTTP failure keeps nothing (there's no page); the day stays open for the next run; fails_when=a truncated page is saved, the refused page is dropped, or keeping it marks the day done; why_new=/ship Step 11 Codex adversarial and native findings (owner D3, D4); seam=fetch, store; no_claim=Postgres writes
+  it("refuses a list cut short against the last saved day, and keeps every refused page", async () => {
+    const { run, days, refusals, serve } = setupSkimmers();
+    const page = (n: number) => Array.from({ length: n }, (_, i) => row(`B${i}X`)).join("\n");
+    days.set("2026-11-19", { day: "2026-11-19", fetchedAt: 0, skimmers: Array(200).fill(null), raw: new Uint8Array() });
+    serve(async () => new Response(PAGE)); // 100 skimmers: under 80% of 200
+    await expect(run()).rejects.toThrow(/under 80% of the last saved day's 200 skimmers \(100\)/);
+    expect(days.has("2026-11-20")).toBe(false);
+    expect(refusals[0]).toMatchObject({ day: "2026-11-20", total: 100 });
+    expect(gunzipSync(refusals[0]!.raw).toString("utf8")).toBe(PAGE);
+    // A second refusal the same day is kept beside the first, not over it.
+    serve(async () => new Response("<html>maintenance</html>"));
+    await expect(run()).rejects.toThrow(/usable grid/);
+    expect(refusals.map((r) => [r.total, gunzipSync(r.raw).toString("utf8").slice(0, 6)])).toEqual([
+      [100, PAGE.slice(0, 6)],
+      [null, "<html>"],
+    ]);
+    serve(async () => new Response("down", { status: 503 }));
+    await expect(run()).rejects.toThrow(/HTTP 503/);
+    expect(refusals).toHaveLength(2); // no page, nothing to keep
+    serve(async () => new Response(page(200)));
+    expect(await run()).toEqual({ status: "saved", day: "2026-11-20", total: 200 });
+  });
+
+  // Value: protects=a real, lasting drop in RBN's list is taken on the second day it agrees (within 10% of the day before's refused count), so one drop can't refuse every day after it, while a day whose refused neighbour disagrees is still refused as a cut-off page; fails_when=a refused day never lets the bar fall (permanent lockout), or any shrink is accepted at once; why_new=/ship pass 2 specialist + Red Team, owner D7; seam=fetch, store; no_claim=how fast RBN's real list moves
+  it("takes a real drop once the day before agrees", async () => {
+    const { run, days, nextDay, serve } = setupSkimmers();
+    const page = (n: number) => Array.from({ length: n }, (_, i) => row(`D${i}X`)).join("\n");
+    days.set("2026-11-19", { day: "2026-11-19", fetchedAt: 0, skimmers: Array(300).fill(null), raw: new Uint8Array() });
+    serve(async () => new Response(page(200)));
+    await expect(run()).rejects.toThrow(/under 80%/); // day 1 of the drop: could be a cut-off page
+    nextDay();
+    serve(async () => new Response(page(150)));
+    await expect(run()).rejects.toThrow(/under 80%/); // 150 vs 200 the day before: disagrees by more than 10%
+    nextDay();
+    serve(async () => new Response(page(140)));
+    expect(await run()).toEqual({ status: "saved", day: "2026-11-22", total: 140 }); // 140 vs 150: agrees
+  });
+
+  // Value: protects=a database error reading the last total is reported as itself and not stored as a page refusal, a good page whose save fails is still kept (if the database takes it), and a failure keeping a refused page still reports the page's own reason; fails_when=an outage is filed as a refusal, a parsed page is dropped on a failed save, or the 502 reason becomes the store's error; why_new=/ship pass 2 Red Team + specialist, owner D7; seam=fetch, store; no_claim=Prisma's error types
+  it("keeps database failures apart from page refusals", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let s = setupSkimmers();
+    s.store.lastTotal.mockRejectedValueOnce(new Error("db down"));
+    await expect(s.run()).rejects.toThrow(/db down/);
+    expect(s.store.refuse).not.toHaveBeenCalled();
+    s = setupSkimmers();
+    s.store.save.mockRejectedValueOnce(new Error("write failed"));
+    await expect(s.run()).rejects.toThrow(/write failed/);
+    expect(s.refusals[0]).toMatchObject({ reason: "Not saved: write failed", total: RBN_MIN_SKIMMERS });
+    s = setupSkimmers();
+    s.store.refuse.mockRejectedValueOnce(new Error("db down"));
+    s.serve(async () => new Response("<html>maintenance</html>"));
+    await expect(s.run()).rejects.toThrow(/usable grid/);
+    expect(warn).toHaveBeenCalledWith("cron.rbn-skimmers: couldn't keep the page:", expect.any(Error));
   });
 });

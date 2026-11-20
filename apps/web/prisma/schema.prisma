@@ -109,6 +109,43 @@ model ReceptionReport {
   @@index([listenerId, createdAt])
 }
 
+model RbnSkimmerDay {
+  /// "YYYY-MM-DD", UTC: the day the list was fetched. RBN publishes only a
+  /// live list of skimmers (seen in the last 7 days) with no history, so the
+  /// #61 replay joins each day's spots to the nearest saved list.
+  day       String   @id
+  createdAt DateTime @default(now())
+  /// When the list was fetched; each skimmer's lastSeen is measured from it.
+  fetchedAt DateTime
+  /// How many skimmers the list held.
+  total     Int
+  /// [{ call, grid (upper-case Maidenhead, or null when RBN's isn't one),
+  /// bands, lastSeen (ms since the epoch) }], as lib/rbn.ts parses them.
+  skimmers  Json
+  /// The page exactly as RBN served it, gzipped, so any day can be parsed
+  /// again after a parser fix or for fields not kept above.
+  raw       Bytes
+}
+
+/// Every page RBN served that wasn't saved as a day (#61): refused by the
+/// parser or the 80% rule, or parsed but not written. Kept so the day can be
+/// parsed again after a fix. A refusal doesn't mark the day done, so the next
+/// cron run still tries; once a run saves the day, RbnSkimmerDay is its record
+/// and its refusals here are only history.
+model RbnSkimmerRefusal {
+  /// "YYYY-MM-DD", UTC: the day the page was fetched.
+  day       String
+  fetchedAt DateTime
+  /// Why it wasn't saved.
+  reason    String
+  /// How many skimmers it parsed to; null when it didn't parse.
+  total     Int?
+  /// The page exactly as RBN served it, gzipped.
+  raw       Bytes
+
+  @@id([day, fetchedAt])
+}
+
 /// One UTC day of the Reverse Beacon Network's IBP spots (#69 v2): how many
 /// times its skimmers spotted each beacon. Fetched once, by whichever server
 /// first needs the day after 01:00 UTC, from RBN's daily file.

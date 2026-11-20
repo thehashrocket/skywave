@@ -20,7 +20,24 @@ export function assertRadioTokenGuarded(env: Record<string, string | undefined>)
   }
 }
 
+/**
+ * Fails a Production Vercel build without CRON_SECRET: Vercel's cron would
+ * then call /api/cron/rbn-skimmers without a secret, every run would be
+ * refused, and each day's RBN skimmer list would be lost for good (RBN keeps
+ * no history). Previews and local builds pass.
+ */
+export function assertCronSecretSet(env: Record<string, string | undefined>): void {
+  if (env.VERCEL_ENV === "production" && !env.CRON_SECRET) {
+    throw new Error(
+      "CRON_SECRET is not set for Production, so every daily RBN skimmer snapshot " +
+        "(/api/cron/rbn-skimmers) would be refused and lost. Add it under the project's " +
+        "Production environment variables in Vercel, then redeploy.",
+    );
+  }
+}
+
 assertRadioTokenGuarded(process.env);
+assertCronSecretSet(process.env);
 
 const config: NextConfig = {
   reactStrictMode: true,
