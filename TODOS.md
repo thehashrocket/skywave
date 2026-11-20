@@ -82,11 +82,16 @@
 
 **Why:** If the #61 replay shows that spots near a receiver predict "heard" better than today's order, the ranking still needs spots live. The replay alone ships nothing.
 
-**Context:** Owner D7 in the #61 eng review (2026-11-18). Start only after the #61 replay passes its pre-registered bar (D1, D4); a pass also says which source earns the work. RBN live goes through #69's single connection in the radio service once its login question is settled. wspr.live (https://wspr.live/) is a free, non-commercial research service with no availability promise: use it only as a cached, rate-limited poll, and fall back to today's order when it's down or slow. A WSPR spot counts only when both ends match: transmitter near the station or beacon, receiver near the Kiwi.
+**Context:** Owner D7 in the #61 eng review (2026-11-18). Start only after the #61 replay passes its pre-registered bar (D1, D4); a pass also says which source earns the work. The re-review (2026-11-20) tightened that bar and added a fork:
+- **Pass means a lift of at least 0.03 AUC** (D10), not only a lower bound above 0. A smaller real lift is written up as too small to build on, and this item stays closed.
+- **Live or daily** (D11): the replay also scores yesterday's spots at the same time of day. If they come within 0.01 AUC of fresh spots, build this as a daily batch from RBN's daily file (`RBN_DAY_URL` in `apps/web/src/lib/rbn.ts`, no login) instead of a live feed, and #69's login stops being a dependency.
+- **Kiwi-own reports** (D12): if the Step 1 freeze adds a score from Kiwis that report spots themselves (same 6-character grid), wspr.live may be the source instead of RBN.
+
+RBN live goes through #69's single connection in the radio service once its login question is settled. wspr.live (https://wspr.live/) is a free, non-commercial research service with no availability promise: use it only as a cached, rate-limited poll, and fall back to today's order when it's down or slow. A WSPR spot counts only when both ends match: transmitter near the station or beacon, receiver near the Kiwi.
 
 **Effort:** M
 **Priority:** P3
-**Depends on:** #61 replay passing; #69 login (RBN half only)
+**Depends on:** #61 replay passing (D10's 0.03 floor); #69 login (RBN live half only, not needed for the daily-batch path)
 
 ### Rank receivers for a broadcaster by transmitter site (#72)
 
