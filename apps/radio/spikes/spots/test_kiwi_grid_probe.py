@@ -129,18 +129,22 @@ def test_cli_counts_matches_and_marks_wspr_skipped(tmp_path):
     assert "k1:8073 FN31PR rbn (5 answers)" in out
 
 
-# Value: protects=a CSV with the wrong columns or a short row is counted as skipped, not a crash; fails_when=KeyError or TypeError escapes load_receivers; why_new=only blank/out-of-range rows were tested; seam=none; no_claim=other export shapes
-@pytest.mark.parametrize(
-    "text",
-    [
-        "rx,lat,lon,answers\nk1:8073,41.714775,-72.72726,5\n",  # wrong header -> KeyError
-        "receiver,lat,lon,answers\nk1:8073,41.714775\n",  # short row -> None fields, TypeError
-    ],
-)
-def test_load_receivers_skips_malformed_rows(tmp_path, text):
+# Value: protects=a short row is counted as skipped, not a crash; fails_when=TypeError escapes load_receivers; why_new=only blank/out-of-range rows were tested; seam=none; no_claim=other export shapes
+def test_load_receivers_skips_a_short_row(tmp_path):
     p = tmp_path / "r.csv"
-    p.write_text(text)
+    p.write_text("receiver,lat,lon,answers\nk1:8073,41.714775\n")  # None fields -> TypeError
     assert load_receivers(p) == ([], 1)
+
+
+# Value: protects=a CSV without block 9's columns is refused (exit 2), not read as 0 of 0; fails_when=the header check is dropped; why_new=Step 11 structured review (P3); seam=none; no_claim=none beyond protects
+def test_main_refuses_a_csv_without_the_columns(tmp_path, capsys):
+    receivers = tmp_path / "r.csv"
+    receivers.write_text("rx,lat,lon,answers\nk1:8073,41.714775,-72.72726,5\n")
+    skimmers = tmp_path / "s.json"
+    skimmers.write_text(json.dumps(FILLER))
+    assert kiwi_grid_probe.main(["--receivers", str(receivers), "--skimmers", str(skimmers), "--no-wspr"]) == 2
+    out = capsys.readouterr()
+    assert out.out == "" and "no receiver column" in out.err
 
 
 def _inputs(tmp_path, csv_text):
@@ -262,3 +266,31 @@ def test_wspr_garbled_error_or_cut_reply_is_missing(tmp_path, monkeypatch, reply
     monkeypatch.setattr(kiwi_grid_probe, "WSPR_ROW_LIMIT", 3)
     assert wspr_grids(7, cache_dir=tmp_path) is None
     assert not list(tmp_path.iterdir())
+
+
+# Value: protects=the 100 floor counts skimmers like the web rule, so co-located skimmers on one square still pass; fails_when=the floor counts unique squares again; why_new=Step 11 (native + Codex); seam=none; no_claim=RBN's real site density
+def test_skimmer_floor_counts_skimmers_not_squares(tmp_path):
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps([{"call": f"K{i}", "grid": "FN31PR"} for i in range(100)]))
+    assert skimmer_grids(p) == {"FN31PR"}
+
+
+# Value: protects=a missing --skimmers file exits 2 with a reason, as documented; fails_when=main catches only ValueError; why_new=Step 11 native review; seam=none; no_claim=none beyond protects
+def test_main_missing_skimmers_file_exits_2(tmp_path, capsys):
+    receivers = tmp_path / "r.csv"
+    receivers.write_text("receiver,lat,lon,answers\n")
+    assert kiwi_grid_probe.main(["--receivers", str(receivers), "--skimmers", str(tmp_path / "nope.json"), "--no-wspr"]) == 2
+    assert "--skimmers" in capsys.readouterr().err
+
+
+# Value: protects=an unreadable cache is refetched, and a cache that can't be written still returns the fetched grids; fails_when=a cache OSError escapes wspr_grids; why_new=Step 11 (Codex adversarial #2, #3); seam=none (monkeypatches _fetch); no_claim=disk-full timing
+def test_cache_read_and_write_failures_never_cost_the_run(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(kiwi_grid_probe, "_fetch", lambda url: "FN31PR\n")
+    unreadable = tmp_path / "a"
+    (unreadable / f"wspr-rx-grids-7d-{datetime.now(timezone.utc):%Y-%m-%d}.tsv").mkdir(parents=True)  # a directory: read fails
+    assert wspr_grids(7, cache_dir=unreadable) == {"FN31PR"}
+    unwritable = tmp_path / "b"
+    unwritable.write_text("a file where the cache directory should be")
+    assert wspr_grids(7, cache_dir=unwritable) == {"FN31PR"}

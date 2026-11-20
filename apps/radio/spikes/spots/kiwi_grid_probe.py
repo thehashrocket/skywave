@@ -32,6 +32,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -43,9 +44,11 @@ CACHE_DIR = Path.home() / ".cache" / "skywave-spike"
 FETCH_TIMEOUT_S = 60
 # More rows than this and the reply may have been cut at the query's LIMIT.
 WSPR_ROW_LIMIT = 200_000
-# The same floor as RBN_MIN_SKIMMERS in apps/web/src/lib/rbn.ts: fewer usable
-# grids than this means the wrong file or shape, not a quiet day.
-MIN_SKIMMER_GRIDS = 100
+# The same floor as RBN_MIN_SKIMMERS in apps/web/src/lib/rbn.ts, counted the same
+# way (skimmers with a usable grid, before co-located ones collapse to one square):
+# fewer means the wrong file or shape, not a quiet day.
+MIN_SKIMMERS = 100
+RECEIVER_COLUMNS = ("receiver", "lat", "lon", "answers")
 # The same locator rule as maidenhead() in apps/web/src/lib/rbn.ts: 4, 6 or 8
 # characters, field letters A-R, subsquare letters A-X. Only 6 and 8 can match.
 LOCATOR = re.compile(r"[A-R]{2}[0-9]{2}(?:[A-X]{2}(?:[0-9]{2})?)?")
@@ -76,11 +79,17 @@ def grid6(lat: float, lon: float) -> str:
 
 
 def load_receivers(path: Path) -> tuple[list[Receiver], int]:
-    """The CSV's receivers with a usable position, and how many rows were skipped."""
+    """The CSV's receivers with a usable position, and how many rows were skipped.
+    Raises ValueError when the header lacks a column, so a wrong file isn't read as
+    every row skipped."""
     out: list[Receiver] = []
     skipped = 0
     with path.open(newline="") as f:
-        for row in csv.DictReader(f):
+        rows = csv.DictReader(f)
+        missing = [c for c in RECEIVER_COLUMNS if c not in (rows.fieldnames or [])]
+        if missing:
+            raise ValueError(f"not block 9's export: no {', '.join(missing)} column")
+        for row in rows:
             try:
                 out.append(Receiver(row["receiver"], grid6(float(row["lat"]), float(row["lon"])), int(row["answers"])))
             except (KeyError, TypeError, ValueError):
@@ -98,8 +107,8 @@ def skimmer_grids(path: Path) -> set[str]:
     """6-character grids of the skimmers in RBN's detail list or one RbnSkimmerDay row
     (as exported: a row, a list holding one row, or its `skimmers` column). Shorter or
     malformed grids are left out. Raises ValueError for any other shape, several days'
-    rows, or fewer than MIN_SKIMMER_GRIDS usable grids, so a wrong file is never read
-    as zero matches."""
+    rows, or fewer than MIN_SKIMMERS skimmers with a usable grid, so a wrong file is
+    never read as zero matches."""
     data = json.loads(path.read_text())
     if isinstance(data, list) and data and all(isinstance(x, dict) and "skimmers" in x for x in data):
         if len(data) != 1:
@@ -113,10 +122,10 @@ def skimmer_grids(path: Path) -> set[str]:
             data = json.loads(data)
     if not isinstance(data, list):
         raise ValueError("not a skimmer list")
-    grids = {g for s in data if isinstance(s, dict) and (g := six(s.get("grid")))}
-    if len(grids) < MIN_SKIMMER_GRIDS:
-        raise ValueError(f"only {len(grids)} usable skimmer grids (fewer than {MIN_SKIMMER_GRIDS}): wrong file?")
-    return grids
+    placed = [g for s in data if isinstance(s, dict) and (g := six(s.get("grid")))]
+    if len(placed) < MIN_SKIMMERS:
+        raise ValueError(f"only {len(placed)} skimmers with a usable grid (fewer than {MIN_SKIMMERS}): wrong file?")
+    return set(placed)
 
 
 def parse_wspr_grids(text: str) -> set[str]:
@@ -130,8 +139,12 @@ def wspr_grids(days: int, cache_dir: Path = CACHE_DIR) -> set[str] | None:
     source, never an empty or partial one."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     cache = cache_dir / f"wspr-rx-grids-{days}d-{today}.tsv"
-    if cache.exists() and (cached := parse_wspr_grids(cache.read_text())):
-        return cached  # an empty cache (an interrupted write) falls through to a fetch
+    try:
+        cached = parse_wspr_grids(cache.read_text()) if cache.exists() else set()
+    except (OSError, ValueError):  # unreadable or not UTF-8: fetch again
+        cached = set()
+    if cached:
+        return cached  # an empty or unreadable cache (an interrupted write) falls through to a fetch
     query = (
         "SELECT DISTINCT rx_loc FROM wspr.rx "
         f"WHERE time > now() - INTERVAL {days} DAY AND length(rx_loc) >= 6 "
@@ -156,11 +169,27 @@ def wspr_grids(days: int, cache_dir: Path = CACHE_DIR) -> set[str] | None:
     if not grids:
         print("wspr.live: source missing (no grids in the reply)", file=sys.stderr)
         return None
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    tmp = cache.with_name(cache.name + ".tmp")
-    tmp.write_text(text)
-    os.replace(tmp, cache)  # never a half-written cache under the day's name
+    _save_cache(cache, text)
     return grids
+
+
+def _save_cache(cache: Path, text: str) -> None:
+    """Best-effort: a cache that can't be written costs a refetch, never the run.
+    A per-run temp file, fsynced and renamed, so the day's name never holds a
+    half-written or interleaved file."""
+    tmp = None
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", dir=cache.parent, prefix=cache.name + ".", suffix=".tmp", delete=False) as f:
+            tmp = f.name
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, cache)
+    except OSError as e:
+        print(f"wspr.live: cache not saved ({e})", file=sys.stderr)
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
 
 
 def _fetch(url: str) -> str:
@@ -209,10 +238,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--list", action="store_true", help="also print each matched receiver")
     args = ap.parse_args(argv)
 
-    receivers, skipped = load_receivers(args.receivers)
+    try:
+        receivers, skipped = load_receivers(args.receivers)
+    except (OSError, ValueError) as e:
+        print(f"--receivers {args.receivers}: {e}", file=sys.stderr)
+        return 2
     try:
         rbn = skimmer_grids(args.skimmers)
-    except ValueError as e:  # json.JSONDecodeError included
+    except (OSError, ValueError) as e:  # a missing file, json.JSONDecodeError included
         print(f"--skimmers {args.skimmers}: {e}", file=sys.stderr)
         return 2
     wspr = None if args.no_wspr else wspr_grids(args.wspr_days)
