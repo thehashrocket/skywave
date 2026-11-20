@@ -112,6 +112,18 @@
 **Priority:** P3
 **Depends on:** None
 
+### Tighten the RBN skimmer snapshot edges (#61 follow-up)
+
+**What:** Notes from the skimmer-snapshot PR's review, none blocking: (1) the two-day agree rule reads the day before's 80%-rule refusal even when a later run saved that day, so two similar row-boundary cuts on consecutive days could let a cut list through (skip the agree path when the day before was saved); (2) a database error from `lastShortTotal` is still stored as a refusal row, misleadingly (read it before the parse try); (3) the `SkimmerStore` comment still says "the latest refused page per day"; (4) two simultaneous cron calls could store a false "Not saved" refusal if Prisma's upsert isn't a single `ON CONFLICT` (treat P2002 as kept); (5) band tokens not written in metres (`472kHz`) are dropped, and HTML entities in a grid or callsign aren't decoded; (6) refusal rows per day are unbounded for a caller holding CRON_SECRET; (7) a cut exactly at a row boundary still passes the cut-row check (RBN's page has no table wrapper to check).
+
+**Why:** Each could leave a wrong or misleading day in the skimmer history the #61 replay joins spots to, and RBN keeps no history to recover from.
+
+**Context:** Skimmer-snapshot /ship review (2026-11-20), passes 1-2 plus an owner-granted round; owner rule "cap review rounds for optional data" (notes plus one TODO). Refused pages are kept gzipped in `RbnSkimmerRefusal`, so most of these are recoverable by re-parsing.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+
 ### Server clock: a backward change then a short sleep (#61)
 
 **What:** Left from the scheduled-clock /ship (owner, 2026-11-19). Set the computer's clock back by hand, then sleep for less than that change before the next measurement: the drift never reads as a forward jump, so the clock sits off by up to the sleep, reading settled, until the next scheduled measurement (5 min, or the tab shown again). Re-measure on any drift past `JUMP_MS` in either direction. Also: the Codex outside review couldn't run on that branch (the session blocked sending code out), so a Codex pass on `server-clock.ts` is still owed.
