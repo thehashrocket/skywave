@@ -14,6 +14,11 @@ import pytest
 import kiwi_grid_probe
 from kiwi_grid_probe import Receiver, grid6, load_receivers, skimmer_grids, summarize, wspr_grids
 
+# skimmer_grids refuses fewer than MIN_SKIMMER_GRIDS usable grids, so every skimmer
+# fixture carries these 100 (AA00AA..AA99AA), which no test receiver sits on.
+FILLER = [{"call": f"F{i}", "grid": f"AA{i:02d}AA"} for i in range(100)]
+FILLER_GRIDS = {r["grid"] for r in FILLER}
+
 
 # Value: protects=a Kiwi's position becomes the right 6-character square; fails_when=field, square or subsquare math is off by one or axes swap; why_new=no Python grid code exists; seam=none; no_claim=accuracy of the Kiwi list's own positions
 @pytest.mark.parametrize(
@@ -40,11 +45,11 @@ def test_grid6_rejects_non_positions():
 def test_skimmer_grids_keeps_six_character_grids_from_both_shapes(tmp_path):
     rows = [{"call": "A", "grid": "fn31pr"}, {"call": "B", "grid": "FN31"}, {"call": "C", "grid": None}, {"call": "D", "grid": "12ab34"}, {"call": "E", "grid": "ZZ00ZZ"}, {"call": "F", "grid": "IO91WM12"}, {"call": "G", "grid": "IO91WMX"}]
     listed = tmp_path / "detail.json"
-    listed.write_text(json.dumps(rows))
+    listed.write_text(json.dumps(rows + FILLER))
     day = tmp_path / "day.json"
-    day.write_text(json.dumps({"skimmers": rows}))
-    assert skimmer_grids(listed) == {"FN31PR", "IO91WM"}
-    assert skimmer_grids(day) == {"FN31PR", "IO91WM"}
+    day.write_text(json.dumps({"skimmers": rows + FILLER}))
+    assert skimmer_grids(listed) - FILLER_GRIDS == {"FN31PR", "IO91WM"}
+    assert skimmer_grids(day) - FILLER_GRIDS == {"FN31PR", "IO91WM"}
 
 
 # Value: protects=rows without a usable position are counted as skipped, not dropped silently or crashing; fails_when=a blank lat raises or vanishes uncounted; why_new=new loader; seam=none; no_claim=none beyond protects
@@ -114,7 +119,7 @@ def test_cli_counts_matches_and_marks_wspr_skipped(tmp_path):
     receivers = tmp_path / "receivers.csv"
     receivers.write_text("receiver,lat,lon,answers\nk1:8073,41.714775,-72.72726,5\nk2:8073,51.5074,-0.1278,3\n")
     skimmers = tmp_path / "skimmers.json"
-    skimmers.write_text(json.dumps([{"call": "W1AW", "grid": "FN31PR"}]))
+    skimmers.write_text(json.dumps([{"call": "W1AW", "grid": "FN31PR"}] + FILLER))
     out = subprocess.run(
         [sys.executable, PROBE, "--receivers", str(receivers), "--skimmers", str(skimmers), "--no-wspr", "--list"],
         cwd=REPO, capture_output=True, text=True, check=True,
@@ -142,7 +147,7 @@ def _inputs(tmp_path, csv_text):
     receivers = tmp_path / "receivers.csv"
     receivers.write_text(csv_text)
     skimmers = tmp_path / "skimmers.json"
-    skimmers.write_text(json.dumps([{"call": "W1AW", "grid": "FN31PR"}]))
+    skimmers.write_text(json.dumps([{"call": "W1AW", "grid": "FN31PR"}] + FILLER))
     return ["--receivers", str(receivers), "--skimmers", str(skimmers)]
 
 
@@ -151,7 +156,7 @@ def test_main_marks_wspr_missing_not_zero(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(kiwi_grid_probe, "wspr_grids", lambda days, cache_dir=None: None)
     assert kiwi_grid_probe.main(_inputs(tmp_path, "receiver,lat,lon,answers\nk1:8073,41.714775,-72.72726,5\n")) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert "skimmer grids: 1; wspr reporter grids: missing" in lines
+    assert "skimmer grids: 101; wspr reporter grids: missing" in lines
     assert "wspr     wspr.live source missing" in lines  # whole line: no count beside it
     assert "either   wspr.live source missing" in lines
 
@@ -168,7 +173,7 @@ def test_main_counts_wspr_and_lists_both_sources(tmp_path, monkeypatch, capsys):
     )
     assert kiwi_grid_probe.main(_inputs(tmp_path, csv_text) + ["--list"]) == 0
     out = capsys.readouterr().out
-    assert "skimmer grids: 1; wspr reporter grids: 2" in out
+    assert "skimmer grids: 101; wspr reporter grids: 2" in out
     assert "skipped 1 receiver rows without a usable position" in out
     assert "rbn          1 of 3 receivers (33.3%),      5 of 9 answers (55.6%)" in out
     assert "wspr         2 of 3 receivers (66.7%),      8 of 9 answers (88.9%)" in out
@@ -184,3 +189,76 @@ def test_main_empty_csv_prints_na(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "rbn          0 of 0 receivers (n/a),      0 of 0 answers (n/a)" in out
     assert "wspr     skipped (--no-wspr)" in out
+
+
+# Value: protects=one RbnSkimmerDay row is read in any export shape, and a wrong shape, several days or too few grids is refused, never read as 0 RBN matches; fails_when=a shape check or the 100-grid floor is dropped; why_new=review finding (red-team #2); seam=none; no_claim=Neon's exact export format
+@pytest.mark.parametrize(
+    ("data", "ok"),
+    [
+        ([{"day": "2026-11-26", "skimmers": [{"call": "W1AW", "grid": "FN31PR"}] + FILLER}], True),
+        ({"day": "2026-11-26", "skimmers": json.dumps([{"call": "W1AW", "grid": "FN31PR"}] + FILLER)}, True),
+        ([{"day": "2026-11-25", "skimmers": FILLER}, {"day": "2026-11-26", "skimmers": FILLER}], False),
+        ({"day": "2026-11-26"}, False),
+        ([{"call": "W1AW", "grid": None}] * 200, False),
+        (FILLER[:99], False),
+        ("FN31PR", False),
+    ],
+)
+def test_skimmer_grids_accepts_one_day_and_refuses_the_rest(tmp_path, data, ok):
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(data))
+    if ok:
+        assert "FN31PR" in skimmer_grids(p)
+    else:
+        with pytest.raises(ValueError):
+            skimmer_grids(p)
+
+
+# Value: protects=a refused skimmer file stops the CLI with exit 2 and a reason, printing no counts; fails_when=main swallows the error or prints rbn 0 of N; why_new=review finding (red-team #2); seam=none; no_claim=none beyond protects
+def test_main_refuses_a_wrong_skimmer_file(tmp_path, capsys):
+    receivers = tmp_path / "r.csv"
+    receivers.write_text("receiver,lat,lon,answers\nk1:8073,41.714775,-72.72726,5\n")
+    skimmers = tmp_path / "s.json"
+    skimmers.write_text(json.dumps({"day": "2026-11-26"}))
+    assert kiwi_grid_probe.main(["--receivers", str(receivers), "--skimmers", str(skimmers), "--no-wspr"]) == 2
+    out = capsys.readouterr()
+    assert out.out == "" and "without 'skimmers'" in out.err
+
+
+# Value: protects=an empty or half-written cache is never read as zero: it falls through to a fetch, and a failed fetch reads as missing; fails_when=the cache hit skips the empty check; why_new=review finding (red-team #1, QA probe 002); seam=none (monkeypatches the module's HTTP call); no_claim=crash timing
+def test_empty_cache_falls_through_to_fetch(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    cache = tmp_path / f"wspr-rx-grids-7d-{datetime.now(timezone.utc):%Y-%m-%d}.tsv"
+    cache.write_text("")
+
+    def down(url):
+        raise OSError("down")
+
+    monkeypatch.setattr(kiwi_grid_probe, "_fetch", down)
+    assert wspr_grids(7, cache_dir=tmp_path) is None
+    monkeypatch.setattr(kiwi_grid_probe, "_fetch", lambda url: "FN31PR\n")
+    assert wspr_grids(7, cache_dir=tmp_path) == {"FN31PR"}
+    assert cache.read_text() == "FN31PR\n"
+    assert [p.name for p in tmp_path.iterdir()] == [cache.name]  # no .tmp left behind
+
+
+# Value: protects=a garbled, error-tailed or row-limit-cut wspr.live reply reads as missing and is not cached; fails_when=UnicodeDecodeError escapes, an Exception line is dropped silently, or a full-limit reply is trusted; why_new=review findings (core, red-team #3); seam=none (monkeypatches _fetch and the limit); no_claim=ClickHouse's exact error text
+@pytest.mark.parametrize(
+    "reply",
+    [
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        "FN31PR\nIO91WM\nCode: 159. DB::Exception: Timeout exceeded\n",
+        "FN31PR\nIO91WM\nFN31PQ\n",
+    ],
+)
+def test_wspr_garbled_error_or_cut_reply_is_missing(tmp_path, monkeypatch, reply):
+    def fetch(url):
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(kiwi_grid_probe, "_fetch", fetch)
+    monkeypatch.setattr(kiwi_grid_probe, "WSPR_ROW_LIMIT", 3)
+    assert wspr_grids(7, cache_dir=tmp_path) is None
+    assert not list(tmp_path.iterdir())

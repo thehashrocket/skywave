@@ -29,6 +29,7 @@ import argparse
 import csv
 import http.client
 import json
+import os
 import re
 import sys
 import urllib.parse
@@ -40,6 +41,11 @@ from pathlib import Path
 WSPR_LIVE = "https://db1.wspr.live/"
 CACHE_DIR = Path.home() / ".cache" / "skywave-spike"
 FETCH_TIMEOUT_S = 60
+# More rows than this and the reply may have been cut at the query's LIMIT.
+WSPR_ROW_LIMIT = 200_000
+# The same floor as RBN_MIN_SKIMMERS in apps/web/src/lib/rbn.ts: fewer usable
+# grids than this means the wrong file or shape, not a quiet day.
+MIN_SKIMMER_GRIDS = 100
 # The same locator rule as maidenhead() in apps/web/src/lib/rbn.ts: 4, 6 or 8
 # characters, field letters A-R, subsquare letters A-X. Only 6 and 8 can match.
 LOCATOR = re.compile(r"[A-R]{2}[0-9]{2}(?:[A-X]{2}(?:[0-9]{2})?)?")
@@ -89,11 +95,28 @@ def six(raw: object) -> str | None:
 
 
 def skimmer_grids(path: Path) -> set[str]:
-    """6-character grids of the skimmers in a list; shorter or malformed grids are left out."""
+    """6-character grids of the skimmers in RBN's detail list or one RbnSkimmerDay row
+    (as exported: a row, a list holding one row, or its `skimmers` column). Shorter or
+    malformed grids are left out. Raises ValueError for any other shape, several days'
+    rows, or fewer than MIN_SKIMMER_GRIDS usable grids, so a wrong file is never read
+    as zero matches."""
     data = json.loads(path.read_text())
-    if isinstance(data, dict):  # an RbnSkimmerDay row exported whole
-        data = data.get("skimmers", [])
-    return {g for s in data if (g := six(s.get("grid")))}
+    if isinstance(data, list) and data and all(isinstance(x, dict) and "skimmers" in x for x in data):
+        if len(data) != 1:
+            raise ValueError(f"{len(data)} RbnSkimmerDay rows: export one day")
+        data = data[0]
+    if isinstance(data, dict):
+        if "skimmers" not in data:
+            raise ValueError("not a skimmer list: an object without 'skimmers'")
+        data = data["skimmers"]
+        if isinstance(data, str):  # a Json column exported as text
+            data = json.loads(data)
+    if not isinstance(data, list):
+        raise ValueError("not a skimmer list")
+    grids = {g for s in data if isinstance(s, dict) and (g := six(s.get("grid")))}
+    if len(grids) < MIN_SKIMMER_GRIDS:
+        raise ValueError(f"only {len(grids)} usable skimmer grids (fewer than {MIN_SKIMMER_GRIDS}): wrong file?")
+    return grids
 
 
 def parse_wspr_grids(text: str) -> set[str]:
@@ -103,28 +126,41 @@ def parse_wspr_grids(text: str) -> set[str]:
 
 def wspr_grids(days: int, cache_dir: Path = CACHE_DIR) -> set[str] | None:
     """Distinct WSPR receiver grids over the last `days` days, or None when wspr.live
-    can't be reached or sends nothing: a missing source, never an empty one."""
+    can't be reached or sends nothing, an error or a possibly cut reply: a missing
+    source, never an empty or partial one."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     cache = cache_dir / f"wspr-rx-grids-{days}d-{today}.tsv"
-    if cache.exists():
-        return parse_wspr_grids(cache.read_text())
+    if cache.exists() and (cached := parse_wspr_grids(cache.read_text())):
+        return cached  # an empty cache (an interrupted write) falls through to a fetch
     query = (
         "SELECT DISTINCT rx_loc FROM wspr.rx "
         f"WHERE time > now() - INTERVAL {days} DAY AND length(rx_loc) >= 6 "
-        "LIMIT 200000 FORMAT TabSeparated"
+        f"LIMIT {WSPR_ROW_LIMIT} FORMAT TabSeparated"
     )
-    url = WSPR_LIVE + "?" + urllib.parse.urlencode({"query": query})
+    # wait_end_of_query makes ClickHouse send an error as an HTTP error, not as a
+    # line after rows it has already streamed.
+    url = WSPR_LIVE + "?" + urllib.parse.urlencode({"query": query, "wait_end_of_query": 1})
     try:
         text = _fetch(url)
-    except (OSError, http.client.HTTPException) as e:  # URLError, timeouts, a cut-off read
+    except (OSError, http.client.HTTPException, UnicodeDecodeError) as e:  # URLError, timeouts, a cut-off or garbled read
         print(f"wspr.live: source missing ({e})", file=sys.stderr)
         return None
-    if not parse_wspr_grids(text):
+    lines = text.splitlines()
+    if any("Exception" in line for line in lines):
+        print("wspr.live: source missing (the reply ends in an error)", file=sys.stderr)
+        return None
+    if len(lines) >= WSPR_ROW_LIMIT:
+        print(f"wspr.live: source missing (the reply hit the {WSPR_ROW_LIMIT}-row limit)", file=sys.stderr)
+        return None
+    grids = parse_wspr_grids(text)
+    if not grids:
         print("wspr.live: source missing (no grids in the reply)", file=sys.stderr)
         return None
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache.write_text(text)
-    return parse_wspr_grids(text)
+    tmp = cache.with_name(cache.name + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, cache)  # never a half-written cache under the day's name
+    return grids
 
 
 def _fetch(url: str) -> str:
@@ -174,7 +210,11 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     receivers, skipped = load_receivers(args.receivers)
-    rbn = skimmer_grids(args.skimmers)
+    try:
+        rbn = skimmer_grids(args.skimmers)
+    except ValueError as e:  # json.JSONDecodeError included
+        print(f"--skimmers {args.skimmers}: {e}", file=sys.stderr)
+        return 2
     wspr = None if args.no_wspr else wspr_grids(args.wspr_days)
     s = summarize(receivers, rbn, wspr)
 
