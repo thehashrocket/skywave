@@ -160,5 +160,24 @@ describe("RBN skimmer list", () => {
       new RegExp(`0 skimmers with a usable grid, under ${RBN_MIN_SKIMMERS}`),
     );
     expect(parseSkimmerList(filler(RBN_MIN_SKIMMERS), FETCHED)).toHaveLength(RBN_MIN_SKIMMERS);
+    // Cut at a row boundary, then an error message: RBN's page ends right after its last row.
+    const trailing = `${filler(RBN_MIN_SKIMMERS)}\n<br /><b>Fatal error</b>: Maximum execution time exceeded`;
+    expect(() => parseSkimmerList(trailing, FETCHED)).toThrow(/something follows the last row/);
+    expect(parseSkimmerList(`${filler(RBN_MIN_SKIMMERS)}\n    \n`, FETCHED)).toHaveLength(RBN_MIN_SKIMMERS);
+  });
+
+  // Value: protects=a band RBN writes in kHz (630 m as "472kHz") is kept beside metre bands, and HTML entities in a callsign, grid or band cell are decoded before checking; fails_when=a 630 m skimmer loses that band, or an entity-encoded callsign refuses the whole page or a grid like "FN35&#68;L" is saved as null; why_new=skimmer-snapshot /ship review note (5), live page 2026-11-21 lists one "472kHz" skimmer; seam=none; no_claim=entities RBN never sends today (none on the live page)
+  it("keeps kHz bands and decodes HTML entities", () => {
+    const rows = [
+      skimmerRow("K1&#47;W", "fn35&#68;l", 10, "472kHz, 2m,&nbsp;70cm, 5MHz"),
+      skimmerRow("N0&amp;X", "EM48", 20),
+      filler(RBN_MIN_SKIMMERS),
+    ].join("\n");
+    expect(() => parseSkimmerList(rows, FETCHED)).toThrow(/callsign or last-seen time can't be read/); // "N0&X" isn't a callsign
+    const skimmers = parseSkimmerList([rows.split("\n")[0], filler(RBN_MIN_SKIMMERS)].join("\n"), FETCHED);
+    expect(skimmers[0]).toEqual({ call: "K1/W", grid: "FN35DL", bands: ["472kHz", "2m", "70cm"], lastSeen: FETCHED - 10_000 });
+    // Value: protects=hex character references (&#x2F;, &#X41;) decode like decimal ones; fails_when=the hex branch is dropped or parsed in base 10, so a hex-encoded callsign refuses the page or its grid saves as null; why_new=the rows above use decimal and named entities only; seam=none; no_claim=entities RBN never sends today
+    const hex = parseSkimmerList([skimmerRow("K2&#x2F;P", "em48&#X41;a", 30), filler(RBN_MIN_SKIMMERS)].join("\n"), FETCHED);
+    expect(hex[0]).toMatchObject({ call: "K2/P", grid: "EM48AA" });
   });
 });
