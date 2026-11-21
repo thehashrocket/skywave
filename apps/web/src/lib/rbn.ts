@@ -136,9 +136,28 @@ const CELL_MARKS: [number, string][] = [
   [6, "id_cq_z_de="],
 ];
 
+// Markup that may follow the last row without meaning anything was cut.
+const TRAILING_MARKUP = /<!--[\s\S]*?-->|<\/(?:table|tbody|body|html|div)\s*>/gi;
+
 const HIDDEN_SECONDS = /<b class="hide">\s*(\d+)\s*<\/b>/;
 
-const text = (html: string) => html.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+
+/** A cell's text: tags dropped, HTML entities decoded, spaces collapsed. */
+const text = (html: string) =>
+  html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&(?:#(\d+)|#x([0-9a-f]+)|([a-z]+));/gi, (m, dec, hex, name) => {
+      if (!dec && !hex) return ENTITIES[name.toLowerCase()] ?? m;
+      const cp = dec ? Number(dec) : parseInt(hex, 16);
+      // Past Unicode's last code point: left as written rather than refusing the whole page.
+      return cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+
+// RBN writes most bands in metres ("40m", "2m", "70cm") and the 630 m band as "472kHz".
+const BAND = /^(?:\d+c?m|\d+kHz)$/;
 
 /** A grid as RBN gives it (operators type their own), upper-cased (8 characters kept to 6), or null when it isn't a Maidenhead locator. */
 export function maidenhead(raw: string): string | null {
@@ -173,7 +192,7 @@ export function parseSkimmerList(html: string, fetchedAt: number): Skimmer[] {
       bands: text(cells[1]!)
         .split(",")
         .map((b) => b.trim())
-        .filter((b) => /^\d+c?m$/.test(b)),
+        .filter((b) => BAND.test(b)),
       lastSeen: fetchedAt - Number(seconds[1]) * 1000,
     };
     // A callsign listed twice keeps its most recent row.
@@ -185,6 +204,12 @@ export function parseSkimmerList(html: string, fetchedAt: number): Skimmer[] {
   const opened = html.match(/<tr[\s>]/g)?.length ?? 0;
   if (opened !== (html.match(/<\/tr>/g)?.length ?? 0))
     throw new Error("Not RBN's whole skimmer list: the page ends partway through a row.");
+  // RBN's page ends right after its last row. Closing tags and comments there are
+  // harmless markup; any visible text (a PHP error or timeout message, say) means
+  // the list stopped early at a row boundary.
+  const end = html.lastIndexOf("</tr>");
+  if (end >= 0 && html.slice(end + "</tr>".length).replace(TRAILING_MARKUP, "").trim() !== "")
+    throw new Error("Not RBN's whole skimmer list: something follows the last row.");
   const skimmers = [...byCall.values()];
   const placed = skimmers.filter((s) => s.grid !== null).length;
   if (placed < RBN_MIN_SKIMMERS)

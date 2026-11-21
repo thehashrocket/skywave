@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 // The real module opens a Prisma client at import; this router never uses it.
 vi.mock("@/server/db", () => ({ db: {} }));
 
-const { beaconStatusSource, rbnSource, saveSkimmerDay } = await import("./beacons");
+const { beaconStatusSource, rbnSource, saveSkimmerDay, SKIMMERS_MAX_REFUSALS, SKIMMERS_MAX_SHORT_REFUSALS } = await import("./beacons");
 type SkimmerDay = import("./beacons").SkimmerDay;
 type SkimmerRefusal = import("./beacons").SkimmerRefusal;
 const { RBN_MIN_SKIMMERS, RBN_SKIMMERS_URL } = await import("@/lib/rbn");
@@ -249,6 +249,10 @@ describe("saveSkimmerDay", () => {
       refuse: vi.fn(async (r: SkimmerRefusal) => {
         refusals.push(r);
       }),
+      refusals: vi.fn(
+        async (day: string, short: boolean) =>
+          refusals.filter((r) => r.day === day && r.reason.startsWith("RBN skimmer list refused: under ") === short).length,
+      ),
       lastShortTotal: vi.fn(async (day: string) => {
         const short = refusals.filter((r) => r.day === day && r.reason.startsWith("RBN skimmer list refused: under "));
         return short.at(-1)?.total ?? null;
@@ -336,11 +340,80 @@ describe("saveSkimmerDay", () => {
     expect(await run()).toEqual({ status: "saved", day: "2026-11-22", total: 140 }); // 140 vs 150: agrees
   });
 
-  // Value: protects=a database error reading the last total is reported as itself and not stored as a page refusal, a good page whose save fails is still kept (if the database takes it), and a failure keeping a refused page still reports the page's own reason; fails_when=an outage is filed as a refusal, a parsed page is dropped on a failed save, or the 502 reason becomes the store's error; why_new=/ship pass 2 Red Team + specialist, owner D7; seam=fetch, store; no_claim=Prisma's error types
+  // Value: protects=the day before's 80%-rule refusal stops counting once a later run saved that day, so a short list today is judged against that saved list as a cut; fails_when=two similar row-boundary cuts on consecutive days let a cut list through because the earlier one was later superseded by a save; why_new=skimmer-snapshot /ship review note (1), TODOS "Tighten the RBN skimmer snapshot edges"; seam=fetch, store; no_claim=how often RBN serves cut pages
+  it("ignores the day before's refusal once a later run saved that day", async () => {
+    const { run, days, nextDay, serve } = setupSkimmers();
+    const page = (n: number) => Array.from({ length: n }, (_, i) => row(`E${i}X`)).join("\n");
+    days.set("2026-11-19", { day: "2026-11-19", fetchedAt: 0, skimmers: Array(300).fill(null), raw: new Uint8Array() });
+    serve(async () => new Response(page(200)));
+    await expect(run()).rejects.toThrow(/under 80%/); // 01:30: a cut page
+    serve(async () => new Response(page(300)));
+    expect(await run()).toMatchObject({ status: "saved", total: 300 }); // 13:30: the whole list
+    nextDay();
+    serve(async () => new Response(page(205)));
+    await expect(run()).rejects.toThrow(/under 80% of the last saved day's 300/); // agrees with 200, but that day was saved
+  });
+
+  // Value: protects=two cron runs at once, where the other saved the day first (Prisma P2002), report "kept" and store no false "Not saved" refusal; fails_when=a lost race is filed as a refused page or answered 502; why_new=skimmer-snapshot /ship review note (4); seam=fetch, store; no_claim=whether Prisma issues a native ON CONFLICT upsert
+  it("reports a day another run saved first as kept", async () => {
+    const { run, store, refusals } = setupSkimmers();
+    store.save.mockRejectedValueOnce(Object.assign(new Error("Unique constraint failed on the fields: (`day`)"), { code: "P2002" }));
+    expect(await run()).toEqual({ status: "kept", day: "2026-11-20" });
+    expect(refusals).toHaveLength(0);
+  });
+
+  // Value: protects=at most SKIMMERS_MAX_REFUSALS pages are kept per day, and the run still reports the page's own reason; fails_when=a caller holding CRON_SECRET (or a stuck retry loop) can grow the refusal table without bound, or the cap turns into a thrown error; why_new=skimmer-snapshot /ship review note (6); seam=fetch, store; no_claim=Postgres's count
+  it("keeps at most a few refused pages a day", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { run, refusals, serve } = setupSkimmers();
+    serve(async () => new Response("<html>maintenance</html>"));
+    for (let i = 0; i < SKIMMERS_MAX_REFUSALS + 2; i++) await expect(run()).rejects.toThrow(/usable grid/);
+    expect(refusals).toHaveLength(SKIMMERS_MAX_REFUSALS);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/pages already kept for 2026-11-20/));
+  });
+
+  // Value: protects=80%-rule refusals and the rest are capped apart: a day full of other refusals still keeps a short list for the next day's agreement check, short lists stop at SKIMMERS_MAX_SHORT_REFUSALS, and short lists never use up the room a "Not saved" page (a good list whose save failed) needs; fails_when=one kind's flood drops the other kind's page, or short-list rows grow without bound for a caller holding CRON_SECRET; why_new=Step 9 Red Team (owner D2) and Step 11 Codex/adversarial findings (owner D3, 2026-11-21); seam=fetch, store; no_claim=atomic caps under parallel calls (a burst can overshoot once)
+  it("caps short-list refusals apart from the rest", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { run, days, refusals, nextDay, serve, store } = setupSkimmers();
+    const page = (n: number) => Array.from({ length: n }, (_, i) => row(`F${i}X`)).join("\n");
+    days.set("2026-11-19", { day: "2026-11-19", fetchedAt: 0, skimmers: Array(300).fill(null), raw: new Uint8Array() });
+    serve(async () => new Response("<html>maintenance</html>"));
+    for (let i = 0; i < SKIMMERS_MAX_REFUSALS; i++) await expect(run()).rejects.toThrow(/usable grid/);
+    // Value: protects=a "Not saved" page (a whole list whose save failed) is kept even when the day's other refusals filled their cap; fails_when=junk pages crowd out the day's only good copy; why_new=Step 11 Codex (owner D6, 2026-11-21); seam=fetch, store; no_claim=how often saves fail
+    serve(async () => new Response(page(300)));
+    store.save.mockRejectedValueOnce(new Error("db blip"));
+    await expect(run()).rejects.toThrow(/db blip/);
+    expect(refusals.at(-1)).toMatchObject({ reason: "Not saved: db blip", total: 300 });
+    refusals.pop();
+    serve(async () => new Response(page(200)));
+    for (let i = 0; i < SKIMMERS_MAX_SHORT_REFUSALS + 2; i++) await expect(run()).rejects.toThrow(/under 80%/);
+    expect(refusals).toHaveLength(SKIMMERS_MAX_REFUSALS + SKIMMERS_MAX_SHORT_REFUSALS);
+    nextDay();
+    // Short lists first, then a good list whose save fails: its page is still kept.
+    serve(async () => new Response(page(150)));
+    for (let i = 0; i < SKIMMERS_MAX_SHORT_REFUSALS; i++) await expect(run()).rejects.toThrow(/under 80%/);
+    serve(async () => new Response(page(300)));
+    store.save.mockRejectedValueOnce(new Error("write failed"));
+    await expect(run()).rejects.toThrow(/write failed/);
+    expect(refusals.at(-1)).toMatchObject({ day: "2026-11-21", reason: "Not saved: write failed", total: 300 });
+    // The day before's kept short list still lets a lasting drop through.
+    nextDay();
+    serve(async () => new Response(page(145)));
+    expect(await run()).toEqual({ status: "saved", day: "2026-11-22", total: 145 }); // agrees with 2026-11-21's 150
+  });
+
+  // Value: protects=a database error reading the last total or the day before's refusal is reported as itself and not stored as a page refusal, a good page whose save fails is still kept (if the database takes it), and a failure keeping a refused page still reports the page's own reason; fails_when=an outage is filed as a refusal, a parsed page is dropped on a failed save, or the 502 reason becomes the store's error; why_new=/ship pass 2 Red Team + specialist, owner D7; seam=fetch, store; no_claim=Prisma's error types
   it("keeps database failures apart from page refusals", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     let s = setupSkimmers();
     s.store.lastTotal.mockRejectedValueOnce(new Error("db down"));
+    await expect(s.run()).rejects.toThrow(/db down/);
+    expect(s.store.refuse).not.toHaveBeenCalled();
+    // Reading the day before's refusal fails: also an outage, never filed as this page's refusal.
+    s = setupSkimmers();
+    s.days.set("2026-11-18", { day: "2026-11-18", fetchedAt: 0, skimmers: [], raw: new Uint8Array() });
+    s.store.lastShortTotal.mockRejectedValueOnce(new Error("db down"));
     await expect(s.run()).rejects.toThrow(/db down/);
     expect(s.store.refuse).not.toHaveBeenCalled();
     s = setupSkimmers();
