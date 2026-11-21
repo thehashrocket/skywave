@@ -173,7 +173,12 @@ def test_summarize_applies_d4s_bar():
     assert summarize([], {}, set())["verdict"].startswith("no verdict: no broadcast answers")
     # Value: protects=an answer whose band had no spot anywhere in its window (a wspr.live gap) is counted apart and left out of the share, never as unmatched, and all-quiet gives no verdict; fails_when=a data gap counts against D4's 30% bar and tips it to stop; why_new=Step 9 Red Team finding (owner chose fix, 2026-11-21); seam=none; no_claim=which bands are ever quiet worldwide
     s = summarize(a, {**{i: None for i in range(10)}, 0: 1000.0, 1: 1000.0, 2: 1000.0}, set(), {3, 4, 5, 6, 7, 8, 9})
-    assert s["scored"] == 3 and s["quiet"] == 7 and s["share"] == 1.0 and s["verdict"].startswith("at least 30% matched")
+    assert s["scored"] == 3 and s["quiet"] == 7 and s["share"] == 1.0 and s["share_quiet_missed"] == 0.3 and s["verdict"].startswith("at least 30% matched")
+    # Value: protects=a verdict only when the share without quiet answers and the share counting them as misses agree, so mostly-quiet data can't say build on a few answers (nor an outage say stop); fails_when=quiet answers leave the denominator and a handful of matches clears the bar; why_new=Step 11 targeted reader (owner D4, 2026-11-21); seam=none; no_claim=how many answers are quiet in practice
+    s = summarize(a, {**{i: None for i in range(10)}, 0: 1000.0, 1: 1000.0}, set(), {2, 3, 4, 5, 6, 7, 8, 9})
+    assert s["share"] == 1.0 and s["share_quiet_missed"] == 0.2 and s["verdict"].startswith("no verdict: the 8 quiet answers decide it (100.0% without them, 20.0% counting")
+    s = summarize(a, {**{i: None for i in range(10)}, 0: 1000.0}, set(), {5, 6})
+    assert s["verdict"].startswith("under 30% matched")  # 1 of 8 and 1 of 10: both under
     assert summarize(a, {}, set(), set(range(10)))["verdict"] == "no verdict: no answer's band had any WSPR spot in its window"
 
 
@@ -209,6 +214,7 @@ def test_main(tmp_path, monkeypatch, capsys):
     assert probe.main(["--answers", str(write(tmp_path, HEADER + row() + row(outcome="not_heard"))), "--window-min", "30"]) == 0
     out = capsys.readouterr().out
     assert "no WSPR spot on the band anywhere in the window: 1" in out and "within 1,200 km:     1 of 1 (100.0%)" in out
+    assert "counting quiet answers as misses: 50.0%" in out and "build the broadcast join" in out
 
 
 REPO = Path(__file__).resolve().parents[4]

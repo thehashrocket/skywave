@@ -25,8 +25,9 @@ band had in the window anywhere, both computed on the server, so no spot rows co
 back. Replies for windows that ended over a day ago are cached under
 ~/.cache/skywave-spike/. A reply that can't be had or trusted makes its answers
 "unanswered", and then there is no verdict. An answer whose band had no spot at all
-in its window (a wspr.live gap, or a band quiet worldwide) is counted apart and left
-out of the share. Missing is never read as "no match".
+in its window (a wspr.live gap, or a band quiet worldwide) is counted apart: the share
+is taken without such answers and with them as misses, and D4 gets a verdict only when
+both agree. Missing is never read as "no match".
 
 Tests beside this file run by hand, not in CI: apps/radio/.venv/bin/pytest apps/radio/spikes/spots
 """
@@ -297,7 +298,9 @@ def run_query(query: str, n: int, end_s: int, cache_dir: Path | None = None, now
 
 def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered: set[int], quiet: set[int] = frozenset()) -> dict:
     """D4's shares and verdict. `quiet` answers (no spot on the band anywhere in the window:
-    a wspr.live gap or a quiet band) are counted apart, never as unmatched."""
+    a wspr.live gap or a quiet band) are counted apart. The share is taken both without
+    them and with them as misses, and gives a verdict only when both readings agree, so
+    neither an outage nor a quiet band can tip D4."""
     scored = [a for a in answers if a.line not in unanswered and a.line not in quiet]
     near = {r: [a for a in scored if (d := dist_m.get(a.line)) is not None and d <= r * 1000] for r in RADII_KM}
     by_band: dict[int, list[int]] = {}
@@ -308,12 +311,18 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
         by_band[a.band][1] += 1
     by_outcome = {o: [sum(1 for a in near[PASS_KM] if a.outcome == o), sum(1 for a in scored if a.outcome == o)] for o in ("heard", "not_heard")}
     share = len(near[PASS_KM]) / len(scored) if scored else None
+    share_quiet_missed = len(near[PASS_KM]) / (len(scored) + len(quiet)) if scored else None
     if not answers:
         verdict = "no verdict: no broadcast answers the probe can score"
     elif not unanswered and not scored:
         verdict = "no verdict: no answer's band had any WSPR spot in its window"
     elif unanswered:
         verdict = f"no verdict: {len(unanswered)} of {len(answers)} answers got no usable wspr.live reply (missing, not zero); run again"
+    elif (share >= PASS_SHARE) != (share_quiet_missed >= PASS_SHARE):
+        verdict = (
+            f"no verdict: the {len(quiet)} quiet answers decide it ({share:.1%} without them, "
+            f"{share_quiet_missed:.1%} counting them as misses; D4's bar is {PASS_SHARE:.0%})"
+        )
     elif share >= PASS_SHARE:
         verdict = f"at least {PASS_SHARE:.0%} matched within {PASS_KM:,} km: build the broadcast join (D4)"
     else:
@@ -324,6 +333,7 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
         "quiet": len(quiet),
         "near": {r: len(v) for r, v in near.items()},
         "share": share,
+        "share_quiet_missed": share_quiet_missed,
         "by_band": dict(sorted(by_band.items())),
         "by_outcome": by_outcome,
         "verdict": verdict,
@@ -373,6 +383,8 @@ def main(argv: list[str] | None = None) -> int:
     pct = lambda n, d: f"{100 * n / d:.1f}%" if d else "n/a"
     for r in RADII_KM:
         print(f"both ends within {r:>5,} km: {s['near'][r]:>5} of {s['scored']} ({pct(s['near'][r], s['scored'])})")
+    if quiet and s["share"] is not None:
+        print(f"  share within {PASS_KM:,} km counting quiet answers as misses: {s['share_quiet_missed']:.1%}")
     for o, (hit, n) in s["by_outcome"].items():
         print(f"  {o:<9} within {PASS_KM:,} km: {hit} of {n} ({pct(hit, n)})")
     for band, (hit, n) in s["by_band"].items():

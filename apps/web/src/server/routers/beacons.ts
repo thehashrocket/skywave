@@ -238,7 +238,7 @@ export type SkimmerRefusal = {
   raw: Uint8Array<ArrayBuffer>;
 };
 
-/** Where the skimmer lists are kept: one row per UTC day, plus each refused page (up to SKIMMERS_MAX_REFUSALS a day). */
+/** Where the skimmer lists are kept: one row per UTC day, plus each refused page (up to SKIMMERS_MAX_REFUSALS + SKIMMERS_MAX_SHORT_REFUSALS a day). */
 export type SkimmerStore = {
   has: (day: string) => Promise<boolean>;
   /** The most recently saved day's skimmer count, or null before the first. */
@@ -247,18 +247,27 @@ export type SkimmerStore = {
   save: (day: SkimmerDay) => Promise<void>;
   /** Keeps a page; each run's page is kept, so a later refusal never replaces an earlier one. */
   refuse: (refusal: SkimmerRefusal) => Promise<void>;
-  /** How many pages are kept for a day. */
-  refusals: (day: string) => Promise<number>;
+  /** How many pages are kept for a day: 80%-rule refusals when `short`, else the rest. */
+  refusals: (day: string, short: boolean) => Promise<number>;
   /** The skimmer count of a day's latest page refused by the 80% rule, or null. */
   lastShortTotal: (day: string) => Promise<number | null>;
 };
 
 /**
- * At most this many refused pages are kept per day, not counting 80%-rule refusals (always kept). The cron runs twice a day,
- * so this leaves room for runs by hand while keeping a caller that holds
- * CRON_SECRET from filling the table.
+ * At most this many refused pages are kept per day, not counting 80%-rule refusals,
+ * which have their own cap below. The cron runs twice a day, so this leaves room for
+ * runs by hand while keeping a caller that holds CRON_SECRET from filling the table.
+ * Parallel calls can overshoot either cap once, by the size of the burst: the count
+ * and the write aren't one statement.
  */
 export const SKIMMERS_MAX_REFUSALS = 10;
+
+/**
+ * At most this many 80%-rule refusals are kept per day. They're counted apart so
+ * they never use up the room a "Not saved" page needs, and the next day's agreement
+ * check needs only one of them.
+ */
+export const SKIMMERS_MAX_SHORT_REFUSALS = 2;
 
 /**
  * A new list must keep at least this share of the last saved day's skimmers:
@@ -295,9 +304,10 @@ const skimmerDbStore: SkimmerStore = {
       data: { day: r.day, fetchedAt: new Date(r.fetchedAt), reason: r.reason, total: r.total, raw: r.raw },
     });
   },
-  async refusals(day) {
+  async refusals(day, short) {
     const { db } = await import("../db");
-    return db.rbnSkimmerRefusal.count({ where: { day } });
+    const isShort = { reason: { startsWith: SHORT_REASON } };
+    return db.rbnSkimmerRefusal.count({ where: short ? { day, ...isShort } : { day, NOT: isShort } });
   },
   async lastShortTotal(day) {
     const { db } = await import("../db");
@@ -362,10 +372,11 @@ export async function saveSkimmerDay({
   let skimmers: Skimmer[] | null = null;
   const keep = async (reason: string) => {
     try {
-      // An 80%-rule refusal is always kept: the next day's agreement check reads it,
-      // and only RBN's own page can produce one.
-      if (!reason.startsWith(SHORT_REASON) && (await store.refusals(day)) >= SKIMMERS_MAX_REFUSALS) {
-        console.warn(`cron.rbn-skimmers: ${SKIMMERS_MAX_REFUSALS} pages already kept for ${day}; not keeping this one.`);
+      // 80%-rule refusals and the rest are capped apart (see SKIMMERS_MAX_SHORT_REFUSALS).
+      const short = reason.startsWith(SHORT_REASON);
+      const cap = short ? SKIMMERS_MAX_SHORT_REFUSALS : SKIMMERS_MAX_REFUSALS;
+      if ((await store.refusals(day, short)) >= cap) {
+        console.warn(`cron.rbn-skimmers: ${cap} ${short ? "short-list " : ""}pages already kept for ${day}; not keeping this one.`);
         return;
       }
       await store.refuse({ day, fetchedAt, reason, total: skimmers?.length ?? null, raw });
