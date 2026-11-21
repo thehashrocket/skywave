@@ -136,6 +136,9 @@ const CELL_MARKS: [number, string][] = [
   [6, "id_cq_z_de="],
 ];
 
+// Markup that may follow the last row without meaning anything was cut.
+const TRAILING_MARKUP = /<!--[\s\S]*?-->|<\/(?:table|tbody|body|html|div)\s*>/gi;
+
 const HIDDEN_SECONDS = /<b class="hide">\s*(\d+)\s*<\/b>/;
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
@@ -201,10 +204,11 @@ export function parseSkimmerList(html: string, fetchedAt: number): Skimmer[] {
   const opened = html.match(/<tr[\s>]/g)?.length ?? 0;
   if (opened !== (html.match(/<\/tr>/g)?.length ?? 0))
     throw new Error("Not RBN's whole skimmer list: the page ends partway through a row.");
-  // RBN's page ends right after its last row. Anything else there (a PHP error
-  // or timeout message, say) means the list stopped early at a row boundary.
+  // RBN's page ends right after its last row. Closing tags and comments there are
+  // harmless markup; any visible text (a PHP error or timeout message, say) means
+  // the list stopped early at a row boundary.
   const end = html.lastIndexOf("</tr>");
-  if (end >= 0 && html.slice(end + "</tr>".length).trim() !== "")
+  if (end >= 0 && html.slice(end + "</tr>".length).replace(TRAILING_MARKUP, "").trim() !== "")
     throw new Error("Not RBN's whole skimmer list: something follows the last row.");
   const skimmers = [...byCall.values()];
   const placed = skimmers.filter((s) => s.grid !== null).length;

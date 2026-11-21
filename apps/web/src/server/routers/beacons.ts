@@ -287,6 +287,8 @@ export const SKIMMERS_AGREE_SHARE = 0.1;
 
 // Every 80%-rule refusal starts with this, so the next day can find it.
 const SHORT_REASON = "RBN skimmer list refused: under ";
+// Every refusal of a list that parsed whole but failed to save starts with this.
+const NOT_SAVED_REASON = "Not saved: ";
 
 const skimmerDbStore: SkimmerStore = {
   async has(day) {
@@ -373,7 +375,13 @@ export async function saveSkimmerDay({
   const keep = async (reason: string) => {
     try {
       // 80%-rule refusals and the rest are capped apart (see SKIMMERS_MAX_SHORT_REFUSALS).
+      // A "Not saved" page is a list that parsed whole: always kept, as it may be the
+      // day's only copy, and no fake page can produce one.
       const short = reason.startsWith(SHORT_REASON);
+      if (reason.startsWith(NOT_SAVED_REASON)) {
+        await store.refuse({ day, fetchedAt, reason, total: skimmers?.length ?? null, raw });
+        return;
+      }
       const cap = short ? SKIMMERS_MAX_SHORT_REFUSALS : SKIMMERS_MAX_REFUSALS;
       if ((await store.refusals(day, short)) >= cap) {
         console.warn(`cron.rbn-skimmers: ${cap} ${short ? "short-list " : ""}pages already kept for ${day}; not keeping this one.`);
@@ -404,7 +412,7 @@ export async function saveSkimmerDay({
     // Two runs at once, and the other saved the day first: its write stands.
     if ((error as { code?: unknown } | null)?.code === "P2002") return { status: "kept", day };
     // A good page whose save failed is still worth keeping, if the database takes it.
-    await keep(`Not saved: ${error instanceof Error ? error.message : String(error)}`);
+    await keep(`${NOT_SAVED_REASON}${error instanceof Error ? error.message : String(error)}`);
     throw error;
   }
   return { status: "saved", day, total: skimmers.length };

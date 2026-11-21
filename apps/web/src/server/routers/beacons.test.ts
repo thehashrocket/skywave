@@ -380,6 +380,12 @@ describe("saveSkimmerDay", () => {
     days.set("2026-11-19", { day: "2026-11-19", fetchedAt: 0, skimmers: Array(300).fill(null), raw: new Uint8Array() });
     serve(async () => new Response("<html>maintenance</html>"));
     for (let i = 0; i < SKIMMERS_MAX_REFUSALS; i++) await expect(run()).rejects.toThrow(/usable grid/);
+    // Value: protects=a "Not saved" page (a whole list whose save failed) is kept even when the day's other refusals filled their cap; fails_when=junk pages crowd out the day's only good copy; why_new=Step 11 Codex (owner D6, 2026-11-21); seam=fetch, store; no_claim=how often saves fail
+    serve(async () => new Response(page(300)));
+    store.save.mockRejectedValueOnce(new Error("db blip"));
+    await expect(run()).rejects.toThrow(/db blip/);
+    expect(refusals.at(-1)).toMatchObject({ reason: "Not saved: db blip", total: 300 });
+    refusals.pop();
     serve(async () => new Response(page(200)));
     for (let i = 0; i < SKIMMERS_MAX_SHORT_REFUSALS + 2; i++) await expect(run()).rejects.toThrow(/under 80%/);
     expect(refusals).toHaveLength(SKIMMERS_MAX_REFUSALS + SKIMMERS_MAX_SHORT_REFUSALS);

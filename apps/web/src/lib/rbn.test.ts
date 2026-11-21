@@ -164,6 +164,10 @@ describe("RBN skimmer list", () => {
     const trailing = `${filler(RBN_MIN_SKIMMERS)}\n<br /><b>Fatal error</b>: Maximum execution time exceeded`;
     expect(() => parseSkimmerList(trailing, FETCHED)).toThrow(/something follows the last row/);
     expect(parseSkimmerList(`${filler(RBN_MIN_SKIMMERS)}\n    \n`, FETCHED)).toHaveLength(RBN_MIN_SKIMMERS);
+    // Value: protects=closing tags and HTML comments after the last row are harmless markup and still parse, while visible text after them is refused; fails_when=a cosmetic </table> or comment at RBN stops every save, or markup hides an error message from the check; why_new=Step 11 Codex + native adversarial (owner D5, 2026-11-21); seam=none; no_claim=what RBN may append in future
+    const markup = `${filler(RBN_MIN_SKIMMERS)}\n</tbody></TABLE>\n<!-- generated 0.04 s -->\n</div></body></html>\n`;
+    expect(parseSkimmerList(markup, FETCHED)).toHaveLength(RBN_MIN_SKIMMERS);
+    expect(() => parseSkimmerList(`${filler(RBN_MIN_SKIMMERS)}</table><!-- x -->Warning: timeout`, FETCHED)).toThrow(/something follows the last row/);
   });
 
   // Value: protects=a band RBN writes in kHz (630 m as "472kHz") is kept beside metre bands, and HTML entities in a callsign, grid or band cell are decoded before checking; fails_when=a 630 m skimmer loses that band, or an entity-encoded callsign refuses the whole page or a grid like "FN35&#68;L" is saved as null; why_new=skimmer-snapshot /ship review note (5), live page 2026-11-21 lists one "472kHz" skimmer; seam=none; no_claim=entities RBN never sends today (none on the live page)
