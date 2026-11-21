@@ -93,24 +93,6 @@ RBN live goes through #69's single connection in the radio service once its logi
 **Priority:** P3
 **Depends on:** #61 replay passing (D10's 0.03 floor); #69 login (RBN live half only, not needed for the daily-batch path)
 
-### Harden the #61 grid probe's input checks
-
-**What:** Make `apps/radio/spikes/spots/kiwi_grid_probe.py` refuse (exit 2) every malformed input the /ship review found, instead of skipping, crashing or reading it as a short count:
-- a row with an unparseable or negative `answers` (today counted as "skipped" with no position), and a file where every row is unusable;
-- a JSON list that isn't skimmers but holds 100 grid-looking entries (require a `call` on each row);
-- a CSV with an unclosed quote (`csv.Error` exits 1 today), and rows silently merged by a stray quote;
-- `--wspr-days` of 0 or less (today reads as "wspr.live missing");
-- cache I/O under a non-UTF-8 locale (open with `encoding="utf-8"`, catch `ValueError` in `_save_cache`), and a cache name that doesn't include the query;
-- `--list` printing an RBN-only list when wspr.live is missing (mark it), and a SQL console that caps the block 9 download (print the expected row count).
-
-**Why:** The probe's D12 count goes to the #61 Step 1 freeze. These all fail loudly or show a "skipped N rows" line, so none reads a missing source as zero, but a bad export could still skew or stop the count.
-
-**Context:** Owner D1 in the second /ship run of PR #85 (2026-11-20): ruled below the blocking floor for a by-hand optional-data probe and recorded as notes plus this TODO. Each finding is listed in PR #85's review notes. Tests live beside the probe (`apps/radio/spikes/spots/test_kiwi_grid_probe.py`, run by hand).
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** Before running the probe for the #61 Step 1 freeze
-
 ### Rank receivers for a broadcaster by transmitter site (#72)
 
 **What:** Order Pick best's receivers for an EiBi broadcast by where they sit relative to its transmitter site, the way `rankForBeacon` does for beacons (`apps/web/src/lib/beacon-rank.ts:67`): past the skip zone, within one or two hops, sunlit midpoint.
@@ -135,16 +117,28 @@ RBN live goes through #69's single connection in the radio service once its logi
 **Priority:** P3
 **Depends on:** None
 
-### Tighten the RBN skimmer snapshot edges (#61 follow-up)
+### RBN skimmer list: a clean cut at a row boundary (#61 follow-up)
 
-**What:** Notes from the skimmer-snapshot PR's review, none blocking: (1) the two-day agree rule reads the day before's 80%-rule refusal even when a later run saved that day, so two similar row-boundary cuts on consecutive days could let a cut list through (skip the agree path when the day before was saved); (2) a database error from `lastShortTotal` is still stored as a refusal row, misleadingly (read it before the parse try); (3) the `SkimmerStore` comment still says "the latest refused page per day"; (4) two simultaneous cron calls could store a false "Not saved" refusal if Prisma's upsert isn't a single `ON CONFLICT` (treat P2002 as kept); (5) band tokens not written in metres (`472kHz`) are dropped, and HTML entities in a grid or callsign aren't decoded; (6) refusal rows per day are unbounded for a caller holding CRON_SECRET; (7) a cut exactly at a row boundary still passes the cut-row check (RBN's page has no table wrapper to check).
+**What:** A page that stops cleanly right after a `</tr>` still parses as the whole list when it keeps at least 80% of the last saved day's skimmers. RBN sends no `Content-Length`, so a dropped connection there looks like a normal end. Possible check: RBN's rows are sorted by last-seen time, newest first, and the list covers 7 days, so a cut always loses the oldest rows. When rows are in that order, refuse a page whose oldest row is under N days old.
 
-**Why:** Each could leave a wrong or misleading day in the skimmer history the #61 replay joins spots to, and RBN keeps no history to recover from.
+**Why:** A cut list saved as the day can't be fixed later. RBN keeps no history, and only refused pages are kept for re-parsing.
 
-**Context:** Skimmer-snapshot /ship review (2026-11-20), passes 1-2 plus an owner-granted round; owner rule "cap review rounds for optional data" (notes plus one TODO). Refused pages are kept gzipped in `RbnSkimmerRefusal`, so most of these are recoverable by re-parsing.
+**Context:** Last open item (7) from the skimmer-snapshot /ship review notes (2026-11-20). Items 1 to 6 and a trailing-text check for item 7 shipped on `fix/rbn-snapshot-edges`. On the live page of 2026-11-21 (350 rows, rows in age order), the oldest row was 7.4 days old, with 22 rows at least 4 days old and 5 at least 6 days old. The test pages all use one last-seen age, so they would need varied ages. Not done yet because a bad N refuses real days (pages are kept, but the day stays unsaved until re-parsed), which makes it the owner's call.
 
 **Effort:** S
 **Priority:** P2
+**Depends on:** The owner picking N, or deciding against the rule
+
+### RBN skimmer refusals: keep "Not saved" rows out of the other-refusals count (#61 follow-up)
+
+**What:** In `apps/web/src/server/routers/beacons.ts`, `skimmerDbStore.refusals(day, false)` counts every non-80%-rule refusal, including "Not saved: " rows, which `keep()` always stores. Count only the rows that are capped (exclude `NOT_SAVED_REASON` as well as `SHORT_REASON`), with a test where 10 failed saves are followed by a broken page that is still kept.
+
+**Why:** After 10 failed saves in one UTC day, later parser refusals that day aren't kept, so the pages that would explain the bad day are lost for debugging. No saved list is lost.
+
+**Context:** Codex outside voice on PR #86's last review round (2026-11-21); owner D7 ruled it a disclosed note plus this TODO. The same review's other ruled note (the day-before read now runs before parsing, so a database read failure there is an outage, not a refusal) needs no work.
+
+**Effort:** S
+**Priority:** P3
 **Depends on:** None
 
 ### Server clock: a backward change then a short sleep (#61)
@@ -306,6 +300,32 @@ RBN live goes through #69's single connection in the radio service once its logi
 
 
 ## Completed
+
+### Harden the #61 grid probe's input checks
+
+**What:** Make `apps/radio/spikes/spots/kiwi_grid_probe.py` refuse (exit 2) every malformed input PR #85's /ship review found, instead of skipping, crashing or reading it as a short count: bad or negative `answers`, an all-unusable file, a JSON list without callsigns, unclosed or stray quotes, `--wspr-days` under 1, cache I/O under a non-UTF-8 locale, a cache name without the query, an unmarked RBN-only `--list`, and a capped block 9 download.
+
+**Why:** The probe's D12 count goes to the #61 Step 1 freeze; a bad export could skew or stop it.
+
+**Context:** Owner D1 in PR #85's second /ship run (2026-11-20).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** Before running the probe for the #61 Step 1 freeze
+**Completed:** fix/rbn-snapshot-edges, PR #86 (2026-11-21), with `--expect-rows` against new SQL block 9b.
+
+### Tighten the RBN skimmer snapshot edges (#61 follow-up)
+
+**What:** Seven notes from the skimmer-snapshot PR's review: (1) the agree rule read the day before's refusal even after that day was saved; (2) a `lastShortTotal` error was stored as a refusal; (3) a stale `SkimmerStore` comment; (4) two simultaneous runs could store a false "Not saved"; (5) `472kHz` bands dropped and HTML entities not decoded; (6) refusal rows unbounded per day; (7) a cut at a row boundary passed the cut-row check.
+
+**Why:** Each could leave a wrong or misleading day in the skimmer history the #61 replay joins spots to.
+
+**Context:** Skimmer-snapshot /ship review (2026-11-20).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+**Completed:** fix/rbn-snapshot-edges, PR #86 (2026-11-21): items 1 to 6, plus a trailing-text check for item 7 (closing tags and comments allowed). Refusals are capped at 10 a day, 80%-rule refusals at 2, and "Not saved" pages are always kept. The rest of item 7 is open above as "RBN skimmer list: a clean cut at a row boundary".
 
 ### Harden the EiBi site table refresh (#72 follow-up)
 
