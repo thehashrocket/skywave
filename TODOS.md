@@ -105,6 +105,18 @@ RBN live goes through #69's single connection in the radio service once its logi
 **Priority:** P3
 **Depends on:** #72 shipped; #61 replay verdict
 
+### Receiver notes view: heard rate per receiver and band (#60)
+
+**What:** A read-only page (or a section of the receiver card) showing, per receiver and band, how many "Did you hear it?" answers said heard, not heard and didn't open, from `ReceptionReport`. Beacon answers listed off the air (`beaconStatus` OFF) or not spotted by RBN that day are left out, as in #61's analysis set.
+
+**Why:** It's the last unbuilt part of #60, and the use Peter's Receiver Notes page showed demand for. The prompt, the table and the hourly limits shipped in #63 and #66.
+
+**Context:** Triage of open issues (2026-11-20, owner D1): #60 closed and this moved here. Rates from a few days of answers would mostly be noise, so start once #61's Step 0 count (first real read ~2026-11-26) shows enough answers per receiver and band to show. Also from #60, still open: automatic heard/not-heard from a CW energy check on the beacon's 1 s dashes (v2; human answers stay the ground truth).
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** #61 Step 0 showing enough answers per receiver
+
 ### Make the EiBi site-table checks smarter than a count (#72 follow-up)
 
 **What:** Notes from the hardening PR's review, none blocking: (1) `parseSites` reads every line after section IV, so a README with a new section after the site list, or two versions glued together, can inflate the count, and that inflated table then becomes the server's high-water mark until the instance restarts (stop at the next section header, or raise the mark only within a ceiling such as 1.5x the bundled table); (2) a README refused for its size is fetched again every 10 minutes per instance for good (back off on the 24 h TTL after a size refusal, keep the 10-minute retry for network errors); (3) the count is the only check, so a coordinate-format change that leaves every site with no coordinates still passes (also refuse a table whose share of placed sites drops sharply); (4) the documented recovery dead-ends if EiBi falls under the 1,000-site first-parse floor, and fails near a season change if the new schedule isn't posted yet; (5) the snapshot workflow's early exit (file unchanged) leaves an open snapshot PR's body as it was.
