@@ -179,5 +179,8 @@ describe("RBN skimmer list", () => {
     // Value: protects=hex character references (&#x2F;, &#X41;) decode like decimal ones; fails_when=the hex branch is dropped or parsed in base 10, so a hex-encoded callsign refuses the page or its grid saves as null; why_new=the rows above use decimal and named entities only; seam=none; no_claim=entities RBN never sends today
     const hex = parseSkimmerList([skimmerRow("K2&#x2F;P", "em48&#X41;a", 30), filler(RBN_MIN_SKIMMERS)].join("\n"), FETCHED);
     expect(hex[0]).toMatchObject({ call: "K2/P", grid: "EM48AA" });
+    // Value: protects=a reference past Unicode's last code point is left as written, costing only that cell, not the day's page; fails_when=String.fromCodePoint's RangeError refuses the whole list with an unrelated error; why_new=Step 9 specialist finding; seam=none; no_claim=RBN ever sending one
+    const wide = parseSkimmerList([skimmerRow("K3X", "FN35&#99999999;", 10), filler(RBN_MIN_SKIMMERS)].join("\n"), FETCHED);
+    expect(wide[0]).toMatchObject({ call: "K3X", grid: null });
   });
 });

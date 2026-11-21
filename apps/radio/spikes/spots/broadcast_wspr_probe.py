@@ -19,12 +19,14 @@ Input: CSV from .local-data/61-step0.sql block 10:
         --window-min <the replay's window> --expect-rows <block 10b's count>
 
 wspr.live is asked once per UTC day and band (split into a few queries when one
-URL would be too long; it refuses POST). Each answer is one column of the reply:
-the smallest "both ends" distance among that window's spots, computed on the
-server, so no spot rows come back. Replies for windows that ended over a day ago
-are cached under ~/.cache/skywave-spike/. A reply that can't be had or trusted
-makes its answers "unanswered", and then there is no verdict: missing is never
-read as "no match".
+URL would be too long; it refuses POST). Each answer is two columns of the reply:
+the smallest "both ends" distance among that window's spots, and how many spots the
+band had in the window anywhere, both computed on the server, so no spot rows come
+back. Replies for windows that ended over a day ago are cached under
+~/.cache/skywave-spike/. A reply that can't be had or trusted makes its answers
+"unanswered", and then there is no verdict. An answer whose band had no spot at all
+in its window (a wspr.live gap, or a band quiet worldwide) is counted apart and left
+out of the share. Missing is never read as "no match".
 
 Tests beside this file run by hand, not in CI: apps/radio/.venv/bin/pytest apps/radio/spikes/spots
 """
@@ -189,18 +191,22 @@ def _answer(line: int, v: dict[str, str], window_min: int) -> Answer | str:
     return Answer(line, end_s - window_min * 60, end_s, nearest_band(freq), kiwi, sites, v["outcome"])
 
 
-def _column(a: Answer) -> str:
+def _columns(a: Answer, i: int) -> str:
+    """Answer i's two columns: a{i}, the smallest "both ends" distance in its window, and
+    c{i}, how many spots the band had in that window anywhere (0: wspr.live has nothing)."""
+
     def d(lon_col: str, lat_col: str, p: tuple[float, float]) -> str:
         return f"greatCircleDistance({lon_col}, {lat_col}, {p[1]:.3f}, {p[0]:.3f})"
 
     tx = d("tx_lon", "tx_lat", a.sites[0]) if len(a.sites) == 1 else "least(" + ", ".join(d("tx_lon", "tx_lat", s) for s in a.sites) + ")"
+    window = f"time >= toDateTime({a.start_s}) AND time < toDateTime({a.end_s})"
     # minOrNull: no spot in the window gives NULL, never min()'s 0 ("a perfect match").
-    return f"minOrNullIf(greatest({tx}, {d('rx_lon', 'rx_lat', a.kiwi)}), time >= toDateTime({a.start_s}) AND time < toDateTime({a.end_s}))"
+    return f"minOrNullIf(greatest({tx}, {d('rx_lon', 'rx_lat', a.kiwi)}), {window}) AS a{i}, countIf({window}) AS c{i}"
 
 
 def build_query(chunk: list[Answer]) -> str:
     band = chunk[0].band
-    cols = ", ".join(f"{_column(a)} AS a{i}" for i, a in enumerate(chunk))
+    cols = ", ".join(_columns(a, i) for i, a in enumerate(chunk))
     start = min(a.start_s for a in chunk)
     end = max(a.end_s for a in chunk)
     return (
@@ -235,29 +241,39 @@ def plan_queries(answers: list[Answer]) -> list[tuple[list[Answer], str]]:
     return out
 
 
-def parse_reply(text: str, n: int) -> list[float | None] | None:
-    """The n per-answer distances (metres, None for no spot in the window), or None
-    when the reply isn't exactly the header a0..a{n-1} and one row of numbers or NULLs."""
+Reply = list[tuple[float | None, int]]
+
+
+def parse_reply(text: str, n: int) -> Reply | None:
+    """Each answer's (distance in metres or None for no near spot, the band's spot count in
+    its window), or None when the reply isn't exactly the header a0, c0, ..., a{n-1}, c{n-1}
+    and one row: finite distances or NULLs, whole counts, and no distance without spots."""
     lines = text.splitlines()
-    if len(lines) != 2 or lines[0].split("\t") != [f"a{i}" for i in range(n)]:
+    if len(lines) != 2 or lines[0].split("\t") != [c for i in range(n) for c in (f"a{i}", f"c{i}")]:
         return None
-    out: list[float | None] = []
-    for v in lines[1].split("\t"):
+    values = lines[1].split("\t")
+    if len(values) != 2 * n:
+        return None
+    out: Reply = []
+    for v, c in zip(values[::2], values[1::2]):
+        if not c.isdigit():
+            return None
         if v == "\\N":
-            out.append(None)
+            out.append((None, int(c)))
             continue
         try:
             x = float(v)
         except ValueError:
             return None
-        if not math.isfinite(x) or x < 0:
+        if not math.isfinite(x) or x < 0 or c == "0":
             return None
-        out.append(x)
-    return out if len(out) == n else None
+        out.append((x, int(c)))
+    return out
 
 
-def run_query(query: str, n: int, end_s: int, cache_dir: Path = CACHE_DIR, now_s: float | None = None) -> list[float | None] | None:
-    """The reply's distances, from the cache or wspr.live, or None when it can't be had or trusted."""
+def run_query(query: str, n: int, end_s: int, cache_dir: Path | None = None, now_s: float | None = None) -> Reply | None:
+    """The reply, from the cache or wspr.live, or None when it can't be had or trusted."""
+    cache_dir = CACHE_DIR if cache_dir is None else cache_dir  # read at call time, so tests can move it
     now_s = time.time() if now_s is None else now_s
     cache = cache_dir / f"wspr-broadcast-{hashlib.sha256(query.encode()).hexdigest()[:16]}.tsv"
     try:
@@ -272,15 +288,17 @@ def run_query(query: str, n: int, end_s: int, cache_dir: Path = CACHE_DIR, now_s
         return None
     got = parse_reply(text, n)
     if got is None:
-        print(f"wspr.live: a reply that isn't {n} distances ({text[:120]!r})", file=sys.stderr)
+        print(f"wspr.live: a reply that isn't {n} distances and counts ({text[:120]!r})", file=sys.stderr)
         return None
     if end_s < now_s - CACHE_AFTER_S:
         _save_cache(cache, text)
     return got
 
 
-def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered: set[int]) -> dict:
-    scored = [a for a in answers if a.line not in unanswered]
+def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered: set[int], quiet: set[int] = frozenset()) -> dict:
+    """D4's shares and verdict. `quiet` answers (no spot on the band anywhere in the window:
+    a wspr.live gap or a quiet band) are counted apart, never as unmatched."""
+    scored = [a for a in answers if a.line not in unanswered and a.line not in quiet]
     near = {r: [a for a in scored if (d := dist_m.get(a.line)) is not None and d <= r * 1000] for r in RADII_KM}
     by_band: dict[int, list[int]] = {}
     for a in scored:
@@ -292,6 +310,8 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
     share = len(near[PASS_KM]) / len(scored) if scored else None
     if not answers:
         verdict = "no verdict: no broadcast answers the probe can score"
+    elif not unanswered and not scored:
+        verdict = "no verdict: no answer's band had any WSPR spot in its window"
     elif unanswered:
         verdict = f"no verdict: {len(unanswered)} of {len(answers)} answers got no usable wspr.live reply (missing, not zero); run again"
     elif share >= PASS_SHARE:
@@ -301,6 +321,7 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
     return {
         "answers": len(answers),
         "scored": len(scored),
+        "quiet": len(quiet),
         "near": {r: len(v) for r, v in near.items()},
         "share": share,
         "by_band": dict(sorted(by_band.items())),
@@ -330,19 +351,25 @@ def main(argv: list[str] | None = None) -> int:
 
     dist_m: dict[int, float | None] = {}
     unanswered: set[int] = set()
+    quiet: set[int] = set()
     for chunk, query in queries:
         got = run_query(query, len(chunk), max(a.end_s for a in chunk))
         if got is None:
             unanswered.update(a.line for a in chunk)
         else:
-            dist_m.update({a.line: d for a, d in zip(chunk, got)})
-    s = summarize(answers, dist_m, unanswered)
+            for a, (d, spots) in zip(chunk, got):
+                dist_m[a.line] = d
+                if spots == 0:
+                    quiet.add(a.line)
+    s = summarize(answers, dist_m, unanswered, quiet)
 
     print(f"answer rows read: {rows}; probed: {s['answers']} in {len(queries)} wspr.live queries; window {args.window_min} min")
     for reason, n in sorted(set_aside.items()):
         print(f"  set aside: {n} {reason}")
     if unanswered:
         print(f"  unanswered: {len(unanswered)} (wspr.live missing; not counted as unmatched)")
+    if quiet:
+        print(f"  no WSPR spot on the band anywhere in the window: {len(quiet)} (a wspr.live gap or a quiet band; not counted as unmatched)")
     pct = lambda n, d: f"{100 * n / d:.1f}%" if d else "n/a"
     for r in RADII_KM:
         print(f"both ends within {r:>5,} km: {s['near'][r]:>5} of {s['scored']} ({pct(s['near'][r], s['scored'])})")

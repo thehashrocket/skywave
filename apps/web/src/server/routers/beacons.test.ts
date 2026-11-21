@@ -369,6 +369,22 @@ describe("saveSkimmerDay", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/pages already kept for 2026-11-20/));
   });
 
+  // Value: protects=an 80%-rule refusal is kept even past the daily cap, so the next day's agreement check still finds it and a real lasting drop is taken on schedule; fails_when=a day full of other refusals hides the short list and the drop is refused for an extra day; why_new=Step 9 Red Team finding (owner chose fix, 2026-11-21); seam=fetch, store; no_claim=how often a day fills the cap
+  it("keeps a short-list refusal past the cap, for the next day's check", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { run, days, refusals, nextDay, serve } = setupSkimmers();
+    const page = (n: number) => Array.from({ length: n }, (_, i) => row(`F${i}X`)).join("\n");
+    days.set("2026-11-19", { day: "2026-11-19", fetchedAt: 0, skimmers: Array(300).fill(null), raw: new Uint8Array() });
+    serve(async () => new Response("<html>maintenance</html>"));
+    for (let i = 0; i < SKIMMERS_MAX_REFUSALS; i++) await expect(run()).rejects.toThrow(/usable grid/);
+    serve(async () => new Response(page(200)));
+    await expect(run()).rejects.toThrow(/under 80%/);
+    expect(refusals).toHaveLength(SKIMMERS_MAX_REFUSALS + 1);
+    nextDay();
+    serve(async () => new Response(page(195)));
+    expect(await run()).toEqual({ status: "saved", day: "2026-11-21", total: 195 });
+  });
+
   // Value: protects=a database error reading the last total or the day before's refusal is reported as itself and not stored as a page refusal, a good page whose save fails is still kept (if the database takes it), and a failure keeping a refused page still reports the page's own reason; fails_when=an outage is filed as a refusal, a parsed page is dropped on a failed save, or the 502 reason becomes the store's error; why_new=/ship pass 2 Red Team + specialist, owner D7; seam=fetch, store; no_claim=Prisma's error types
   it("keeps database failures apart from page refusals", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

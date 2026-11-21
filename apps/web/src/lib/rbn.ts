@@ -144,9 +144,12 @@ const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"'
 const text = (html: string) =>
   html
     .replace(/<[^>]*>/g, "")
-    .replace(/&(?:#(\d+)|#x([0-9a-f]+)|([a-z]+));/gi, (m, dec, hex, name) =>
-      dec ? String.fromCodePoint(Number(dec)) : hex ? String.fromCodePoint(parseInt(hex, 16)) : (ENTITIES[name.toLowerCase()] ?? m),
-    )
+    .replace(/&(?:#(\d+)|#x([0-9a-f]+)|([a-z]+));/gi, (m, dec, hex, name) => {
+      if (!dec && !hex) return ENTITIES[name.toLowerCase()] ?? m;
+      const cp = dec ? Number(dec) : parseInt(hex, 16);
+      // Past Unicode's last code point: left as written rather than refusing the whole page.
+      return cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    })
     .replace(/\s+/g, " ")
     .trim();
 

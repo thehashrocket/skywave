@@ -254,7 +254,7 @@ export type SkimmerStore = {
 };
 
 /**
- * At most this many refused pages are kept per day. The cron runs twice a day,
+ * At most this many refused pages are kept per day, not counting 80%-rule refusals (always kept). The cron runs twice a day,
  * so this leaves room for runs by hand while keeping a caller that holds
  * CRON_SECRET from filling the table.
  */
@@ -362,7 +362,9 @@ export async function saveSkimmerDay({
   let skimmers: Skimmer[] | null = null;
   const keep = async (reason: string) => {
     try {
-      if ((await store.refusals(day)) >= SKIMMERS_MAX_REFUSALS) {
+      // An 80%-rule refusal is always kept: the next day's agreement check reads it,
+      // and only RBN's own page can produce one.
+      if (!reason.startsWith(SHORT_REASON) && (await store.refusals(day)) >= SKIMMERS_MAX_REFUSALS) {
         console.warn(`cron.rbn-skimmers: ${SKIMMERS_MAX_REFUSALS} pages already kept for ${day}; not keeping this one.`);
         return;
       }
