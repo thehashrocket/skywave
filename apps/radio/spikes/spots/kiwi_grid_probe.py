@@ -16,7 +16,11 @@ Inputs:
                once and cached under ~/.cache/skywave-spike/ (skip with --no-wspr)
 
     python kiwi_grid_probe.py --receivers ../../../../.local-data/61-receivers.csv \\
-        --skimmers ../../../../.local-data/rbn-skimmers/2026-11-19-detail.json
+        --skimmers ../../../../.local-data/rbn-skimmers/2026-11-19-detail.json \\
+        --expect-rows <block 9b's count>
+
+Any input it can't trust stops it with exit 2 and a reason; wspr.live alone is
+optional, and reads as "missing" (never as zero matches) when it can't be had.
 
 "answers" are answers with pick context (block 9 counts only those). The tests
 beside this file are a spike's and run by hand, not in CI (pytest's testpaths
@@ -27,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import http.client
 import json
 import os
@@ -78,23 +83,44 @@ def grid6(lat: float, lon: float) -> str:
     )
 
 
-def load_receivers(path: Path) -> tuple[list[Receiver], int]:
-    """The CSV's receivers with a usable position, and how many rows were skipped.
-    Raises ValueError when the header lacks a column, so a wrong file isn't read as
-    every row skipped."""
+def load_receivers(path: Path) -> list[Receiver]:
+    """The CSV's receivers. Block 9 exports only receivers with a position, one row
+    each, with a count of at least 1, so any row that breaks that means a bad or cut
+    export. Raises ValueError naming the line (a missing column, a short, long or
+    merged row, an unclosed quote, a bad position or count, a repeated receiver, or
+    no rows at all), so a bad file is never read as a smaller count."""
     out: list[Receiver] = []
-    skipped = 0
-    with path.open(newline="") as f:
-        rows = csv.DictReader(f)
-        missing = [c for c in RECEIVER_COLUMNS if c not in (rows.fieldnames or [])]
-        if missing:
-            raise ValueError(f"not block 9's export: no {', '.join(missing)} column")
-        for row in rows:
-            try:
-                out.append(Receiver(row["receiver"], grid6(float(row["lat"]), float(row["lon"])), int(row["answers"])))
-            except (KeyError, TypeError, ValueError):
-                skipped += 1
-    return out, skipped
+    seen: set[str] = set()
+    # utf-8-sig: a spreadsheet's byte-order mark is not part of the first column's name.
+    with path.open(newline="", encoding="utf-8-sig") as f:
+        rows = csv.DictReader(f, strict=True)
+        try:
+            missing = [c for c in RECEIVER_COLUMNS if c not in (rows.fieldnames or [])]
+            if missing:
+                raise ValueError(f"not block 9's export: no {', '.join(missing)} column")
+            for row in rows:
+                line = rows.line_num
+                values = [row.get(c) for c in RECEIVER_COLUMNS]
+                if None in row or any(v is None for v in values):
+                    raise ValueError(f"line {line}: not 4 fields")
+                if any("\n" in v or "\r" in v for v in values):
+                    raise ValueError(f"line {line}: a field spans lines (a stray quote merged rows)")
+                key, lat, lon, answers = (v.strip() for v in values)
+                try:
+                    grid = grid6(float(lat), float(lon))
+                except ValueError:
+                    raise ValueError(f"line {line}: not a position: {lat!r}, {lon!r}") from None
+                if not answers.isdigit() or int(answers) < 1:
+                    raise ValueError(f"line {line}: answers isn't a whole number of at least 1: {answers!r}")
+                if not key or key in seen:
+                    raise ValueError(f"line {line}: receiver {key!r} is blank or repeated")
+                seen.add(key)
+                out.append(Receiver(key, grid, int(answers)))
+        except csv.Error as e:  # an unclosed quote, say
+            raise ValueError(f"line {rows.line_num}: {e}") from None
+    if not out:
+        raise ValueError("no receiver rows: an empty export")
+    return out
 
 
 def six(raw: object) -> str | None:
@@ -109,7 +135,7 @@ def skimmer_grids(path: Path) -> set[str]:
     malformed grids are left out. Raises ValueError for any other shape, several days'
     rows, or fewer than MIN_SKIMMERS skimmers with a usable grid, so a wrong file is
     never read as zero matches."""
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(data, list) and data and all(isinstance(x, dict) and "skimmers" in x for x in data):
         if len(data) != 1:
             raise ValueError(f"{len(data)} RbnSkimmerDay rows: export one day")
@@ -122,6 +148,9 @@ def skimmer_grids(path: Path) -> set[str]:
             data = json.loads(data)
     if not isinstance(data, list):
         raise ValueError("not a skimmer list")
+    # Every skimmer has a callsign: a list of other grid-looking records isn't one.
+    if not all(isinstance(s, dict) and isinstance(s.get("call"), str) and s["call"].strip() for s in data):
+        raise ValueError("not a skimmer list: an entry without a callsign")
     placed = [g for s in data if isinstance(s, dict) and (g := six(s.get("grid")))]
     if len(placed) < MIN_SKIMMERS:
         raise ValueError(f"only {len(placed)} skimmers with a usable grid (fewer than {MIN_SKIMMERS}): wrong file?")
@@ -133,23 +162,36 @@ def parse_wspr_grids(text: str) -> set[str]:
     return {g for line in text.splitlines() if (g := six(line))}
 
 
-def wspr_grids(days: int, cache_dir: Path = CACHE_DIR) -> set[str] | None:
-    """Distinct WSPR receiver grids over the last `days` days, or None when wspr.live
-    can't be reached or sends nothing, an error or a possibly cut reply: a missing
-    source, never an empty or partial one."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    cache = cache_dir / f"wspr-rx-grids-{days}d-{today}.tsv"
-    try:
-        cached = parse_wspr_grids(cache.read_text()) if cache.exists() else set()
-    except (OSError, ValueError):  # unreadable or not UTF-8: fetch again
-        cached = set()
-    if cached:
-        return cached  # an empty or unreadable cache (an interrupted write) falls through to a fetch
-    query = (
+def _wspr_query(days: int) -> str:
+    return (
         "SELECT DISTINCT rx_loc FROM wspr.rx "
         f"WHERE time > now() - INTERVAL {days} DAY AND length(rx_loc) >= 6 "
         f"LIMIT {WSPR_ROW_LIMIT} FORMAT TabSeparated"
     )
+
+
+def wspr_cache_path(days: int, cache_dir: Path = CACHE_DIR) -> Path:
+    """Today's cache file for this query: the query's hash is in the name, so a
+    changed query never reads an old reply."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    tag = hashlib.sha256(_wspr_query(days).encode()).hexdigest()[:10]
+    return cache_dir / f"wspr-rx-grids-{days}d-{today}-{tag}.tsv"
+
+
+def wspr_grids(days: int, cache_dir: Path = CACHE_DIR) -> set[str] | None:
+    """Distinct WSPR receiver grids over the last `days` days, or None when wspr.live
+    can't be reached or sends nothing, an error or a possibly cut reply: a missing
+    source, never an empty or partial one."""
+    if days < 1:
+        raise ValueError(f"--wspr-days must be at least 1, not {days}")
+    cache = wspr_cache_path(days, cache_dir)
+    try:
+        cached = parse_wspr_grids(cache.read_text(encoding="utf-8")) if cache.exists() else set()
+    except (OSError, ValueError):  # unreadable or not UTF-8: fetch again
+        cached = set()
+    if cached:
+        return cached  # an empty or unreadable cache (an interrupted write) falls through to a fetch
+    query = _wspr_query(days)
     # wait_end_of_query makes ClickHouse send an error as an HTTP error, not as a
     # line after rows it has already streamed.
     url = WSPR_LIVE + "?" + urllib.parse.urlencode({"query": query, "wait_end_of_query": 1})
@@ -180,13 +222,13 @@ def _save_cache(cache: Path, text: str) -> None:
     tmp = None
     try:
         cache.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile("w", dir=cache.parent, prefix=cache.name + ".", suffix=".tmp", delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", dir=cache.parent, prefix=cache.name + ".", suffix=".tmp", delete=False, encoding="utf-8") as f:
             tmp = f.name
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, cache)
-    except OSError as e:
+    except (OSError, ValueError) as e:  # ValueError: a reply that can't be written as UTF-8
         print(f"wspr.live: cache not saved ({e})", file=sys.stderr)
         if tmp:
             Path(tmp).unlink(missing_ok=True)
@@ -195,7 +237,7 @@ def _save_cache(cache: Path, text: str) -> None:
 def _fetch(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "skywave-spike/61"})
     with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_S) as r:
-        return r.read().decode()
+        return r.read().decode("utf-8")
 
 
 def summarize(receivers: list[Receiver], rbn: set[str], wspr: set[str] | None) -> dict:
@@ -229,19 +271,37 @@ def _line(label: str, part: dict | None, total: dict, absent: str) -> str:
     )
 
 
+def _at_least_1(raw: str) -> int:
+    n = int(raw)
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, not {n}")
+    return n
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--receivers", type=Path, required=True)
     ap.add_argument("--skimmers", type=Path, required=True)
-    ap.add_argument("--wspr-days", type=int, default=7)
+    ap.add_argument("--wspr-days", type=_at_least_1, default=7)
+    ap.add_argument(
+        "--expect-rows",
+        type=_at_least_1,
+        help="block 9b's count: refuse an export with any other number of rows (a SQL console that capped the download)",
+    )
     ap.add_argument("--no-wspr", action="store_true", help="count RBN skimmers only")
     ap.add_argument("--list", action="store_true", help="also print each matched receiver")
     args = ap.parse_args(argv)
 
     try:
-        receivers, skipped = load_receivers(args.receivers)
-    except (OSError, ValueError) as e:
+        receivers = load_receivers(args.receivers)
+    except (OSError, ValueError) as e:  # UnicodeDecodeError included
         print(f"--receivers {args.receivers}: {e}", file=sys.stderr)
+        return 2
+    if args.expect_rows is not None and len(receivers) != args.expect_rows:
+        print(
+            f"--receivers {args.receivers}: {len(receivers)} rows, but block 9b counted {args.expect_rows}: a capped or partial download?",
+            file=sys.stderr,
+        )
         return 2
     try:
         rbn = skimmer_grids(args.skimmers)
@@ -252,12 +312,13 @@ def main(argv: list[str] | None = None) -> int:
     s = summarize(receivers, rbn, wspr)
 
     print(f"skimmer grids: {len(rbn)}; wspr reporter grids: {'skipped' if args.no_wspr else len(wspr) if wspr is not None else 'missing'}")
-    if skipped:
-        print(f"skipped {skipped} receiver rows without a usable position")
+    print(f"receiver rows read: {len(receivers)}" + ("" if args.expect_rows is None else " (as block 9b counted)"))
     absent = "skipped (--no-wspr)" if args.no_wspr else "wspr.live source missing"
     for label in ("rbn", "wspr", "either"):
         print(_line(label, s[label], s["total"], absent))
     if args.list:
+        if wspr is None:
+            print(f"matched receivers, RBN only ({absent}):")
         for r in receivers:
             src = [n for n, g in (("rbn", rbn), ("wspr", wspr or set())) if r.grid in g]
             if src:
