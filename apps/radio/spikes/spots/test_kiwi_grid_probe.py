@@ -14,7 +14,7 @@ import pytest
 import kiwi_grid_probe
 from kiwi_grid_probe import Receiver, grid6, load_receivers, skimmer_grids, summarize, wspr_cache_path, wspr_grids
 
-# skimmer_grids refuses fewer than MIN_SKIMMER_GRIDS usable grids, so every skimmer
+# skimmer_grids refuses fewer than MIN_SKIMMERS usable grids, so every skimmer
 # fixture carries these 100 (AA00AA..AA99AA), which no test receiver sits on.
 FILLER = [{"call": f"F{i}", "grid": f"AA{i:02d}AA"} for i in range(100)]
 FILLER_GRIDS = {r["grid"] for r in FILLER}
