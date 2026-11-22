@@ -80,14 +80,14 @@ export function queryWords(query: string): string[] {
 
 /**
  * The next start of a broadcast after `ms`, within the coming day, on a day
- * its days and dates allow, and in `season`: a later row past the season
+ * its days and dates allow. With `season` set, a later row past the season
  * change is left out, since the next season lists other frequencies (D7).
  */
-function nextStart(b: Broadcast, ms: number, season: string): number | undefined {
+function nextStart(b: Broadcast, ms: number, season: string | null): number | undefined {
   const midnight = Math.floor(ms / DAY) * DAY;
   for (const day of [0, 1]) {
     const at = midnight + day * DAY + b.start * MINUTE;
-    if (at > ms && at <= ms + DAY && onAirAt(b, at) && seasonFor(at) === season) return at;
+    if (at > ms && at <= ms + DAY && onAirAt(b, at) && (season === null || seasonFor(at) === season)) return at;
   }
   return undefined;
 }
@@ -107,6 +107,9 @@ export function findBroadcasts(
 ): SearchResult {
   const words = queryWords(query);
   if (!words.length) return { found: [], names: [] };
+  // The season cut only applies to this season's schedule: a fallback copy from
+  // the season before (eibispace.de down at a switch) would lose every later row.
+  const cutAt = season === seasonFor(ms) ? season : null;
   const names = new Set<string>();
   const merged = new Map<string, FoundBroadcast>();
   for (const b of schedule) {
@@ -114,7 +117,7 @@ export function findBroadcasts(
     if (!words.every((w) => text.includes(w))) continue;
     names.add(b.station);
     const onNow = onAirAt(b, ms);
-    const startsAt = onNow ? undefined : nextStart(b, ms, season);
+    const startsAt = onNow ? undefined : nextStart(b, ms, cutAt);
     if (!onNow && startsAt === undefined) continue;
     const key = `${b.khz}|${b.start}|${b.end}|${b.station}|${b.lang}`;
     let f = merged.get(key);
@@ -124,7 +127,17 @@ export function findBroadcasts(
     const target = b.target.trim();
     if (target && !f.targets.includes(target)) f.targets.push(target);
   }
-  const found = [...merged.values()].map((f) => (f.onNow ? { ...f, startsAt: undefined } : f));
+  // Listings that overlap but differ in their times are one row too: one per
+  // frequency, station, language and "on now" or start time, as the page keys them.
+  const rows = new Map<string, FoundBroadcast>();
+  for (const m of merged.values()) {
+    const f = m.onNow ? { ...m, startsAt: undefined } : m;
+    const key = `${f.khz}|${f.station}|${f.lang}|${f.startsAt ?? "now"}`;
+    const row = rows.get(key);
+    if (!row) rows.set(key, f);
+    else for (const t of f.targets) if (!row.targets.includes(t)) row.targets.push(t);
+  }
+  const found = [...rows.values()];
   found.sort(
     (a, b) =>
       Number(b.onNow) - Number(a.onNow) ||

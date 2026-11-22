@@ -74,7 +74,7 @@ describe("station search", () => {
     expect(rows(schedule, "test", Date.UTC(2026, 10, 20, 0, 30))[0]).toBe("15100 Test Radio now");
   });
 
-  // Value: protects=each listing is checked on its own before merging, so a twin listing whose dates ended or whose days don't fit can't hide the one that's on, and merged listings keep every target, blanks left out; fails_when=dedupe runs first and the expired VFF Iqaluit-style twin or the Mo-Fr half of an RNZ-style pair wins, or a second target is dropped; why_new=eng re-check (Codex, native fallback) and re-check D4; seam=none; no_claim=none beyond protects
+  // Value: protects=each listing is checked on its own before merging, so a twin listing whose dates ended or whose days don't fit can't hide the one that's on, merged listings keep every target, blanks left out, and overlapping listings that differ only in their times make one row; fails_when=dedupe runs first and the expired VFF Iqaluit-style twin or the Mo-Fr half of an RNZ-style pair wins, a second target is dropped, or overlaps show as duplicate rows; why_new=eng re-check (Codex, native fallback), re-check D4 and the /ship review (specialist + QA); seam=none; no_claim=none beyond protects
   it("merges listings only after checking each, keeping every target", () => {
     const schedule = [
       b("VFF Iqaluit Radio", 2514, "0000", "2400", { to: "3110", target: "NAm" }), // ended 31 October
@@ -92,9 +92,20 @@ describe("station search", () => {
       ["China Radio Int.", true, ["SAs", "ENA"]],
     ]);
     expect(find(schedule, "rnz").found.map((f) => [f.khz, f.onNow])).toEqual([[9700, true]]);
+    // Overlapping listings that differ only in their times are one row, on now or later.
+    const overlap = [
+      b("Overlap Radio", 6125, "1100", "1300", { target: "CHN" }),
+      b("Overlap Radio", 6125, "1130", "1400", { target: "FE" }),
+      b("Overlap Radio", 7300, "1800", "1900"),
+      b("Overlap Radio", 7300, "1800", "2000", { target: "Af" }),
+    ];
+    expect(find(overlap, "overlap").found.map((f) => [f.khz, f.onNow, f.targets])).toEqual([
+      [6125, true, ["CHN", "FE"]],
+      [7300, false, ["Eu", "Af"]],
+    ]);
   });
 
-  // Value: protects=a "later" row never runs past the season change, since the next season lists other frequencies, while on-now rows are untouched; fails_when=the day before a switch promises a frequency from the ending season; why_new=station search D7; seam=none; no_claim=the next season's listings (not loaded)
+  // Value: protects=a "later" row never runs past the season change, since the next season lists other frequencies, while on-now rows are untouched, and a previous season's fallback copy keeps its later rows; fails_when=the day before a switch promises a frequency from the ending season, or a stale fallback empties every later row; why_new=station search D7 and the /ship red team (stale fallback); seam=none; no_claim=the next season's listings (not loaded)
   it("stops later rows at the season change", () => {
     const schedule = [
       b("Edge Radio", 9500, "1800", "1900"),
@@ -106,6 +117,8 @@ describe("station search", () => {
       "7200 Edge Radio now",
       "9500 Edge Radio 03-27T18:00",
     ]);
+    // A previous season's copy (served as the fallback right after a switch) keeps its later rows.
+    expect(find(schedule, "edge", Date.UTC(2026, 10, 19, 12, 0), "a26").found).toHaveLength(3);
   });
 
   // Value: protects=an empty result says why: the station names that matched are reported even when none is on in the next 24 hours, and none when the name matches nothing; fails_when=a correctly typed station that's off today reads as a spelling mistake; why_new=design review 4A; seam=none; no_claim=none beyond protects
