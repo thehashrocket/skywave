@@ -121,7 +121,11 @@ type WideProps = {
 const wide: { current?: WideProps & { mount: number }; mounts: number } = { mounts: 0 };
 const presetSelect: { current?: (p: { freqKhz: number; mode: "am" }) => void } = {};
 const receiverList: { data?: { receivers: Receiver[] }; errorUpdatedAt: number } = { errorUpdatedAt: 0 };
-const schedule: { data?: { season: string; bundled: boolean; broadcasts: Broadcast[] } } = {};
+const schedule: {
+  data?: { season: string; bundled: boolean; broadcasts: Broadcast[]; targetNames?: Record<string, string> };
+  isError?: boolean;
+  refetch?: () => void;
+} = {};
 vi.mock("@/lib/use-schedule", () => ({ useSchedule: () => schedule }));
 // NCDXF's beacons off the air (#69), as useBeaconStatus hands them to the page.
 const beaconsOff: { current: ReadonlyMap<string, string | null> } = { current: new Map() };
@@ -1717,6 +1721,26 @@ describe("ListenPage", () => {
       expect(pick).toMatchObject({ pickSource: "listen", rankPos: 0, freqKhz: 9_580 });
     });
 
+    // Value: protects=a run started from Find a station's Pick best button is labelled "search" on the answer, so #61 can tell those runs apart (pick context 7); fails_when=StationSearch's onPickBest passes "listen" or another source, the button starts no run while the list is loaded, or the run picks for wherever the dial settled instead of the clicked row (Codex O1); why_new=the station search page test covers only the no-list message, and reports.test only the server accepting "search" (/ship coverage audit); seam=useRadio, useSchedule and useSubmitReport mocked, list hook mocked; no_claim=the search rules (station-search tests)
+    it("labels the context of a Find a station Pick best run", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
+      receiverList.data = { receivers: [listed, { ...backup, snr: 10 }] };
+      const view = render(<ListenPage />);
+      fireEvent.change(screen.getByLabelText("Station name"), { target: { value: "kbs" } });
+      fireEvent.click(screen.getByRole("button", { name: /^9,580 kHz/ }));
+      // A refused retune moves the dial back; Pick best still picks for the clicked row.
+      radio.settled = { freqKhz: 7_000, mode: "am" };
+      view.rerender(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Pick best for 9,580 kHz" })));
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 9_580, mode: "am" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(60_000));
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      const [, , , pick] = submitReport.mock.lastCall!;
+      expect(pick).toMatchObject({ pickSource: "search", rankPos: 0, freqKhz: 9_580 });
+    });
+
     // Value: protects=a switch to the offered receiver is labelled "better" with that receiver first, so the replay can leave hand-ordered runs out; fails_when=the offer path passes another source; why_new=#73 proposed test 3; seam=useRadio and useSubmitReport mocked, list hook mocked; no_claim=the offer's own rule (better-receiver tests)
     it("labels the context of a switch to a better receiver", () => {
       localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
@@ -2326,6 +2350,112 @@ describe("ListenPage", () => {
         [9_620, "Nearby"],
         [9_650, "Radio Here"],
       ]);
+    });
+
+    // Value: protects=when the schedule query fails, Find a station says so and its Try again refetches the page's schedule query; fails_when=the page passes another flag as loadFailed (a failed load reads "Loading" forever) or wires Try again to nothing or the wrong query; why_new=StationSearch's own test passes these props by hand, so the page's wiring of isError and refetch was untested (/ship coverage audit); seam=useSchedule mocked; no_claim=react-query's error and retry behaviour
+    it("lets Find a station retry a failed schedule load", () => {
+      const refetch = vi.fn();
+      schedule.isError = true;
+      schedule.refetch = refetch;
+      try {
+        render(<ListenPage />);
+        expect(document.querySelector(".station-search-status")!.textContent).toBe("Couldn't load the station schedule.");
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+        expect(refetch).toHaveBeenCalledTimes(1);
+      } finally {
+        schedule.isError = undefined;
+        schedule.refetch = undefined;
+      }
+    });
+
+    // Value: protects=Find a station sits above Strong signals, searches the page's schedule with its target names, marks "Strong here" from the playing receiver's finished scan, tunes a row in its own mode, and its Pick best button starts a run with source "search" (with no receiver list it says to press that button again); fails_when=the section is mounted elsewhere or unwired, another receiver's scan marks rows, every row tunes AM, or the no-list message tells a search user to press Listen; why_new=station search D2, D3, D11, design 6B/6bA, eng re-check C5; seam=useRadio, useSchedule and both waterfalls mocked; no_claim=the search rules (station-search tests)
+    it("wires Find a station above Strong signals", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_650, mode: "am" }));
+      const daily = (khz: number, station: string, target = "Eu") => ({ khz, start: 0, end: 1440, days: "", station, lang: "E", target });
+      radio.canScan = true;
+      radio.scan = {
+        state: "done",
+        host: listed.host,
+        port: listed.port,
+        signals: [{ freqKhz: 12_095, snrDb: 31, band: "25m" }],
+        hidden: 0,
+        bandsDone: 1,
+        bandsTotal: 1,
+        partial: false,
+      };
+      schedule.data = {
+        season: "b26",
+        bundled: false,
+        broadcasts: [daily(12_095, "BBC", "SAs"), daily(9_410, "BBC"), daily(8_957, "Shannon Volmet", "")],
+        targetNames: { Eu: "Europe", SAs: "South Asia" },
+      };
+      const view = render(<ListenPage />);
+      playing(view);
+      const search = screen.getByRole("heading", { name: "Find a station" });
+      const signals = screen.getByRole("heading", { name: "Strong signals now" });
+      expect(search.compareDocumentPosition(signals) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      fireEvent.change(screen.getByLabelText("Station name"), { target: { value: "bbc" } });
+      expect(screen.getByRole("button", { name: /^12,095 kHz/ }).getAttribute("aria-label")).toBe(
+        "12,095 kHz, BBC, English, on now, to South Asia, strong here",
+      );
+      fireEvent.click(screen.getByRole("button", { name: /^12,095 kHz/ }));
+      expect((screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement).value).toBe("12,095.00");
+      // A scan from another receiver marks nothing.
+      radio.scan = { ...radio.scan, host: "other.example" };
+      view.rerender(<ListenPage />);
+      expect(screen.getByRole("button", { name: /^12,095 kHz/ }).getAttribute("aria-label")).not.toContain("strong here");
+      fireEvent.change(screen.getByLabelText("Station name"), { target: { value: "volmet" } });
+      fireEvent.click(screen.getByRole("button", { name: /^8,957 kHz USB/ }));
+      expect((screen.getByRole("radio", { name: "USB" }) as HTMLInputElement).checked).toBe(true);
+      // Nothing playing and no receiver list: Pick best for the search says to press it again.
+      radio.status = { state: "idle" };
+      receiverList.data = undefined;
+      view.rerender(<ListenPage />);
+      fireEvent.click(screen.getByRole("button", { name: /^8,957 kHz USB/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Pick best for 8,957 kHz" }));
+      expect(screen.getByText("The receiver list is still loading. Press Pick best for 8,957 kHz again in a moment.")).toBeTruthy();
+    });
+
+    // Value: protects=Find a station says a clicked row is out of range only for a listed receiver playing that stops short of it, by the list's range, and says nothing for a typed receiver whose range is unknown; fails_when=the page stops passing reaches (no range note), reads it from another receiver or the dial, or passes it for a typed receiver (a false "doesn't reach"); why_new=StationSearch's own test passes reaches by hand; the page's wiring of covers() and playingListed was untested (/ship coverage audit); seam=useRadio and useSchedule mocked, list hook mocked; no_claim=the receiver's real range (the list's minKhz/maxKhz stand in)
+    it("tells Find a station whether the receiver playing reaches a row", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_650, mode: "am" }));
+      receiverList.data = { receivers: [{ ...listed, maxKhz: 10_000 }, backup] };
+      const daily = (khz: number) => ({ khz, start: 0, end: 1440, days: "", station: "BBC", lang: "E", target: "Eu" });
+      schedule.data = { season: "b26", bundled: false, broadcasts: [daily(12_095), daily(9_410)], targetNames: {} };
+      const view = render(<ListenPage />);
+      playing(view);
+      fireEvent.change(screen.getByLabelText("Station name"), { target: { value: "bbc" } });
+      fireEvent.click(screen.getByRole("button", { name: /^12,095 kHz/ }));
+      expect(screen.getByText("This receiver doesn't reach 12,095 kHz.")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: /^9,410 kHz/ }));
+      expect(screen.queryByText(/doesn't reach/)).toBeNull();
+      // A typed receiver isn't on the list: its range is unknown, so no range note.
+      playing(view, "typed.example", 8073);
+      fireEvent.click(screen.getByRole("button", { name: /^12,095 kHz/ }));
+      expect(screen.queryByText(/doesn't reach/)).toBeNull();
+    });
+
+    // Value: protects=when Find a station's Pick best can't start a run (no receiver on the list covers the row), the receiver playing is asked for that frequency, so the dial settles on what really plays instead of showing a frequency nothing is tuned to; fails_when=onPickBest moves the dial and sends nothing when no run starts; why_new=/ship r2 red team edge (owner D4: fix), as beacon Listen's fallback retune; seam=useRadio mocked; no_claim=the service refusing the retune and the dial's settle (settled test)
+    it("asks the receiver playing for a search row's frequency when Pick best can't start", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_650, mode: "am" }));
+      receiverList.data = { receivers: [{ ...listed, maxKhz: 10_000 }, { ...backup, maxKhz: 10_000 }] };
+      schedule.data = {
+        season: "b26",
+        bundled: false,
+        broadcasts: [{ khz: 12_095, start: 0, end: 1440, days: "", station: "BBC", lang: "E", target: "Eu" }],
+        targetNames: {},
+      };
+      savePin({ host: listed.host, port: listed.port, fromList: true, label: "K1VL" });
+      const view = render(<ListenPage />);
+      playing(view);
+      fireEvent.change(screen.getByLabelText("Station name"), { target: { value: "bbc" } });
+      fireEvent.click(screen.getByRole("button", { name: /^12,095 kHz/ }));
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(screen.getByText("This receiver doesn't reach 12,095 kHz.")).toBeTruthy();
+      radio.retune.mockClear();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Pick best for 12,095 kHz" })));
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(radio.retune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 12_095, mode: "am" }));
     });
 
     // Value: protects=once audio has played on a service that streams it, the receiver's own waterfall opens 60 kHz wide around the dial (owner: open at ~60 kHz) and Audio goes back to the audio one, telling the service each time; fails_when=the default width changes, the view isn't asked for (or is asked for before audio or without the feature), or Audio leaves the wide view up; why_new=wideband waterfall; seam=useRadio and both waterfalls mocked; no_claim=what the service streams (radio tests)

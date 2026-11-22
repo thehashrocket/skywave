@@ -1,6 +1,7 @@
 import { after } from "next/server";
 import { forPage, parseEibi, scheduleUrl, seasonFor, type Broadcast, type ListedBroadcast } from "@/lib/eibi";
 import { parseSites, SITES_URL, sitesFromJson, type SiteTable } from "@/lib/eibi-sites";
+import { targetName, type TargetTable } from "@/lib/eibi-targets";
 import snapshot from "../eibi-snapshot.json";
 import { readCapped } from "../read-capped";
 import { publicProcedure, router } from "../trpc";
@@ -18,6 +19,12 @@ export type Schedule = {
   broadcasts: Broadcast[];
   /** The copy bundled with this app, served because eibispace.de couldn't be reached. */
   bundled: boolean;
+  /**
+   * Names for the target codes the broadcasts use ("Eu" → "Europe"), from the
+   * README's lists bundled in the snapshot (station search, re-check D5). A
+   * code with no name is left out.
+   */
+  targetNames: Record<string, string>;
 };
 
 /**
@@ -29,9 +36,22 @@ export type ListedSchedule = Schedule & { listed: ListedBroadcast[] };
 
 type Cached = ListedSchedule & { fetchedAt: number };
 
-function fromCsv(csv: string, season: string) {
+/** Names for the target codes these broadcasts use, from the bundled README lists. */
+function namesFor(broadcasts: readonly Broadcast[], targets: TargetTable | undefined): Record<string, string> {
+  const names: Record<string, string> = {};
+  if (!targets) return names;
+  for (const { target } of broadcasts) {
+    if (Object.hasOwn(names, target)) continue;
+    const name = targetName(targets, target);
+    if (name) names[target] = name;
+  }
+  return names;
+}
+
+function fromCsv(csv: string, season: string, targets: TargetTable | undefined) {
   const listed = parseEibi(csv, season);
-  return { season, listed, broadcasts: listed.map(forPage) };
+  const broadcasts = listed.map(forPage);
+  return { season, listed, broadcasts, targetNames: namesFor(broadcasts, targets) };
 }
 
 type Options = {
@@ -41,6 +61,8 @@ type Options = {
   defer?: (task: Promise<unknown>) => void;
   /** The fallback copy: the season it's for and the file's text. */
   bundled?: { season: string; csv: string };
+  /** The target names bundled in the snapshot (README sections II and III). */
+  targets?: TargetTable;
 };
 
 /**
@@ -71,6 +93,7 @@ export function scheduleSource({
   now = () => Date.now(),
   defer = after,
   bundled = snapshot,
+  targets = snapshot.targets,
 }: Options = {}) {
   let cached: Cached | null = null;
   let fallback: Cached | null = null;
@@ -80,7 +103,7 @@ export function scheduleSource({
   async function refresh(): Promise<Cached> {
     const season = seasonFor(now());
     const csv = await fetchLatin1(fetchImpl, scheduleUrl(season), "EiBi schedule");
-    return { ...fromCsv(csv, season), bundled: false, fetchedAt: now() };
+    return { ...fromCsv(csv, season, targets), bundled: false, fetchedAt: now() };
   }
 
   function startRefresh(): Promise<Cached> {
@@ -103,7 +126,7 @@ export function scheduleSource({
   }
 
   function bundledCopy(): Cached {
-    fallback ??= { ...fromCsv(bundled.csv, bundled.season), bundled: true, fetchedAt: -Infinity };
+    fallback ??= { ...fromCsv(bundled.csv, bundled.season, targets), bundled: true, fetchedAt: -Infinity };
     return fallback;
   }
 

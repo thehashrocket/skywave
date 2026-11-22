@@ -99,6 +99,7 @@ export function Presets({ freqKhz, mode, onSelect }: Props) {
             <button
               type="button"
               className="preset-tune"
+              aria-current={current || undefined}
               onClick={() => onSelect({ freqKhz: p.freqKhz, mode: p.mode as Mode })}
             >
               <span className="preset-freq">{p.freqKhz.toLocaleString("en-US", { maximumFractionDigits: 2 })}</span>

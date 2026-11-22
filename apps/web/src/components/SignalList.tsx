@@ -107,13 +107,15 @@ export function SignalList({
           {scan.signals.map((s, i) => {
             const station = stationAt?.(s.freqKhz);
             const others = station?.all.split("\n");
+            const current = Math.abs(s.freqKhz - freqKhz) < 0.005;
             return (
-              <li
-                key={s.freqKhz}
-                data-current={Math.abs(s.freqKhz - freqKhz) < 0.005 || undefined}
-                data-beyond={i >= PHONE_ROWS || undefined}
-              >
-                <button type="button" className="preset-tune" onClick={() => onTune(s.freqKhz)}>
+              <li key={s.freqKhz} data-current={current || undefined} data-beyond={i >= PHONE_ROWS || undefined}>
+                <button
+                  type="button"
+                  className="preset-tune"
+                  aria-current={current || undefined}
+                  onClick={() => onTune(s.freqKhz)}
+                >
                   <span className="preset-freq">{khz(s.freqKhz)}</span>
                   <span className="preset-mode">{s.band}</span>
                   <span className="signal-what">

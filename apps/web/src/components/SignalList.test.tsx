@@ -91,7 +91,7 @@ describe("SignalList", () => {
     expect(screen.getByRole("status").textContent).toContain("about 5 seconds");
   });
 
-  // Value: protects=the signal being listened to is marked like a current preset; fails_when=data-current is dropped; why_new=new component; seam=none; no_claim=styling
+  // Value: protects=the signal being listened to is marked like a current preset, for screen readers too (aria-current on its button); fails_when=data-current or aria-current is dropped or lands on another row; why_new=new component; aria-current from station search design review (owner: build now); seam=none; no_claim=styling
   it("marks the signal that's tuned", () => {
     show({
       state: "done",
@@ -107,6 +107,7 @@ describe("SignalList", () => {
     });
     const rows = screen.getAllByRole("listitem");
     expect(rows.map((r) => r.hasAttribute("data-current"))).toEqual([true, false]);
+    expect(rows.map((r) => r.querySelector("button")!.getAttribute("aria-current"))).toEqual(["true", null]);
   });
 
   // Value: protects=the waiting text names the real wait after Pick best (its 15 s check, then 10 s) (eng review R11); fails_when=checking isn't read or the texts swap; why_new=only the 10 s text existed; seam=none; no_claim=the scan timing itself (page.test.tsx)

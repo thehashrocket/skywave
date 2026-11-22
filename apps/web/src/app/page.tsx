@@ -7,6 +7,7 @@ import { MapPanel } from "@/components/MapPanel";
 import { Presets } from "@/components/Presets";
 import { ReceiverPicker, type Playing } from "@/components/ReceiverPicker";
 import { SignalList } from "@/components/SignalList";
+import { StationSearch } from "@/components/StationSearch";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SMeter } from "@/components/SMeter";
 import { SpanPicker } from "@/components/SpanPicker";
@@ -309,7 +310,7 @@ export default function ListenPage() {
   // object each press, so it's the newest message again; the text follows the
   // list as it loads or fails. `from` names the control to press again: after
   // the error link, Listen would redial the receiver that just failed.
-  const [pageMessage, setPageMessage] = useState<{ from: "listen" | "link" | "clock" } | null>(null);
+  const [pageMessage, setPageMessage] = useState<{ from: "listen" | "link" | "search" | "clock" } | null>(null);
   // Where focus goes when the error link starts a run and goes away.
   const statusRef = useRef<HTMLDivElement>(null);
 
@@ -583,7 +584,7 @@ export default function ListenPage() {
    * covers the frequency.
    */
   const startPickBest = useCallback(
-    (from: "listen" | "link"): boolean => {
+    (from: "listen" | "link" | "search"): boolean => {
       acted.current++;
       if (receivers) {
         const khz = latest.current.freqKhz;
@@ -933,7 +934,13 @@ export default function ListenPage() {
         ? "Checking the time with the server…"
         : listGone
           ? `${LIST_FAILED_TEXT} Paste a receiver address, or try again below.`
-          : `The receiver list is still loading. Press ${pageMessage.from === "link" ? "Pick best receiver" : "Listen"} again in a moment.`),
+          : `The receiver list is still loading. Press ${
+              pageMessage.from === "link"
+                ? "Pick best receiver"
+                : pageMessage.from === "search"
+                  ? `Pick best for ${freqKhz.toLocaleString("en-US", { maximumFractionDigits: 2 })} kHz`
+                  : "Listen"
+            } again in a moment.`),
   };
   // While a run is going, only its note shows: it names each refusal and
   // what's next, and the bare refusal lands a render before the note does.
@@ -982,7 +989,8 @@ export default function ListenPage() {
 
   // Station names from the EiBi schedule, by the minute: nothing until the page
   // has the schedule and its own clock (the server's time isn't the viewer's).
-  const schedule = useSchedule().data?.broadcasts;
+  const scheduleQuery = useSchedule();
+  const schedule = scheduleQuery.data?.broadcasts;
   const clock = sun?.at ?? null;
   const stationNow = useMemo(
     () => (schedule && clock !== null ? stationLine(scheduledOn(schedule, freqKhz, clock)) : null),
@@ -1428,6 +1436,30 @@ export default function ListenPage() {
           onClickOffset={onWaterfallClick}
         />
       )}
+
+      <StationSearch
+        schedule={scheduleQuery.data}
+        loadFailed={scheduleQuery.isError}
+        onRetry={() => void scheduleQuery.refetch()}
+        clock={clock}
+        freqKhz={freqKhz}
+        strong={scan?.state === "done" && scannedKey === playingKey ? scan.signals : null}
+        idle={!busy}
+        reaches={status.state === "listening" && playingListed ? (khz) => covers(playingListed, khz) : undefined}
+        onTune={(khz, m) => changeFreq(clampKhz(khz), m)}
+        onPickBest={(khz, m) => {
+          // Pick best for the row the note is about, not wherever the dial has
+          // settled since (a refused retune moves it back): set before the run
+          // starts, as beacon Listen does, since its tunes read the dial from here.
+          const k = clampKhz(khz);
+          latest.current = { freqKhz: k, mode: m };
+          setFreqKhz(k);
+          setMode(m);
+          // Nothing to try (no list, or nothing covers it): whatever plays is asked for
+          // the frequency instead, so the dial settles on what really plays, as beacon Listen does.
+          if (!startPickBest("search")) sendRetune({ freqKhz: k, mode: m });
+        }}
+      />
 
       <SignalList
         scan={scan}
