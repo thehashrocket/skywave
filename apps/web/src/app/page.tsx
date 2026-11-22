@@ -1455,7 +1455,9 @@ export default function ListenPage() {
           latest.current = { freqKhz: k, mode: m };
           setFreqKhz(k);
           setMode(m);
-          startPickBest("search");
+          // Nothing to try (no list, or nothing covers it): whatever plays is asked for
+          // the frequency instead, so the dial settles on what really plays, as beacon Listen does.
+          if (!startPickBest("search")) sendRetune({ freqKhz: k, mode: m });
         }}
       />
 

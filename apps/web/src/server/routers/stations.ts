@@ -41,7 +41,7 @@ function namesFor(broadcasts: readonly Broadcast[], targets: TargetTable | undef
   const names: Record<string, string> = {};
   if (!targets) return names;
   for (const { target } of broadcasts) {
-    if (target in names) continue;
+    if (Object.hasOwn(names, target)) continue;
     const name = targetName(targets, target);
     if (name) names[target] = name;
   }

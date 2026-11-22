@@ -232,7 +232,8 @@ export function StationSearch({
           {visible.map((f, i) => {
             const mode = clickMode(f.khz, f.lang, f.station);
             // An older server sends no targetNames; its rows just have no "to" line.
-            const targets = f.targets.map((t) => schedule!.targetNames?.[t]).filter((n): n is string => !!n);
+            const names = schedule!.targetNames ?? {};
+            const targets = f.targets.map((t) => (Object.hasOwn(names, t) ? names[t] : undefined)).filter((n): n is string => !!n);
             const to = [...new Set(targets)].join(", ");
             const strongHere = isStrong(f);
             const when = f.onNow ? null : startsParts(f.startsAt!, clock!);

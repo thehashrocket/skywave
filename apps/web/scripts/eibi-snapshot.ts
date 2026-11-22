@@ -105,7 +105,8 @@ export async function snapshot(
 export function targetsNoteOutput(targetsError: string | undefined, unnamed: readonly string[]) {
   const parts = [];
   if (targetsError) parts.push(`Kept the bundled target names: ${targetsError}`.replace(/[\r\n]+/g, " "));
-  if (unnamed.length) parts.push(`Target codes with no name in EiBi's README: ${unnamed.join(", ")}.`);
+  // In code spans: a code from the remote schedule can't @-mention anyone or render as Markdown in the bot's PR.
+  if (unnamed.length) parts.push(`Target codes with no name in EiBi's README: ${unnamed.map((c) => `\`${c.replace(/`/g, "")}\``).join(", ")}.`);
   return parts.length ? `targets_note=${parts.join(" ")}\n` : "";
 }
 

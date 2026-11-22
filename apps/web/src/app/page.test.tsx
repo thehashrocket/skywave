@@ -2435,6 +2435,29 @@ describe("ListenPage", () => {
       expect(screen.queryByText(/doesn't reach/)).toBeNull();
     });
 
+    // Value: protects=when Find a station's Pick best can't start a run (no receiver on the list covers the row), the receiver playing is asked for that frequency, so the dial settles on what really plays instead of showing a frequency nothing is tuned to; fails_when=onPickBest moves the dial and sends nothing when no run starts; why_new=/ship r2 red team edge (owner D4: fix), as beacon Listen's fallback retune; seam=useRadio mocked; no_claim=the service refusing the retune and the dial's settle (settled test)
+    it("asks the receiver playing for a search row's frequency when Pick best can't start", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_650, mode: "am" }));
+      receiverList.data = { receivers: [{ ...listed, maxKhz: 10_000 }, { ...backup, maxKhz: 10_000 }] };
+      schedule.data = {
+        season: "b26",
+        bundled: false,
+        broadcasts: [{ khz: 12_095, start: 0, end: 1440, days: "", station: "BBC", lang: "E", target: "Eu" }],
+        targetNames: {},
+      };
+      savePin({ host: listed.host, port: listed.port, fromList: true, label: "K1VL" });
+      const view = render(<ListenPage />);
+      playing(view);
+      fireEvent.change(screen.getByLabelText("Station name"), { target: { value: "bbc" } });
+      fireEvent.click(screen.getByRole("button", { name: /^12,095 kHz/ }));
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(screen.getByText("This receiver doesn't reach 12,095 kHz.")).toBeTruthy();
+      radio.retune.mockClear();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Pick best for 12,095 kHz" })));
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(radio.retune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 12_095, mode: "am" }));
+    });
+
     // Value: protects=once audio has played on a service that streams it, the receiver's own waterfall opens 60 kHz wide around the dial (owner: open at ~60 kHz) and Audio goes back to the audio one, telling the service each time; fails_when=the default width changes, the view isn't asked for (or is asked for before audio or without the feature), or Audio leaves the wide view up; why_new=wideband waterfall; seam=useRadio and both waterfalls mocked; no_claim=what the service streams (radio tests)
     it("opens 60 kHz wide around the dial once audio plays, and Audio goes back", () => {
       localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_650, mode: "am" }));

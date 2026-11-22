@@ -103,10 +103,12 @@ export function parseTargets(readme: string, previous?: TargetTable): TargetTabl
 export function targetName(table: TargetTable, code: string): string | undefined {
   const c = code.trim();
   if (!c) return undefined;
-  const direct = table.areas[c] ?? table.countries[c];
+  // Own keys only: a code like "constructor" mustn't name itself after Object's.
+  const own = (names: Record<string, string>, key: string) => (Object.hasOwn(names, key) ? names[key] : undefined);
+  const direct = own(table.areas, c) ?? own(table.countries, c);
   if (direct) return direct;
-  const prefix = table.prefixes[c[0]!];
-  const rest = table.areas[c.slice(1)];
+  const prefix = own(table.prefixes, c[0]!);
+  const rest = own(table.areas, c.slice(1));
   return prefix && rest ? `${prefix} ${rest}` : undefined;
 }
 

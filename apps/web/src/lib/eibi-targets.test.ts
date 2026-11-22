@@ -79,7 +79,7 @@ describe("EiBi target names", () => {
     expect(Object.keys(t.areas)).not.toContain("Alternatively,");
   });
 
-  // Value: protects=a code resolves to an area, a prefixed area or a country, a one-letter country code beats the prefix rule ("E" is Spain), and blank or unknown codes have no name; fails_when=prefix codes are left unnamed, "E" reads as a prefix, or an unknown code gets a guess; why_new=station search re-check D1/C4; seam=none; no_claim=what EiBi means by codes it doesn't list
+  // Value: protects=a code resolves to an area, a prefixed area or a country, a one-letter country code beats the prefix rule ("E" is Spain), and blank or unknown codes have no name; fails_when=prefix codes are left unnamed, "E" reads as a prefix, an unknown code gets a guess, or a code like "constructor" reads Object's built-in property; why_new=station search re-check D1/C4; own keys from the /ship r2 adversarial review; seam=none; no_claim=what EiBi means by codes it doesn't list
   it("names area, prefixed and country codes", () => {
     const t = parseTargets(readme(COUNTRIES, AREAS));
     const cases: [string, string | undefined][] = [
@@ -93,6 +93,8 @@ describe("EiBi target names", () => {
       ["NAf", undefined], // no "N.." rule in this README
       ["", undefined],
       ["  ", undefined],
+      ["constructor", undefined], // Object's own keys are never names
+      ["toString", undefined],
     ];
     for (const [code, name] of cases) expect([code, targetName(t, code)]).toEqual([code, name]);
   });

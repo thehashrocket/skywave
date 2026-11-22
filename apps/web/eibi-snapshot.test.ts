@@ -213,12 +213,14 @@ describe("eibi:snapshot target names (station search)", () => {
     expect(none.unnamed).toEqual([]);
   });
 
-  // Value: protects=kept names and unnamed codes reach the snapshot PR body as one line, since CI doesn't run on that PR, and nothing is said when there's nothing to say; fails_when=the output breaks on a multi-line reason, or the workflow stops passing the note; why_new=station search re-check D3; seam=reads .github/workflows/eibi-snapshot.yml as text; no_claim=GitHub rendering the body
+  // Value: protects=kept names and unnamed codes reach the snapshot PR body as one line, since CI doesn't run on that PR, and nothing is said when there's nothing to say; fails_when=the output breaks on a multi-line reason, a remote code reaches the body bare (an @-mention or Markdown), or the workflow stops passing the note; why_new=station search re-check D3; seam=reads .github/workflows/eibi-snapshot.yml as text; no_claim=GitHub rendering the body
   it("puts the target note in the PR body", () => {
     expect(targetsNoteOutput(undefined, [])).toBe("");
-    expect(targetsNoteOutput(undefined, ["Qq", "Zx"])).toBe("targets_note=Target codes with no name in EiBi's README: Qq, Zx.\n");
+    expect(targetsNoteOutput(undefined, ["Qq", "Zx"])).toBe("targets_note=Target codes with no name in EiBi's README: `Qq`, `Zx`.\n");
+    // Codes come from the remote schedule: each sits in a code span, so none can ping or render.
+    expect(targetsNoteOutput(undefined, ["@x`y"])).toBe("targets_note=Target codes with no name in EiBi's README: `@xy`.\n");
     expect(targetsNoteOutput("README request failed: HTTP 503\nlater", ["Qq"])).toBe(
-      "targets_note=Kept the bundled target names: README request failed: HTTP 503 later Target codes with no name in EiBi's README: Qq.\n",
+      "targets_note=Kept the bundled target names: README request failed: HTTP 503 later Target codes with no name in EiBi's README: `Qq`.\n",
     );
     const workflow = readFileSync(new URL("../../.github/workflows/eibi-snapshot.yml", import.meta.url), "utf8");
     expect(workflow).toContain("TARGETS_NOTE: ${{ steps.snapshot.outputs.targets_note }}");
