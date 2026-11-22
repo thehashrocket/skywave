@@ -1555,6 +1555,84 @@ html,
   color: var(--glass);
 }
 
+/* Find a station: a name, then the frequencies it's on now as buttons, or when it's next on. */
+
+.station-search .presets-save {
+  margin-bottom: 10px;
+}
+
+.station-results {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+.station-results li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.station-result-name {
+  flex: 0 1 18rem;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.station-results li:not([data-on]) .station-result-name {
+  color: var(--muted);
+}
+
+.station-result-freqs {
+  flex: 1 1 16rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.station-freq {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 10px;
+  font: inherit;
+  color: var(--text);
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.station-freq .preset-freq {
+  font-size: 1.05rem;
+}
+
+.station-freq:hover {
+  border-color: var(--glass);
+}
+
+.station-freq[data-current] .preset-freq {
+  color: var(--lamp);
+}
+
+.station-freq-lang,
+.station-result-off {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.station-result-off {
+  flex: 1 1 16rem;
+}
+
+.station-result-off .link-button {
+  padding: 0;
+  font-size: inherit;
+}
+
 .preset-delete {
   font: inherit;
   font-size: 1.2rem;

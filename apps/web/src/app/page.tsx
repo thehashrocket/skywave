@@ -7,6 +7,7 @@ import { MapPanel } from "@/components/MapPanel";
 import { Presets } from "@/components/Presets";
 import { ReceiverPicker, type Playing } from "@/components/ReceiverPicker";
 import { SignalList } from "@/components/SignalList";
+import { StationSearch } from "@/components/StationSearch";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SMeter } from "@/components/SMeter";
 import { SpanPicker } from "@/components/SpanPicker";
@@ -1439,6 +1440,13 @@ export default function ListenPage() {
         onTune={(khz) => changeFreq(khz, "am")}
         onScanAgain={() => startScan(true)}
         stationAt={stationAt}
+      />
+
+      <StationSearch
+        schedule={schedule}
+        clock={clock}
+        freqKhz={freqKhz}
+        onTune={(khz) => changeFreq(clampKhz(khz), "am")}
       />
 
       <Presets freqKhz={freqKhz} mode={mode} onSelect={(p) => changeFreq(clampKhz(p.freqKhz), p.mode)} />
