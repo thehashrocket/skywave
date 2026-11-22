@@ -67,10 +67,14 @@ const statusLine = () => document.querySelector(".station-search-status")!.textC
 const rowNames = () => screen.queryAllByRole("button", { name: /kHz/ }).map((r) => r.getAttribute("aria-label"));
 
 describe("StationSearch", () => {
-  // Value: protects=every state before results says what's happening: loading (field off), a failed load with Try again (outside the live region) that keeps typed text, and the empty field's hint; fails_when=a failed load says "Loading" forever, retry is missing, or the empty section is blank; why_new=design review 3A, 5A and the eng re-check error state; seam=none; no_claim=react-query's retry timing
+  // Value: protects=every state before results says what's happening: loading (field off) until both the schedule and the page's clock are in, a failed load with Try again (outside the live region) that keeps typed text, and the empty field's hint; fails_when=a failed load says "Loading" forever, retry is missing, the empty section is blank, or the field opens before the clock is set (results worked out for 1970); why_new=design review 3A, 5A and the eng re-check error state; clock-null case added by the /ship coverage audit; seam=none; no_claim=react-query's retry timing
   it("says what's happening before there are results", () => {
     const loading = show({ schedule: undefined });
     expect(loading.field.disabled).toBe(true);
+    expect(statusLine()).toBe("Loading the schedule…");
+    cleanup();
+    const noClock = show({ clock: null });
+    expect(noClock.field.disabled).toBe(true);
     expect(statusLine()).toBe("Loading the schedule…");
     cleanup();
     const failed = show({ schedule: undefined, loadFailed: true });

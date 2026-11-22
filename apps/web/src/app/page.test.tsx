@@ -2416,6 +2416,25 @@ describe("ListenPage", () => {
       expect(screen.getByText("The receiver list is still loading. Press Pick best for 8,957 kHz again in a moment.")).toBeTruthy();
     });
 
+    // Value: protects=Find a station says a clicked row is out of range only for a listed receiver playing that stops short of it, by the list's range, and says nothing for a typed receiver whose range is unknown; fails_when=the page stops passing reaches (no range note), reads it from another receiver or the dial, or passes it for a typed receiver (a false "doesn't reach"); why_new=StationSearch's own test passes reaches by hand; the page's wiring of covers() and playingListed was untested (/ship coverage audit); seam=useRadio and useSchedule mocked, list hook mocked; no_claim=the receiver's real range (the list's minKhz/maxKhz stand in)
+    it("tells Find a station whether the receiver playing reaches a row", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_650, mode: "am" }));
+      receiverList.data = { receivers: [{ ...listed, maxKhz: 10_000 }, backup] };
+      const daily = (khz: number) => ({ khz, start: 0, end: 1440, days: "", station: "BBC", lang: "E", target: "Eu" });
+      schedule.data = { season: "b26", bundled: false, broadcasts: [daily(12_095), daily(9_410)], targetNames: {} };
+      const view = render(<ListenPage />);
+      playing(view);
+      fireEvent.change(screen.getByLabelText("Station name"), { target: { value: "bbc" } });
+      fireEvent.click(screen.getByRole("button", { name: /^12,095 kHz/ }));
+      expect(screen.getByText("This receiver doesn't reach 12,095 kHz.")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: /^9,410 kHz/ }));
+      expect(screen.queryByText(/doesn't reach/)).toBeNull();
+      // A typed receiver isn't on the list: its range is unknown, so no range note.
+      playing(view, "typed.example", 8073);
+      fireEvent.click(screen.getByRole("button", { name: /^12,095 kHz/ }));
+      expect(screen.queryByText(/doesn't reach/)).toBeNull();
+    });
+
     // Value: protects=once audio has played on a service that streams it, the receiver's own waterfall opens 60 kHz wide around the dial (owner: open at ~60 kHz) and Audio goes back to the audio one, telling the service each time; fails_when=the default width changes, the view isn't asked for (or is asked for before audio or without the feature), or Audio leaves the wide view up; why_new=wideband waterfall; seam=useRadio and both waterfalls mocked; no_claim=what the service streams (radio tests)
     it("opens 60 kHz wide around the dial once audio plays, and Audio goes back", () => {
       localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_650, mode: "am" }));
