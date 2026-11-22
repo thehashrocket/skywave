@@ -1555,82 +1555,82 @@ html,
   color: var(--glass);
 }
 
-/* Find a station: a name, then the frequencies it's on now as buttons, or when it's next on. */
+/* Find a station (design review 10A): the presets' grid rows, filling across so "Show more"
+   only adds rows at the end (11A), with a time column and a second line under the name. */
 
-.station-search .presets-save {
+.station-search-field {
+  max-width: 520px;
+  margin-bottom: 8px;
+}
+
+.station-search-field input {
+  caret-color: var(--lamp);
+}
+
+.station-search-status {
+  margin-bottom: 4px;
+}
+
+.station-search-retry {
+  margin-bottom: 8px;
+}
+
+/* The note after a click; its line is held so it can't push the list down (6B). */
+.station-search-note {
+  min-height: 1lh;
   margin-bottom: 10px;
-}
-
-.station-results {
-  list-style: none;
-  margin: 0 0 12px;
-  padding: 0;
-}
-
-.station-results li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 16px;
-  padding: 8px 4px;
-  border-bottom: 1px solid var(--rule);
-}
-
-.station-result-name {
-  flex: 0 1 18rem;
-  min-width: 0;
-  font-weight: 600;
-}
-
-.station-results li:not([data-on]) .station-result-name {
-  color: var(--muted);
-}
-
-.station-result-freqs {
-  flex: 1 1 16rem;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.station-freq {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 3px 10px;
-  font: inherit;
-  color: var(--text);
-  background: none;
-  border: 1px solid var(--rule);
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.station-freq .preset-freq {
-  font-size: 1.05rem;
-}
-
-.station-freq:hover {
-  border-color: var(--glass);
-}
-
-.station-freq[data-current] .preset-freq {
-  color: var(--lamp);
-}
-
-.station-freq-lang,
-.station-result-off {
   font-size: 0.85rem;
   color: var(--muted);
 }
 
-.station-result-off {
-  flex: 1 1 16rem;
+.station-search-note .link-button {
+  margin-left: 0.5em;
 }
 
-.station-result-off .link-button {
-  padding: 0;
-  font-size: inherit;
+.station-results .preset-tune {
+  grid-template-columns: 6ch 9.5ch 1fr;
+}
+
+.station-when {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.station-when-until {
+  font-size: 0.8rem;
+}
+
+.station-second {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 10px;
+  font-size: 0.85rem;
+}
+
+.station-to {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+/* The S-meter's "good signal" green, not lamp: lamp marks the tuned row (9A). */
+.station-strong {
+  color: var(--meter-mid);
+}
+
+.station-results .preset-tune:hover .signal-station-name {
+  color: var(--glass);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Phones only; see the 520px block. */
+.station-phone-more {
+  display: none;
 }
 
 .preset-delete {
@@ -2205,6 +2205,16 @@ html,
     display: none;
   }
   .signals-more {
+    display: inline-block;
+    margin-bottom: 20px;
+  }
+  /* Find a station: 8 rows first, as Strong signals (12A); its own button reveals the rest of the
+     page, and only then the button that adds more. */
+  .station-search:not([data-phone-open]) .station-results li[data-beyond],
+  .station-search:not([data-phone-open]) .station-more {
+    display: none;
+  }
+  .station-search:not([data-phone-open]) .station-phone-more {
     display: inline-block;
     margin-bottom: 20px;
   }
