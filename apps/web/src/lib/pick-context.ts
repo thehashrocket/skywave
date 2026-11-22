@@ -8,7 +8,7 @@ import { receiverKey, type Receiver } from "./kiwi-list";
  */
 
 /** Which button started the run. "better" lists the offered receiver first by hand, not by rank. */
-export const PICK_SOURCES = ["beacon", "listen", "link", "drawer", "better"] as const;
+export const PICK_SOURCES = ["beacon", "listen", "link", "drawer", "better", "search"] as const;
 export type PickSource = (typeof PICK_SOURCES)[number];
 
 /**
@@ -33,11 +33,14 @@ export type PickSource = (typeof PICK_SOURCES)[number];
  * time header) every 5 minutes and on wake, corrected whenever it's off by more
  * than its error (at least half a second), and any correction drops a held
  * pick's context; the gap timers run on the server's clock; beacon Listen
- * waits for a measurement while the clock is unsure. The server still accepts
- * 2 to 5 from tabs opened before those deploys.
+ * waits for a measurement while the clock is unsure. 7: a run can start from
+ * station search's Pick best button (source "search"); the pick rules are
+ * those of 6, so the #61 replay should group 6 and 7 as one rule set (owner,
+ * station search build). The server still accepts 2 to 6 from tabs opened
+ * before those deploys.
  * Raise it whenever what the page records, or when it records it, changes.
  */
-export const PICK_CONTEXT_VERSION = 6;
+export const PICK_CONTEXT_VERSION = 7;
 
 /** How many of the ranked list's receivers a report keeps, best first. */
 export const MAX_CANDIDATES = 10;
