@@ -178,14 +178,26 @@ const MOBILE_BANDS: Range = [
 ].map(([startKhz, endKhz]) => ({ startKhz: startKhz!, endKhz: endKhz! }));
 
 /**
+ * AM broadcasters that b26 lists inside the aeronautical, maritime or ham
+ * bands, where the band rule would tune a sideband and garble them (/ship
+ * adversarial review, owner's choice: a named list). Matched on the folded
+ * station name; add a name here when a season moves another one in.
+ */
+const BAND_BROADCASTERS =
+  /\b(sound of hope|firedrake|voice of korea|radio tury|star-star bc|presidential pirate)\b/;
+
+/**
  * The mode a result tunes in (D11, reopened at build: "USB outside the
  * broadcast bands" put 42% of b26's rows in USB, broadcasters included). AM
  * on long and medium wave and in the shortwave broadcast bands; in a ham band
  * what the dial would pick; USB in the aeronautical and maritime mobile bands;
- * AM anywhere else, where out-of-band broadcasters are.
+ * AM anywhere else, where out-of-band broadcasters are. Morse rows tune CW,
+ * and the AM broadcasters EiBi lists inside the mobile and ham bands tune AM.
  */
-export function clickMode(khz: number): Mode {
-  if (khz < 1800 || inBand(khz, BROADCAST_BANDS)) return "am";
+export function clickMode(khz: number, lang = "", station = ""): Mode {
+  // EiBi's "-CW" language marks Morse (navy, channel markers): CW wherever it is.
+  if (lang.split(",").some((c) => c.trim() === "-CW")) return "cw";
+  if (khz < 1800 || inBand(khz, BROADCAST_BANDS) || BAND_BROADCASTERS.test(fold(station))) return "am";
   if (inBand(khz, HAM_BANDS)) return guessMode(khz);
   return inBand(khz, MOBILE_BANDS) ? "usb" : "am";
 }

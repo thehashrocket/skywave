@@ -33,8 +33,8 @@ type Props = {
   /** Whether the receiver playing reaches a frequency; undefined when that's unknown. */
   reaches?: (freqKhz: number) => boolean;
   onTune: (freqKhz: number, mode: Mode) => void;
-  /** Pick best for the dial's frequency (pick source "search"). */
-  onPickBest: () => void;
+  /** Pick best for the clicked row's frequency and mode (pick source "search"). */
+  onPickBest: (freqKhz: number, mode: Mode) => void;
 };
 
 /** Rows per page (D5). */
@@ -82,8 +82,11 @@ function spokenLabel(
     .join(", ");
 }
 
-/** A note under the count, after a click (design 6B, 7A); "idle" and "range" show while still true. */
-type Note = { kind: "idle" | "range"; khz: number } | { kind: "later"; text: string };
+/**
+ * A note under the count, after a click (design 6B, 7A): "idle" and "range"
+ * show while still true; "later" is worded from the clock each minute.
+ */
+type Note = { kind: "idle" | "range"; khz: number; mode: Mode } | { kind: "later"; row: FoundBroadcast };
 
 /**
  * Find a station by name (a listener's request): every broadcast of a
@@ -158,11 +161,11 @@ export function StationSearch({
   };
 
   const tune = (f: FoundBroadcast) => {
-    onTune(f.khz, clickMode(f.khz));
-    if (idle) setNote({ kind: "idle", khz: f.khz });
-    else if (reaches && !reaches(f.khz)) setNote({ kind: "range", khz: f.khz });
-    else if (!f.onNow && f.startsAt !== undefined && clock !== null)
-      setNote({ kind: "later", text: `${title(f)} ${startsSentence(f.startsAt, clock)}.` });
+    const mode = clickMode(f.khz, f.lang, f.station);
+    onTune(f.khz, mode);
+    if (idle) setNote({ kind: "idle", khz: f.khz, mode });
+    else if (reaches && !reaches(f.khz)) setNote({ kind: "range", khz: f.khz, mode });
+    else if (!f.onNow && f.startsAt !== undefined) setNote({ kind: "later", row: f });
     else setNote(null);
   };
 
@@ -171,8 +174,10 @@ export function StationSearch({
       ? "Nothing is playing."
       : note?.kind === "range" && !idle && reaches && !reaches(note.khz)
         ? `This receiver doesn't reach ${khz(note.khz)} kHz.`
-        : note?.kind === "later"
-          ? note.text
+        : note?.kind === "later" && note.row.startsAt !== undefined && clock !== null
+          ? note.row.startsAt > clock
+            ? `${title(note.row)} ${startsSentence(note.row.startsAt, clock)}.`
+            : `${title(note.row)} should be on now.`
           : "";
   const offerPick = note !== null && note.kind !== "later" && noteText !== "";
 
@@ -216,8 +221,8 @@ export function StationSearch({
       <div className="station-search-note">
         <span role="status">{noteText}</span>
         {offerPick && (
-          <button type="button" className="link-button inline" onClick={onPickBest}>
-            Pick best for {khz(freqKhz)} kHz
+          <button type="button" className="link-button inline" onClick={() => onPickBest(note.khz, note.mode)}>
+            Pick best for {khz(note.khz)} kHz
           </button>
         )}
       </div>
@@ -225,7 +230,7 @@ export function StationSearch({
       {visible.length > 0 && (
         <ul ref={listRef} className="presets-list station-results">
           {visible.map((f, i) => {
-            const mode = clickMode(f.khz);
+            const mode = clickMode(f.khz, f.lang, f.station);
             // An older server sends no targetNames; its rows just have no "to" line.
             const targets = f.targets.map((t) => schedule!.targetNames?.[t]).filter((n): n is string => !!n);
             const to = [...new Set(targets)].join(", ");

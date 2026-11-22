@@ -149,7 +149,7 @@ describe("StationSearch", () => {
     fireEvent.click(screen.getByRole("button", { name: /^6,195 kHz/ }));
     expect(screen.getByText("Nothing is playing.").getAttribute("role")).toBe("status");
     fireEvent.click(screen.getByRole("button", { name: "Pick best for 6,195 kHz" }));
-    expect(props.onPickBest).toHaveBeenCalledTimes(1);
+    expect(props.onPickBest).toHaveBeenCalledWith(6195, "am");
     rerender({ idle: false });
     expect(screen.queryByText("Nothing is playing.")).toBeNull();
     rerender({ idle: false, reaches: (khz) => khz < 10_000 });
@@ -161,6 +161,27 @@ describe("StationSearch", () => {
     expect(screen.queryByRole("button", { name: /^Pick best for/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /^9,410 kHz/ }));
     expect(document.querySelector(".station-search-note [role=status]")!.textContent).toBe("");
+  });
+
+  // Value: protects=Pick best under a note names and picks for the clicked row's frequency and mode, wherever the dial is now (a refused retune moves it back); fails_when=the button reads the dial, so "doesn't reach 12,095 kHz" is followed by a pick for another frequency; why_new=/ship adversarial review (Codex O1); seam=none; no_claim=the page's dial handling (page test)
+  it("picks best for the clicked row, not the dial", () => {
+    const { type, props } = show({ freqKhz: 9410, reaches: (khz) => khz < 10_000 });
+    type("bbc");
+    fireEvent.click(screen.getByRole("button", { name: /^12,095 kHz/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Pick best for 12,095 kHz" }));
+    expect(props.onPickBest).toHaveBeenCalledWith(12095, "am");
+  });
+
+  // Value: protects=the "starts at" note is worded from the clock each minute, and says the broadcast should be on once its start has passed; fails_when=the note keeps the wait from the click ("in 6 h" an hour later) or promises a start that has gone by; why_new=/ship adversarial review (native N2); seam=none; no_claim=none beyond protects
+  it("keeps the starts-at note current", () => {
+    const { type, rerender } = show();
+    type("bbc");
+    fireEvent.click(screen.getByRole("button", { name: /^6,195 kHz/ }));
+    expect(screen.getByText("BBC · English starts at 18:00 UTC, in 6 h.")).toBeTruthy();
+    rerender({ clock: NOW + 5.5 * 3_600_000 });
+    expect(screen.getByText("BBC · English starts at 18:00 UTC, in 30 min.")).toBeTruthy();
+    rerender({ clock: NOW + 6 * 3_600_000 + 60_000 });
+    expect(screen.getByText("BBC · English should be on now.")).toBeTruthy();
   });
 
   // Value: protects=long results page in 20s with a counting button ("Show 20 more of R", then "Show the last R"), focus moving to the first new row, each page read out at once ("Showing 40 of 45."), rows past 8 marked for the phone's first page with its own reveal that moves focus to the ninth row and goes away, and a new query starting over; fails_when=rows past 20 are unreachable, focus is lost after either Show more, a screen reader hears nothing after paging or a wrong count, the phone sees all 20 at once, or a new search keeps the old page count; why_new=station search D5, design 2A, 11A, 12A, 13A; phone reveal and paging announcement added by the /ship coverage audit; seam=none; no_claim=the 520px CSS hiding (jsdom applies no media queries)

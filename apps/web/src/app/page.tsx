@@ -1447,7 +1447,16 @@ export default function ListenPage() {
         idle={!busy}
         reaches={status.state === "listening" && playingListed ? (khz) => covers(playingListed, khz) : undefined}
         onTune={(khz, m) => changeFreq(clampKhz(khz), m)}
-        onPickBest={() => startPickBest("search")}
+        onPickBest={(khz, m) => {
+          // Pick best for the row the note is about, not wherever the dial has
+          // settled since (a refused retune moves it back): set before the run
+          // starts, as beacon Listen does, since its tunes read the dial from here.
+          const k = clampKhz(khz);
+          latest.current = { freqKhz: k, mode: m };
+          setFreqKhz(k);
+          setMode(m);
+          startPickBest("search");
+        }}
       />
 
       <SignalList

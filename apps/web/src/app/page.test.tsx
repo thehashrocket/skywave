@@ -1721,13 +1721,16 @@ describe("ListenPage", () => {
       expect(pick).toMatchObject({ pickSource: "listen", rankPos: 0, freqKhz: 9_580 });
     });
 
-    // Value: protects=a run started from Find a station's Pick best button is labelled "search" on the answer, so #61 can tell those runs apart (pick context 7); fails_when=StationSearch's onPickBest passes "listen" or another source, or the button starts no run while the list is loaded; why_new=the station search page test covers only the no-list message, and reports.test only the server accepting "search" (/ship coverage audit); seam=useRadio, useSchedule and useSubmitReport mocked, list hook mocked; no_claim=the search rules (station-search tests)
+    // Value: protects=a run started from Find a station's Pick best button is labelled "search" on the answer, so #61 can tell those runs apart (pick context 7); fails_when=StationSearch's onPickBest passes "listen" or another source, the button starts no run while the list is loaded, or the run picks for wherever the dial settled instead of the clicked row (Codex O1); why_new=the station search page test covers only the no-list message, and reports.test only the server accepting "search" (/ship coverage audit); seam=useRadio, useSchedule and useSubmitReport mocked, list hook mocked; no_claim=the search rules (station-search tests)
     it("labels the context of a Find a station Pick best run", () => {
       localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
       receiverList.data = { receivers: [listed, { ...backup, snr: 10 }] };
       const view = render(<ListenPage />);
       fireEvent.change(screen.getByLabelText("Station name"), { target: { value: "kbs" } });
       fireEvent.click(screen.getByRole("button", { name: /^9,580 kHz/ }));
+      // A refused retune moves the dial back; Pick best still picks for the clicked row.
+      radio.settled = { freqKhz: 7_000, mode: "am" };
+      view.rerender(<ListenPage />);
       act(() => fireEvent.click(screen.getByRole("button", { name: "Pick best for 9,580 kHz" })));
       radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 9_580, mode: "am" };
       radio.heardAudio = true;

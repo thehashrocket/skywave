@@ -128,7 +128,7 @@ describe("station search", () => {
     expect(find(schedule, "radio xyz")).toEqual({ found: [], names: [] });
   });
 
-  // Value: protects=a click tunes AM on long/medium wave, in the broadcast bands and for out-of-band broadcasters, what the dial picks in a ham band, and USB only in the HF aeronautical and maritime mobile bands; fails_when=VoA Ashna on 12,140 or R.Triunfal on 5,825 tune USB, Volmet tunes AM, or a 40 m row ignores the ham rule; why_new=station search D11, reopened at build (owner: ITU mobile bands); seam=none; no_claim=DRM and data rows, noise in any mode
+  // Value: protects=a "-CW" (Morse) row tunes CW in any band, the named AM broadcasters inside the mobile and ham bands (Sound of Hope, Firedrake, Voice of Korea...) tune AM while Volmets there keep USB, and otherwise a click tunes AM on long/medium wave, in the broadcast bands and for out-of-band broadcasters, what the dial picks in a ham band, and USB only in the HF aeronautical and maritime mobile bands; fails_when=a Morse row tunes AM (silence), Sound of Hope or Voice of Korea tunes a sideband (garbled), or VoA Ashna on 12,140 or R.Triunfal on 5,825 tune USB, Volmet tunes AM, or a 40 m row ignores the ham rule; why_new=/ship adversarial review (Codex O2, native N1 with the owner choosing a named list) and station search D11, reopened at build (owner: ITU mobile bands); seam=none; no_claim=DRM and data rows, noise in any mode
   it("picks the mode a result tunes in", () => {
     const cases: [number, string][] = [
       [198, "am"],
@@ -144,6 +144,26 @@ describe("station search", () => {
       [14250, "usb"],
     ];
     expect(cases.map(([k]) => [k, clickMode(k)])).toEqual(cases);
+    // EiBi's "-CW" language is Morse (navy, channel markers): CW in any band, alone or in a list.
+    expect([clickMode(4_331, "-CW"), clickMode(9_580, "-CW"), clickMode(7_039, "E,-CW"), clickMode(9_580, "E")]).toEqual([
+      "cw",
+      "cw",
+      "cw",
+      "am",
+    ]);
+    // AM broadcasters listed inside the mobile and ham bands tune AM; utility voice there keeps the band rule.
+    expect(
+      [
+        [6230, "M", "Sound of Hope"],
+        [6230, "M", "CNR1 Jammer/Firedrake"],
+        [3560, "E", "Voice of Korea"],
+        [6265, "P", "Rádio Tury"],
+        [8300, "M", "Star-Star Bc.Station"],
+        [9025, "E", "Presidential Pirate"],
+        [8957, "E", "Shannon Volmet"],
+        [3560, "E", "Some Ham Net"],
+      ].map(([k, l, n]) => clickMode(k as number, l as string, n as string)),
+    ).toEqual(["am", "am", "am", "am", "am", "am", "usb", "lsb"]);
   });
 
   // Value: protects=a later row's start reads as UTC time plus how long until it, "tomorrow" once past midnight UTC, in a row and in the note's sentence; fails_when=minutes round down to 0, hours read as minutes, or a start after midnight looks like today; why_new=design review 7A; seam=none; no_claim=the viewer's local time
