@@ -92,13 +92,13 @@ describe("scheduleSource", () => {
 });
 
 describe("stations.schedule for the page (#72)", () => {
-  // Value: protects=the page gets the schedule exactly as before #72: plain broadcasts with no country, site or listed rows, while the server keeps them; fails_when=site data leaks into the page payload or the server loses it; why_new=#72 D7/D13; seam=fetch; no_claim=compressed transfer size
+  // Value: protects=the page gets plain broadcasts with no country, site or listed rows, plus only the target names (station search), while the server keeps the sites; fails_when=site data leaks into the page payload or the server loses it; why_new=#72 D7/D13; station search re-check D5 added targetNames; seam=fetch; no_claim=compressed transfer size
   it("keeps sites on the server", async () => {
     const { get } = setup();
     const schedule = await get();
     expect(schedule.listed[0]).toMatchObject({ station: "Fetched", country: "KOR", site: "KOR-k" });
     const page = forPageSchedule(schedule);
-    expect(Object.keys(page).sort()).toEqual(["broadcasts", "bundled", "season"]);
+    expect(Object.keys(page).sort()).toEqual(["broadcasts", "bundled", "season", "targetNames"]);
     expect(page.broadcasts[0]).toEqual({
       khz: 9580,
       start: 0,
@@ -108,6 +108,33 @@ describe("stations.schedule for the page (#72)", () => {
       lang: "E",
       target: "FE",
     });
+  });
+});
+
+describe("stations.schedule target names (station search)", () => {
+  // Value: protects=the page gets a name for each target code the season uses, from the bundled README lists, prefix codes included, and nothing for a blank or unnamed code, for both a fetched and the bundled schedule; fails_when=names come from the wrong table, the prefix rule is lost, an unnamed code gets a made-up entry, or the bundled fallback has none; why_new=station search re-check D5; seam=fetch; no_claim=EiBi's README wording
+  it("names the season's target codes", async () => {
+    const rows = ["9580;0000-2400;;KOR;A;E;FE;k;1;;", "6180;0000-2400;;CHN;B;E;WAf;;1;;", "7200;0000-2400;;CHN;C;E;Tas;;1;;", "7300;0000-2400;;CHN;D;E;;;1;;"];
+    const csv = `${HEADER}\r\n${rows.join("\r\n")}\r\n`;
+    const targets = { areas: { FE: "Far East", Af: "Africa" }, countries: { CHN: "China" }, prefixes: { W: "West" } };
+    const fetched = scheduleSource({
+      fetchImpl: (async () => new Response(csv)) as unknown as typeof fetch,
+      now: () => Date.parse("2026-11-10T12:00:00Z"),
+      defer: () => {},
+      bundled: { season: "b26", csv },
+      targets,
+    });
+    expect((await fetched()).targetNames).toEqual({ FE: "Far East", WAf: "West Africa" });
+    const offline = scheduleSource({
+      fetchImpl: (async () => new Response("", { status: 503 })) as unknown as typeof fetch,
+      now: () => Date.parse("2026-11-10T12:00:00Z"),
+      defer: () => {},
+      bundled: { season: "b26", csv },
+      targets,
+    });
+    const bundled = await offline();
+    expect(bundled.bundled).toBe(true);
+    expect(bundled.targetNames).toEqual({ FE: "Far East", WAf: "West Africa" });
   });
 });
 

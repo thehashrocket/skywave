@@ -1,7 +1,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { seasonFor } from "./src/lib/eibi";
-import { keptSitesNotice, siteCountsOutput, snapshot, SNAPSHOT_FETCH_TIMEOUT_MS, SNAPSHOT_MAX_BYTES } from "./scripts/eibi-snapshot";
+import {
+  keptSitesNotice,
+  siteCountsOutput,
+  snapshot,
+  SNAPSHOT_FETCH_TIMEOUT_MS,
+  SNAPSHOT_MAX_BYTES,
+  targetsNoteOutput,
+} from "./scripts/eibi-snapshot";
+import { MIN_AREAS, MIN_COUNTRIES, type TargetTable } from "./src/lib/eibi-targets";
 import { MIN_SITES, sitesFromJson, sitesToJson } from "./src/lib/eibi-sites";
 
 const HEADER = "kHz:75;Time(UTC):93;Days:59;ITU:49;Station:201;Lng:49;Target:62;Remarks:135;P:35;Start:60;Stop:60;";
@@ -150,5 +158,70 @@ describe("eibi:snapshot", () => {
         expect(season).not.toBe(seasonFor(run - 8 * 86_400_000));
       }
     }
+  });
+});
+
+describe("eibi:snapshot target names (station search)", () => {
+  const csv = `${HEADER}\r\n9580;0000-2400;;KOR;A;E;FE;k;1;;\r\n6180;0000-2400;;CHN;B;E;WAf;;1;;\r\n7200;0000-2400;;AUS;C;;Tas;;1;;\r\n7300;0000-2400;;CHN;D;E;Qq;;1;;\r\n7400;0000-2400;;CHN;E;E;;;1;;\r\n`;
+  /** A README with whole country, target-area and site lists, or only the sites. */
+  const readme = (withTargets: boolean) =>
+    [
+      ...(withTargets
+        ? [
+            "   II) Country codes.",
+            "   CHN  China (People's Republic)",
+            ...Array.from({ length: MIN_COUNTRIES }, (_, i) => `   Q${i.toString(36).padStart(2, "0").toUpperCase()}  Filler ${i}`),
+            "",
+            "   III) Target-area codes.",
+            "   Af  - Africa",
+            "   FE  - Far East",
+            "   W.. - West ..",
+            ...Array.from({ length: MIN_AREAS }, (_, i) => `   Zz${i.toString(36)} - Filler ${i}`),
+            "",
+          ]
+        : []),
+      "   IV) Transmitter site codes.",
+      "   B:   Brasília 15S47-47W55",
+      ...Array.from({ length: MIN_SITES - 1 }, (_, i) => `        f${i.toString(36)}-Filler 10N00-010E00`),
+    ].join("\r\n");
+  const fetchWith = (readmeText: string) =>
+    (async (url: string) =>
+      new Response(Buffer.from(url.endsWith("README.TXT") ? readmeText : csv, "latin1"))) as unknown as typeof fetch;
+
+  // Value: protects=the refresh saves the README's target names with the season, from the same single README download as the sites, and reports the season's codes left unnamed except the known-unnamed Tas and blanks; fails_when=the names aren't saved, the README is fetched twice, or a new code goes unreported; why_new=station search re-check D5/D3; seam=fetch; no_claim=EiBi's real README (the parser's own tests use its lines)
+  it("saves the README's target names and lists unnamed codes", async () => {
+    const fetchImpl = vi.fn(fetchWith(readme(true)));
+    const { json, targetsError, unnamed } = await snapshot("b26", fetchImpl as unknown as typeof fetch);
+    const saved = JSON.parse(json);
+    expect(saved.targets.areas.FE).toBe("Far East");
+    expect(saved.targets.prefixes).toEqual({ W: "West" });
+    expect(saved.targets.countries.CHN).toBe("China");
+    expect(targetsError).toBeUndefined();
+    expect(unnamed).toEqual(["Qq"]);
+    expect(fetchImpl.mock.calls.filter(([url]) => String(url).endsWith("README.TXT"))).toHaveLength(1);
+  });
+
+  // Value: protects=a README without whole target lists never holds up the season or drops names: the bundled names are kept and the reason returned, and with none bundled the snapshot saves without names rather than failing; fails_when=a README problem fails the snapshot, or a short list replaces good names; why_new=station search re-check D5 (as for sites); seam=fetch; no_claim=the workflow's log wording
+  it("keeps the bundled names when the README's lists aren't whole", async () => {
+    const bundled: TargetTable = { areas: { FE: "Far East" }, countries: { CHN: "China" }, prefixes: {} };
+    const kept = await snapshot("b26", fetchWith(readme(false)), undefined, SNAPSHOT_FETCH_TIMEOUT_MS, bundled);
+    expect(JSON.parse(kept.json).targets).toEqual(bundled);
+    expect(kept.targetsError).toMatch(/no country or target-area section/);
+    expect(kept.unnamed).toEqual(["Qq", "WAf"]);
+    const none = await snapshot("b26", fetchWith(readme(false)));
+    expect(JSON.parse(none.json)).not.toHaveProperty("targets");
+    expect(none.unnamed).toEqual([]);
+  });
+
+  // Value: protects=kept names and unnamed codes reach the snapshot PR body as one line, since CI doesn't run on that PR, and nothing is said when there's nothing to say; fails_when=the output breaks on a multi-line reason, or the workflow stops passing the note; why_new=station search re-check D3; seam=reads .github/workflows/eibi-snapshot.yml as text; no_claim=GitHub rendering the body
+  it("puts the target note in the PR body", () => {
+    expect(targetsNoteOutput(undefined, [])).toBe("");
+    expect(targetsNoteOutput(undefined, ["Qq", "Zx"])).toBe("targets_note=Target codes with no name in EiBi's README: Qq, Zx.\n");
+    expect(targetsNoteOutput("README request failed: HTTP 503\nlater", ["Qq"])).toBe(
+      "targets_note=Kept the bundled target names: README request failed: HTTP 503 later Target codes with no name in EiBi's README: Qq.\n",
+    );
+    const workflow = readFileSync(new URL("../../.github/workflows/eibi-snapshot.yml", import.meta.url), "utf8");
+    expect(workflow).toContain("TARGETS_NOTE: ${{ steps.snapshot.outputs.targets_note }}");
+    expect(workflow).toMatch(/body="[^"]*\$checked \$SITE_COUNTS \$TARGETS_NOTE/);
   });
 });

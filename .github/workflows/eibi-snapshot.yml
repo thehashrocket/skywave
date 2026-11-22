@@ -60,6 +60,8 @@ jobs:
           SITES_NOTE: ${{ steps.snapshot.outputs.sites_note }}
           # The bundled table's site count and the new one's ("1,698 → 1,690").
           SITE_COUNTS: ${{ steps.snapshot.outputs.site_counts }}
+          # Kept target names, or the season's target codes EiBi's README doesn't name (station search).
+          TARGETS_NOTE: ${{ steps.snapshot.outputs.targets_note }}
         run: |
           file=apps/web/src/server/eibi-snapshot.json
           if git diff --quiet -- "$file"; then
@@ -79,7 +81,7 @@ jobs:
             checked="\`pnpm --filter web eibi:snapshot\` checked the schedule. The transmitter sites were NOT refreshed: $SITES_NOTE If the README is refused as under 80% season after season, EiBi may have really dropped sites, and the README's Station names section says how to take the smaller list."
           fi
           title="chore(web): refresh the bundled EiBi schedule and transmitter sites ($season)"
-          body="The station schedule and transmitter-site table the server falls back on when eibispace.de can't be reached, refreshed for season $season by the \`Refresh EiBi snapshot\` workflow. $checked $SITE_COUNTS
+          body="The station schedule and transmitter-site table the server falls back on when eibispace.de can't be reached, refreshed for season $season by the \`Refresh EiBi snapshot\` workflow. $checked $SITE_COUNTS $TARGETS_NOTE
 
           A PR opened by this workflow doesn't start CI on its own: close and reopen it, or push to it, to run the checks."
           # A rerun pushes a new commit to an open PR: refresh its body too, so it describes that commit.
