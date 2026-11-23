@@ -438,10 +438,10 @@ describe("reports.submit with Pick best's context (#61)", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  // Value: protects=a broadcast pick started from station search's Pick best button is stored with its own source, so #61 can tell those runs apart; fails_when="search" is missing from the sources the server takes (the answer loses its context) or is stored as another source; why_new=station search design 6bA; seam=in-memory db; no_claim=Postgres
-  it("stores context from a station search pick", async () => {
-    const { data, warn } = await submit({ ...valid, pick: { ...pick, pickSource: "search" } });
-    expect(data).toMatchObject({ ...stored, pickSource: "search" });
+  // Value: protects=a pick started from station search's Pick best button or a GhostNet row's Listen is stored with its own source, so #61 can tell those runs apart; fails_when="search" or "ghostnet" is missing from the sources the server takes (the answer loses its context) or is stored as another source; why_new=station search design 6bA, then GhostNet owner D3/D11; seam=in-memory db; no_claim=Postgres
+  it.each(["search", "ghostnet"] as const)("stores context from a %s pick", async (pickSource) => {
+    const { data, warn } = await submit({ ...valid, pick: { ...pick, pickSource } });
+    expect(data).toMatchObject({ ...stored, pickSource });
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -530,9 +530,9 @@ describe("reports.submit with Pick best's context (#61)", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  // Value: protects=a tab opened before the round 2, clock, round 3, scheduled clock or station search deploy still sends version 2 to 6; its context is kept and stored as sent, so the replay can tell it from version 7; fails_when=the server accepts only the current version (old tabs lose context) or rewrites the version it stores; why_new=round 2 raised PICK_CONTEXT_VERSION to 3, the monotonic clock to 4, round 3 to 5, the scheduled clock to 6, station search's "search" source to 7; seam=in-memory db; no_claim=Postgres
-  it.each([2, 3, 4, 5, 6])("keeps context from a tab on earlier version %i, storing that version", async (version) => {
-    expect(PICK_CONTEXT_VERSION).toBe(7);
+  // Value: protects=a tab opened before the round 2, clock, round 3, scheduled clock, station search or GhostNet deploy still sends version 2 to 7; its context is kept and stored as sent, so the replay can tell it from version 8; fails_when=the server accepts only the current version (old tabs lose context) or rewrites the version it stores; why_new=round 2 raised PICK_CONTEXT_VERSION to 3, the monotonic clock to 4, round 3 to 5, the scheduled clock to 6, station search's "search" source to 7, GhostNet's "ghostnet" source to 8; seam=in-memory db; no_claim=Postgres
+  it.each([2, 3, 4, 5, 6, 7])("keeps context from a tab on earlier version %i, storing that version", async (version) => {
+    expect(PICK_CONTEXT_VERSION).toBe(8);
     const { data, warn } = await submit({ ...valid, pick: { ...pick, version } });
     expect(data).toMatchObject({ ...stored, pickVersion: version });
     expect(warn).not.toHaveBeenCalled();
