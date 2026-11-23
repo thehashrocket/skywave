@@ -10,6 +10,5 @@
     "test:radio": "cd apps/radio && .venv/bin/python -m pytest -q",
     "test:web": "pnpm --filter web test",
     "db:up": "docker compose up -d postgres"
-  },
-  "version": "0.45.0"
+  }
 }
