@@ -39,6 +39,7 @@ import {
   type Mode,
 } from "@/lib/radio-types";
 import { DEFAULT_KIWI_PORT, parseReceiver } from "@/lib/receiver";
+import { keepsArrowKeys, keepsLetterKeys, modeForKey, pageStepKhz, steppedKhz } from "@/lib/tuning-keys";
 import { buildShareLink, parseShareLink } from "@/lib/share-link";
 import type { PickSource } from "@/lib/pick-context";
 import { usePickBest, WATCH_MS } from "@/lib/use-pick-best";
@@ -63,6 +64,8 @@ const STORAGE_KEY = "skywave.receiver";
 // save from before pins existed never reads as one.
 const PIN_KEY = "skywave.pin";
 const TUNING_KEY = "skywave.tuning";
+// "off" once the listener turns the A/U/L/C mode keys off (WCAG 2.1.4, #89 D3); absent means on.
+const LETTER_KEYS_KEY = "skywave.letterKeys";
 const DEFAULT_TUNING = { freqKhz: 10_000, mode: "am" as Mode };
 // How long the dial rests before the frequency is saved.
 const SAVE_TUNING_MS = 500;
@@ -147,6 +150,23 @@ function saveTuning(t: { freqKhz: number; mode: Mode }) {
     localStorage.setItem(TUNING_KEY, JSON.stringify(t));
   } catch {
     /* ignore */
+  }
+}
+
+function loadLetterKeys(): boolean {
+  try {
+    return localStorage.getItem(LETTER_KEYS_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function saveLetterKeys(on: boolean) {
+  try {
+    if (on) localStorage.removeItem(LETTER_KEYS_KEY);
+    else localStorage.setItem(LETTER_KEYS_KEY, "off");
+  } catch {
+    /* storage unavailable; the choice still holds this visit */
   }
 }
 
@@ -301,6 +321,7 @@ export default function ListenPage() {
   // Not until the saved tuning is restored: saving first would overwrite it with the default.
   const [tuningRestored, setTuningRestored] = useState(false);
   const [volume, setVolume] = useState(0.8);
+  const [letterKeys, setLetterKeys] = useState(true);
   const [browseOpen, setBrowseOpen] = useState(false);
   // The receiver drawer under the header strip: the Receiver field, Pick best, the map and the table.
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -360,6 +381,7 @@ export default function ListenPage() {
     // "change" shows something to pick from.
     const firstVisit = !p && !last.host && !shared;
     setBrowseOpen(firstVisit);
+    setLetterKeys(loadLetterKeys());
     const t = loadTuning();
     setFreqKhz(shared?.freqKhz ?? t.freqKhz);
     setMode(shared?.mode ?? t.mode);
@@ -865,6 +887,39 @@ export default function ListenPage() {
     [changeFreq, freqKhz],
   );
 
+  // ← → tune from anywhere on the page, and A/U/L/C pick the mode (#89), so a listener
+  // who clicked a saved frequency can fine-tune without going back up to the dial.
+  // Controls with keys of their own keep them (lib/tuning-keys), and the dial marks
+  // the keys it took. One listener for the page's life; it calls this render's handler,
+  // so a retune goes out with what's playing now, not what played at mount.
+  const onPageKey = useRef<(e: globalThis.KeyboardEvent) => void>(() => {});
+  const modeAnchorRef = useRef<HTMLSpanElement>(null);
+  onPageKey.current = (e) => {
+    if (e.defaultPrevented) return;
+    const step = pageStepKhz(e);
+    if (step !== undefined) {
+      if (keepsArrowKeys(e.target)) return;
+      e.preventDefault();
+      // At either end of the dial the key changes nothing, so it isn't a listener action either.
+      const next = steppedKhz(freqKhz, step);
+      if (next !== freqKhz) onDial(next);
+      return;
+    }
+    // Letters work on the mode radios too: only their arrows are their own.
+    const m = letterKeys ? modeForKey(e) : undefined;
+    if (!m || keepsLetterKeys(e.target)) return;
+    e.preventDefault();
+    // A held key, or the mode already on, changes nothing, so it isn't a listener
+    // action: it mustn't drop a beacon Listen waiting on the clock (D4).
+    if (e.repeat || m === mode) return;
+    changeMode(m);
+  };
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => onPageKey.current(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const onWaterfallClick = (hz: number) => {
     const base = mode === "cw" ? freqKhz - CW_PITCH_KHZ : freqKhz;
     changeFreq(clampKhz(Math.round((base + hz / 1000) * 100) / 100));
@@ -1275,15 +1330,44 @@ export default function ListenPage() {
       <section className="controls" aria-label="Tuning">
         <FrequencyReadout freqKhz={freqKhz} onChange={(k) => changeFreq(k)} step={wheelStep} station={stationNow} />
 
-        <fieldset className="modes">
-          <legend className="visually-hidden">Mode</legend>
-          {MODES.map((m) => (
-            <label key={m} className="mode">
-              <input type="radio" name="mode" value={m} checked={mode === m} onChange={() => changeMode(m)} />
-              <span>{MODE_LABELS[m]}</span>
-            </label>
-          ))}
-        </fieldset>
+        <div className="mode-group">
+          <fieldset className="modes">
+            <legend className="visually-hidden">Mode</legend>
+            {MODES.map((m) => (
+              <label key={m} className="mode">
+                <input
+                  type="radio"
+                  name="mode"
+                  value={m}
+                  checked={mode === m}
+                  onChange={() => changeMode(m)}
+                  // A mouse click leaves focus here in most browsers, where ← → would pick
+                  // the next mode; move it to the anchor after the modes so they tune (D1)
+                  // and Tab goes on to the next control, which a blur to the page body may
+                  // not. Keyboard selection keeps it on the radio.
+                  onClick={(e) => {
+                    if (e.detail > 0) modeAnchorRef.current?.focus();
+                  }}
+                />
+                <span>{MODE_LABELS[m]}</span>
+              </label>
+            ))}
+          </fieldset>
+          {/* Focusable by script only: where a mouse click on a mode leaves focus (D1). */}
+          <span className="mode-anchor" ref={modeAnchorRef} tabIndex={-1} />
+          {/* Single-letter shortcuts need an off switch (WCAG 2.1.4): speech input can type them. */}
+          <label className="letter-keys">
+            <input
+              type="checkbox"
+              checked={letterKeys}
+              onChange={(e) => {
+                setLetterKeys(e.target.checked);
+                saveLetterKeys(e.target.checked);
+              }}
+            />
+            Letter keys change mode (A U L C)
+          </label>
+        </div>
 
         <SMeter meter={meter} />
 
@@ -1437,6 +1521,10 @@ export default function ListenPage() {
         />
       )}
 
+      {/* Above Find a station and Strong signals now (#89): a listener working from saved
+          frequencies reaches them without scrolling past both. */}
+      <Presets freqKhz={freqKhz} mode={mode} onSelect={(p) => changeFreq(clampKhz(p.freqKhz), p.mode)} />
+
       <StationSearch
         schedule={scheduleQuery.data}
         loadFailed={scheduleQuery.isError}
@@ -1472,8 +1560,6 @@ export default function ListenPage() {
         onScanAgain={() => startScan(true)}
         stationAt={stationAt}
       />
-
-      <Presets freqKhz={freqKhz} mode={mode} onSelect={(p) => changeFreq(clampKhz(p.freqKhz), p.mode)} />
 
       <SiteFooter onPlayer />
     </main>

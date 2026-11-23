@@ -23,6 +23,16 @@ function setup(freqKhz = 10_000) {
 }
 
 describe("Dial", () => {
+  // Value: protects=an arrow on the focused dial at either end of its range reports nothing, so it isn't a listener action that could drop a waiting beacon Listen (#89 review); fails_when=onKeyDown calls onChange with the same frequency again; why_new=the page-wide arrows already skip this, the dial's own keys did not; seam=none; no_claim=what the page does with onChange
+  it("reports nothing for an arrow at either end of the range", () => {
+    const top = setup(30_000);
+    fireEvent.keyDown(top.dial, { key: "ArrowRight" });
+    fireEvent.keyDown(top.dial, { key: "PageUp" });
+    expect(top.onChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(top.dial, { key: "ArrowLeft" });
+    expect(top.onChange).toHaveBeenLastCalledWith(29_999);
+  });
+
   // Value: protects=a mouse still tunes on press and drag, and arrow keys still step (regression for design D15); fails_when=the touch rules leak into mouse or keyboard input; why_new=Dial had no test; seam=none; no_claim=real pointer hardware
   it("tunes on mouse press and drag, and steps with the keys, as before", () => {
     const { onChange, dial } = setup();
@@ -93,11 +103,12 @@ describe("Dial", () => {
     }
   });
 
-  // Value: protects=no pointer press or key tunes below 10 kHz or above 30,000 kHz, though the scale starts at 0 (regression: both clamps moved into clampKhz); fails_when=clampKhz floors at DIAL_MIN_KHZ, or a handler stops clamping; why_new=no test pinned the dial's ends; seam=none; no_claim=the typed-entry range (FrequencyReadout tests)
+  // Value: protects=no pointer press or key tunes below 10 kHz or above 30,000 kHz, though the scale starts at 0 (regression: both clamps moved into clampKhz); fails_when=clampKhz floors at DIAL_MIN_KHZ, a handler stops clamping, or a key at the bottom reports a value; why_new=no test pinned the dial's ends; seam=none; no_claim=the typed-entry range (FrequencyReadout tests)
   it("keeps pointer and key tuning within 10 to 30,000 kHz", () => {
     const { onChange, dial, view } = setup(10);
+    // Already at the bottom: the key reports nothing rather than 10 again (#89 review: not a listener action).
     fireEvent.keyDown(dial, { key: "PageDown" });
-    expect(onChange).toHaveBeenLastCalledWith(10);
+    expect(onChange).not.toHaveBeenCalled();
     fireEvent.pointerDown(dial, { pointerType: "mouse", clientX: 0, clientY: 50 });
     expect(onChange).toHaveBeenLastCalledWith(10);
     fireEvent.pointerUp(dial, { pointerType: "mouse", clientX: 0, clientY: 50 });
@@ -141,7 +152,7 @@ describe("Dial", () => {
   // Value: protects=screen readers get the keyboard sentence and touch screens a touch one readers skip (design D16, eng review code quality); fails_when=the touch sentence is announced or the keyboard one is removed; why_new=the hint was keyboard-only; seam=none; no_claim=which sentence shows for which pointer (CSS)
   it("hints for keyboard and touch, announcing only the keyboard sentence", () => {
     setup();
-    expect(screen.getByText(/use the arrow keys/).getAttribute("aria-hidden")).toBeNull();
+    expect(screen.getByText(/use ← → \(not in text fields\)/).getAttribute("aria-hidden")).toBeNull();
     expect(screen.getByText("Drag the dial or tap a band to tune.").getAttribute("aria-hidden")).toBe("true");
   });
 

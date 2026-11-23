@@ -32,7 +32,14 @@ vi.mock("@/lib/use-radio", () => ({ useRadio: () => radio }));
 vi.mock("@/components/Presets", () => ({
   Presets: ({ onSelect }: { onSelect: (p: { freqKhz: number; mode: "am" }) => void }) => {
     presetSelect.current = onSelect;
-    return <output aria-label="presets" />;
+    // A saved frequency to click and leave focus on, as the real list's buttons do (#89).
+    return (
+      <output aria-label="presets">
+        <button type="button" onClick={() => onSelect({ freqKhz: 9_580, mode: "am" })}>
+          preset 9580
+        </button>
+      </output>
+    );
   },
 }));
 vi.mock("@/components/AudioSpectrum", () => ({
@@ -1162,6 +1169,199 @@ describe("ListenPage", () => {
     for (let i = 1; i < order.length; i++) {
       expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
+  });
+
+  // Value: protects=Saved frequencies comes before Find a station and Strong signals now, so a listener working from saved stations reaches them without scrolling past both (#89); fails_when=<Presets> moves back below StationSearch or SignalList; why_new=the order changed; seam=presets mocked; no_claim=visual spacing
+  it("puts Saved frequencies above Find a station and Strong signals now", () => {
+    radio.canScan = true;
+    radio.status = { state: "listening", host: listed.host, port: listed.port };
+    render(<ListenPage />);
+    const presets = screen.getByLabelText("presets");
+    for (const later of [screen.getByLabelText("Station name"), screen.getByRole("heading", { name: "Strong signals now" })])
+      expect(presets.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  describe("page-wide keys (#89)", () => {
+    const dialAt = () => Number(screen.getByRole("slider", { name: "Tuning dial" }).getAttribute("aria-valuenow"));
+    const checkedMode = () => (document.querySelector<HTMLInputElement>('input[name="mode"]:checked')?.value ?? null);
+    const preset = () => screen.getByRole("button", { name: "preset 9580" });
+
+    // Value: protects=after clicking a saved frequency, ← → tune 1 kHz and Shift 10 from the button that keeps focus, while ↑ ↓ PgUp PgDn are left to scroll the page (D2); fails_when=the page handler is missing, steps differently from the dial, or takes a scroll key; why_new=arrows only worked on the focused dial; seam=presets mocked as one button; no_claim=real browser focus after a click (hand check)
+    it("tunes with ← → from a preset button and leaves the scroll keys alone", () => {
+      render(<ListenPage />);
+      fireEvent.click(preset());
+      expect(dialAt()).toBe(9_580);
+      fireEvent.keyDown(preset(), { key: "ArrowRight" });
+      expect(dialAt()).toBe(9_581);
+      fireEvent.keyDown(preset(), { key: "ArrowLeft", shiftKey: true });
+      expect(dialAt()).toBe(9_571);
+      for (const key of ["ArrowUp", "ArrowDown", "PageUp", "PageDown"]) {
+        // fireEvent returns false when the event's default was prevented.
+        expect(fireEvent.keyDown(preset(), { key }), key).toBe(true);
+      }
+      expect(dialAt()).toBe(9_571);
+    });
+
+    // Value: protects=a page-wide arrow while listening retunes the receiver with the frequency it shows, not only the dial (O1: a listener added once must call the current handlers); fails_when=the window listener keeps the first render's onDial/sendRetune, so audio stays put while the dial moves; why_new=new window listener; seam=radio mocked; no_claim=real Kiwi retune
+    it("retunes what's playing when ← → tune from the page", () => {
+      vi.useFakeTimers();
+      try {
+        // Listening to a receiver, as a visit that pressed Listen on a saved one.
+        savePin({ host: listed.host, port: listed.port, fromList: true });
+        const view = render(<ListenPage />);
+        fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+        radio.status = { state: "listening", host: listed.host, port: listed.port };
+        view.rerender(<ListenPage />);
+        fireEvent.click(preset());
+        act(() => vi.advanceTimersByTime(500));
+        radio.retune.mockClear();
+        fireEvent.keyDown(preset(), { key: "ArrowRight" });
+        act(() => vi.advanceTimersByTime(500));
+        expect(radio.retune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 9_581, mode: "am" }));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Value: protects=text fields, the volume, a keyboard-focused mode radio and the dial keep their own arrow keys; fails_when=the guard misses one, so typing or a volume nudge also retunes (or the dial steps twice); why_new=new page-wide handler; seam=none; no_claim=caret movement itself (jsdom)
+    it("leaves arrows to text fields, the volume, the mode radios and the dial", () => {
+      render(<ListenPage />);
+      const targets = [
+        screen.getByLabelText("Volume"),
+        document.getElementById("freq")!,
+        screen.getByLabelText("Station name"),
+        screen.getByLabelText("Receiver"),
+        document.querySelector<HTMLInputElement>('input[name="mode"][value="usb"]')!,
+      ];
+      for (const target of targets) fireEvent.keyDown(target, { key: "ArrowRight" });
+      expect(dialAt()).toBe(10_000);
+      fireEvent.keyDown(screen.getByRole("slider", { name: "Tuning dial" }), { key: "ArrowRight" });
+      expect(dialAt()).toBe(10_001); // once, not twice
+    });
+
+    // Value: protects=after choosing a receiver from the open list, → still tunes (D7: the list's buttons have no arrow keys of their own); fails_when=the guard starts skipping the receiver drawer; why_new=owner decision D7; seam=picker mocked; no_claim=the real drawer's markup
+    it("tunes from a button in the receiver list", () => {
+      render(<ListenPage />);
+      fireEvent.keyDown(screen.getByRole("button", { name: "choose listed" }), { key: "ArrowRight" });
+      expect(dialAt()).toBe(10_001);
+    });
+
+    // Value: protects=a mouse click on a mode moves focus to an anchor after the modes (not the page body, and not the group whose first Tab stop is the radio again), so → then tunes instead of picking the next mode, while a keyboard selection (click detail 0) keeps focus on the radios, where A/U/L/C still work (D1, review item 4); fails_when=the blur is dropped, fires on keyboard selection, or letters are blocked on a radio; why_new=owner decision D1; seam=none; no_claim=each browser's own focus-on-click rules (hand check)
+    it("lets a clicked mode go of focus so → tunes, but not a keyboard choice", () => {
+      render(<ListenPage />);
+      const usb = document.querySelector<HTMLInputElement>('input[name="mode"][value="usb"]')!;
+      usb.focus();
+      fireEvent.click(usb, { detail: 1 });
+      expect(checkedMode()).toBe("usb");
+      // Focus moves to the anchor after the modes, not the page body or the group (whose
+      // first tab stop is the radio again), so Tab carries on to the next control.
+      expect(document.activeElement).toBe(document.querySelector(".mode-anchor"));
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: "ArrowRight" });
+      expect(dialAt()).toBe(10_001);
+      expect(checkedMode()).toBe("usb");
+
+      const lsb = document.querySelector<HTMLInputElement>('input[name="mode"][value="lsb"]')!;
+      lsb.focus();
+      fireEvent.click(lsb, { detail: 0 });
+      expect(document.activeElement).toBe(lsb);
+      // The radios keep their arrows but not letters: U still picks USB from here.
+      fireEvent.keyDown(lsb, { key: "u" });
+      expect(checkedMode()).toBe("usb");
+    });
+
+    // Value: protects=A U L C pick the mode from anywhere, never while typing in Find a station, never with Cmd/Ctrl (copy, address bar), and not at all once the listener turns them off, a choice kept across visits (D3, WCAG 2.1.4); and the checkbox doesn't deaden ← → (N2); fails_when=letters fire in a text field or with a modifier, the switch is ignored or forgotten, or the checkbox swallows arrows; why_new=mode hotkeys are new; seam=none; no_claim=speech input itself
+    it("switches mode with A U L C, except while typing, with Cmd/Ctrl, or once turned off", () => {
+      const view = render(<ListenPage />);
+      fireEvent.keyDown(document.body, { key: "u" });
+      expect(checkedMode()).toBe("usb");
+      fireEvent.keyDown(document.body, { key: "c" });
+      expect(checkedMode()).toBe("cw");
+      fireEvent.keyDown(screen.getByLabelText("Station name"), { key: "a" });
+      fireEvent.keyDown(document.body, { key: "l", ctrlKey: true });
+      fireEvent.keyDown(document.body, { key: "a", metaKey: true });
+      expect(checkedMode()).toBe("cw");
+
+      const off = screen.getByLabelText("Letter keys change mode (A U L C)");
+      fireEvent.click(off);
+      fireEvent.keyDown(off, { key: "ArrowRight" });
+      expect(dialAt()).toBe(10_001);
+      fireEvent.keyDown(document.body, { key: "a" });
+      expect(checkedMode()).toBe("cw");
+
+      view.unmount();
+      render(<ListenPage />);
+      expect((screen.getByLabelText("Letter keys change mode (A U L C)") as HTMLInputElement).checked).toBe(false);
+      fireEvent.keyDown(document.body, { key: "u" });
+      expect(checkedMode()).not.toBe("usb");
+    });
+
+    // Value: protects=turning the letter keys back on is remembered too, so a listener who tried the off switch isn't stuck with it on the next visit (D3); fails_when=saveLetterKeys(true) stops clearing "skywave.letterKeys"="off"; why_new=the on half of the saved choice had no test; seam=none; no_claim=storage that throws
+    it("remembers letter keys turned back on", () => {
+      localStorage.setItem("skywave.letterKeys", "off");
+      const view = render(<ListenPage />);
+      const box = () => screen.getByLabelText("Letter keys change mode (A U L C)") as HTMLInputElement;
+      expect(box().checked).toBe(false);
+      fireEvent.click(box());
+      view.unmount();
+      render(<ListenPage />);
+      expect(box().checked).toBe(true);
+      fireEvent.keyDown(document.body, { key: "u" });
+      expect(checkedMode()).toBe("usb");
+    });
+
+    // Value: protects=leaving the player (a client-side route change unmounts it) gives ← → back to the next page; fails_when=the keydown listener isn't removed on unmount, so arrows keep being swallowed site-wide; why_new=new window listener; seam=none; no_claim=Next.js routing itself
+    it("lets go of the arrow keys once the page is gone", () => {
+      const view = render(<ListenPage />);
+      expect(fireEvent.keyDown(document.body, { key: "ArrowRight" })).toBe(false);
+      view.unmount();
+      expect(fireEvent.keyDown(document.body, { key: "ArrowRight" })).toBe(true);
+    });
+
+    // Value: protects=an arrow at the end of the dial changes nothing, so it sends no retune and isn't a listener action (review: it could drop a waiting beacon Listen); fails_when=the edge check is dropped and onDial runs with the same frequency; why_new=adversarial review finding; seam=radio and presets mocked; no_claim=the beacon wait itself (covered with the mode keys in IBP beacon mode)
+    it("sends nothing for an arrow at the end of the dial", () => {
+      vi.useFakeTimers();
+      try {
+        savePin({ host: listed.host, port: listed.port, fromList: true });
+        const view = render(<ListenPage />);
+        fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+        radio.status = { state: "listening", host: listed.host, port: listed.port };
+        view.rerender(<ListenPage />);
+        act(() => presetSelect.current!({ freqKhz: 30_000, mode: "am" }));
+        act(() => vi.advanceTimersByTime(500));
+        expect(dialAt()).toBe(30_000);
+        radio.retune.mockClear();
+        fireEvent.keyDown(preset(), { key: "ArrowRight" });
+        act(() => vi.advanceTimersByTime(500));
+        expect(radio.retune).not.toHaveBeenCalled();
+        expect(dialAt()).toBe(30_000);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Value: protects=pressing the letter of the mode already on, or holding a letter, sends nothing to the receiver (D4: it isn't a listener action); fails_when=the hotkey path calls changeMode for the same mode or on key repeat; why_new=new path to changeMode; seam=radio mocked; no_claim=the beacon wait itself (see the IBP beacon test)
+    it("sends nothing for the mode already on or a held letter", () => {
+      vi.useFakeTimers();
+      try {
+        savePin({ host: listed.host, port: listed.port, fromList: true });
+        const view = render(<ListenPage />);
+        fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+        radio.status = { state: "listening", host: listed.host, port: listed.port };
+        view.rerender(<ListenPage />);
+        // The test can tell silence from a change: a real one is sent.
+        fireEvent.keyDown(document.body, { key: "u" });
+        act(() => vi.advanceTimersByTime(500));
+        expect(radio.retune).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "usb" }));
+        radio.retune.mockClear();
+        fireEvent.keyDown(document.body, { key: "u" });
+        fireEvent.keyDown(document.body, { key: "l", repeat: true });
+        act(() => vi.advanceTimersByTime(500));
+        expect(radio.retune).not.toHaveBeenCalled();
+        expect(checkedMode()).toBe("usb");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe("header strip and drawer", () => {
@@ -2639,6 +2839,33 @@ describe("ListenPage", () => {
       });
       expect(radio.tune.mock.calls.length).toBe(tunesAtStop);
       expect(screen.queryByText("Checking the time with the server…")).toBeNull();
+      vi.unstubAllGlobals();
+    });
+
+    // Value: protects=a beacon Listen waiting on the clock still tunes after the letter of the mode already on, or a held letter, is pressed: neither is a listener action (#89 D4); fails_when=the mode keys call changeMode for the same mode or a key repeat, bumping the action count that drops the wait; why_new=the D4 page test checks only that no retune is sent; seam=MapPanel/picker/radio mocked, real server clock with a fetch answering after a delay; no_claim=what a different letter does to the wait (it is a real mode change, so it cancels, like the radios)
+    it("keeps a waiting beacon Listen through the mode already on or a held letter", async () => {
+      resetServerClock();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          () =>
+            new Promise<Response>((resolve) =>
+              setTimeout(() => resolve(new Response(null, { status: 204, headers: { "x-server-ms": String(Date.now()) } })), 500),
+            ),
+        ),
+      );
+      render(<ListenPage />);
+      openStrip();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+      expect(screen.getByText("Checking the time with the server…")).toBeTruthy();
+      expect(document.querySelector<HTMLInputElement>('input[name="mode"]:checked')?.value).toBe("am");
+      // AM is already on; L held down repeats.
+      act(() => fireEvent.keyDown(document.body, { key: "a" }));
+      act(() => fireEvent.keyDown(document.body, { key: "l", repeat: true }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 14_100, mode: "cw" }));
       vi.unstubAllGlobals();
     });
 
