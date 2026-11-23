@@ -2,6 +2,16 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.45.0.0] - 2026-11-22 ([#90](https://github.com/thehashrocket/skywave/issues/90))
+
+### Added
+- **Keep tuning without scrolling back up.** Once you scroll past the tuning controls, a bar pins to the top of the window with the frequency, the four modes, the receiver and Listen/Stop. It goes away when the controls come back into view, and on a phone it takes two rows.
+- **Change receiver from anywhere.** Press the receiver name in the bar to jump to the receiver drawer, opened and ready.
+- If a Listen from the bar can't start, or the receiver refuses it, the status line that says why comes into focus.
+
+### Changed
+- The bar's modes, receiver and Listen/Stop work like the ones they mirror: pressing the mode already on changes nothing, the arrow and letter keys still tune with the bar focused, and keyboard focus never lands hidden under the bar.
+
 ## [0.44.0.0] - 2026-11-22 ([#89](https://github.com/thehashrocket/skywave/issues/89))
 
 ### Added
