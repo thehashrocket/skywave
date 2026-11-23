@@ -76,6 +76,18 @@
 
 ## Web app
 
+### GhostNet: confirm the RTTY dial on a live slot (#91 follow-up)
+
+**What:** During a GhostNet RTTY slot (Thu 1900Z Europe, Thu 0800Z Australia, Fri 0200Z North America), watch a Kiwi waterfall around 7.073-7.081 MHz. If the two tones sit at 7.077 and 7.07683 MHz (mark on 7.077), keep the dial at 7.074875 USB. If they sit 1-2.5 kHz above 7.077, move the dial to 7.077 USB.
+
+**Why:** The GhostNet guide (v1.5) says only "RTTY 7.077 MHz, 45.45 Baud" and tells stations to use their radio's RTTY preset. It doesn't say whether 7.077 is the mark or a USB dial. If we guessed wrong, the strip's RTTY row is silent.
+
+**Context:** Owner D8 in the #91 eng review (2026-11-22) chose the mark reading, from radio RTTY-preset convention and #92's default `markHz` of 2125. RTTY goes out only in short blind bursts, so a slot can be empty. The #93 recording session (Fri 2026-11-27 0100Z) can stay on through 0200-0230Z. The dial lives in `apps/web/src/lib/ghostnet.ts`, and a test pins it.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** #91 merged, or the #93 recording session
+
 ### Live spot feed for receiver ranking (#61)
 
 **What:** Feed live RBN and/or WSPR spots to Pick best as a re-order after today's order, the way `rankByNoise` works (`apps/web/src/lib/noise-rank.ts`).
