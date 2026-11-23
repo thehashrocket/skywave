@@ -1124,6 +1124,10 @@ html:has(.tuning-bar:not([hidden])) {
   cursor: pointer;
 }
 
+.tuning-bar-receiver:hover {
+  color: var(--lamp);
+}
+
 .tuning-bar .power {
   grid-area: power;
   padding-block: 6px;
