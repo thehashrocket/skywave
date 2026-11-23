@@ -1466,6 +1466,25 @@ describe("ListenPage", () => {
       expect(document.activeElement === document.querySelector(".status")).toBe(fromBar);
     });
 
+    // Value: protects=a refusal after a bar Listen moves focus only while the bar's Listen is still the latest listener action and focus hasn't moved on (review pass 2, owner D9); fails_when=the bar marker outlives another action (a receiver chosen in the drawer) or ignores where focus now is; why_new=the refused-Listen rows above change nothing between the press and the refusal; seam=radio and picker mocked; no_claim=real focus scrolling
+    it.each([
+      ["another receiver is chosen meanwhile", "choose"],
+      ["focus has moved to another control", "focus"],
+    ])("leaves focus alone after a bar Listen when %s", (_name, step) => {
+      savePin({ host: listed.host, port: listed.port, fromList: true });
+      const view = renderScrolled();
+      const listen = inBar().getByRole("button", { name: "Listen" });
+      listen.focus();
+      fireEvent.click(listen, { detail: 1 });
+      if (step === "choose") fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+      // "choose" keeps focus in the bar, so only the other action can stop the move; "focus" moves it off the bar.
+      const keep = step === "choose" ? inBar().getByRole("button", { name: "AM" }) : screen.getByRole("button", { name: "Copy link" });
+      keep.focus();
+      radio.status = { state: "error", code: "busy", message: "full", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(document.activeElement).toBe(keep);
+    });
+
     // Value: protects=only a Listen from the bar moves focus to the status row: the header's Listen, which sits beside the status row's message, keeps focus even right after a failed bar press (D16); fails_when=the bar flag isn't cleared by the submit that reads it, or the focus ignores where the press came from; why_new=the test above presses the bar only; seam=receiver list mocked as not loaded; no_claim=focus scrolling
     it("leaves focus on the header's Listen when it can't start, even after a bar press", () => {
       receiverList.data = undefined;

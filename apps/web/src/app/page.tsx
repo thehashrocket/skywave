@@ -341,8 +341,9 @@ export default function ListenPage() {
   const modeGroupRef = useRef<HTMLDivElement>(null);
   // Set by a Listen/Stop press in the tuning bar, read once by the submit it starts.
   const submitFromBar = useRef(false);
-  // A Listen from the tuning bar still starting: if it ends in an error, the status row says why (D16).
-  const barListen = useRef(false);
+  // A Listen from the tuning bar still starting, as the listener-action count it started at:
+  // if it ends in an error with nothing done since, the status row says why (D16). Null: none.
+  const barListen = useRef<number | null>(null);
 
   useEffect(() => {
     const p = loadPin();
@@ -1148,13 +1149,19 @@ export default function ListenPage() {
     if (beaconFocus) focusBeaconStrip();
   }, [beaconFocus]);
   // A bar Listen that ends in a receiver's error (full, blocked, unreachable), once Pick best
-  // has nothing left to try, takes focus to the status row that says so; one that plays doesn't.
+  // has nothing left to try, takes focus to the status row that says so. Not once it plays or
+  // ends idle, not after any other listener action since (a map pick, a beacon Listen, Stop),
+  // and not if focus has moved on from the bar: then the error isn't the bar's to report.
   useEffect(() => {
-    if (!barListen.current) return;
-    if (status.state === "listening") barListen.current = false;
-    else if (status.state === "error" && !starting && pickBest.settled) {
-      barListen.current = false;
-      statusRef.current?.focus();
+    const at = barListen.current;
+    if (at === null) return;
+    const settled = !starting && pickBest.settled;
+    if (acted.current !== at || status.state === "listening" || (settled && status.state === "idle")) {
+      barListen.current = null;
+    } else if (settled && status.state === "error") {
+      barListen.current = null;
+      const active = document.activeElement;
+      if (!active || active === document.body || active.closest(".tuning-bar")) statusRef.current?.focus();
     }
   }, [status.state, starting, pickBest.settled]);
   /**
@@ -1233,7 +1240,7 @@ export default function ListenPage() {
             e.preventDefault();
             const fromBar = submitFromBar.current;
             submitFromBar.current = false;
-            barListen.current = false;
+            barListen.current = null;
             acted.current++;
             cancelPickBest();
             if (busy) radio.stop();
@@ -1241,11 +1248,11 @@ export default function ListenPage() {
             // reason is in the status row; from the tuning bar, far down the page,
             // bring that row into view (D16), now or when the receiver refuses.
             else if (!draft.host.trim()) {
-              if (startPickBest("listen")) barListen.current = fromBar;
+              if (startPickBest("listen")) barListen.current = fromBar ? acted.current : null;
               else if (fromBar) statusRef.current?.focus();
             } else {
               commitDraft();
-              barListen.current = fromBar;
+              barListen.current = fromBar ? acted.current : null;
             }
           }}
         >
