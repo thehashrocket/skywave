@@ -69,7 +69,8 @@ export function TuningBar({
       sentinel.style.height = `${Math.max(1, bottom - barHeightPx())}px`;
     };
     measure();
-    const io = new IntersectionObserver(([entry]) => setPast(!entry!.isIntersecting));
+    // A fast scroll can cross the sentinel twice before a callback: the newest entry is where it is now.
+    const io = new IntersectionObserver((entries) => setPast(!entries[entries.length - 1]!.isIntersecting));
     io.observe(sentinel);
     // Whatever moves the watched element (the drawer, the dial going compact, a resize) resizes the page.
     const ro = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
@@ -83,6 +84,20 @@ export function TuningBar({
     };
   }, [target]);
 
+  // Cleared on any release, anywhere: a press that ends off the bar, or focuses nothing (Safari's
+  // buttons, the bar's padding, a touch that scrolls), mustn't make the next Tab look like a pointer's.
+  useEffect(() => {
+    const release = () => {
+      pressing.current = false;
+    };
+    window.addEventListener("pointerup", release, true);
+    window.addEventListener("pointercancel", release, true);
+    return () => {
+      window.removeEventListener("pointerup", release, true);
+      window.removeEventListener("pointercancel", release, true);
+    };
+  }, []);
+
   const shown = past || keyboardFocus;
 
   return (
@@ -94,14 +109,6 @@ export function TuningBar({
         hidden={!shown}
         onPointerDown={() => {
           pressing.current = true;
-        }}
-        // Cleared on release too: a press that focuses nothing (Safari's buttons, the bar's
-        // padding, a touch that scrolls) mustn't make the next Tab look like a pointer's.
-        onPointerUp={() => {
-          pressing.current = false;
-        }}
-        onPointerCancel={() => {
-          pressing.current = false;
         }}
         // Keyboard focus turns the hold on; only focus leaving the bar turns it off. A click while
         // held keeps it, so the bar doesn't vanish from under the pointer before the click lands.
@@ -122,7 +129,10 @@ export function TuningBar({
               type="button"
               className="tuning-bar-mode"
               aria-pressed={mode === m}
-              onClick={() => onMode(m)}
+              // The mode already on changes nothing, so it isn't a listener action (#89 D4).
+              onClick={() => {
+                if (m !== mode) onMode(m);
+              }}
             >
               {MODE_LABELS[m]}
             </button>

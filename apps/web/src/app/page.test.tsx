@@ -1367,7 +1367,7 @@ describe("ListenPage", () => {
 
   describe("sticky tuning bar (#90)", () => {
     // Where the bar's sentinel is, as scrolling would report it.
-    let report: (intersecting: boolean) => void;
+    let report: (intersecting: boolean | boolean[]) => void;
     beforeEach(() => {
       report = fakeIntersectionObserver();
       vi.stubGlobal("scrollTo", vi.fn());
@@ -1446,6 +1446,24 @@ describe("ListenPage", () => {
       expect(document.activeElement).toBe(status);
       expect(status!.textContent).toContain("The receiver list is still loading. Press Listen");
       expect(radio.tune).not.toHaveBeenCalled();
+    });
+
+    // Value: protects=a Listen from the bar on a pinned receiver that then refuses (busy) moves focus to the status row that says so, while the same refusal after the header's Listen doesn't move focus (D16, review P1); fails_when=only the list-loading case is handled, or every refusal steals focus; why_new=the tests above cover a Listen that can't start at all; seam=radio mocked; no_claim=the receiver's real refusal message
+    it.each([
+      ["the bar", true],
+      ["the header", false],
+    ])("after a refused Listen from %s, focus goes to the status row only from the bar", (_from, fromBar) => {
+      savePin({ host: listed.host, port: listed.port, fromList: true });
+      const view = renderScrolled();
+      const listen = fromBar
+        ? inBar().getByRole("button", { name: "Listen" })
+        : within(document.querySelector<HTMLElement>(".console-header")!).getByRole("button", { name: "Listen" });
+      listen.focus();
+      fireEvent.click(listen, { detail: 1 });
+      expect(radio.tune).toHaveBeenCalled();
+      radio.status = { state: "error", code: "busy", message: "full", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(document.activeElement === document.querySelector(".status")).toBe(fromBar);
     });
 
     // Value: protects=only a Listen from the bar moves focus to the status row: the header's Listen, which sits beside the status row's message, keeps focus even right after a failed bar press (D16); fails_when=the bar flag isn't cleared by the submit that reads it, or the focus ignores where the press came from; why_new=the test above presses the bar only; seam=receiver list mocked as not loaded; no_claim=focus scrolling

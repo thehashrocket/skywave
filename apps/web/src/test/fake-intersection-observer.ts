@@ -6,7 +6,7 @@ import { vi } from "vitest";
  * that reports whether the last observer's target is in view, as scrolling
  * would. Undo with vi.unstubAllGlobals().
  */
-export function fakeIntersectionObserver(): (intersecting: boolean) => void {
+export function fakeIntersectionObserver(): (intersecting: boolean | boolean[]) => void {
   let callback: ((entries: { isIntersecting: boolean }[]) => void) | undefined;
   vi.stubGlobal(
     "IntersectionObserver",
@@ -18,8 +18,10 @@ export function fakeIntersectionObserver(): (intersecting: boolean) => void {
       disconnect() {}
     },
   );
+  // An array is several entries in one callback, oldest first, as a fast scroll can deliver them.
   return (intersecting) => {
     if (!callback) throw new Error("no IntersectionObserver was made");
-    act(() => callback!([{ isIntersecting: intersecting }]));
+    const entries = (Array.isArray(intersecting) ? intersecting : [intersecting]).map((i) => ({ isIntersecting: i }));
+    act(() => callback!(entries));
   };
 }

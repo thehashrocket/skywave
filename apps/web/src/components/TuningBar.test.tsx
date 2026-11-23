@@ -7,7 +7,7 @@ import { fakeIntersectionObserver } from "@/test/fake-intersection-observer";
 import { TuningBar } from "./TuningBar";
 
 // Where the bar's sentinel is, as scrolling would report it.
-let report: (intersecting: boolean) => void;
+let report: (intersecting: boolean | boolean[]) => void;
 beforeEach(() => {
   report = fakeIntersectionObserver();
 });
@@ -134,6 +134,38 @@ describe("TuningBar", () => {
     expect(onMode).toHaveBeenCalledWith("cw");
     fireEvent.click(screen.getByRole("button", { name: "Kyiv, change receiver" }));
     expect(onChangeReceiver).toHaveBeenCalledTimes(1);
+  });
+
+  // Value: protects=when one callback carries several entries (a fast scroll crossing the sentinel twice), the bar follows the newest; fails_when=the callback reads the first entry; why_new=review found the first-entry read; seam=none; no_claim=how often browsers batch entries (IntersectionObserver faked)
+  it.each([
+    ["down then back up", [false, true], false],
+    ["up then back down", [true, false], true],
+  ])("follows the newest of several entries (%s)", (_name, entries, shown) => {
+    renderBar();
+    report(entries);
+    expect(bar() !== null).toBe(shown);
+  });
+
+  // Value: protects=pressing the mode already on in the bar does nothing, so it can't cancel a waiting beacon Listen or retune (#89 D4); fails_when=the bar calls onMode for the current mode; why_new=review found the bar skipped the same-mode rule; seam=none; no_claim=the page's beacon wait itself (onMode mocked)
+  it("does nothing for the mode already on", () => {
+    const onMode = vi.fn();
+    renderBar({ mode: "am", onMode });
+    report(false);
+    fireEvent.click(screen.getByRole("button", { name: "AM" }));
+    expect(onMode).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "USB" }));
+    expect(onMode).toHaveBeenCalledWith("usb");
+  });
+
+  // Value: protects=a press that starts on the bar and is released off it doesn't leave the bar thinking a pointer is down, so the next keyboard focus still holds it; fails_when=only the bar's own pointerup clears the flag; why_new=both review voices found it; seam=none; no_claim=real drag gestures (synthetic events)
+  it("keeps the keyboard hold after a press released outside the bar", () => {
+    renderBar();
+    report(false);
+    fireEvent.pointerDown(screen.getByRole("button", { name: "USB" }));
+    fireEvent.pointerUp(screen.getByRole("button", { name: "outside" }));
+    fireEvent.focus(screen.getByRole("button", { name: "AM" }));
+    report(true);
+    expect(bar()).not.toBeNull();
   });
 
   // Value: protects=the bar starts watching once the watched element exists, even if it renders after the bar; fails_when=the observer setup runs only at mount and gives up on a missing element; why_new=review found the bar would silently never show; seam=none; no_claim=none beyond protects

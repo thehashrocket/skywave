@@ -341,6 +341,8 @@ export default function ListenPage() {
   const modeGroupRef = useRef<HTMLDivElement>(null);
   // Set by a Listen/Stop press in the tuning bar, read once by the submit it starts.
   const submitFromBar = useRef(false);
+  // A Listen from the tuning bar still starting: if it ends in an error, the status row says why (D16).
+  const barListen = useRef(false);
 
   useEffect(() => {
     const p = loadPin();
@@ -1145,6 +1147,16 @@ export default function ListenPage() {
   useEffect(() => {
     if (beaconFocus) focusBeaconStrip();
   }, [beaconFocus]);
+  // A bar Listen that ends in a receiver's error (full, blocked, unreachable), once Pick best
+  // has nothing left to try, takes focus to the status row that says so; one that plays doesn't.
+  useEffect(() => {
+    if (!barListen.current) return;
+    if (status.state === "listening") barListen.current = false;
+    else if (status.state === "error" && !starting && pickBest.settled) {
+      barListen.current = false;
+      statusRef.current?.focus();
+    }
+  }, [status.state, starting, pickBest.settled]);
   /**
    * The tuning bar's receiver button (#90): what "change" does, but it only
    * opens. It's a listener action, so a beacon Listen waiting on the clock is
@@ -1221,15 +1233,20 @@ export default function ListenPage() {
             e.preventDefault();
             const fromBar = submitFromBar.current;
             submitFromBar.current = false;
+            barListen.current = false;
             acted.current++;
             cancelPickBest();
             if (busy) radio.stop();
             // A blank receiver is Auto: skywave picks one. When it can't start, the
             // reason is in the status row; from the tuning bar, far down the page,
-            // bring that row into view (D16).
+            // bring that row into view (D16), now or when the receiver refuses.
             else if (!draft.host.trim()) {
-              if (!startPickBest("listen") && fromBar) statusRef.current?.focus();
-            } else commitDraft();
+              if (startPickBest("listen")) barListen.current = fromBar;
+              else if (fromBar) statusRef.current?.focus();
+            } else {
+              commitDraft();
+              barListen.current = fromBar;
+            }
           }}
         >
           <div className="field field-host">
