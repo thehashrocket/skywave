@@ -8,7 +8,7 @@ import { receiverKey, type Receiver } from "./kiwi-list";
  */
 
 /** Which button started the run. "better" lists the offered receiver first by hand, not by rank. */
-export const PICK_SOURCES = ["beacon", "listen", "link", "drawer", "better", "search"] as const;
+export const PICK_SOURCES = ["beacon", "listen", "link", "drawer", "better", "search", "ghostnet"] as const;
 export type PickSource = (typeof PICK_SOURCES)[number];
 
 /**
@@ -36,11 +36,15 @@ export type PickSource = (typeof PICK_SOURCES)[number];
  * waits for a measurement while the clock is unsure. 7: a run can start from
  * station search's Pick best button (source "search"); the pick rules are
  * those of 6, so the #61 replay should group 6 and 7 as one rule set (owner,
- * station search build). The server still accepts 2 to 6 from tabs opened
- * before those deploys.
+ * station search build). 8: a run can start from a GhostNet row's Listen
+ * (source "ghostnet", issue #91), ranked by the net's region (lib/ghostnet.ts);
+ * again the pick rules are those of 6, so group 6, 7 and 8. GhostNet
+ * frequencies rarely get a reception question (only when EiBi lists a station
+ * there), so few rows will carry it (owner D11). The server still accepts 2
+ * to 7 from tabs opened before those deploys.
  * Raise it whenever what the page records, or when it records it, changes.
  */
-export const PICK_CONTEXT_VERSION = 7;
+export const PICK_CONTEXT_VERSION = 8;
 
 /** How many of the ranked list's receivers a report keeps, best first. */
 export const MAX_CANDIDATES = 10;

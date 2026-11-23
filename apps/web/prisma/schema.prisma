@@ -54,7 +54,7 @@ model ReceptionReport {
   /// the server's clock (version 5: good to about 2 s; version 6: to the
   /// measurement's error, under 1.5 s on an ordinary visit).
   pickedAtMs   BigInt?
-  /// "beacon" | "listen" | "link" | "drawer" | "better" | "search"; text, like txKind.
+  /// "beacon" | "listen" | "link" | "drawer" | "better" | "search" | "ghostnet"; text, like txKind.
   pickSource   String?
   /// Place in the ranked list the run was given, from 0.
   rankPos      Int?
