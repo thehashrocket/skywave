@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import {
   ALE_CHANNELS_KHZ,
+  EVENTS,
   followingSlot,
   formatWait,
   isTuned,
@@ -20,8 +21,8 @@ import {
 import { MODE_LABELS, type Mode } from "@/lib/radio-types";
 import { useServerTick } from "@/lib/use-server-tick";
 
-/** The net or bridge a GhostNet Listen picked. */
-export type GhostPick = { eventId: string };
+/** The net or bridge a GhostNet Listen picked, and when that window ends (Unix ms, eventEnd). */
+export type GhostPick = { eventId: string; endMs: number };
 
 type Props = {
   open: boolean;
@@ -53,6 +54,8 @@ const KIND_NOTES: Record<SlotKind, string> = {
   ale: "Can't be decoded here.",
   voice: "Emergency voice only; usually silent.",
 };
+
+const eventName = (id: string) => EVENTS.find((e) => e.id === id)?.name ?? "The net";
 
 /** The strip's open focus target, like focusBeaconStrip. */
 export function focusGhostNetStrip() {
@@ -118,7 +121,15 @@ export function GhostNetStrip({ open, onOpenChange, freqKhz, mode, pick, connect
         .
       </p>
       {now !== null && (
-        <Body now={now} freqKhz={freqKhz} mode={mode} pick={pick} connecting={connecting} onListen={onListen} />
+        <Body
+          now={now}
+          freqKhz={freqKhz}
+          mode={mode}
+          pick={pick}
+          connecting={connecting}
+          playing={playing}
+          onListen={onListen}
+        />
       )}
       <div className="visually-hidden" role="status">
         {announce}
@@ -127,9 +138,13 @@ export function GhostNetStrip({ open, onOpenChange, freqKhz, mode, pick, connect
   );
 }
 
-type BodyProps = Omit<Props, "open" | "onOpenChange" | "playing" | "connecting"> & { now: number; connecting: boolean };
+type BodyProps = Omit<Props, "open" | "onOpenChange" | "playing" | "connecting"> & {
+  now: number;
+  connecting: boolean;
+  playing: boolean;
+};
 
-function Body({ now, freqKhz, mode, pick, connecting, onListen }: BodyProps) {
+function Body({ now, freqKhz, mode, pick, connecting, playing, onListen }: BodyProps) {
   const { onNow, next } = stripRows(now);
   const first = next[0];
   const tuned = (o: Occurrence) => isTuned(o.slot, freqKhz, mode);
@@ -179,6 +194,12 @@ function Body({ now, freqKhz, mode, pick, connecting, onListen }: BodyProps) {
             })}
           </tbody>
         </table>
+      )}
+      {/* The picked net is over but its receiver still plays: ask to free the volunteer's slot (review D8). */}
+      {pick && now >= pick.endMs && (playing || connecting) && (
+        <p className="ghostnet-ended">
+          {`${eventName(pick.eventId)} has ended. Stop when you're done: the receiver is a volunteer's.`}
+        </p>
       )}
       <p className="sched-head">Next</p>
       <table className="sched-strip" role="table">
@@ -248,7 +269,8 @@ function Row({
             aria-label={listenLabel(o)}
             aria-pressed={picked(o)}
             onClick={(e) => {
-              if (e.detail <= 1) onListen(o);
+              // Pressing the picked row's Listen again would restart Pick best and could cut the audio (review D9).
+              if (e.detail <= 1 && !picked(o)) onListen(o);
             }}
           >
             Listen

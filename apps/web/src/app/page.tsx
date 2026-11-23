@@ -14,7 +14,7 @@ import { SpanPicker } from "@/components/SpanPicker";
 import { AudioSpectrum } from "@/components/AudioSpectrum";
 import { BeaconStrip, focusBeaconStrip } from "@/components/BeaconStrip";
 import { focusGhostNetStrip, GhostNetStrip, type GhostPick } from "@/components/GhostNetStrip";
-import { isTuned, rankForRegion, type Occurrence, type Slot } from "@/lib/ghostnet";
+import { eventEnd, isTuned, rankForRegion, type Occurrence, type Slot } from "@/lib/ghostnet";
 import { rankForBeacon } from "@/lib/beacon-rank";
 import { beaconOnBand, IBP_BANDS_KHZ, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
 import { serverClockSettled, serverNow, settleServerClock } from "@/lib/server-clock";
@@ -731,7 +731,7 @@ export default function ListenPage() {
       if (dialKhz === null || m === null) return;
       listenAt(dialKhz, m, (list) => rankForRegion(list, o.event.regions, dialKhz), "ghostnet");
       // After the run starts, which ends any earlier pick.
-      setGhostPick({ eventId: o.event.id, slot: o.slot });
+      setGhostPick({ eventId: o.event.id, endMs: eventEnd(o), slot: o.slot });
     },
     [listenAt],
   );

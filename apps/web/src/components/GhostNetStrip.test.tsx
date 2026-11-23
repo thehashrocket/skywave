@@ -19,6 +19,8 @@ afterEach(() => {
 });
 
 const at = (iso: string) => Date.parse(iso);
+// The North America net picked with Listen; its window ends Fri 03:00 UTC.
+const NA_PICK = { eventId: "na", endMs: Date.parse("2026-11-27T03:00:00Z") };
 
 function renderStrip(
   iso: string,
@@ -122,7 +124,7 @@ describe("GhostNetStrip", () => {
       freqKhz: 7107,
       mode: "usb",
       connecting: true,
-      pick: { eventId: "na" },
+      pick: NA_PICK,
     });
     expect(screen.getByRole("button", { name: /North America net, JS8Call/ }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("Connecting…")).toBeTruthy();
@@ -130,7 +132,7 @@ describe("GhostNetStrip", () => {
 
   // Value: protects=a net stays picked when it rolls into its next slot on the same dial (JS8 to VARA, both 7.107 USB), so Listen keeps reading pressed (review C1); fails_when=the pick is matched by slot start time; why_new=quality review finding; seam=useServerTick mocked; no_claim=page wiring
   it("keeps the picked net pressed across a slot on the same dial", () => {
-    renderStrip("2026-11-27T01:40:00Z", { freqKhz: 7107, mode: "usb", pick: { eventId: "na" } });
+    renderStrip("2026-11-27T01:40:00Z", { freqKhz: 7107, mode: "usb", pick: NA_PICK });
     expect(screen.getByRole("button", { name: /North America net, Winlink VARA/ }).getAttribute("aria-pressed")).toBe("true");
   });
 
@@ -155,7 +157,7 @@ describe("GhostNetStrip", () => {
 
   // Value: protects=the hidden status line says "Connecting…" when the picked net's receiver starts connecting, then "<net> playing." once audio plays (D8, D13); fails_when=the pick's state changes aren't announced, or playing is announced for a net not on the air or as Connecting…; why_new=audit: only window start/end announcements were tested; seam=useServerTick mocked; no_claim=what a given screen reader does
   it("announces the picked net connecting, then playing", () => {
-    const tuned = { freqKhz: 7107, mode: "usb" as Mode, pick: { eventId: "na" } };
+    const tuned = { freqKhz: 7107, mode: "usb" as Mode, pick: NA_PICK };
     const view = renderStrip("2026-11-27T01:10:00Z", tuned);
     const status = () => screen.getByRole("status").textContent;
     expect(status()).toBe("");
@@ -198,5 +200,25 @@ describe("GhostNetStrip", () => {
     expect(screen.queryAllByRole("button")).toHaveLength(0);
     expect(screen.getByText("GhostNet")).toBeTruthy();
     expect(screen.getByRole("link", { name: "S2 Underground" })).toBeTruthy();
+  });
+  // Value: protects=after the picked net's window ends, while its receiver still plays, the strip says it has ended and asks to free the volunteer's slot; not before it ends, and not once nothing plays (review D8); fails_when=the ended line keys on the wrong time, shows while the net is on, or shows with nothing playing; why_new=owner D8 (Kiwi channel held on silence); seam=useServerTick mocked; no_claim=that listeners act on it
+  it("asks to free the receiver once the picked net has ended", () => {
+    const ended = /North America net has ended\. Stop when you're done: the receiver is a volunteer's\./;
+    const view = renderStrip("2026-11-27T02:50:00Z", { freqKhz: 7190, mode: "lsb", pick: NA_PICK, playing: true });
+    expect(screen.queryByText(ended)).toBeNull();
+    view.rerenderAt("2026-11-27T03:05:00Z");
+    expect(screen.getByText(ended)).toBeTruthy();
+    view.rerenderAt("2026-11-27T03:06:00Z", { playing: false });
+    expect(screen.queryByText(ended)).toBeNull();
+  });
+
+  // Value: protects=pressing the picked row's Listen again does nothing, so a stray second press can't restart Pick best and cut the audio playing (review D9); fails_when=the press guard is dropped; why_new=owner D9 (audio cut); seam=useServerTick mocked; no_claim=the beacon strip, which keeps its re-pick
+  it("ignores a second press on the picked Listen", () => {
+    const onListen = vi.fn();
+    renderStrip("2026-11-27T01:10:00Z", { freqKhz: 7107, mode: "usb", pick: NA_PICK, onListen });
+    const listen = screen.getByRole("button", { name: "Listen to North America net, JS8Call on 7.107 MHz USB" });
+    expect(listen.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(listen);
+    expect(onListen).not.toHaveBeenCalled();
   });
 });
