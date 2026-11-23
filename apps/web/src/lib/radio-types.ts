@@ -7,6 +7,11 @@ export function isMode(value: unknown): value is Mode {
 
 export const MODE_LABELS: Record<Mode, string> = { am: "AM", usb: "USB", lsb: "LSB", cw: "CW" };
 
+/** A frequency as the readout shows it: kHz with thousands separators and two decimals ("9,420.00"). */
+export function formatKhz(khz: number): string {
+  return khz.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 /** Audio passband relative to the tuned frequency, in Hz. Mirrors apps/radio/skywave_radio/dsp.py. */
 export const PASSBANDS: Record<Mode, [number, number]> = {
   am: [-4500, 4500],
