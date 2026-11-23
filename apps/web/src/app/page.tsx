@@ -893,7 +893,7 @@ export default function ListenPage() {
   // the keys it took. One listener for the page's life; it calls this render's handler,
   // so a retune goes out with what's playing now, not what played at mount.
   const onPageKey = useRef<(e: globalThis.KeyboardEvent) => void>(() => {});
-  const modeGroupRef = useRef<HTMLDivElement>(null);
+  const modeAnchorRef = useRef<HTMLSpanElement>(null);
   onPageKey.current = (e) => {
     if (e.defaultPrevented) return;
     const step = pageStepKhz(e);
@@ -1330,8 +1330,7 @@ export default function ListenPage() {
       <section className="controls" aria-label="Tuning">
         <FrequencyReadout freqKhz={freqKhz} onChange={(k) => changeFreq(k)} step={wheelStep} station={stationNow} />
 
-        {/* Focusable by script only: where a mouse click on a mode leaves focus (D1). */}
-        <div className="mode-group" ref={modeGroupRef} tabIndex={-1}>
+        <div className="mode-group">
           <fieldset className="modes">
             <legend className="visually-hidden">Mode</legend>
             {MODES.map((m) => (
@@ -1343,17 +1342,19 @@ export default function ListenPage() {
                   checked={mode === m}
                   onChange={() => changeMode(m)}
                   // A mouse click leaves focus here in most browsers, where ← → would pick
-                  // the next mode; move it to the group so they tune (D1) and Tab still
-                  // goes on to the next control, which a blur to the page body may not.
-                  // Keyboard selection keeps it on the radio.
+                  // the next mode; move it to the anchor after the modes so they tune (D1)
+                  // and Tab goes on to the next control, which a blur to the page body may
+                  // not. Keyboard selection keeps it on the radio.
                   onClick={(e) => {
-                    if (e.detail > 0) modeGroupRef.current?.focus();
+                    if (e.detail > 0) modeAnchorRef.current?.focus();
                   }}
                 />
                 <span>{MODE_LABELS[m]}</span>
               </label>
             ))}
           </fieldset>
+          {/* Focusable by script only: where a mouse click on a mode leaves focus (D1). */}
+          <span className="mode-anchor" ref={modeAnchorRef} tabIndex={-1} />
           {/* Single-letter shortcuts need an off switch (WCAG 2.1.4): speech input can type them. */}
           <label className="letter-keys">
             <input

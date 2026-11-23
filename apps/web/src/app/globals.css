@@ -949,6 +949,11 @@ html,
   gap: 6px;
 }
 
+/* Where a mouse click on a mode leaves focus (page.tsx); out of the flow, so it adds no gap. */
+.mode-anchor {
+  position: absolute;
+}
+
 /* The off switch for the A/U/L/C keys, small under the mode segments. */
 .letter-keys {
   display: flex;

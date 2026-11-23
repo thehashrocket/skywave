@@ -89,7 +89,7 @@ describe("keepsArrowKeys / keepsLetterKeys", () => {
     ["search", true, true],
     ["num", true, true],
     ["date", true, true],
-    ["color", true, true],
+    ["color", false, false], // a picker button: no typing
     ["ta", true, true],
     ["sel", true, true],
     ["ce", true, true],

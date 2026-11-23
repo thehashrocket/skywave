@@ -178,7 +178,9 @@ export function Dial({ freqKhz, onChange, compact = false }: Props) {
     if (step === undefined) return;
     // Also tells the page's own ← → handler (page.tsx) the dial took this key.
     e.preventDefault();
-    onChange(steppedKhz(freqKhz, step));
+    // At either end of the dial the key changes nothing, so it isn't a listener action either.
+    const next = steppedKhz(freqKhz, step);
+    if (next !== freqKhz) onChange(next);
   };
 
   const needle = x(freqKhz);

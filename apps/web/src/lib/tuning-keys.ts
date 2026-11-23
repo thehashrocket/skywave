@@ -47,10 +47,12 @@ export function modeForKey(e: KeyLike): Mode | undefined {
 }
 
 // What the listener types into: letters and arrows are theirs. Every input counts except
-// the kinds that take no typing, so an input type added later is safe by default.
+// the kinds that take no typing (a color input is a picker button), so an input type added
+// later is safe by default.
 const TYPING =
   'input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"])' +
-  ':not([type="reset"]):not([type="range"]):not([type="file"]):not([type="image"]):not([type="hidden"]), ' +
+  ':not([type="reset"]):not([type="range"]):not([type="file"]):not([type="image"]):not([type="hidden"])' +
+  ':not([type="color"]), ' +
   'textarea, select, [contenteditable]:not([contenteditable="false"])';
 // Plus places whose arrow keys are their own: the dial, the volume (a range), the mode radios
 // and the receiver map (it pans; it takes no letters, so A/U/L/C still work there).

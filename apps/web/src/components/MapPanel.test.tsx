@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Receiver } from "@/lib/kiwi-list";
+import { keepsArrowKeys, keepsLetterKeys } from "@/lib/tuning-keys";
 import { CODE_TIMEOUT_MS, MapPanel, withTimeout, type MapList } from "./MapPanel";
 import type { ReceiverMapProps } from "./ReceiverMap";
 
@@ -269,5 +270,15 @@ describe("MapPanel", () => {
     await screen.findByTestId("adapter");
     lastProps().onListen(okList.receivers![0]!);
     expect(props.onListen).toHaveBeenCalledWith(okList.receivers![0]);
+  });
+
+  // Value: protects=← → pressed while the real map (or its frame) has focus pan the map and don't also retune, while A/U/L/C still change mode there (#89 review item 4); fails_when=MapPanel drops or renames data-map-region, which tuning-keys keys on and the unit test only checks on hand-built markup; why_new=wiring between MapPanel's frame and the page-wide key guard had no test; seam=adapter mocked; no_claim=MapLibre's own keyboard panning
+  it("keeps the arrow keys inside the map for panning, not the letters", async () => {
+    setup();
+    const inMap = await screen.findByTestId("adapter");
+    expect(keepsArrowKeys(inMap)).toBe(true);
+    expect(keepsLetterKeys(inMap)).toBe(false);
+    // Outside the frame (the panel heading), the page keeps its arrows.
+    expect(keepsArrowKeys(screen.getByRole("heading", { name: /Receiver map/ }))).toBe(false);
   });
 });
