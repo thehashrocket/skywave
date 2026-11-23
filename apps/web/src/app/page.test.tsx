@@ -3147,6 +3147,27 @@ describe("ListenPage", () => {
       expect(radio.stop).not.toHaveBeenCalled();
     });
 
+    // Value: protects=after a GhostNet Listen whose Pick best run fell back to the receiver already playing, the status row's "has ended, Stop" line still shows once the net is over, ahead of the run's leftover "Back on …" note (review D1, owner D11); fails_when=the status row keeps showing the finished run's note over the ended line; why_new=the ended line only showed with no other status message; seam=MapPanel/picker/radio mocked, fake timers; no_claim=real refusal timing
+    it("says the net has ended over a finished run's note", () => {
+      const view = render(<ListenPage />);
+      fireEvent.change(screen.getByLabelText("Receiver"), { target: { value: "typed.example" } });
+      fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+      radio.status = { state: "listening", host: "typed.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      openGhostNet();
+      act(() => fireEvent.click(screen.getByRole("button", { name: NA_JS8 })));
+      for (const r of [nyc, london]) {
+        radio.status = { state: "error", code: "busy", message: "full", host: r.host, port: r.port };
+        view.rerender(<ListenPage />);
+      }
+      radio.status = { state: "listening", host: "typed.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      expect(statusText()).toMatch(/Back on typed\.example\./);
+      // 03:01:03 UTC: the net is over.
+      act(() => vi.advanceTimersByTime(6_660_000));
+      expect(statusText()).toMatch(ended);
+    });
+
     // Value: protects=tuning away from every one of the net's frequencies ends the pick, so no ended line follows the listener to another station (owner D11); fails_when=the pick outlives a move off the net; why_new=pick lifetime changed to follow the net; seam=MapPanel/picker/radio mocked, fake timers; no_claim=none beyond protects
     it("drops the GhostNet pick when the dial leaves the net", () => {
       listenToNaNet();

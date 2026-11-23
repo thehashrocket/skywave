@@ -1069,7 +1069,8 @@ export default function ListenPage() {
     ghostPick && ghostMinute !== null && ghostMinute >= ghostPick.endMs && status.state === "listening"
       ? `${EVENTS.find((e) => e.id === ghostPick.eventId)?.name ?? "The GhostNet net"} has ended. Stop when you're done: the receiver is a volunteer's.`
       : undefined;
-  const message = messages[source] ?? ghostEnded;
+  // A finished run's note (e.g. "Back on <receiver>.") would otherwise hide it (review D1).
+  const message = ghostEnded && source === "note" && !pickBest.running ? ghostEnded : (messages[source] ?? ghostEnded);
   const messageTone =
     source === "service"
       ? status.state === "error"
