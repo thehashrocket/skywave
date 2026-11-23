@@ -1315,6 +1315,28 @@ describe("ListenPage", () => {
       expect(fireEvent.keyDown(document.body, { key: "ArrowRight" })).toBe(true);
     });
 
+    // Value: protects=an arrow at the end of the dial changes nothing, so it sends no retune and isn't a listener action (review: it could drop a waiting beacon Listen); fails_when=the edge check is dropped and onDial runs with the same frequency; why_new=adversarial review finding; seam=radio and presets mocked; no_claim=the beacon wait itself (covered with the mode keys in IBP beacon mode)
+    it("sends nothing for an arrow at the end of the dial", () => {
+      vi.useFakeTimers();
+      try {
+        savePin({ host: listed.host, port: listed.port, fromList: true });
+        const view = render(<ListenPage />);
+        fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+        radio.status = { state: "listening", host: listed.host, port: listed.port };
+        view.rerender(<ListenPage />);
+        act(() => presetSelect.current!({ freqKhz: 30_000, mode: "am" }));
+        act(() => vi.advanceTimersByTime(500));
+        expect(dialAt()).toBe(30_000);
+        radio.retune.mockClear();
+        fireEvent.keyDown(preset(), { key: "ArrowRight" });
+        act(() => vi.advanceTimersByTime(500));
+        expect(radio.retune).not.toHaveBeenCalled();
+        expect(dialAt()).toBe(30_000);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     // Value: protects=pressing the letter of the mode already on, or holding a letter, sends nothing to the receiver (D4: it isn't a listener action); fails_when=the hotkey path calls changeMode for the same mode or on key repeat; why_new=new path to changeMode; seam=radio mocked; no_claim=the beacon wait itself (see the IBP beacon test)
     it("sends nothing for the mode already on or a held letter", () => {
       vi.useFakeTimers();

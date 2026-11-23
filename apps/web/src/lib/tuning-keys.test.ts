@@ -52,7 +52,7 @@ describe("pageStepKhz", () => {
 });
 
 describe("modeForKey", () => {
-  // Value: protects=A/U/L/C pick AM/USB/LSB/CW, Caps Lock still works, and Shift or Cmd/Ctrl/Alt letters (Cmd+C, Ctrl+L) never switch mode; fails_when=case or the modifier check changes; why_new=mode hotkeys are new (#89, N4); seam=none; no_claim=non-Latin layouts (a known gap)
+  // Value: protects=A/U/L/C pick AM/USB/LSB/CW, Caps Lock still works, and Shift or Cmd/Ctrl/Alt letters (Cmd+C, Ctrl+L) never switch mode, and a keydown with no key (Chrome autofill) is ignored, not thrown on; fails_when=case, the modifier check or the key-type check changes; why_new=mode hotkeys are new (#89, N4); seam=none; no_claim=non-Latin layouts (a known gap)
   it.each([
     [key("a"), "am"],
     [key("u"), "usb"],
@@ -64,6 +64,7 @@ describe("modeForKey", () => {
     [key("l", { ctrlKey: true }), undefined],
     [key("a", { altKey: true }), undefined],
     [key("x"), undefined],
+    [{ ...key("a"), key: undefined as unknown as string }, undefined], // Chrome autofill
   ])("%o picks %s", (e, mode) => {
     expect(modeForKey(e)).toBe(mode);
   });
@@ -81,7 +82,7 @@ describe("keepsArrowKeys / keepsLetterKeys", () => {
       <button id="btn">preset</button>`;
   });
 
-  // Value: protects=typing fields and the map keep letters and arrows; the volume, the mode radios and the dial keep only their arrows, so A/U/L/C still work there (review item 4); buttons and checkboxes leave both to the page (N2: the letter-keys checkbox mustn't deaden arrows); fails_when=a control is added to or dropped from the wrong list; why_new=guard is new (#89); seam=none; no_claim=focus rules of real browsers
+  // Value: protects=typing fields keep letters and arrows; the volume, the mode radios, the dial and the map keep only their arrows, so A/U/L/C still work there (review item 4); buttons and checkboxes leave both to the page (N2: the letter-keys checkbox mustn't deaden arrows); fails_when=a control is added to or dropped from the wrong list; why_new=guard is new (#89); seam=none; no_claim=focus rules of real browsers
   it.each([
     ["plain", true, true],
     ["search", true, true],
@@ -89,7 +90,7 @@ describe("keepsArrowKeys / keepsLetterKeys", () => {
     ["ta", true, true],
     ["sel", true, true],
     ["ce", true, true],
-    ["inmap", true, true],
+    ["inmap", true, false],
     ["range", true, false],
     ["radio", true, false],
     ["dial", true, false],

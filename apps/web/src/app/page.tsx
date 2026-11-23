@@ -899,7 +899,9 @@ export default function ListenPage() {
     if (step !== undefined) {
       if (keepsArrowKeys(e.target)) return;
       e.preventDefault();
-      onDial(steppedKhz(freqKhz, step));
+      // At either end of the dial the key changes nothing, so it isn't a listener action either.
+      const next = steppedKhz(freqKhz, step);
+      if (next !== freqKhz) onDial(next);
       return;
     }
     // Letters work on the mode radios too: only their arrows are their own.

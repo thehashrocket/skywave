@@ -41,16 +41,19 @@ const LETTER_MODES: Record<string, Mode> = { a: "am", u: "usb", l: "lsb", c: "cw
 /** The mode a letter key picks (A, U, L, C; Caps Lock counts, Shift and other modifiers don't), or undefined. */
 export function modeForKey(e: KeyLike): Mode | undefined {
   if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return undefined;
+  // Chrome's autofill sends a keydown with no key at all.
+  if (typeof e.key !== "string") return undefined;
   return LETTER_MODES[e.key.toLowerCase()];
 }
 
-// What the listener types into (letters and arrows are theirs), and the receiver map (it pans).
+// What the listener types into: letters and arrows are theirs.
 const TYPING =
   'input:not([type]), input[type="text"], input[type="search"], input[type="url"], input[type="email"], ' +
   'input[type="number"], input[type="tel"], input[type="password"], ' +
-  'textarea, select, [contenteditable]:not([contenteditable="false"]), [data-map-region]';
-// Plus controls whose arrow keys are their own: the dial, the volume (a range), the mode radios.
-const OWN_ARROWS = `${TYPING}, input[type="range"], input[type="radio"], [role="slider"]`;
+  'textarea, select, [contenteditable]:not([contenteditable="false"])';
+// Plus places whose arrow keys are their own: the dial, the volume (a range), the mode radios
+// and the receiver map (it pans; it takes no letters, so A/U/L/C still work there).
+const OWN_ARROWS = `${TYPING}, input[type="range"], input[type="radio"], [role="slider"], [data-map-region]`;
 
 const within = (target: EventTarget | null, selector: string) =>
   target instanceof Element && target.closest(selector) !== null;
