@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   EVENTS,
   eventEnd,
+  eventStart,
   followingSlot,
   formatWait,
   GHOSTNET_LISTEN_LEAD_MS,
@@ -93,13 +94,15 @@ describe("nextStart, nextWindow, msUntil, followingSlot", () => {
   });
 
   // Value: protects=a pick made on any slot, not only the first, ends with its whole net or bridge, so the status row's "has ended, Stop" nudge to free the volunteer's receiver comes on time (owner D8, D11); fails_when=eventEnd uses the picked slot's end or forgets the slot's offset in the week; why_new=page test picks only a net's first slot, so a later-slot pick's end was untested; seam=none; no_claim=page wiring (page tests)
+  // Value: protects=eventStart gives the window's first-slot opening from any picked slot, so a later-slot pick expires when its net comes round again, not a slot later (review D5); fails_when=eventStart returns the picked slot's start or drops the slot offset; why_new=the page test picks only a first slot, where the offset cancels; seam=none; no_claim=page wiring (page tests)
   it.each([
-    ["2026-11-27T01:10:00Z", "na", "2026-11-27T03:00:00Z"],
-    ["2026-11-27T02:40:00Z", "na", "2026-11-27T03:00:00Z"],
-    ["2026-11-28T13:40:00Z", "na-au", "2026-11-28T14:00:00Z"],
-    ["2026-11-28T09:10:00Z", "au-sp", "2026-11-28T10:00:00Z"],
-  ])("ends the window picked at %s (%s) at %s", (iso, id, end) => {
+    ["2026-11-27T01:10:00Z", "na", "2026-11-27T01:00:00Z", "2026-11-27T03:00:00Z"],
+    ["2026-11-27T02:40:00Z", "na", "2026-11-27T01:00:00Z", "2026-11-27T03:00:00Z"],
+    ["2026-11-28T13:40:00Z", "na-au", "2026-11-28T12:00:00Z", "2026-11-28T14:00:00Z"],
+    ["2026-11-28T09:10:00Z", "au-sp", "2026-11-28T08:00:00Z", "2026-11-28T10:00:00Z"],
+  ])("opens the window picked at %s (%s) at %s and ends it at %s", (iso, id, start, end) => {
     const o = windowsAt(at(iso)).find((w) => w.event.id === id)!;
+    expect(eventStart(o)).toBe(at(start));
     expect(eventEnd(o)).toBe(at(end));
   });
 });

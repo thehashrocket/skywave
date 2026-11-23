@@ -3219,6 +3219,10 @@ describe("ListenPage", () => {
       act(() => vi.advanceTimersByTime(200));
       expect(radio.tune).not.toHaveBeenCalled();
       expect(radio.retune).toHaveBeenCalledWith(expect.objectContaining({ freqKhz: 7074.875, mode: "usb" }));
+      // Value: protects=the pick carries on through the retune, so the "has ended, Stop" nudge to free the volunteer's receiver still shows after the net (owner D8, D11); fails_when=the follow branch drops or loses the pick; why_new=only the tuneTo path was checked for the nudge; seam=MapPanel/picker/radio mocked, fake timers; no_claim=Kiwi audio
+      // 03:01:03 UTC: the net is over.
+      act(() => vi.advanceTimersByTime(3_659_800));
+      expect(statusText()).toMatch(ended);
     });
 
     // Value: protects=a GhostNet pick ends when its net comes round again, so a listener parked on 7.107 doesn't see "has ended" during the next week's live net (review D5); fails_when=the pick keeps its first week's end time forever; why_new=the pick never expired; seam=MapPanel/picker/radio mocked, fake timers; no_claim=none beyond protects
