@@ -2396,6 +2396,29 @@ html:has(.tuning-bar:not([hidden])) {
   .ghostnet-sep {
     display: none;
   }
+  /* GhostNet rows on phones: frequency | name, times, then wait and Listen under them,
+     so the name and times get the width (review D6). The table carries explicit ARIA
+     roles in GhostNetStrip, so these display changes keep its semantics. */
+  .ghostnet .sched-strip,
+  .ghostnet .sched-strip tbody {
+    display: block;
+  }
+  .ghostnet .sched-strip tr {
+    display: grid;
+    grid-template-columns: auto 1fr;
+  }
+  .ghostnet .sched-strip tr.ghostnet-note-row {
+    display: block;
+  }
+  .ghostnet .sched-strip tr > th {
+    grid-row: span 2;
+  }
+  .ghostnet .sched-strip tr > td:last-child {
+    grid-column: 2;
+    border-top: 0;
+    padding-top: 0;
+    text-align: left;
+  }
   .receivers-table-wrap {
     padding: 12px;
   }

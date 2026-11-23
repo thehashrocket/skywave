@@ -146,9 +146,9 @@ function Body({ now, freqKhz, mode, pick, connecting, onListen }: BodyProps) {
           {first && ` Next: ${first.event.name}, ${utcLabel(first.startMs)} (in ${formatWait(first.startMs - now)}).`}
         </p>
       ) : (
-        <table className="sched-strip">
+        <table className="sched-strip" role="table">
           <caption className="visually-hidden">GhostNet windows on the air now</caption>
-          <tbody>
+          <tbody role="rowgroup">
             {onNow.map((o) => {
               const after = followingSlot(o);
               const note = noteFor(o, tuned(o), picked(o), connecting);
@@ -161,8 +161,8 @@ function Body({ now, freqKhz, mode, pick, connecting, onListen }: BodyProps) {
                     wait={`${formatWait(o.endMs - now)} left`}
                   />
                   {(note || after) && (
-                    <tr className="ghostnet-note-row">
-                      <td colSpan={3}>
+                    <tr className="ghostnet-note-row" role="row">
+                      <td colSpan={3} role="cell">
                         {note && <span className="ghostnet-note">{note}</span>}
                         {after && (
                           <span className="sched-place ghostnet-after">
@@ -181,9 +181,9 @@ function Body({ now, freqKhz, mode, pick, connecting, onListen }: BodyProps) {
         </table>
       )}
       <p className="sched-head">Next</p>
-      <table className="sched-strip">
+      <table className="sched-strip" role="table">
         <caption className="visually-hidden">When each GhostNet net and bridge opens next</caption>
-        <tbody>
+        <tbody role="rowgroup">
           {next.map((o) => (
             <Row key={o.event.id} o={o} {...row} utc={utcLabel(o.startMs)} wait={`in ${formatWait(o.startMs - now)}`} />
           ))}
@@ -216,8 +216,10 @@ function Row({
 }) {
   const { guideKhz, mode } = o.slot;
   return (
-    <tr data-current={tuned(o) || undefined} data-picked={picked(o) || undefined}>
-      <th scope="row" className="sched-freq">
+    // Explicit roles: on phones the rows are laid out as a grid (review D6), which can drop a
+    // table's implicit semantics in some browsers.
+    <tr role="row" data-current={tuned(o) || undefined} data-picked={picked(o) || undefined}>
+      <th scope="row" role="rowheader" className="sched-freq">
         {guideKhz === null || mode === null ? (
           "ALE"
         ) : (
@@ -226,7 +228,7 @@ function Row({
           </>
         )}
       </th>
-      <td>
+      <td role="cell">
         <span className="ghostnet-name">{o.event.name}</span>
         {/* UTC, then the device's local time with weekday and zone (D16, D17); phones stack them (D12). */}
         <span className="sched-place ghostnet-when">
@@ -237,7 +239,7 @@ function Row({
           </span>
         </span>
       </td>
-      <td>
+      <td role="cell">
         <span className="sched-next ghostnet-wait">{wait}</span>
         {listenOffered(o, now) && (
           <button

@@ -3084,6 +3084,58 @@ describe("ListenPage", () => {
       expect(radio.tune).not.toHaveBeenCalled();
       expect(radio.retune).not.toHaveBeenCalledWith(expect.objectContaining({ mode: "cw" }));
     });
+
+    // A fetch for the server's time that answers after half a second: beacon Listen waits on it.
+    const slowClock = () => {
+      resetServerClock();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          () =>
+            new Promise<Response>((resolve) =>
+              setTimeout(() => resolve(new Response(null, { status: 204, headers: { "x-server-ms": String(Date.now()) } })), 500),
+            ),
+        ),
+      );
+    };
+
+    // Value: protects=with the receiver list loaded, a GhostNet Listen during a beacon Listen's clock wait keeps its own receiver playing, and no late CW tune or retune swaps it out when the clock answers (owner D10; review state-matrix cell, owner D3 fix); fails_when=the with-list path stops bumping the action count or the beacon ticket; why_new=the no-list rows above cover only listenAt's no-list branch; seam=MapPanel/picker/radio mocked, real server clock with a fetch answering after a delay; no_claim=real network timing
+    it("keeps the GhostNet receiver when a waiting beacon Listen's clock answers (list loaded)", async () => {
+      slowClock();
+      render(<ListenPage />);
+      // Opened first, so only listenAt's own bumps can drop the wait.
+      openGhostNet();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+      act(() => fireEvent.click(screen.getByRole("button", { name: /^Listen to \S+ on 14\.100 MHz$/ })));
+      expect(screen.getByText("Checking the time with the server…")).toBeTruthy();
+      act(() => fireEvent.click(screen.getByRole("button", { name: NA_JS8 })));
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "nyc.example", freqKhz: 7107, mode: "usb" }));
+      const tunes = radio.tune.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(radio.tune.mock.calls.length).toBe(tunes);
+      expect(radio.retune).not.toHaveBeenCalledWith(expect.objectContaining({ mode: "cw" }));
+    });
+
+    // Value: protects=folding the GhostNet strip is a listener action, so it drops a beacon Listen still waiting on the clock, as opening it does (owner D15; review state-matrix cell, owner D4 fix); fails_when=changeGhostNet(false) stops bumping the action count; why_new=only opening was tested; seam=MapPanel/picker/radio mocked, real server clock with a fetch answering after a delay; no_claim=real network timing
+    it("drops a waiting beacon Listen when the GhostNet strip is folded", async () => {
+      slowClock();
+      render(<ListenPage />);
+      openGhostNet();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+      act(() => fireEvent.click(screen.getByRole("button", { name: /^Listen to \S+ on 14\.100 MHz$/ })));
+      expect(screen.getByText("Checking the time with the server…")).toBeTruthy();
+      const details = document.querySelector<HTMLDetailsElement>("details.ghostnet")!;
+      details.open = false;
+      act(() => fireEvent(details, new Event("toggle")));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(screen.getByLabelText("map beacons").textContent).toBe("on, selected none");
+      expect(radio.tune).not.toHaveBeenCalled();
+      expect(radio.retune).not.toHaveBeenCalledWith(expect.objectContaining({ mode: "cw" }));
+    });
   });
 
   describe("IBP beacon mode", () => {
