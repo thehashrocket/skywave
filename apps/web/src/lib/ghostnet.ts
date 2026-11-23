@@ -185,6 +185,11 @@ export function nextWindow(ms: number): Occurrence {
   return EVENTS.map((e) => nextStart(e, ms)).reduce((a, b) => (b.startMs < a.startMs ? b : a));
 }
 
+/** When `o`'s net or bridge window opens: the start of its first slot that week (Unix ms). */
+export function eventStart(o: Occurrence): number {
+  return o.startMs - o.slot.startMs + o.event.slots[0]!.startMs;
+}
+
 /** When `o`'s net or bridge window ends: the end of its last slot that week (Unix ms). */
 export function eventEnd(o: Occurrence): number {
   const last = o.event.slots[o.event.slots.length - 1]!;

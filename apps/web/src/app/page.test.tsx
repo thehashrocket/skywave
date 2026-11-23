@@ -2138,6 +2138,38 @@ describe("ListenPage", () => {
       resetServerClock();
     });
 
+    // Value: protects=a GhostNet Listen that starts no Pick best run (nothing listed covers the net) drops the playing receiver's earlier pick context, so a reception answer on the net's frequency is saved with no pick, not credited to the earlier run (review D2); fails_when=listenAt keeps the old context on the GhostNet no-start path; why_new=Codex flagged #61 mislabels twice, owner chose to clear; seam=useRadio and useSubmitReport mocked, list hook mocked; no_claim=the beacon no-start rule (its own tests)
+    it("drops an earlier pick's context when a GhostNet Listen starts no run", () => {
+      vi.setSystemTime(Date.UTC(2026, 10, 27, 1, 10, 3));
+      resetServerClock();
+      noteResponse(new Headers({ "x-server-ms": String(Date.now()) }), Date.now(), Date.now());
+      schedule.data = {
+        season: "b26",
+        bundled: false,
+        broadcasts: [{ khz: 7_107, start: 0, end: 1440, days: "", station: "Test Station", lang: "E", target: "NAm" }],
+      };
+      // An earlier Pick best on the net's own frequency chose K1VL.
+      receiverList.data = { receivers: [{ ...listed, lat: 44.3, lon: -72.6 }] };
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 7_107, mode: "usb" }));
+      const view = render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 7_107, mode: "usb" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      // Now the list has nothing that covers 7,107 kHz, so GhostNet Listen can't start a run.
+      receiverList.data = { receivers: [{ ...listed, lat: 44.3, lon: -72.6, maxKhz: 7_000 }] };
+      view.rerender(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "GhostNet" })));
+      radio.tune.mockClear();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to North America net, JS8Call on 7.107 MHz USB" })));
+      expect(radio.tune).not.toHaveBeenCalled();
+      act(() => vi.advanceTimersByTime(60_000));
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      const [, , , pick] = submitReport.mock.lastCall!;
+      expect(pick ?? null).toBeNull();
+      resetServerClock();
+    });
+
     // Value: protects=a switch to the offered receiver is labelled "better" with that receiver first, so the replay can leave hand-ordered runs out; fails_when=the offer path passes another source; why_new=#73 proposed test 3; seam=useRadio and useSubmitReport mocked, list hook mocked; no_claim=the offer's own rule (better-receiver tests)
     it("labels the context of a switch to a better receiver", () => {
       localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
@@ -3166,6 +3198,41 @@ describe("ListenPage", () => {
       // 03:01:03 UTC: the net is over.
       act(() => vi.advanceTimersByTime(6_660_000));
       expect(statusText()).toMatch(ended);
+    });
+
+    // Value: protects=while the picked net's receiver plays, Listen on that net's next slot (RTTY, dial 7.074875 USB) only retunes the playing receiver, with no new Pick best run that could switch receivers and cut the audio (review D4, owner D11); fails_when=the next slot's Listen goes through listenAt/Pick best again; why_new=following a net slot to slot restarted Pick best; seam=MapPanel/picker/radio mocked, fake timers; no_claim=Kiwi audio
+    it("follows the picked net to its next slot by retuning the receiver playing", () => {
+      const view = listenToNaNet();
+      const details = document.querySelector<HTMLDetailsElement>("details.ghostnet")!;
+      // 02:00:03 UTC: the RTTY slot is on the air.
+      act(() => vi.advanceTimersByTime(3_000_000));
+      view.rerender(<ListenPage />);
+      expect(details.open).toBe(true);
+      radio.tune.mockClear();
+      radio.retune.mockClear();
+      act(() =>
+        fireEvent.click(
+          screen.getByRole("button", { name: "Listen to North America net, RTTY on 7.077 MHz, dial 7.0749 USB" }),
+        ),
+      );
+      // The retune goes out after its short debounce.
+      act(() => vi.advanceTimersByTime(200));
+      expect(radio.tune).not.toHaveBeenCalled();
+      expect(radio.retune).toHaveBeenCalledWith(expect.objectContaining({ freqKhz: 7074.875, mode: "usb" }));
+    });
+
+    // Value: protects=a GhostNet pick ends when its net comes round again, so a listener parked on 7.107 doesn't see "has ended" during the next week's live net (review D5); fails_when=the pick keeps its first week's end time forever; why_new=the pick never expired; seam=MapPanel/picker/radio mocked, fake timers; no_claim=none beyond protects
+    it("ends the GhostNet pick when its net comes round again", () => {
+      listenToNaNet();
+      const details = document.querySelector<HTMLDetailsElement>("details.ghostnet")!;
+      details.open = false;
+      act(() => fireEvent(details, new Event("toggle")));
+      // 03:01:03 UTC: the net is over.
+      act(() => vi.advanceTimersByTime(6_660_000));
+      expect(statusText()).toMatch(ended);
+      // Next Friday 01:00:03 UTC: the same net is on the air again.
+      act(() => vi.advanceTimersByTime(604_800_000 - 7_260_000));
+      expect(statusText()).not.toMatch(ended);
     });
 
     // Value: protects=tuning away from every one of the net's frequencies ends the pick, so no ended line follows the listener to another station (owner D11); fails_when=the pick outlives a move off the net; why_new=pick lifetime changed to follow the net; seam=MapPanel/picker/radio mocked, fake timers; no_claim=none beyond protects

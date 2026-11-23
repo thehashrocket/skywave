@@ -231,4 +231,11 @@ describe("GhostNetStrip", () => {
     fireEvent.click(listen, { detail: 2 });
     expect(onListen).toHaveBeenCalledOnce();
   });
+  // Value: protects=once the picked net's window is over, next week's row of the same net isn't shown as picked while the dial stays on it (review D5); fails_when=picked ignores the pick's end time; why_new=a parked dial showed next week's row pressed; seam=useServerTick mocked; no_claim=page pick lifetime (page tests)
+  it("doesn't mark next week's row of the picked net as pressed", () => {
+    renderStrip("2026-12-04T00:50:00Z", { freqKhz: 7107, mode: "usb", pick: NA_PICK, playing: true });
+    expect(
+      screen.getByRole("button", { name: "Listen to North America net, JS8Call on 7.107 MHz USB" }).getAttribute("aria-pressed"),
+    ).toBe("false");
+  });
 });

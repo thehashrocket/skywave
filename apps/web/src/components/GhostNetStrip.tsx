@@ -146,7 +146,8 @@ function Body({ now, freqKhz, mode, pick, connecting, playing, onListen }: BodyP
   const first = next[0];
   const tuned = (o: Occurrence) => isTuned(o.slot, freqKhz, mode);
   // The picked net's row while the dial is on its slot (C1: a net rolling into a slot on the same dial stays picked).
-  const picked = (o: Occurrence) => pick?.eventId === o.event.id && tuned(o);
+  // Not past its window, so next week's row of the same net never reads as picked (review D5).
+  const picked = (o: Occurrence) => pick?.eventId === o.event.id && now < pick.endMs && tuned(o);
   // A receiver is connecting or playing for this run, so re-pressing its Listen could cut it (D9).
   const busy = connecting || playing;
   const row = { now, tuned, picked, busy, onListen };
