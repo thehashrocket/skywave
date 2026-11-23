@@ -104,6 +104,7 @@ apps/web/
   src/lib/use-radio.ts               WebSocket + Web Audio graph
   src/components/                    Dial, Waterfall, SMeter, Presets, FrequencyReadout, ReceiverPicker, SignalList, StationSearch
   src/lib/station-search.ts          Find a station: name matching, on now and next 24 h, the mode a row tunes in
+  src/lib/ghostnet.ts                GhostNet's weekly UTC schedule, region boxes, and the receiver ranking its Listen uses (#91)
   src/lib/kiwi-list.ts               parses and ranks the public receiver list (with positions)
   src/lib/solar.ts                   where the sun is; which receivers are in darkness
   src/lib/use-solar-clock.ts         one minute clock for the page's Night column and map
