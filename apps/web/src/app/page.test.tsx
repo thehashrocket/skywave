@@ -3105,9 +3105,9 @@ describe("ListenPage", () => {
     const ended = /North America net has ended\. Stop when you're done: the receiver is a volunteer's\./;
     const statusText = () => document.querySelector(".status-row .status")!.textContent;
 
-    // Value: protects=once the picked net's window is over and its receiver still plays, the always-visible status row asks to free the volunteer's slot, with the GhostNet strip folded and after following the net to its voice slot, and not before the window ends (owner D8, D11); fails_when=the line lives only in the open strip, or the pick is dropped when the dial moves to another of the net's frequencies; why_new=review fix-check note and owner D11; seam=MapPanel/picker/radio mocked, fake timers; no_claim=that listeners act on it
+    // Value: protects=once the picked net's window is over and its receiver still plays, the always-visible status row asks to free the volunteer's slot, with the GhostNet strip folded and after following the net to its voice slot, and not before the window ends nor once Stop leaves nothing playing (owner D8, D11); fails_when=the line lives only in the open strip, shows with nothing playing, or the pick is dropped when the dial moves to another of the net's frequencies; why_new=review fix-check note and owner D11; seam=MapPanel/picker/radio mocked, fake timers; no_claim=that listeners act on it
     it("says in the status row that the picked net has ended", () => {
-      listenToNaNet();
+      const view = listenToNaNet();
       const details = document.querySelector<HTMLDetailsElement>("details.ghostnet")!;
       details.open = false;
       act(() => fireEvent(details, new Event("toggle")));
@@ -3118,6 +3118,33 @@ describe("ListenPage", () => {
       // 03:01:03 UTC: the net is over.
       act(() => vi.advanceTimersByTime(120_000));
       expect(statusText()).toMatch(ended);
+      // Stopped: nothing holds the volunteer's receiver, so the line goes (ship coverage audit: the listening check was untested).
+      radio.status = { state: "idle" };
+      radio.heardAudio = false;
+      view.rerender(<ListenPage />);
+      expect(statusText()).not.toMatch(ended);
+    });
+
+    // Value: protects=the page tells the strip its picked net is connecting or playing, so a second Listen press then starts no new run (no audio cut, D9), and after Stop it listens again; fails_when=page.tsx's connecting/playing props are miswired or dropped; why_new=strip tests pass those props by hand (no_claim=page wiring); seam=MapPanel/picker/radio mocked, real GhostNetStrip; no_claim=Kiwi audio
+    it.each([
+      ["connecting", false],
+      ["playing", false],
+      ["stopped", true],
+    ] as const)("handles a second GhostNet Listen press while %s", (state, listensAgain) => {
+      const view = render(<ListenPage />);
+      openGhostNet();
+      act(() => fireEvent.click(screen.getByRole("button", { name: NA_JS8 })));
+      radio.status =
+        state === "stopped"
+          ? { state: "idle" }
+          : { state: state === "playing" ? "listening" : "connecting", host: nyc.host, port: nyc.port, freqKhz: 7107, mode: "usb" };
+      radio.heardAudio = state === "playing";
+      view.rerender(<ListenPage />);
+      const tunes = radio.tune.mock.calls.length;
+      act(() => fireEvent.click(screen.getByRole("button", { name: NA_JS8 })));
+      act(() => vi.advanceTimersByTime(200));
+      expect(radio.tune.mock.calls.length).toBe(listensAgain ? tunes + 1 : tunes);
+      expect(radio.stop).not.toHaveBeenCalled();
     });
 
     // Value: protects=tuning away from every one of the net's frequencies ends the pick, so no ended line follows the listener to another station (owner D11); fails_when=the pick outlives a move off the net; why_new=pick lifetime changed to follow the net; seam=MapPanel/picker/radio mocked, fake timers; no_claim=none beyond protects

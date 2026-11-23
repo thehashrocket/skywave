@@ -201,10 +201,13 @@ describe("GhostNetStrip", () => {
     expect(screen.getByText("GhostNet")).toBeTruthy();
     expect(screen.getByRole("link", { name: "S2 Underground" })).toBeTruthy();
   });
-  // Value: protects=pressing the picked row's Listen again does nothing, so a stray second press can't restart Pick best and cut the audio playing (review D9); fails_when=the press guard is dropped; why_new=owner D9 (audio cut); seam=useServerTick mocked; no_claim=the beacon strip, which keeps its re-pick
-  it("ignores a second press on the picked Listen", () => {
+  // Value: protects=pressing the picked row's Listen again does nothing while its receiver connects or plays, so a stray second press can't restart Pick best and cut the audio or abandon the connect (review D9); fails_when=the press guard is dropped or busy stops counting connecting; why_new=owner D9 (audio cut), connecting row from ship coverage audit; seam=useServerTick mocked; no_claim=the beacon strip, which keeps its re-pick
+  it.each([
+    ["plays", { playing: true }],
+    ["connects", { connecting: true }],
+  ] as const)("ignores a second press on the picked Listen while it %s", (_state, state) => {
     const onListen = vi.fn();
-    renderStrip("2026-11-27T01:10:00Z", { freqKhz: 7107, mode: "usb", pick: NA_PICK, playing: true, onListen });
+    renderStrip("2026-11-27T01:10:00Z", { freqKhz: 7107, mode: "usb", pick: NA_PICK, ...state, onListen });
     const listen = screen.getByRole("button", { name: "Listen to North America net, JS8Call on 7.107 MHz USB" });
     expect(listen.getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(listen);
@@ -216,6 +219,16 @@ describe("GhostNetStrip", () => {
     const onListen = vi.fn();
     renderStrip("2026-11-27T01:10:00Z", { freqKhz: 7107, mode: "usb", pick: NA_PICK, onListen });
     fireEvent.click(screen.getByRole("button", { name: "Listen to North America net, JS8Call on 7.107 MHz USB" }));
+    expect(onListen).toHaveBeenCalledOnce();
+  });
+
+  // Value: protects=a double-click on a Listen not yet picked starts one run, not two (the second click arrives with detail 2), so the second can't restart Pick best on the receiver the first is connecting; fails_when=the e.detail guard is dropped; why_new=only the picked-row guard was tested; seam=useServerTick mocked; no_claim=how a browser numbers clicks
+  it("ignores the second click of a double-click on Listen", () => {
+    const onListen = vi.fn();
+    renderStrip("2026-11-27T01:10:00Z", { onListen });
+    const listen = screen.getByRole("button", { name: "Listen to North America net, JS8Call on 7.107 MHz USB" });
+    fireEvent.click(listen, { detail: 1 });
+    fireEvent.click(listen, { detail: 2 });
     expect(onListen).toHaveBeenCalledOnce();
   });
 });
