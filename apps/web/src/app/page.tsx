@@ -21,7 +21,10 @@ import { useBeaconStatus, useRbnQuiet } from "@/lib/use-beacon-status";
 import { useServerTick } from "@/lib/use-server-tick";
 import { Waterfall } from "@/components/Waterfall";
 import { WideWaterfall } from "@/components/WideWaterfall";
-import { ReceiverChip } from "@/components/ReceiverChip";
+import { PowerButton } from "@/components/PowerButton";
+import { AUTO_LABEL, ReceiverChip } from "@/components/ReceiverChip";
+import { TuningBar } from "@/components/TuningBar";
+import { prefersReducedMotion } from "@/lib/reduced-motion";
 import { ReceptionPrompt } from "@/components/ReceptionPrompt";
 import { scheduledBetween, scheduledOn, shortLabel, stationLine } from "@/lib/eibi";
 import { covers, findReceiver, placeName, rankReceivers, receiverKey, type Receiver } from "@/lib/kiwi-list";
@@ -334,6 +337,10 @@ export default function ListenPage() {
   const [pageMessage, setPageMessage] = useState<{ from: "listen" | "link" | "search" | "clock" } | null>(null);
   // Where focus goes when the error link starts a run and goes away.
   const statusRef = useRef<HTMLDivElement>(null);
+  // The sticky tuning bar (#90) shows once this group has scrolled up under it.
+  const modeGroupRef = useRef<HTMLDivElement>(null);
+  // Set by a Listen/Stop press in the tuning bar, read once by the submit it starts.
+  const submitFromBar = useRef(false);
 
   useEffect(() => {
     const p = loadPin();
@@ -1014,6 +1021,8 @@ export default function ListenPage() {
   );
   // Where it is, when the list says.
   const listedPlace = playingListed ? placeName(playingListed.location) : "";
+  // Where audio comes from, as the strip, the status row and the tuning bar all name it.
+  const playingPlace = playingNow ? listedPlace || playingNow.host : "";
   // One wheel notch over the readout. Medium wave channels are 10 kHz apart in
   // the Americas, 9 elsewhere: go by where the receiver playing is, 9 if unknown.
   const wheelStep = tuningStepKhz(freqKhz, mode, inAmericas(playingListed?.lon));
@@ -1136,6 +1145,23 @@ export default function ListenPage() {
   useEffect(() => {
     if (beaconFocus) focusBeaconStrip();
   }, [beaconFocus]);
+  /**
+   * The tuning bar's receiver button (#90): what "change" does, but it only
+   * opens. It's a listener action, so a beacon Listen waiting on the clock is
+   * dropped (D15); the page goes to the top and focus to the drawer once it
+   * has rendered open.
+   */
+  const [drawerFocus, setDrawerFocus] = useState(0);
+  const openDrawerFromBar = () => {
+    acted.current++;
+    setDrawerOpen(true);
+    window.scrollTo?.({ top: 0, behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    setDrawerFocus((n) => n + 1);
+  };
+  useEffect(() => {
+    // preventScroll: a focus mid-way through the smooth scroll would cut it short.
+    if (drawerFocus) drawerRef.current?.focus({ preventScroll: true });
+  }, [drawerFocus]);
 
   return (
     <main className="console">
@@ -1144,7 +1170,7 @@ export default function ListenPage() {
         <div className="tuned-to">
           {playingNow ? (
             <span className="tuned-to-text">
-              Listening via <span className="tuned-to-place">{listedPlace || playingNow.host}</span>
+              Listening via <span className="tuned-to-place">{playingPlace}</span>
               {listedPlace && <span className="tuned-to-host"> · {playingNow.host}</span>}
             </span>
           ) : (
@@ -1176,18 +1202,7 @@ export default function ListenPage() {
           </button>
         </div>
         {/* The receiver form's submit button, kept in the strip so it's always in reach. */}
-        <button
-          type="submit"
-          form="receiver-form"
-          className={busy ? "power power-on" : "power"}
-          onClick={(e) => {
-            // Listen turns into Stop at once; the second click of a
-            // double-click mustn't stop what the first one started.
-            if (e.detail > 1) e.preventDefault();
-          }}
-        >
-          {busy ? "Stop" : "Listen"}
-        </button>
+        <PowerButton busy={busy} />
       </header>
 
       <section
@@ -1196,18 +1211,25 @@ export default function ListenPage() {
         className="drawer"
         aria-label="Choose a receiver"
         inert={!drawerOpen}
+        // Focusable by script only: where the tuning bar's receiver button lands (#90).
+        tabIndex={-1}
       >
         <form
           id="receiver-form"
           className="receiver"
           onSubmit={(e) => {
             e.preventDefault();
+            const fromBar = submitFromBar.current;
+            submitFromBar.current = false;
             acted.current++;
             cancelPickBest();
             if (busy) radio.stop();
-            // A blank receiver is Auto: skywave picks one.
-            else if (!draft.host.trim()) startPickBest("listen");
-            else commitDraft();
+            // A blank receiver is Auto: skywave picks one. When it can't start, the
+            // reason is in the status row; from the tuning bar, far down the page,
+            // bring that row into view (D16).
+            else if (!draft.host.trim()) {
+              if (!startPickBest("listen") && fromBar) statusRef.current?.focus();
+            } else commitDraft();
           }}
         >
           <div className="field field-host">
@@ -1330,7 +1352,7 @@ export default function ListenPage() {
       <section className="controls" aria-label="Tuning">
         <FrequencyReadout freqKhz={freqKhz} onChange={(k) => changeFreq(k)} step={wheelStep} station={stationNow} />
 
-        <div className="mode-group">
+        <div className="mode-group" ref={modeGroupRef}>
           <fieldset className="modes">
             <legend className="visually-hidden">Mode</legend>
             {MODES.map((m) => (
@@ -1402,12 +1424,25 @@ export default function ListenPage() {
         )}
       </section>
 
+      <TuningBar
+        watch={modeGroupRef}
+        freqKhz={freqKhz}
+        mode={mode}
+        onMode={changeMode}
+        busy={busy}
+        onPower={() => {
+          submitFromBar.current = true;
+        }}
+        receiverText={playingPlace || (pin?.label ?? AUTO_LABEL)}
+        onChangeReceiver={openDrawerFromBar}
+      />
+
       <div className="status-row">
         <div className="status" role="status" data-state={shownState} ref={statusRef} tabIndex={-1}>
           <span className="status-lamp" aria-hidden="true" />
           <span className="status-state">{STATE_TEXT[shownState]}</span>
           {/* The strip shows where; this live region says it too, so a switch is heard. */}
-          {playingNow && <span className="visually-hidden"> via {listedPlace || playingNow.host}</span>}
+          {playingNow && <span className="visually-hidden"> via {playingPlace}</span>}
           {message && (
             <span className="status-message" data-tone={messageTone ? "danger" : undefined}>
               {message}
