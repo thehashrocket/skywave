@@ -225,6 +225,22 @@ RBN live goes through #69's single connection in the radio service once its logi
 **Priority:** P3
 **Depends on:** A pin-to-receiver button (not planned yet)
 
+### Cap Saved frequencies if long lists push Find a station down
+
+**What:** Show the first 24 saved frequencies plus the one now tuned, with a "Show all N" button, in `apps/web/src/components/Presets.tsx`.
+
+**Why:** Issue #89 moves Saved frequencies above Find a station and Strong signals now, with every row shown (owner, eng review D5, 2026-11-22). A browser can keep 200 (`LOCAL_MAX`, `Presets.tsx:19`), each with two buttons, so a long list pushes search far down the page and adds hundreds of tab stops.
+
+**Pros:** Search and Strong signals stay near the top whatever the list size.
+
+**Cons:** Hides saved stations behind a click; adds state and tests to Presets.
+
+**Context:** Trigger: a listener reports a long list. Nobody has measured list sizes yet. Reuse StationSearch's "Show 20 more" pattern. Keep the tuned preset visible past the cap so `aria-current` still shows.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** Issue #89 landing
+
 ### Drop the browser's float32 frame decoding
 
 **What:** Remove the `0x01`/`0x02` branches from `handleBinary` (`apps/web/src/lib/use-radio.ts`) and their test.
@@ -338,6 +354,22 @@ RBN live goes through #69's single connection in the radio service once its logi
 **Priority:** P2
 **Depends on:** None
 **Completed:** fix/rbn-snapshot-edges, PR #86 (2026-11-21): items 1 to 6, plus a trailing-text check for item 7 (closing tags and comments allowed). Refusals are capped at 10 a day, 80%-rule refusals at 2, and "Not saved" pages are always kept. The rest of item 7 is open above as "RBN skimmer list: a clean cut at a row boundary".
+
+### Move the RBN skimmer cron from Cron Jobs to Vercel Schedules
+
+**What:** Replace the two `crons` entries in `apps/web/vercel.json` (`/api/cron/rbn-skimmers` at 01:30 and 13:30 UTC) with Vercel Schedules, following Vercel's migration guide (linked from the Cron Jobs page). Keep the route's `Authorization: Bearer $CRON_SECRET` check working, or change it to whatever Schedules sends.
+
+**Why:** Vercel's dashboard marks Cron Jobs "Legacy" and deprecated (seen 2026-11-22). Schedules adds execution history, which the snapshot needs: today the Cron Jobs page shows only invocation counts, so whether a run saved, kept or failed is visible only in the runtime logs. A day with no snapshot is lost for good (RBN keeps no location history), so the job must not stop when the old system is retired.
+
+**Pros:** Run history in the dashboard; off a deprecated feature before Vercel removes it.
+
+**Cons:** One more migration on a job that works; the auth header and the 60 s `maxDuration` must be checked again under Schedules.
+
+**Context:** Route: `apps/web/src/app/api/cron/rbn-skimmers/route.ts` (401 without the secret, 200 "saved"/"kept", 502 with a reason). Decision D14 / PR #84. First, confirm the current cron runs (Invocations reach 1 after 01:30 UTC on 2026-11-23) so the move starts from a known-good job. Check Vercel's docs for a removal date before picking the priority.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** The post-deploy cron check (eng review task T7, 2026-11-22)
 
 ### Harden the EiBi site table refresh (#72 follow-up)
 
