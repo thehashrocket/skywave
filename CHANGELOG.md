@@ -1,0 +1,517 @@
+# Changelog
+
+Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
+
+## [0.44.0.0] - 2026-11-22 ([#89](https://github.com/thehashrocket/skywave/issues/89))
+
+### Added
+- **Tune with the arrow keys from anywhere on the page.** The left and right arrow keys move 1 kHz (Shift for 10) without clicking the dial first, so you can click a saved frequency and fine-tune right away. Text fields, the volume, the mode buttons and the receiver map keep their own arrow keys, and the up and down arrows, Page Up and Page Down still scroll the page.
+- **Switch mode from the keyboard.** A, U, L and C pick AM, USB, LSB and CW from anywhere outside a text field. A **Letter keys change mode** switch under the mode buttons turns them off, and the choice is remembered.
+
+### Changed
+- **Saved frequencies sit higher on the page,** right under the waterfall and above Find a station and Strong signals now, so changing stations doesn't mean scrolling to the bottom.
+- After you click a mode button with the mouse, the left and right arrow keys tune instead of switching to the next mode.
+
+## [0.43.0.0] - 2026-11-22 ([#88](https://github.com/thehashrocket/skywave/pull/88))
+
+### Added
+- **Find a station by name.** Type part of a station's name above Strong signals to see its broadcasts that are on the air now or start in the next 24 hours, one row per frequency, time and language. Click a row to tune there.
+- Matching ignores accents, case and word order, and understands EiBi's short forms, so "R." matches Radio and "VoA" matches Voice of America.
+- Each row says where the broadcast is aimed, and a row the current receiver's band scan heard says "Strong here". When nothing is playing, or the receiver can't reach a row, a note offers Pick best for it.
+- A click picks the row's mode: AM for broadcasters, USB for aeronautical and maritime voice, and CW for Morse listings.
+
+## [0.42.1.1] - 2026-11-21 ([#87](https://github.com/thehashrocket/skywave/pull/87))
+
+### Changed
+- Documented the two parts of the "Did you hear it?" work that were never built (a per-receiver heard-rate view and automatic CW detection), to start once there are enough answers per receiver.
+
+## [0.42.1.0] - 2026-11-21 ([#86](https://github.com/thehashrocket/skywave/pull/86))
+
+### Added
+- A hand-run probe for the receiver-ranking study in #61 counts broadcast answers with a WSPR spot near both the transmitter and the receiver.
+
+### Fixed
+- The twice-daily RBN skimmer snapshot now refuses pages cut off at a row boundary, keeps the 630 m band, reads HTML entities and caps how many refused pages it keeps. A good list whose save failed is always kept.
+
+## [0.42.0.0] - 2026-11-21 ([#85](https://github.com/thehashrocket/skywave/pull/85))
+
+### Added
+- **Count which answered receivers are spotters themselves.** A hand-run script for #61 matches the receivers listeners answered about against RBN skimmers and WSPR reporters by grid square. A source it can't trust reads as missing, never as zero matches.
+
+## [0.41.0.0] - 2026-11-20 ([#84](https://github.com/thehashrocket/skywave/pull/84))
+
+### Added
+- **A daily record of where RBN's skimmers are.** A Vercel cron fetches the Reverse Beacon Network's skimmer list, with each skimmer's grid, at 01:30 and 13:30 UTC and saves one copy per UTC day, original page included. RBN keeps no history, and the #61 beacon replay needs to know where each skimmer was.
+- A page that isn't the list, stops partway through a row, or holds under 80% of the last saved day's skimmers is set aside instead of saved as that day.
+
+## [0.40.0.0] - 2026-11-20 ([#83](https://github.com/thehashrocket/skywave/pull/83))
+
+### Changed
+- **Safer transmitter-site updates.** The twice-yearly EiBi refresh gives up on a download after 30 seconds or 3 MB, and its PR shows the transmitter-site count before and after.
+- The server's site table can no longer shrink a little at a time through slightly short downloads, and each site keeps at most 20 coordinates.
+
+## [0.39.0.0] - 2026-11-19 ([#82](https://github.com/thehashrocket/skywave/pull/82))
+
+### Added
+- **Answers record where a broadcast was sent from.** Each "Did you hear it?" answer about a broadcast now saves the station's possible transmitter sites from EiBi's site list, or the country when EiBi doesn't say. The page doesn't change, and a lookup problem never loses the answer.
+- The site list ships with the app and refreshes in the background at most once a day. A new list with under 80% of the last good one's sites is refused. The seasonal snapshot job bundles it too.
+
+## [0.38.0.0] - 2026-11-19 ([#81](https://github.com/thehashrocket/skywave/pull/81))
+
+### Added
+- **Beacons RBN didn't hear yesterday are marked.** A beacon the Reverse Beacon Network's skimmers didn't spot all of the previous UTC day reads "Not spotted by RBN yesterday." in the band strip and is dimmed on the map, often days before NCDXF's list catches up. Listen and the question still work.
+- One server downloads RBN's daily file once a day after 01:00 UTC and saves each beacon's spot count for every server to read. No page waits on the download.
+
+## [0.37.0.0] - 2026-11-19 ([#80](https://github.com/thehashrocket/skywave/pull/80))
+
+### Added
+- **An invitation under beacons listed off the air.** After NCDXF's note, the band strip adds "Heard it anyway? Answer the question after its turn; NCDXF wants to know."
+
+## [0.36.0.0] - 2026-11-19 ([#79](https://github.com/thehashrocket/skywave/pull/79))
+
+### Added
+- **See which beacons NCDXF lists as off the air.** Their rows in the band strip are greyed with NCDXF's note, and they are drawn dimmer on the map. Listen and the question still work, since NCDXF asks to hear when one comes back.
+- Each beacon answer records the beacon's listed status, so a "heard" answer on a beacon listed off is a back-on-the-air report.
+- The status list refreshes every 3 hours and keeps the last good copy when a fetch fails.
+
+## [0.35.5.0] - 2026-11-19 ([#78](https://github.com/thehashrocket/skywave/pull/78))
+
+### Fixed
+- The page now knows the server's time to the millisecond and checks it again every 5 minutes, when the tab comes back into view and after a sleep, so beacon Listen and "Did you hear it?" stay on the right beacon all visit.
+- A beacon Listen waiting on the clock can no longer reopen a volunteer's receiver after Stop.
+
+## [0.35.4.0] - 2026-11-19 ([#77](https://github.com/thehashrocket/skywave/pull/77))
+
+### Added
+- Reports note how many of their ranked receivers were really on the public list.
+
+### Fixed
+- After a laptop sleep or a change to the computer's clock, the page asks the server for its time again, so the beacon strip, the beacon question and a report's Pick best time stay right.
+
+## [0.35.3.0] - 2026-11-19 ([#76](https://github.com/thehashrocket/skywave/pull/76))
+
+### Fixed
+- The beacon strip and "Did you hear it?" keep the server's time when someone sets their computer's clock back, and are right again as soon as a laptop wakes from sleep.
+
+## [0.35.2.0] - 2026-11-19 ([#75](https://github.com/thehashrocket/skywave/pull/75))
+
+### Fixed
+- A "Did you hear it?" answer keeps how Pick best chose its receiver only when that choice held from the moment the question appeared, so it no longer borrows a choice that was dropped and made again. The server accepts receiver addresses only in the spelling the page writes.
+
+## [0.35.1.0] - 2026-11-19 ([#74](https://github.com/thehashrocket/skywave/pull/74))
+
+### Fixed
+- Closed a few rare ways an answer could carry the wrong Pick best context. Each answer now records which version of the rules wrote it, so the #61 study can tell old answers from fixed ones.
+
+## [0.35.0.0] - 2026-11-19 ([#73](https://github.com/thehashrocket/skywave/pull/73))
+
+### Added
+- **Answers keep how Pick best chose the receiver.** When Pick best did the choosing, each "Did you hear it?" answer now stores what started the run (a beacon, Listen, a link, the drawer or the better-receiver offer), the receiver's place in the ranking, the top ten candidates, and the receiver's position, signal and listener count. #61 uses this to test whether another receiver order would have picked receivers people heard.
+- Malformed or mismatched context is dropped, and the answer is still kept.
+
+## [0.34.0.0] - 2026-11-18 ([#71](https://github.com/thehashrocket/skywave/pull/71))
+
+### Added
+- **Pick best prefers a receiver that's quieter than usual.** The radio service measures each receiver's noise floor from waterfall frames it already pulls (band scans and the wide view), never opening a connection just to measure. Receivers with enough measurements trade places in 3 dB steps by how far below their own usual level they are this hour.
+- The radio service keeps 30 days of hourly levels per receiver and band in SQLite on a Docker volume that survives redeploys, and serves them to the web app at `/noise`.
+
+## [0.33.0.0] - 2026-11-18 ([#70](https://github.com/thehashrocket/skywave/pull/70))
+
+### Added
+- **The picked beacon stays marked in the beacon strip** as it moves up the bands, and a line under its row says it's on air now during its turn, or counts down to its next one.
+- If the first turn after Listen didn't play long enough to ask about, the strip says "Missed the start" and when the beacon is back.
+
+## [0.32.0.0] - 2026-11-18 ([#68](https://github.com/thehashrocket/skywave/pull/68))
+
+### Added
+- **An IBP beacons button in the header.** It sits beside **change**, opens the receiver drawer with the beacon strip expanded, and moves focus there.
+
+### Changed
+- While the drawer and the beacon strip are open, "Did you hear it?" for a beacon appears directly under that band's row instead of on the status line.
+
+## [0.31.0.0] - 2026-11-18 ([#66](https://github.com/thehashrocket/skywave/pull/66))
+
+### Added
+- **IBP beacon mode.** A band strip under the map shows which of the 18 International Beacon Project beacons is on each of the 5 bands right now, with a countdown to the next change. Listen tunes the band in CW and runs Pick best with receivers ranked for that beacon: 1,000 to 8,000 km away, with a sunlit path from 14 MHz up.
+- The map shows all 18 beacons, fills and labels the five on the air, and draws a path from the picked beacon to the receiver.
+- Beacon timing follows the server's clock, so a wrong computer clock doesn't name the wrong beacon.
+- "Did you hear it?" asks about the beacon you picked once at least 7 seconds of its turn have played.
+
+## [0.30.2.0] - 2026-11-18 ([#65](https://github.com/thehashrocket/skywave/pull/65))
+
+### Fixed
+- Updated `@vercel/functions` to 3.11.3, which drops a copy of zod that could exhaust memory validating oversized collections (Dependabot alert #1).
+
+## [0.30.1.0] - 2026-11-18 ([#64](https://github.com/thehashrocket/skywave/pull/64))
+
+### Fixed
+- Updated Next.js to 16.4.5, the November 2026 security release, which closes an information disclosure advisory (Dependabot alert #6). Builds on 16.4.2 had started failing on the known vulnerability.
+
+## [0.30.0.0] - 2026-11-18 ([#63](https://github.com/thehashrocket/skywave/pull/63))
+
+### Added
+- **"Did you hear it?"** After a minute of audio on a frequency where EiBi lists a station, a line under the status row asks whether you heard it, with Heard, Not heard, Didn't open and an optional comment. It never stops or retunes anything, asks at most once every 10 minutes, and stops asking after you close it twice.
+- Answers are saved without IPs, names or callsigns, under a random ID kept in the browser, and are limited per listener and per receiver each hour.
+
+## [0.29.2.0] - 2026-11-15 ([#58](https://github.com/thehashrocket/skywave/pull/58))
+
+### Fixed
+- Audio now plays on an iPhone set to silent, in Safari and Chrome. As with any media app, starting skywave pauses audio from other apps.
+
+## [0.29.1.0] - 2026-11-15 ([#57](https://github.com/thehashrocket/skywave/pull/57))
+
+### Fixed
+- When the radio service can't be reached, the page now says a VPN, ad blocker or firewall may be blocking it, instead of telling listeners to start it with a developer command.
+- A connection that never opened no longer adds "The connection to the radio service was lost too." After a real drop the page says "Press Listen to reconnect."
+
+## [0.29.0.0] - 2026-11-15 ([#56](https://github.com/thehashrocket/skywave/pull/56))
+
+### Added
+- **Listening shows up in analytics.** A `listen_start` event fires when a receiver's first audio plays, with mode and frequency, and a `radio_error` event fires on each error with its code, so the Vercel dashboard shows whether visitors actually hear a receiver.
+
+## [0.28.0.0] - 2026-11-13 ([#55](https://github.com/thehashrocket/skywave/pull/55))
+
+### Added
+- **An audio spectrum under the S-meter,** like a rig's AF display, showing what's coming out of the speaker up to about 6 kHz. It is taken ahead of the volume, so turning down doesn't flatten it, and it appears with the waterfall at the first audio.
+
+## [0.27.0.0] - 2026-11-13 ([#54](https://github.com/thehashrocket/skywave/pull/54))
+
+### Added
+- **A spectrum trace over both waterfalls.** A line along the top shows the spectrum right now on the waterfall's own levels, so a spike on the trace is the bright line under it.
+- The passband shading is darker where it crosses the trace, and a small red pointer marks the tuned frequency. Station names on the wide view move below the trace.
+
+## [0.26.1.0] - 2026-11-13 ([#53](https://github.com/thehashrocket/skywave/pull/53))
+
+### Fixed
+- The receiver drawer now starts shut, so a first visit shows the frequency readout instead of a map and receiver table. Listen on Auto already picks a receiver. A listener on r/shortwave couldn't find where to enter a frequency.
+
+## [0.26.0.0] - 2026-11-13 ([#52](https://github.com/thehashrocket/skywave/pull/52))
+
+### Added
+- **A credit footer** on the listening page and `/owners`, with links to jasonshultz.com, the source on GitHub and the page for Kiwi owners. On the listening page each link opens a new tab, so the audio keeps playing.
+
+## [0.25.0.0] - 2026-11-12 ([#51](https://github.com/thehashrocket/skywave/pull/51))
+
+### Added
+- **A page for KiwiSDR owners** at `/owners`. It explains what skywave does on their receiver, the limits it keeps, and two ways to opt out, one of them a GitHub issue form. The main page links to it in a new tab.
+
+### Changed
+- skywave's production radio service now names itself `skywavehf.com` in each Kiwi's user list. Self-hosted copies keep the default `skywave`.
+
+## [0.24.0.0] - 2026-11-12 ([#50](https://github.com/thehashrocket/skywave/pull/50))
+
+### Added
+- **KiwiSDR owners can opt out.** Receivers named in `BLOCKED_RECEIVERS` (a host, or a host and port) are refused by the radio service, so Pick best moves on, and hidden from the web app's list and map.
+
+## [0.23.1.0] - 2026-11-12 ([#49](https://github.com/thehashrocket/skywave/pull/49))
+
+### Changed
+- Merged Vercel's generated Web Analytics setup. The same analytics had already shipped in 0.23.0.0, so this merge changed no files.
+
+## [0.23.0.0] - 2026-11-12 ([#48](https://github.com/thehashrocket/skywave/pull/48))
+
+### Added
+- **Share links.** A link like `/?f=9580&m=am&rx=host:port` opens skywave tuned there with that receiver pinned, ready for Listen. A Copy link button makes one.
+- Link previews with a real title, description and a generated card image.
+- Vercel Web Analytics.
+- A public-site setting: on a public deployment the shared saved frequencies are read-only, and each browser keeps its own.
+
+## [0.22.0.0] - 2026-11-12 ([#46](https://github.com/thehashrocket/skywave/pull/46))
+
+### Added
+- **Fairer use of volunteers' receivers.** By default only one skywave listener can use a given Kiwi at a time, and one address can hold at most two listeners. A full receiver is refused as busy, so Pick best moves on.
+
+### Changed
+- The listener-limit message now says why the limit exists.
+
+### Fixed
+- A late dial move after a session ended no longer opens a new channel on the receiver.
+
+## [0.21.2.1] - 2026-11-11 ([#45](https://github.com/thehashrocket/skywave/pull/45))
+
+### Changed
+- The radio service now runs on a DigitalOcean Droplet behind Caddy with automatic TLS, and GitHub Actions redeploys it after CI passes on `main`.
+
+## [0.21.2.0] - 2026-11-10 ([#43](https://github.com/thehashrocket/skywave/pull/43))
+
+### Fixed
+- Station names on the waterfall are no longer cut at about 12 characters. They show the station with a count of others on the frequency, like "Voice of Turkey +1".
+- In Strong signals, the "+N more" count stays visible when a long station name is cut short.
+
+## [0.21.1.1] - 2026-11-10 ([#42](https://github.com/thehashrocket/skywave/pull/42))
+
+### Changed
+- Updated fast-uri to 3.1.9 for its URI parsing security fixes.
+
+## [0.21.1.0] - 2026-11-10 ([#44](https://github.com/thehashrocket/skywave/pull/44))
+
+### Fixed
+- Pick best now moves on when a receiver says it's full, refuses apps or wants a password within 15 seconds of starting to play, instead of leaving the page on "Problem".
+
+## [0.21.0.1] - 2026-11-10 ([#41](https://github.com/thehashrocket/skywave/pull/41))
+
+### Added
+- A GitHub workflow refreshes the bundled EiBi schedule on 1 April and 1 November and opens a PR with the new copy.
+
+## [0.21.0.0] - 2026-11-10 ([#40](https://github.com/thehashrocket/skywave/pull/40))
+
+### Added
+- **Station names from the EiBi schedule.** The station scheduled on your frequency shows under the readout ("KBS World Radio · English"), with "+N more" on a shared frequency.
+- Strong signals rows name the station, and the wide waterfall marks each scheduled station in view.
+- The schedule refreshes daily, with a bundled copy for when EiBi's site can't be reached.
+
+## [0.20.0.0] - 2026-11-10 ([#39](https://github.com/thehashrocket/skywave/pull/39))
+
+### Added
+- **A wide waterfall from the receiver itself.** Choose Audio, 15 kHz, 60 kHz (the default), 230 kHz or the whole band. Click a signal to tune it, snapped to the channel step. The view follows the dial near its edges.
+- It uses the waterfall stream the band scan already shares with the audio, so it takes no extra slot on the volunteer's Kiwi. It starts once the receiver has played for 10 seconds.
+
+## [0.19.0.0] - 2026-11-10 ([#38](https://github.com/thehashrocket/skywave/pull/38))
+
+### Added
+- **Fine tuning on the readout.** With the pointer resting on the number, or the box focused, the mouse wheel and the Up and Down arrows step by the channel spacing: 9 or 10 kHz on medium wave depending on the receiver's region, 5 kHz for shortwave AM, 100 Hz for SSB and 10 Hz for CW. Shift steps ten at once.
+
+### Changed
+- A header strip shows "Listening via" and the receiver's place, with **change** and Listen/Stop. The receiver fields, list and map move into a drawer that closes once you choose a receiver.
+- The dial switches to a shorter layout once audio plays, leaving room for the waterfall.
+
+## [0.18.0.0] - 2026-11-10 ([#37](https://github.com/thehashrocket/skywave/pull/37))
+
+### Added
+- **Auto receiver by default.** Listen runs Pick best for the dial's frequency.
+- **Pin a receiver** by choosing it from the table or map or typing an address. The ✕ goes back to Auto.
+- **Switch receivers while listening,** without pressing Stop.
+- **"Switch to a better receiver?"** When the playing receiver can't tune the frequency, or the dial has moved 1 MHz or more and another receiver is 12 dB stronger, skywave offers a switch. It never switches by itself.
+
+## [0.17.0.0] - 2026-11-09 ([#36](https://github.com/thehashrocket/skywave/pull/36))
+
+### Changed
+- **Easier to read.** Ham band labels on the dial are darker, and the band row labels sit beside the dial where the needle can't run through them.
+- On phones the readout fits its digits. Strong signals fills each column top to bottom, and the "Blank picks the best receiver" hint stays beside the Receiver label instead of vanishing with the placeholder.
+
+## [0.16.1.1] - 2026-10-28 ([#34](https://github.com/thehashrocket/skywave/pull/34))
+
+### Changed
+- Documented why the ham-band scan was shelved, and two ideas for later, quick-tune buttons for the ham bands and live DX cluster spots.
+
+## [0.16.1.0] - 2026-10-28 ([#35](https://github.com/thehashrocket/skywave/pull/35))
+
+### Fixed
+- Vercel builds no longer fail when a build cache is restored, because the build now generates the Prisma client itself.
+
+## [0.16.0.0] - 2026-10-28 ([#32](https://github.com/thehashrocket/skywave/pull/32))
+
+### Added
+- **The web app runs on Vercel** with Neon Postgres. Each deploy applies database migrations first, so a failed migration leaves the previous deploy serving.
+- A Vercel build refuses to put the radio token in public JavaScript when no site password is set. The README covers the setup.
+
+## [0.15.2.0] - 2026-10-26 ([#31](https://github.com/thehashrocket/skywave/pull/31))
+
+### Fixed
+- When the radio service refuses or fails a retune, the dial and mode move back to what's actually playing.
+
+## [0.15.1.2] - 2026-10-26 ([#30](https://github.com/thehashrocket/skywave/pull/30))
+
+### Fixed
+- A refused request now leaves the station playing, and the radio service checks tune input more strictly (ports, hosts, modes, deeply nested JSON) instead of dropping the socket and its audio.
+
+## [0.15.1.1] - 2026-10-26 ([#29](https://github.com/thehashrocket/skywave/pull/29))
+
+### Changed
+- CI now runs the radio tests on Python 3.12 as well as 3.13, and radio service shutdown waits on every cleanup still closing a Kiwi within one deadline.
+
+## [0.15.1.0] - 2026-10-25 ([#28](https://github.com/thehashrocket/skywave/pull/28))
+
+### Fixed
+- Stop, a receiver switch or the time limit no longer shows "Something broke" when cleanup hits an error, and a volunteer's Kiwi channel is never left open after its slot frees.
+- On shutdown the radio service waits up to 5 seconds for sockets still closing their Kiwis.
+
+## [0.15.0.0] - 2026-10-25 ([#27](https://github.com/thehashrocket/skywave/pull/27))
+
+### Added
+- **Idle browser sockets close.** A socket with nothing playing and no message for 10 minutes (`IDLE_SOCKET_MINUTES`) is closed quietly, and a Listen that crosses the hang-up is sent again on a new socket.
+- **One address can hold at most 8 sockets** (`MAX_SOCKETS_PER_IP`), and the page explains when that limit is hit, mentioning that the network may be shared.
+
+## [0.14.3.0] - 2026-10-25 ([#26](https://github.com/thehashrocket/skywave/pull/26))
+
+### Fixed
+- The "Stopped" or error status now goes out only after the Kiwi channel has closed and the slot is free, so reconnecting on it can't be refused or go over a volunteer's limit.
+- The session time limit now fires even when a receiver goes quiet. A `MAX_SESSION_MINUTES` below 1 now stops the service at startup.
+
+## [0.14.2.0] - 2026-10-23 ([#25](https://github.com/thehashrocket/skywave/pull/25))
+
+### Fixed
+- A listener slot now frees only after every socket on that Kiwi channel has closed, including after a cancelled switch and a band scan's waterfall, so another listener can't take it while the old channel is still open.
+
+## [0.14.1.0] - 2026-10-23 ([#24](https://github.com/thehashrocket/skywave/pull/24))
+
+### Fixed
+- Fixed a flaky radio service test that tuned a second listener before the first one's slot was free. A new test checks the slot stays held until the Kiwi connection closes.
+
+## [0.14.0.0] - 2026-10-23 ([#23](https://github.com/thehashrocket/skywave/pull/23))
+
+### Added
+- **A blank Listen runs Pick best,** and skywave remembers your last frequency and mode.
+- Pick best leaves out receivers that refused (full, no apps, needs a password) for 15 minutes.
+
+### Changed
+- A design pass over the whole page brings a new order (dial, controls, waterfall, strong signals, presets, receivers), a status row that says where you're listening, and 44 px tap targets in the receiver list.
+- The readout accepts kHz and MHz units and flags bad input with "Enter 10 to 30,000 kHz".
+
+## [0.13.1.0] - 2026-10-22 ([#22](https://github.com/thehashrocket/skywave/pull/22))
+
+### Fixed
+- Coming back to a receiver within 30 seconds no longer shows the old scan answer. The scan waits out the 30-second limit and runs fresh, and the limit now counts per address and receiver across all connections.
+
+## [0.13.0.0] - 2026-10-22 ([#21](https://github.com/thehashrocket/skywave/pull/21))
+
+### Added
+- **Strong signals now.** About 10 seconds after a receiver starts playing, skywave scans its medium wave and 14 shortwave broadcast bands and lists the strongest carriers. Click one to tune it in AM.
+- The scan shares the audio's channel on the Kiwi, so it takes no extra slot and never ends the audio. Results are shared for 10 minutes, and each listener gets at most one scan every 30 seconds.
+
+## [0.12.1.3] - 2026-10-22 ([#20](https://github.com/thehashrocket/skywave/pull/20))
+
+### Changed
+- Documented how to run the web app when port 3000 is already taken.
+
+## [0.12.1.2] - 2026-10-22 ([#19](https://github.com/thehashrocket/skywave/pull/19))
+
+### Changed
+- Documented the phone controls that still have tap targets under 44 px.
+
+## [0.12.1.1] - 2026-10-22 ([#18](https://github.com/thehashrocket/skywave/pull/18))
+
+### Added
+- Added DESIGN.md, which records the web app's existing colors, type, layout and components.
+
+## [0.12.1.0] - 2026-10-22 ([#17](https://github.com/thehashrocket/skywave/pull/17))
+
+### Fixed
+- A dial move made while switching receivers is no longer lost when the connection drops, so the dial and the audio stay on the same frequency.
+
+## [0.12.0.0] - 2026-10-22 ([#16](https://github.com/thehashrocket/skywave/pull/16))
+
+### Changed
+- **Bigger tap targets on phones.** Inline buttons such as Retry map, Browse receivers, Reload page and Try again now have 44 px tap targets.
+- The map credits start folded on narrow screens instead of covering the map.
+
+## [0.11.0.1] - 2026-10-22 ([#15](https://github.com/thehashrocket/skywave/pull/15))
+
+### Changed
+- Documented two phone problems to fix, small inline tap targets and map credits that cover the map.
+
+## [0.11.0.0] - 2026-10-22 ([#14](https://github.com/thehashrocket/skywave/pull/14))
+
+### Added
+- **Pick best moves on after a late refusal.** If a receiver plays and then refuses apps within 15 seconds, Pick best tries the next one.
+- After a deploy, the map offers "Reload page" when its code can't load.
+
+### Fixed
+- Receiver list ages now come from the server, so a wrong computer clock doesn't skew them, and Try again shows "Trying again…" while it works.
+
+## [0.10.0.0] - 2026-10-21 ([#13](https://github.com/thehashrocket/skywave/pull/13))
+
+### Added
+- **A greyline receiver map.** Every listed receiver with a position appears on a map shaded for night and twilight and redrawn each minute. Dots show night, full, out-of-range, connecting and listening receivers. Click one to see a card, then Listen to switch.
+- If the map can't load or draw, it says why and offers Retry map and Browse receivers.
+
+## [0.9.0.0] - 2026-10-21 ([#12](https://github.com/thehashrocket/skywave/pull/12))
+
+### Changed
+- **The receiver table holds still.** When the list refreshes, rows stay put and a "List updated. Show it" line offers the new copy.
+
+### Fixed
+- Back offers the last receiver that played unless it's already on screen, and Pick best's way back keeps the old receiver's https and list settings.
+- An unknown error no longer leaves the page on "Connecting…", and a radio service that never opens is reported as unreachable after 10 seconds.
+- With no list loaded yet, the picker tries again every 15 seconds instead of every 15 minutes.
+
+## [0.8.0.0] - 2026-10-21 ([#11](https://github.com/thehashrocket/skywave/pull/11))
+
+### Added
+- **A Night column** in the receiver table says whether the sun has set at each receiver right now, and sorts night first.
+- **Back to the previous receiver:** a link beside the status line returns to the last receiver that played.
+
+### Changed
+- A tune from idle reads "Connecting…" with a Stop button, and the table rings the receiver being tuned until it plays.
+- The page now reads radio first, then a Receivers section with Pick best and the folded table.
+
+## [0.7.2.0] - 2026-10-21 ([#10](https://github.com/thehashrocket/skywave/pull/10))
+
+### Fixed
+- Receivers whose owners allow only the Kiwi's own web page (about 1 in 6) are dropped from the list, so Pick best stops offering them. When one refuses anyway, the message says so and Pick best names the reason.
+- A saved receiver that refuses apps is forgotten, and a "full" message now gives the receiver's listener limit.
+
+## [0.7.1.0] - 2026-10-21 ([#9](https://github.com/thehashrocket/skywave/pull/9))
+
+### Fixed
+- Receivers sending just enough audio are no longer dropped for a frame they sent in time.
+
+## [0.7.0.0] - 2026-10-21 ([#8](https://github.com/thehashrocket/skywave/pull/8))
+
+### Fixed
+- **A broken receiver can't hold a listener slot.** A receiver that sends only status messages, empty blocks or a trickle of audio now times out, and a Kiwi that stops reading is let go.
+- A slow browser tab is no longer blamed on a healthy receiver.
+- A corrupt frame can no longer stall audio or blank the waterfall, because oversized audio frames and spectrum rows with impossible values are skipped.
+
+## [0.6.0.0] - 2026-10-21 ([#7](https://github.com/thehashrocket/skywave/pull/7))
+
+### Changed
+- **The stream uses less than half the data.** Audio and waterfall frames are now sent in a compact format, cutting each listener's stream from 556 to 237 kbit/s.
+
+### Fixed
+- A receiver block with no samples no longer crashes the session.
+
+## [0.5.1.0] - 2026-10-20 ([#6](https://github.com/thehashrocket/skywave/pull/6))
+
+### Added
+- Dependabot checks the pnpm dependencies weekly.
+
+### Fixed
+- About a third of public receivers connected and then sent nothing. They now play, because skywave dials the path current KiwiSDR firmware answers on.
+
+## [0.5.0.0] - 2026-10-20 ([#5](https://github.com/thehashrocket/skywave/pull/5))
+
+### Changed
+- **The receiver list keeps only entries on KiwiSDR ports** (80 and 8070 to 8079, plus 443 for https), and the parser refuses odd entries, more private address ranges and overlong fields.
+- Receivers of equal rank are shuffled per visitor instead of following the mirror's order, and IPv6 addresses show in brackets, so a copied address pastes back.
+- A pasted URL without a port gets the right default port.
+
+## [0.4.0.0] - 2026-10-20 ([#4](https://github.com/thehashrocket/skywave/pull/4))
+
+### Changed
+- **Pick best says plainly where it's going back to:** "Going back to X…", then "Back on X" or "Couldn't get back to X". A receiver that was still connecting counts as one to go back to.
+- Only a receiver that actually plays is saved, and bad saved data starts fresh instead of crashing the page.
+
+### Fixed
+- When the public list stops answering, the last copy is still shown with its age, and a failed refresh over a usable list no longer shows an error.
+
+## [0.3.0.0] - 2026-10-20 ([#3](https://github.com/thehashrocket/skywave/pull/3))
+
+### Added
+- **Receivers that use https now work,** from the list or a pasted `https://` address.
+
+### Changed
+- Each listener gets their own address-lookup limit, and a busy lookup asks Pick best to retry the same receiver once.
+
+### Fixed
+- A browser tab that stops reading no longer leaves the stream on a silent "Listening": the session ends after 15 seconds.
+
+## [0.2.0.1] - 2026-10-20 ([#2](https://github.com/thehashrocket/skywave/pull/2))
+
+### Added
+- CI runs the typecheck and both test suites on every push.
+
+## [0.2.0.0] - 2026-10-20 ([#1](https://github.com/thehashrocket/skywave/pull/1))
+
+### Added
+- **Pick best receiver.** One click tunes the strongest public receiver that covers your frequency, moves on if one fails, and goes back to what was playing if nothing works.
+- **Browse the public receiver list.** Search, filter (covers this frequency, has a free slot) and sort it, and switch receivers mid-listen. Pasted receiver URLs work too.
+- The list comes from a public KiwiSDR mirror, is cached for 15 minutes, and leaves out entries skywave can't dial.
+
+## [0.1.0.0] - 2026-10-19
+
+### Added
+- **Listen to public KiwiSDR receivers in the browser.** Paste a receiver's address, press Listen and hear AM, USB, LSB or CW, demodulated by skywave's own radio service.
+- A dial that switches to the usual sideband in ham bands, a frequency readout you can type into, an S-meter, a waterfall you can click to tune, and saved frequencies.
+- An optional site password (`APP_PASSWORD`).
+- The radio service dials only public addresses, needs a token when served beyond localhost, and caps how many listeners it serves and for how long.
