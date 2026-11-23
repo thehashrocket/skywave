@@ -141,7 +141,7 @@ describe("Dial", () => {
   // Value: protects=screen readers get the keyboard sentence and touch screens a touch one readers skip (design D16, eng review code quality); fails_when=the touch sentence is announced or the keyboard one is removed; why_new=the hint was keyboard-only; seam=none; no_claim=which sentence shows for which pointer (CSS)
   it("hints for keyboard and touch, announcing only the keyboard sentence", () => {
     setup();
-    expect(screen.getByText(/use the arrow keys/).getAttribute("aria-hidden")).toBeNull();
+    expect(screen.getByText(/use ← → \(not in text fields\)/).getAttribute("aria-hidden")).toBeNull();
     expect(screen.getByText("Drag the dial or tap a band to tune.").getAttribute("aria-hidden")).toBe("true");
   });
 

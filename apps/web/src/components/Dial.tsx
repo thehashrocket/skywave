@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, type KeyboardEvent, type PointerEvent } from "react";
 import { BROADCAST_BANDS, clampKhz, DIAL_MAX_KHZ, DIAL_MIN_KHZ, HAM_BANDS, type Band } from "@/lib/radio-types";
+import { dialStepKhz, steppedKhz } from "@/lib/tuning-keys";
 
 const W = 1000;
 const PAD = 20;
@@ -173,18 +174,11 @@ export function Dial({ freqKhz, onChange, compact = false }: Props) {
   }, []);
 
   const onKeyDown = (e: KeyboardEvent<SVGSVGElement>) => {
-    const steps: Record<string, number> = {
-      ArrowRight: e.shiftKey ? 10 : 1,
-      ArrowLeft: e.shiftKey ? -10 : -1,
-      ArrowUp: e.shiftKey ? 10 : 1,
-      ArrowDown: e.shiftKey ? -10 : -1,
-      PageUp: 100,
-      PageDown: -100,
-    };
-    const step = steps[e.key];
+    const step = dialStepKhz(e.key, e.shiftKey);
     if (step === undefined) return;
+    // Also tells the page's own ← → handler (page.tsx) the dial took this key.
     e.preventDefault();
-    onChange(clampKhz(Math.round((freqKhz + step) * 100) / 100));
+    onChange(steppedKhz(freqKhz, step));
   };
 
   const needle = x(freqKhz);
@@ -250,9 +244,7 @@ export function Dial({ freqKhz, onChange, compact = false }: Props) {
       </div>
       <p className="dial-hint">
         {/* Screen readers get the keyboard sentence; a touch screen shows the touch one instead. */}
-        <span className="hint-fine">
-          Drag to tune, or focus the dial and use the arrow keys. Shift steps by 10 kHz.
-        </span>
+        <span className="hint-fine">Drag to tune, or use ← → (not in text fields). Shift steps by 10 kHz.</span>
         <span className="hint-coarse" aria-hidden="true">
           Drag the dial or tap a band to tune.
         </span>
