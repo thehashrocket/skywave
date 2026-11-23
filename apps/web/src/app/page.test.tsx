@@ -1246,14 +1246,15 @@ describe("ListenPage", () => {
       expect(dialAt()).toBe(10_001);
     });
 
-    // Value: protects=a mouse click on a mode lets focus go, so → then tunes instead of picking the next mode, while a keyboard selection (click detail 0) keeps focus on the radios, where A/U/L/C still work (D1, review item 4); fails_when=the blur is dropped, fires on keyboard selection, or letters are blocked on a radio; why_new=owner decision D1; seam=none; no_claim=each browser's own focus-on-click rules (hand check)
+    // Value: protects=a mouse click on a mode moves focus to the mode group (not the page body, so Tab continues), so → then tunes instead of picking the next mode, while a keyboard selection (click detail 0) keeps focus on the radios, where A/U/L/C still work (D1, review item 4); fails_when=the blur is dropped, fires on keyboard selection, or letters are blocked on a radio; why_new=owner decision D1; seam=none; no_claim=each browser's own focus-on-click rules (hand check)
     it("lets a clicked mode go of focus so → tunes, but not a keyboard choice", () => {
       render(<ListenPage />);
       const usb = document.querySelector<HTMLInputElement>('input[name="mode"][value="usb"]')!;
       usb.focus();
       fireEvent.click(usb, { detail: 1 });
       expect(checkedMode()).toBe("usb");
-      expect(document.activeElement).not.toBe(usb);
+      // Focus moves to the mode group, not the page body, so Tab carries on from here.
+      expect(document.activeElement).toBe(document.querySelector(".mode-group"));
       fireEvent.keyDown(document.activeElement ?? document.body, { key: "ArrowRight" });
       expect(dialAt()).toBe(10_001);
       expect(checkedMode()).toBe("usb");

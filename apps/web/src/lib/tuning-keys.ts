@@ -46,10 +46,11 @@ export function modeForKey(e: KeyLike): Mode | undefined {
   return LETTER_MODES[e.key.toLowerCase()];
 }
 
-// What the listener types into: letters and arrows are theirs.
+// What the listener types into: letters and arrows are theirs. Every input counts except
+// the kinds that take no typing, so an input type added later is safe by default.
 const TYPING =
-  'input:not([type]), input[type="text"], input[type="search"], input[type="url"], input[type="email"], ' +
-  'input[type="number"], input[type="tel"], input[type="password"], ' +
+  'input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"])' +
+  ':not([type="reset"]):not([type="range"]):not([type="file"]):not([type="image"]):not([type="hidden"]), ' +
   'textarea, select, [contenteditable]:not([contenteditable="false"])';
 // Plus places whose arrow keys are their own: the dial, the volume (a range), the mode radios
 // and the receiver map (it pans; it takes no letters, so A/U/L/C still work there).

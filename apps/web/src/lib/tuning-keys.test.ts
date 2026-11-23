@@ -74,6 +74,7 @@ describe("keepsArrowKeys / keepsLetterKeys", () => {
   beforeAll(() => {
     document.body.innerHTML = `
       <input id="plain"><input id="search" type="search"><input id="num" type="number">
+      <input id="date" type="date"><input id="color" type="color">
       <input id="range" type="range"><input id="radio" type="radio"><input id="check" type="checkbox">
       <textarea id="ta"></textarea><select id="sel"></select><div id="ce" contenteditable="true"></div>
       <div id="ceoff" contenteditable="false"></div>
@@ -87,6 +88,8 @@ describe("keepsArrowKeys / keepsLetterKeys", () => {
     ["plain", true, true],
     ["search", true, true],
     ["num", true, true],
+    ["date", true, true],
+    ["color", true, true],
     ["ta", true, true],
     ["sel", true, true],
     ["ce", true, true],
