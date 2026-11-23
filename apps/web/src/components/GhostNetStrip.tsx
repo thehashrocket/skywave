@@ -150,7 +150,9 @@ function Body({ now, freqKhz, mode, pick, connecting, playing, onListen }: BodyP
   const tuned = (o: Occurrence) => isTuned(o.slot, freqKhz, mode);
   // The picked net's row while the dial is on its slot (C1: a net rolling into a slot on the same dial stays picked).
   const picked = (o: Occurrence) => pick?.eventId === o.event.id && tuned(o);
-  const row = { now, tuned, picked, onListen };
+  // A receiver is connecting or playing for this run, so re-pressing its Listen could cut it (D9).
+  const busy = connecting || playing;
+  const row = { now, tuned, picked, busy, onListen };
 
   return (
     <>
@@ -223,6 +225,7 @@ function Row({
   now,
   tuned,
   picked,
+  busy,
   onListen,
   utc,
   wait,
@@ -231,6 +234,7 @@ function Row({
   now: number;
   tuned: (o: Occurrence) => boolean;
   picked: (o: Occurrence) => boolean;
+  busy: boolean;
   onListen: (o: Occurrence) => void;
   utc: string;
   wait: string;
@@ -269,8 +273,9 @@ function Row({
             aria-label={listenLabel(o)}
             aria-pressed={picked(o)}
             onClick={(e) => {
-              // Pressing the picked row's Listen again would restart Pick best and could cut the audio (review D9).
-              if (e.detail <= 1 && !picked(o)) onListen(o);
+              // Pressing the picked row's Listen again while it connects or plays would restart Pick
+              // best and could cut the audio (review D9); after Stop or a failed start it listens again.
+              if (e.detail <= 1 && !(picked(o) && busy)) onListen(o);
             }}
           >
             Listen

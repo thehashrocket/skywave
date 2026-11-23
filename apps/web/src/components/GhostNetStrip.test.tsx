@@ -215,10 +215,18 @@ describe("GhostNetStrip", () => {
   // Value: protects=pressing the picked row's Listen again does nothing, so a stray second press can't restart Pick best and cut the audio playing (review D9); fails_when=the press guard is dropped; why_new=owner D9 (audio cut); seam=useServerTick mocked; no_claim=the beacon strip, which keeps its re-pick
   it("ignores a second press on the picked Listen", () => {
     const onListen = vi.fn();
-    renderStrip("2026-11-27T01:10:00Z", { freqKhz: 7107, mode: "usb", pick: NA_PICK, onListen });
+    renderStrip("2026-11-27T01:10:00Z", { freqKhz: 7107, mode: "usb", pick: NA_PICK, playing: true, onListen });
     const listen = screen.getByRole("button", { name: "Listen to North America net, JS8Call on 7.107 MHz USB" });
     expect(listen.getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(listen);
     expect(onListen).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=after Stop or a run that never started (nothing connecting or playing), the picked row's Listen still listens again, so the D9 guard never leaves a dead Listen (review fix-check 2); fails_when=the guard ignores a picked row regardless of whether anything plays; why_new=fix-check found Listen dead after Stop; seam=useServerTick mocked; no_claim=page wiring of Stop (page passes playing/connecting from radio status)
+  it("listens again on the picked row once nothing plays", () => {
+    const onListen = vi.fn();
+    renderStrip("2026-11-27T01:10:00Z", { freqKhz: 7107, mode: "usb", pick: NA_PICK, onListen });
+    fireEvent.click(screen.getByRole("button", { name: "Listen to North America net, JS8Call on 7.107 MHz USB" }));
+    expect(onListen).toHaveBeenCalledOnce();
   });
 });
