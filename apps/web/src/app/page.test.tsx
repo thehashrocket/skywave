@@ -3085,6 +3085,49 @@ describe("ListenPage", () => {
       expect(radio.retune).not.toHaveBeenCalledWith(expect.objectContaining({ mode: "cw" }));
     });
 
+    // Listen on the North America net's JS8 slot, then the receiver plays it.
+    const listenToNaNet = () => {
+      const view = render(<ListenPage />);
+      openGhostNet();
+      act(() => fireEvent.click(screen.getByRole("button", { name: NA_JS8 })));
+      radio.status = { state: "listening", host: nyc.host, port: nyc.port, freqKhz: 7107, mode: "usb" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      return view;
+    };
+    const tuneTo = (khz: number, mode: "LSB" | "USB" | "AM") => {
+      const readout = screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement;
+      act(() => readout.focus());
+      fireEvent.change(readout, { target: { value: String(khz) } });
+      fireEvent.submit(readout.form!);
+      act(() => fireEvent.click(screen.getByRole("radio", { name: mode })));
+    };
+    const ended = /North America net has ended\. Stop when you're done: the receiver is a volunteer's\./;
+    const statusText = () => document.querySelector(".status-row .status")!.textContent;
+
+    // Value: protects=once the picked net's window is over and its receiver still plays, the always-visible status row asks to free the volunteer's slot, with the GhostNet strip folded and after following the net to its voice slot, and not before the window ends (owner D8, D11); fails_when=the line lives only in the open strip, or the pick is dropped when the dial moves to another of the net's frequencies; why_new=review fix-check note and owner D11; seam=MapPanel/picker/radio mocked, fake timers; no_claim=that listeners act on it
+    it("says in the status row that the picked net has ended", () => {
+      listenToNaNet();
+      const details = document.querySelector<HTMLDetailsElement>("details.ghostnet")!;
+      details.open = false;
+      act(() => fireEvent(details, new Event("toggle")));
+      tuneTo(7190, "LSB");
+      // 02:59:03 UTC: the voice slot is still on.
+      act(() => vi.advanceTimersByTime(6_540_000));
+      expect(statusText()).not.toMatch(ended);
+      // 03:01:03 UTC: the net is over.
+      act(() => vi.advanceTimersByTime(120_000));
+      expect(statusText()).toMatch(ended);
+    });
+
+    // Value: protects=tuning away from every one of the net's frequencies ends the pick, so no ended line follows the listener to another station (owner D11); fails_when=the pick outlives a move off the net; why_new=pick lifetime changed to follow the net; seam=MapPanel/picker/radio mocked, fake timers; no_claim=none beyond protects
+    it("drops the GhostNet pick when the dial leaves the net", () => {
+      listenToNaNet();
+      tuneTo(9580, "AM");
+      act(() => vi.advanceTimersByTime(6_660_000));
+      expect(statusText()).not.toMatch(ended);
+    });
+
     // A fetch for the server's time that answers after half a second: beacon Listen waits on it.
     const slowClock = () => {
       resetServerClock();

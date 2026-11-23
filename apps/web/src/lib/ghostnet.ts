@@ -223,9 +223,15 @@ export function listenOffered(o: Occurrence, ms: number): boolean {
  */
 export const GHOSTNET_TOLERANCE_KHZ = 0.1;
 
-export function isTuned(s: Slot, dialKhz: number, mode: Mode): boolean {
+/** Whether the dial is on `slot`'s frequency in any mode (a GhostNet pick follows its net this way, owner D11). */
+export function onSlotFrequency(slot: Slot, freqKhz: number): boolean {
   // A hair over the tolerance for floating point (7107.1 - 7107 is 0.1000000000004).
-  return s.dialKhz !== null && s.mode === mode && Math.abs(dialKhz - s.dialKhz) <= GHOSTNET_TOLERANCE_KHZ + 1e-6;
+  return slot.dialKhz !== null && Math.abs(freqKhz - slot.dialKhz) <= GHOSTNET_TOLERANCE_KHZ + 1e-6;
+}
+
+/** Whether the dial is on `s`'s frequency and in its mode (owner D12). */
+export function isTuned(s: Slot, dialKhz: number, mode: Mode): boolean {
+  return s.mode === mode && onSlotFrequency(s, dialKhz);
 }
 
 /**

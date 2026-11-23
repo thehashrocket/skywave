@@ -3,7 +3,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import {
   ALE_CHANNELS_KHZ,
-  EVENTS,
   followingSlot,
   formatWait,
   isTuned,
@@ -54,8 +53,6 @@ const KIND_NOTES: Record<SlotKind, string> = {
   ale: "Can't be decoded here.",
   voice: "Emergency voice only; usually silent.",
 };
-
-const eventName = (id: string) => EVENTS.find((e) => e.id === id)?.name ?? "The net";
 
 /** The strip's open focus target, like focusBeaconStrip. */
 export function focusGhostNetStrip() {
@@ -196,12 +193,6 @@ function Body({ now, freqKhz, mode, pick, connecting, playing, onListen }: BodyP
             })}
           </tbody>
         </table>
-      )}
-      {/* The picked net is over but its receiver still plays: ask to free the volunteer's slot (review D8). */}
-      {pick && now >= pick.endMs && (playing || connecting) && (
-        <p className="ghostnet-ended">
-          {`${eventName(pick.eventId)} has ended. Stop when you're done: the receiver is a volunteer's.`}
-        </p>
       )}
       <p className="sched-head">Next</p>
       <table className="sched-strip" role="table">

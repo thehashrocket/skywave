@@ -2234,13 +2234,6 @@ html:has(.tuning-bar:not([hidden])) {
   color: var(--muted);
 }
 
-/* The picked net is over while its receiver still plays (review D8). */
-.ghostnet-ended {
-  margin: 6px 0 0;
-  max-width: 68ch;
-  color: var(--text);
-}
-
 .ghostnet-mode {
   font-family: var(--font-ui);
   font-weight: 400;

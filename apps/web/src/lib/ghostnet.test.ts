@@ -6,6 +6,7 @@ import {
   GHOSTNET_LISTEN_LEAD_MS,
   inRegion,
   isTuned,
+  onSlotFrequency,
   listenOffered,
   localLabel,
   msUntil,
@@ -232,5 +233,14 @@ describe("formatting", () => {
     expect(localLabel(at("2026-11-27T01:00:00Z"), "America/Los_Angeles")).toBe("Thu 5:00 pm PST");
     expect(localLabel(at("2026-10-30T01:00:00Z"), "America/Los_Angeles")).toBe("Thu 6:00 pm PDT");
     expect(localLabel(at("2026-11-26T18:00:00Z"), "Europe/Berlin")).toMatch(/^Thu 7:00 pm (CET|GMT\+1)$/);
+  });
+  // Value: protects=a GhostNet pick follows its net while the dial is on any of its frequencies, whatever the mode, within 0.1 kHz, and not on a nearby frequency or a null (ALE) dial (owner D11); fails_when=the check compares mode or uses the wrong tolerance; why_new=pick lifetime follows the net; seam=none; no_claim=page wiring (page tests)
+  it("onSlotFrequency matches the slot's dial in any mode", () => {
+    const voice = EVENTS.find((e) => e.id === "na")!.slots.find((sl) => sl.kind === "voice")!;
+    expect(onSlotFrequency(voice, 7190)).toBe(true);
+    expect(onSlotFrequency(voice, 7190.1)).toBe(true);
+    expect(onSlotFrequency(voice, 7190.2)).toBe(false);
+    const ale = EVENTS.flatMap((e) => e.slots).find((sl) => sl.kind === "ale")!;
+    expect(onSlotFrequency(ale, 7107)).toBe(false);
   });
 });

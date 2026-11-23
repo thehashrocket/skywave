@@ -14,7 +14,7 @@ import { SpanPicker } from "@/components/SpanPicker";
 import { AudioSpectrum } from "@/components/AudioSpectrum";
 import { BeaconStrip, focusBeaconStrip } from "@/components/BeaconStrip";
 import { focusGhostNetStrip, GhostNetStrip, type GhostPick } from "@/components/GhostNetStrip";
-import { eventEnd, isTuned, rankForRegion, type Occurrence, type Slot } from "@/lib/ghostnet";
+import { eventEnd, EVENTS, isTuned, onSlotFrequency, rankForRegion, type Occurrence, type Slot } from "@/lib/ghostnet";
 import { rankForBeacon } from "@/lib/beacon-rank";
 import { beaconOnBand, IBP_BANDS_KHZ, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
 import { serverClockSettled, serverNow, settleServerClock } from "@/lib/server-clock";
@@ -597,10 +597,13 @@ export default function ListenPage() {
   // retunes off its band or changes receiver (pickFrom, switchTo).
   const [beaconPick, setBeaconPick] = useState<(BeaconPick & { atMs: number }) | null>(null);
   if (beaconPick && ibpBandIndex(freqKhz) !== beaconPick.bandIndex) setBeaconPick(null);
-  // The GhostNet row picked with Listen (#91), with its slot: its Listen reads
-  // pressed while the dial stays on that slot, and it ends like a beacon pick.
-  const [ghostPick, setGhostPick] = useState<(GhostPick & { slot: Slot }) | null>(null);
-  if (ghostPick && !isTuned(ghostPick.slot, freqKhz, mode)) setGhostPick(null);
+  // The GhostNet net picked with Listen (#91), with its slots: it lasts while the
+  // dial stays on any of that net's frequencies (following it to its next slot
+  // keeps it, owner D11), past the window's end so the status row can say the
+  // net is over, and ends like a beacon pick on a change of receiver.
+  const [ghostPick, setGhostPick] = useState<(GhostPick & { slots: readonly Slot[] }) | null>(null);
+  // Frequency only: moving to the next slot changes the dial and the mode in two steps.
+  if (ghostPick && !ghostPick.slots.some((s) => onSlotFrequency(s, freqKhz))) setGhostPick(null);
   // Asking skywave to choose (Pick best, blank Listen, the error link, the
   // better-receiver offer) is Auto, so a run that starts ends any pin. It's a
   // change of receiver too, which ends a beacon pick (beacon Listen sets its own after).
@@ -731,7 +734,7 @@ export default function ListenPage() {
       if (dialKhz === null || m === null) return;
       listenAt(dialKhz, m, (list) => rankForRegion(list, o.event.regions, dialKhz), "ghostnet");
       // After the run starts, which ends any earlier pick.
-      setGhostPick({ eventId: o.event.id, endMs: eventEnd(o), slot: o.slot });
+      setGhostPick({ eventId: o.event.id, endMs: eventEnd(o), slots: o.event.slots });
     },
     [listenAt],
   );
@@ -1059,7 +1062,14 @@ export default function ListenPage() {
   // While a run is going, only its note shows: it names each refusal and
   // what's next, and the bare refusal lands a render before the note does.
   const source = pickBest.running ? "note" : newest && messages[newest] ? newest : "service";
-  const message = messages[source];
+  // Once the picked GhostNet net is over and its receiver still plays, the status
+  // row asks to free the volunteer's slot, strip open or not (owner D8, D11).
+  const ghostMinute = useServerTick(60_000, ghostPick !== null);
+  const ghostEnded =
+    ghostPick && ghostMinute !== null && ghostMinute >= ghostPick.endMs && status.state === "listening"
+      ? `${EVENTS.find((e) => e.id === ghostPick.eventId)?.name ?? "The GhostNet net"} has ended. Stop when you're done: the receiver is a volunteer's.`
+      : undefined;
+  const message = messages[source] ?? ghostEnded;
   const messageTone =
     source === "service"
       ? status.state === "error"
