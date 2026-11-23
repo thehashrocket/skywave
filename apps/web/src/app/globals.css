@@ -156,7 +156,8 @@ html,
 }
 
 .tuned-to-change,
-.tuned-to-beacons {
+.tuned-to-beacons,
+.tuned-to-ghostnet {
   white-space: nowrap;
 }
 
@@ -2062,8 +2063,10 @@ html:has(.tuning-bar:not([hidden])) {
   color: var(--map-beacon);
 }
 
-/* The IBP band strip under the map (BeaconStrip): folded like the receiver table. */
-.beacons summary {
+/* The schedule strips under the map (BeaconStrip, GhostNetStrip; #91 D10): folded like the
+   receiver table, sharing one look. Strip-only rules follow as .beacons-* and .ghostnet-*. */
+.beacons summary,
+.ghostnet summary {
   width: fit-content;
   cursor: pointer;
   color: var(--glass);
@@ -2072,23 +2075,24 @@ html:has(.tuning-bar:not([hidden])) {
   font-size: 1.15rem;
 }
 
-.beacons summary:hover {
+.beacons summary:hover,
+.ghostnet summary:hover {
   color: var(--text);
 }
 
-.beacons-head {
+.sched-head {
   margin: 8px 0 4px;
   font-family: var(--font-instrument);
   font-size: 1.05rem;
   color: var(--glass);
 }
 
-.beacons-next {
+.sched-next {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
-.beacons-strip {
+.sched-strip {
   width: 100%;
   max-width: 34rem;
   border-collapse: collapse;
@@ -2096,23 +2100,23 @@ html:has(.tuning-bar:not([hidden])) {
   border-radius: var(--radius-panel);
 }
 
-.beacons-strip th,
-.beacons-strip td {
+.sched-strip th,
+.sched-strip td {
   padding: 6px 10px;
   border-top: 1px solid var(--rule);
   text-align: left;
 }
 
-.beacons-strip tr:first-child th,
-.beacons-strip tr:first-child td {
+.sched-strip tr:first-child th,
+.sched-strip tr:first-child td {
   border-top: 0;
 }
 
-.beacons-strip td:last-child {
+.sched-strip td:last-child {
   text-align: right;
 }
 
-.beacons-freq {
+.sched-freq {
   font-family: var(--font-instrument);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -2120,7 +2124,7 @@ html:has(.tuning-bar:not([hidden])) {
   white-space: nowrap;
 }
 
-.beacons-strip tr[data-current] .beacons-freq {
+.sched-strip tr[data-current] .sched-freq {
   color: var(--lamp);
 }
 
@@ -2130,7 +2134,7 @@ html:has(.tuning-bar:not([hidden])) {
   color: var(--text);
 }
 
-.beacons-place {
+.sched-place {
   font-family: var(--font-ui);
   font-size: 0.85rem;
   color: var(--muted);
@@ -2169,9 +2173,9 @@ html:has(.tuning-bar:not([hidden])) {
 /* A beacon NCDXF lists as off the air (#69): greyed, with its note on a line of its own.
    Listen stays, so a listener can report it back on the air. */
 .beacons-strip tr[data-off] .beacons-call,
-.beacons-strip tr[data-off] .beacons-freq,
+.beacons-strip tr[data-off] .sched-freq,
 .beacons-strip tr[data-quiet] .beacons-call,
-.beacons-strip tr[data-quiet] .beacons-freq {
+.beacons-strip tr[data-quiet] .sched-freq {
   color: var(--muted);
 }
 
@@ -2203,11 +2207,69 @@ html:has(.tuning-bar:not([hidden])) {
   color: var(--muted);
 }
 
-.beacons-note {
+.sched-note {
   margin: 6px 0 0;
   max-width: 68ch;
   font-size: 0.85rem;
   color: var(--muted);
+}
+
+/* GhostNetStrip (#91): the schedule strip's own parts, on the shared .sched-* look. */
+.ghostnet-tail {
+  font-family: var(--font-ui);
+  font-weight: 400;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.ghostnet-about {
+  margin: 4px 0 0;
+  max-width: 68ch;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.ghostnet-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.ghostnet-mode {
+  font-family: var(--font-ui);
+  font-weight: 400;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.ghostnet-name {
+  display: block;
+  color: var(--text);
+}
+
+.ghostnet-when {
+  display: block;
+}
+
+.ghostnet-wait {
+  margin-right: 10px;
+  white-space: nowrap;
+}
+
+/* The line under an on-air row: what the audio is, and the next slot. */
+.sched-strip .ghostnet-note-row td {
+  border-top: 0;
+  padding-top: 0;
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.ghostnet-note {
+  display: block;
+  color: var(--text);
+}
+
+.ghostnet-after {
+  display: block;
 }
 
 .map-note {
@@ -2327,6 +2389,13 @@ html:has(.tuning-bar:not([hidden])) {
     padding-block: 10px;
     margin-block: -10px;
   }
+  /* GhostNet times stack on phones: UTC, then local (#91 D12). */
+  .ghostnet-local {
+    display: block;
+  }
+  .ghostnet-sep {
+    display: none;
+  }
   .receivers-table-wrap {
     padding: 12px;
   }
@@ -2393,6 +2462,7 @@ html:has(.tuning-bar:not([hidden])) {
   .receiver-switch,
   .tuned-to-change,
   .tuned-to-beacons,
+  .tuned-to-ghostnet,
   .span-step,
   .presets-save button,
   .receiver-choose,

@@ -191,10 +191,10 @@ export function BeaconStrip({
       <summary>IBP beacons</summary>
       {now !== null && (
         <>
-          <p className="beacons-head">
-            On air now <span className="beacons-next">· next change in {Math.ceil(msLeftInSlot(now) / SECOND)} s</span>
+          <p className="sched-head">
+            On air now <span className="sched-next">· next change in {Math.ceil(msLeftInSlot(now) / SECOND)} s</span>
           </p>
-          <table className="beacons-strip">
+          <table className="sched-strip beacons-strip">
             <caption className="visually-hidden">The beacon on each IBP frequency now</caption>
             <tbody>
               {IBP_BANDS_KHZ.map((khz, b) => {
@@ -211,11 +211,11 @@ export function BeaconStrip({
                       data-off={isOff || undefined}
                       data-quiet={rbn.quiet.has(beacon.call) || undefined}
                     >
-                      <th scope="row" className="beacons-freq">
+                      <th scope="row" className="sched-freq">
                         {(khz / 1000).toFixed(3)}
                       </th>
                       <td className="beacons-call">
-                        {beacon.call} <span className="beacons-place">{beacon.location}</span>
+                        {beacon.call} <span className="sched-place">{beacon.location}</span>
                         {picked && <span className="beacons-picked"> · picked</span>}
                         {mark && (
                           <span className="beacons-off" id={`beacons-off-${b}`}>
@@ -248,11 +248,11 @@ export function BeaconStrip({
               })}
             </tbody>
           </table>
-          <p className="beacons-note">
+          <p className="sched-note">
             Each beacon sends its callsign, then four 1-second dashes at 100 W, 10 W, 1 W and 100 mW: hear the last dash
             and the path is wide open.
           </p>
-          <p className="beacons-note">
+          <p className="sched-note">
             By the UTC clock; the receiver&apos;s audio runs a second or two behind, and a beacon may be off the air.
             Each moves up a band every 10 seconds. &ldquo;Listed off the air&rdquo; is NCDXF&apos;s list, which can lag
             by days and misses beacons off for a contest; &ldquo;not spotted by RBN&rdquo; means the Reverse Beacon
