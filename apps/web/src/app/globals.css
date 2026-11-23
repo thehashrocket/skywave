@@ -943,6 +943,22 @@ html,
   color: var(--muted);
 }
 
+.mode-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* The off switch for the A/U/L/C keys, small under the mode segments. */
+.letter-keys {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+
 .modes {
   display: flex;
   gap: 0;
@@ -2106,7 +2122,7 @@ html,
     grid-template-columns: 1fr 1fr;
   }
   .readout,
-  .modes,
+  .mode-group,
   .audio-spectrum {
     grid-column: span 2;
   }
@@ -2121,7 +2137,7 @@ html,
     padding: 14px;
   }
   .readout,
-  .modes,
+  .mode-group,
   .audio-spectrum {
     grid-column: auto;
   }
@@ -2238,7 +2254,8 @@ html,
   .tuned-to-beacons,
   .span-step,
   .presets-save button,
-  .receiver-choose {
+  .receiver-choose,
+  .letter-keys {
     min-height: 44px;
   }
   /* The chip's and the reception prompt's ✕ keep their size; the hit area grows around them. */
