@@ -2,6 +2,19 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.46.0.0] - 2026-11-23 ([#91](https://github.com/thehashrocket/skywave/issues/91))
+
+### Added
+- **See when GhostNet is on the air.** A folded GhostNet strip under the IBP beacons shows S2 Underground's weekly volunteer HF nets and bridges: what's on now with time left and the next slot, and when each one opens next, in UTC and your local time.
+- **Listen to a net in one press.** From 15 minutes before a window opens, Listen tunes the net's frequency and mode and picks a receiver in the net's own region first. The RTTY slot tunes the right dial for its tones.
+- A **GhostNet** button in the header opens the strip and moves focus to it, without leaving beacon mode.
+- A tuned on-air row says what you'll hear: JS8Call and RTTY tones that Skywave can't decode yet, or an emergency voice channel that's usually silent.
+- Once the net you picked is over and the receiver is still playing, the status row says so and asks you to stop when you're done, since the receiver is a volunteer's.
+
+### Changed
+- Following a net to its next slot with Listen keeps the receiver that's playing and just moves its dial, so the audio isn't cut.
+- The IBP beacon strip and the GhostNet strip share one look, and on phones each GhostNet row stacks its details beside the frequency.
+
 ## [0.45.0.0] - 2026-11-22 ([#90](https://github.com/thehashrocket/skywave/issues/90))
 
 ### Added

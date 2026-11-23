@@ -88,6 +88,18 @@
 **Priority:** P2
 **Depends on:** #91 merged, or the #93 recording session
 
+### GhostNet: tighten "follow the net" and the ended line (#91 follow-up)
+
+**What:** In `listenToGhostNet` (`apps/web/src/app/page.tsx`), take the follow-the-net retune only when (1) the receiver playing covers the new slot's dial, (2) the pick is this week's window (`serverNow() < ghostPick.endMs`), and (3) the receiver is the one the GhostNet run chose; otherwise go through `listenAt`/Pick best and set a fresh pick. Also let the status row's "has ended, Stop" line win over a stale "receiver list is still loading" page message, the way it already wins over a finished Pick best note.
+
+**Why:** Today the shortcut retunes whatever plays. The na-au and eu-au bridges move from 14.107 to 3.575 MHz, so a receiver that can't tune that low goes quiet with no fallback. If the run fell back to the listener's earlier receiver, the rest of the net stays on it. A pick left from last week catches next week's Listen and is then cleared mid-net, so the next slot runs Pick best and can cut the audio. A GhostNet Listen in the list's first second of loading leaves a page message that can hide the nudge to free the volunteer's receiver.
+
+**Context:** Owner D2 and D3 in the #91 read-only /ship review (2026-11-23) ruled these notes for a later PR. Each case is rare (nearly every KiwiSDR covers 0-30 MHz; week-long sessions; a failed run; a Listen in the list's first second). Follow-the-net itself is owner D4 from the earlier round; keep its no-Pick-best behavior when the checks pass.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** #91 merged
+
 ### Live spot feed for receiver ranking (#61)
 
 **What:** Feed live RBN and/or WSPR spots to Pick best as a re-order after today's order, the way `rankByNoise` works (`apps/web/src/lib/noise-rank.ts`).
