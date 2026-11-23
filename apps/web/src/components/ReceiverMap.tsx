@@ -32,6 +32,7 @@ import {
 import { buildStyle, resolveTokens, SOURCES } from "@/lib/receiver-map-style";
 import { formatHostPort } from "@/lib/receiver";
 import { darkRegion, NIGHT_ELEVATION, TWILIGHT_ELEVATION, type SunPosition } from "@/lib/solar";
+import { prefersReducedMotion } from "@/lib/reduced-motion";
 
 // maplibre-gl 6 expects its worker beside its own module, which the bundler
 // doesn't copy; the app serves it (app/vendor/maplibre). The version in the
@@ -74,9 +75,6 @@ const NO_FEATURES = { type: "FeatureCollection" as const, features: [] };
 
 /** An open card: the receivers it lists, nearest first. It sits by the first one still listed. */
 type Card = { keys: string[]; more: boolean };
-
-const reducedMotion = () =>
-  typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
  * The MapLibre adapter. Loaded only once the page admits the map, and kept
@@ -346,7 +344,7 @@ export default memo(function ReceiverMap({
   const targetKey = target?.join(",");
   useEffect(() => {
     if (!map || !target) return;
-    if (reducedMotion()) map.jumpTo({ center: target });
+    if (prefersReducedMotion()) map.jumpTo({ center: target });
     else map.easeTo({ center: target, duration: 600 });
     // target is read through targetKey.
   }, [map, follow, playingKey, targetKey, centerRequest]);
@@ -354,7 +352,7 @@ export default memo(function ReceiverMap({
   // One brief emphasis on the dot when playback starts; none under reduced motion.
   const listeningKey = playing?.phase === "listening" ? receiverKey(playing) : null;
   useEffect(() => {
-    if (!map || !listeningKey || reducedMotion()) return;
+    if (!map || !listeningKey || prefersReducedMotion()) return;
     const id = { source: SOURCES.receivers, id: listeningKey };
     map.setFeatureState(id, { emphasis: true });
     const timer = setTimeout(() => map.setFeatureState(id, { emphasis: false }), EMPHASIS_MS);
@@ -455,7 +453,7 @@ export default memo(function ReceiverMap({
               className="link-button"
               onClick={() => {
                 if (anchorLngLat)
-                  map?.easeTo({ center: anchorLngLat, zoom: map.getZoom() + 3, duration: reducedMotion() ? 0 : 600 });
+                  map?.easeTo({ center: anchorLngLat, zoom: map.getZoom() + 3, duration: prefersReducedMotion() ? 0 : 600 });
                 closeCard();
               }}
             >

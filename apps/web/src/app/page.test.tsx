@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Broadcast } from "@/lib/eibi";
 import type { Receiver } from "@/lib/kiwi-list";
 import { noteResponse, resetServerClock } from "@/lib/server-clock";
+import { fakeIntersectionObserver } from "@/test/fake-intersection-observer";
 import type { RadioStatus, ScanState, Settled } from "@/lib/use-radio";
 
 const radio = {
@@ -1361,6 +1362,178 @@ describe("ListenPage", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("sticky tuning bar (#90)", () => {
+    // Where the bar's sentinel is, as scrolling would report it.
+    let report: (intersecting: boolean | boolean[]) => void;
+    beforeEach(() => {
+      report = fakeIntersectionObserver();
+      vi.stubGlobal("scrollTo", vi.fn());
+    });
+    afterEach(() => vi.unstubAllGlobals());
+
+    /** Renders the page scrolled down past the modes, so the bar shows. */
+    const renderScrolled = () => {
+      const view = render(<ListenPage />);
+      report(false);
+      return view;
+    };
+    const inBar = () => within(screen.getByRole("region", { name: "Tuning bar" }));
+    const checkedMode = () => document.querySelector<HTMLInputElement>('input[name="mode"]:checked')?.value ?? null;
+    const dialAt = () => Number(screen.getByRole("slider", { name: "Tuning dial" }).getAttribute("aria-valuenow"));
+
+    // Value: protects=the bar and the main controls share one mode: a bar press changes the page's mode, and a letter key shows in the bar; fails_when=the bar keeps its own mode or skips changeMode; why_new=no bar before #90; seam=radio mocked; no_claim=audio output
+    it("changes mode from the bar, and follows a mode picked elsewhere", () => {
+      renderScrolled();
+      fireEvent.click(inBar().getByRole("button", { name: "USB" }));
+      expect(checkedMode()).toBe("usb");
+      fireEvent.keyDown(document.body, { key: "c" });
+      expect(checkedMode()).toBe("cw");
+      expect(inBar().getByRole("button", { name: "CW" }).getAttribute("aria-pressed")).toBe("true");
+    });
+
+    // Value: protects=a mode pressed in the bar while listening retunes the receiver in that mode, as the main modes do; fails_when=the bar sets the page's mode but skips changeMode's retune; why_new=the test above checks only the checked radio, and only while idle; seam=radio mocked; no_claim=the radio service applying the mode
+    it("retunes what's playing when a mode is pressed in the bar", () => {
+      vi.useFakeTimers();
+      try {
+        savePin({ host: listed.host, port: listed.port, fromList: true });
+        const view = renderScrolled();
+        fireEvent.click(inBar().getByRole("button", { name: "Listen" }), { detail: 1 });
+        radio.status = { state: "listening", host: listed.host, port: listed.port };
+        view.rerender(<ListenPage />);
+        act(() => vi.advanceTimersByTime(500));
+        radio.retune.mockClear();
+        fireEvent.click(inBar().getByRole("button", { name: "LSB" }));
+        act(() => vi.advanceTimersByTime(500));
+        expect(radio.retune).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "lsb" }));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Value: protects=page-wide ← → and A/U/L/C still work with focus on a bar button (#89 contract); fails_when=the bar's controls become arrow- or letter-owning (radios, a slider); why_new=#89 rows cover the page's own focus targets only; seam=none; no_claim=none beyond protects
+    it("keeps ← → tuning and letter keys with focus in the bar", () => {
+      renderScrolled();
+      const am = inBar().getByRole("button", { name: "AM" });
+      am.focus();
+      const before = dialAt();
+      fireEvent.keyDown(am, { key: "ArrowRight" });
+      expect(dialAt()).toBe(before + 1);
+      fireEvent.keyDown(am, { key: "u" });
+      expect(checkedMode()).toBe("usb");
+    });
+
+    // Value: protects=Listen and Stop in the bar start and stop the radio from anywhere on the page, freeing a volunteer's channel (D2); fails_when=the bar's button isn't the receiver form's submit; why_new=new path; seam=radio mocked; no_claim=the radio service's channel release
+    it("listens and stops from the bar", () => {
+      savePin({ host: listed.host, port: listed.port, fromList: true });
+      const view = renderScrolled();
+      fireEvent.click(inBar().getByRole("button", { name: "Listen" }), { detail: 1 });
+      expect(radio.tune).toHaveBeenCalled();
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      fireEvent.click(inBar().getByRole("button", { name: "Stop" }), { detail: 1 });
+      expect(radio.stop).toHaveBeenCalledTimes(1);
+    });
+
+    // Value: protects=a Listen from the bar that can't start (no receiver list) puts focus on the status row that says why (D16); fails_when=the bar's press isn't marked or the status row isn't focused; why_new=new path; seam=receiver list mocked as not loaded; no_claim=the scroll itself (browser focus scrolling)
+    it("takes focus to the status row when Listen in the bar can't start", () => {
+      receiverList.data = undefined;
+      renderScrolled();
+      fireEvent.click(inBar().getByRole("button", { name: "Listen" }), { detail: 1 });
+      const status = document.querySelector(".status");
+      expect(document.activeElement).toBe(status);
+      expect(status!.textContent).toContain("The receiver list is still loading. Press Listen");
+      expect(radio.tune).not.toHaveBeenCalled();
+    });
+
+    // Value: protects=a Listen from the bar on a pinned receiver that then refuses (busy) moves focus to the status row that says so, while the same refusal after the header's Listen doesn't move focus (D16, review P1); fails_when=only the list-loading case is handled, or every refusal steals focus; why_new=the tests above cover a Listen that can't start at all; seam=radio mocked; no_claim=the receiver's real refusal message
+    it.each([
+      ["the bar", true],
+      ["the header", false],
+    ])("after a refused Listen from %s, focus goes to the status row only from the bar", (_from, fromBar) => {
+      savePin({ host: listed.host, port: listed.port, fromList: true });
+      const view = renderScrolled();
+      const listen = fromBar
+        ? inBar().getByRole("button", { name: "Listen" })
+        : within(document.querySelector<HTMLElement>(".console-header")!).getByRole("button", { name: "Listen" });
+      listen.focus();
+      fireEvent.click(listen, { detail: 1 });
+      expect(radio.tune).toHaveBeenCalled();
+      radio.status = { state: "error", code: "busy", message: "full", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(document.activeElement === document.querySelector(".status")).toBe(fromBar);
+    });
+
+    // Value: protects=a refusal after a bar Listen moves focus only while the bar's Listen is still the latest listener action and focus hasn't moved on (review pass 2, owner D9); fails_when=the bar marker outlives another action (a receiver chosen in the drawer) or ignores where focus now is; why_new=the refused-Listen rows above change nothing between the press and the refusal; seam=radio and picker mocked; no_claim=real focus scrolling
+    it.each([
+      ["another receiver is chosen meanwhile", "choose"],
+      ["focus has moved to another control", "focus"],
+    ])("leaves focus alone after a bar Listen when %s", (_name, step) => {
+      savePin({ host: listed.host, port: listed.port, fromList: true });
+      const view = renderScrolled();
+      const listen = inBar().getByRole("button", { name: "Listen" });
+      listen.focus();
+      fireEvent.click(listen, { detail: 1 });
+      if (step === "choose") fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+      // "choose" keeps focus in the bar, so only the other action can stop the move; "focus" moves it off the bar.
+      const keep = step === "choose" ? inBar().getByRole("button", { name: "AM" }) : screen.getByRole("button", { name: "Copy link" });
+      keep.focus();
+      radio.status = { state: "error", code: "busy", message: "full", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(document.activeElement).toBe(keep);
+    });
+
+    // Value: protects=only a Listen from the bar moves focus to the status row: the header's Listen, which sits beside the status row's message, keeps focus even right after a failed bar press (D16); fails_when=the bar flag isn't cleared by the submit that reads it, or the focus ignores where the press came from; why_new=the test above presses the bar only; seam=receiver list mocked as not loaded; no_claim=focus scrolling
+    it("leaves focus on the header's Listen when it can't start, even after a bar press", () => {
+      receiverList.data = undefined;
+      renderScrolled();
+      fireEvent.click(inBar().getByRole("button", { name: "Listen" }), { detail: 1 });
+      expect(document.activeElement).toBe(document.querySelector(".status"));
+      const header = screen.getAllByRole("button", { name: "Listen" }).find((b) => !b.closest(".tuning-bar"))!;
+      header.focus();
+      fireEvent.click(header, { detail: 1 });
+      expect(document.activeElement).toBe(header);
+      expect(radio.tune).not.toHaveBeenCalled();
+    });
+
+    // Value: protects=a bar Listen on Auto that does start leaves focus on the bar's button, so a keyboard user can press Stop where they are (D16 moves focus only when Listen can't start); fails_when=the status focus runs on every bar press, not only a failed start; why_new=the bar tests above cover a failed Auto start and a pinned start only; seam=radio mocked, receiver list loaded; no_claim=which receiver Auto picks
+    it("keeps focus in the bar when Listen on Auto starts", () => {
+      renderScrolled();
+      const listen = inBar().getByRole("button", { name: "Listen" });
+      listen.focus();
+      fireEvent.click(listen, { detail: 1 });
+      expect(radio.tune).toHaveBeenCalled();
+      expect(document.activeElement).toBe(listen);
+    });
+
+    // Value: protects=the bar's receiver button names what the header strip does: the place playing while audio plays, else the pinned receiver's label (D13); fails_when=the bar shows the pin while another receiver (an Auto pick) plays, or drops the place for the host; why_new=the drawer test covers only the Auto label; seam=radio and receiver list mocked; no_claim=placeName formatting (its own tests)
+    it("names the receiver playing, else the pinned one, on the bar's receiver button", () => {
+      savePin({ host: backup.host, port: backup.port, fromList: true, label: "Backup" });
+      const view = renderScrolled();
+      expect(inBar().getByRole("button", { name: "Backup, change receiver" })).toBeTruthy();
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(inBar().getByRole("button", { name: "Vermont, change receiver" })).toBeTruthy();
+    });
+
+    // Value: protects=the bar's receiver button opens (never toggles) the drawer, scrolls to the top (instantly under reduced motion) and focuses the drawer once it renders open (D6), named by its visible text (D13); fails_when=focus lands while the drawer is inert, a second press shuts it, or the name drops the visible text; why_new=new path; seam=scrollTo and matchMedia stubbed; no_claim=the real scroll animation
+    it.each([
+      ["smooth", false],
+      ["auto", true],
+    ])("opens the receiver drawer from the bar (scroll %s)", (behavior, reduced) => {
+      vi.stubGlobal("matchMedia", (q: string) => ({ matches: reduced && q.includes("reduce") }));
+      renderScrolled();
+      const change = screen.getByRole("button", { name: "Change receiver" });
+      expect(change.getAttribute("aria-expanded")).toBe("false");
+      const receiver = inBar().getByRole("button", { name: "Auto (best for this frequency), change receiver" });
+      fireEvent.click(receiver);
+      expect(change.getAttribute("aria-expanded")).toBe("true");
+      expect(window.scrollTo).toHaveBeenCalledWith({ top: 0, behavior });
+      expect(document.activeElement).toBe(document.getElementById("receiver-drawer"));
+      fireEvent.click(receiver);
+      expect(change.getAttribute("aria-expanded")).toBe("true");
     });
   });
 
@@ -2839,6 +3012,34 @@ describe("ListenPage", () => {
       });
       expect(radio.tune.mock.calls.length).toBe(tunesAtStop);
       expect(screen.queryByText("Checking the time with the server…")).toBeNull();
+      vi.unstubAllGlobals();
+    });
+
+    // Value: protects=the tuning bar's receiver button counts as a listener action, like "change", so a beacon Listen waiting on the clock never tunes after it (D15); fails_when=the bar's handler skips the action count; why_new=new path into the drawer; seam=MapPanel/picker/radio mocked, real server clock with a fetch answering after a delay, IntersectionObserver faked; no_claim=real slot timing
+    it("drops a beacon Listen waiting on the clock once the bar's receiver button is pressed", async () => {
+      resetServerClock();
+      const report = fakeIntersectionObserver();
+      vi.stubGlobal("scrollTo", vi.fn());
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          () =>
+            new Promise<Response>((resolve) =>
+              setTimeout(() => resolve(new Response(null, { status: 204, headers: { "x-server-ms": String(Date.now()) } })), 500),
+            ),
+        ),
+      );
+      render(<ListenPage />);
+      openStrip();
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
+      expect(screen.getByText("Checking the time with the server…")).toBeTruthy();
+      report(false);
+      const bar = within(screen.getByRole("region", { name: "Tuning bar" }));
+      act(() => fireEvent.click(bar.getByRole("button", { name: /, change receiver$/ })));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(radio.tune).not.toHaveBeenCalled();
       vi.unstubAllGlobals();
     });
 

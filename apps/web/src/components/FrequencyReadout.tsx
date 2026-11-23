@@ -2,16 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { StationLine } from "@/lib/eibi";
-import { DIAL_MAX_KHZ, inTuneRange, stepKhz, TUNE_MIN_KHZ } from "@/lib/radio-types";
+import { DIAL_MAX_KHZ, formatKhz, inTuneRange, stepKhz, TUNE_MIN_KHZ } from "@/lib/radio-types";
 
 const RANGE_HINT = `Enter ${TUNE_MIN_KHZ.toLocaleString("en-US")} to ${DIAL_MAX_KHZ.toLocaleString("en-US")} kHz`;
 
 /** The longest entry the readout takes ("29,999.99 kHz" with room to spare). */
 const MAX_INPUT = 32;
-
-function format(khz: number) {
-  return khz.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
 
 /**
  * What the user typed, as kHz rounded to 10 Hz, or null if it isn't a tunable
@@ -62,7 +58,7 @@ export function FrequencyReadout({
   /** Who the schedule has on this frequency now, if anyone. */
   station?: StationLine | null;
 }) {
-  const [draft, setDraft] = useState(format(freqKhz));
+  const [draft, setDraft] = useState(formatKhz(freqKhz));
   const [editing, setEditing] = useState(false);
   // A typed value that isn't a tunable frequency: it stays in the box, flagged, until fixed or Escape.
   const [invalid, setInvalid] = useState(false);
@@ -156,12 +152,12 @@ export function FrequencyReadout({
     if (editing) {
       shown.current = freqKhz;
       // Focused but nothing typed (the wheel or arrows tuning it): show the new frequency.
-      if (!edited.current) setDraft(format(freqKhz));
+      if (!edited.current) setDraft(formatKhz(freqKhz));
       return;
     }
     if (invalid && shown.current === freqKhz) return;
     shown.current = freqKhz;
-    setDraft(format(freqKhz));
+    setDraft(formatKhz(freqKhz));
     setInvalid(false);
   }, [freqKhz, editing, invalid]);
 
@@ -216,7 +212,7 @@ export function FrequencyReadout({
           if (cancelling.current) {
             cancelling.current = false;
             edited.current = false; // what was typed is gone, so stepping works again
-            setDraft(format(freqKhz));
+            setDraft(formatKhz(freqKhz));
             setInvalid(false);
             setEditing(false);
           } else if (edited.current) {

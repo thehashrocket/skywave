@@ -47,6 +47,8 @@
   --map-last: rgba(212, 230, 216, 0.45);
   --map-beacon: var(--brass); /* IBP beacons and the selected one's path */
   --map-height: 360px;
+  /* The sticky tuning bar's height (#90): also the room scrolling leaves above focus while it shows. rem, so text zoom grows both. */
+  --tuning-bar-h: 3.75rem;
   color-scheme: dark;
 }
 
@@ -108,6 +110,8 @@ html,
 /* Page frame */
 
 .console {
+  /* The tuning bar's sentinel is measured from the top of the page's main. */
+  position: relative;
   --console-gap: 20px;
   max-width: 1120px;
   margin: 0 auto;
@@ -995,16 +999,20 @@ html,
   margin-left: -1px;
 }
 
-.mode:first-child span {
+/* The tuning bar's mode buttons share the segmented ends and the lit state. */
+.mode:first-child span,
+.tuning-bar-mode:first-child {
   border-radius: var(--radius-knob) 0 0 var(--radius-knob);
   margin-left: 0;
 }
 
-.mode:last-child span {
+.mode:last-child span,
+.tuning-bar-mode:last-child {
   border-radius: 0 var(--radius-knob) var(--radius-knob) 0;
 }
 
-.mode input:checked + span {
+.mode input:checked + span,
+.tuning-bar-mode[aria-pressed="true"] {
   background: var(--glass);
   border-color: var(--glass);
   color: var(--ink);
@@ -1013,6 +1021,116 @@ html,
 .mode input:focus-visible + span {
   outline: 2px solid var(--lamp);
   outline-offset: 2px;
+}
+
+/* Sticky tuning bar (#90): pinned to the top once the modes have scrolled up under it. */
+
+/* Keyboard focus scrolled into view lands below the bar, not under it (WCAG 2.4.11). */
+html:has(.tuning-bar:not([hidden])) {
+  scroll-padding-top: var(--tuning-bar-h);
+}
+
+/* From the top of the page to just above where the modes pass under the bar; TuningBar sets its height. */
+.tuning-bar-sentinel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.tuning-bar {
+  position: fixed;
+  top: 0;
+  inset-inline: 0;
+  margin-inline: auto;
+  max-width: 1120px;
+  /* Above the map's tooltips and cards (z-index 3). */
+  z-index: 10;
+  height: var(--tuning-bar-h);
+  padding: 8px 16px;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-areas: "freq modes receiver power";
+  align-items: center;
+  gap: 8px 20px;
+  background: var(--enamel-raised);
+  border-bottom: 1px solid var(--rule);
+  border-radius: 0 0 var(--radius-panel) var(--radius-panel);
+  transition: transform 180ms ease-out;
+}
+
+/* `hidden` is how the bar leaves the page and the accessibility tree; the grid above mustn't override it. */
+.tuning-bar[hidden] {
+  display: none;
+}
+
+/* Slides down as it appears; it just goes when it hides. */
+@starting-style {
+  .tuning-bar {
+    transform: translateY(-100%);
+  }
+}
+
+.tuning-bar-freq {
+  grid-area: freq;
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 1.6rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--lamp);
+  white-space: nowrap;
+}
+
+.tuning-bar-unit {
+  font-size: 1rem;
+  color: var(--muted);
+}
+
+.tuning-bar-modes {
+  grid-area: modes;
+  display: flex;
+}
+
+.tuning-bar-mode {
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 1rem;
+  padding: 6px 11px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--rule);
+  margin-left: -1px;
+  cursor: pointer;
+}
+
+/* The receiver: the place playing or the choice, cut short rather than wrapping the bar. */
+.tuning-bar-receiver {
+  grid-area: receiver;
+  justify-self: start;
+  max-width: 100%;
+  font: inherit;
+  padding: 6px 4px;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dotted var(--muted);
+  border-radius: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.tuning-bar-receiver:hover {
+  color: var(--lamp);
+}
+
+.tuning-bar .power {
+  grid-area: power;
+  padding-block: 6px;
 }
 
 /* S-meter */
@@ -2137,6 +2255,24 @@ html,
 }
 
 @media (max-width: 520px) {
+  /* Two rows on a phone: frequency, receiver and Listen/Stop, then the modes. */
+  :root {
+    /* Two 44px rows, the gap and the padding. */
+    --tuning-bar-h: 6.75rem;
+  }
+  .tuning-bar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "freq receiver power"
+      "modes modes modes";
+    gap: 6px 12px;
+    padding: 6px 12px;
+    border-radius: 0;
+  }
+  .tuning-bar .power {
+    min-width: 5em;
+    padding-inline: 14px;
+  }
   .controls {
     grid-template-columns: 1fr;
     padding: 14px;
@@ -2260,7 +2396,9 @@ html,
   .span-step,
   .presets-save button,
   .receiver-choose,
-  .letter-keys {
+  .letter-keys,
+  .tuning-bar-mode,
+  .tuning-bar-receiver {
     min-height: 44px;
   }
   /* The chip's and the reception prompt's ✕ keep their size; the hit area grows around them. */
@@ -2374,6 +2512,9 @@ html,
 
 @media (prefers-reduced-motion: reduce) {
   .smeter-fill {
+    transition: none;
+  }
+  .tuning-bar {
     transition: none;
   }
   .waterfall-screen .waterfall-picture {

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, type KeyboardEvent, type PointerEvent } from "react";
 import { BROADCAST_BANDS, clampKhz, DIAL_MAX_KHZ, DIAL_MIN_KHZ, HAM_BANDS, type Band } from "@/lib/radio-types";
 import { dialStepKhz, steppedKhz } from "@/lib/tuning-keys";
+import { prefersReducedMotion } from "@/lib/reduced-motion";
 
 const W = 1000;
 const PAD = 20;
@@ -169,7 +170,7 @@ export function Dial({ freqKhz, onChange, compact = false }: Props) {
     const box = scrollRef.current;
     if (!box || box.scrollWidth <= box.clientWidth) return;
     if (px > box.scrollLeft + EDGE_PX && px < box.scrollLeft + box.clientWidth - EDGE_PX) return;
-    const still = !smooth || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const still = !smooth || prefersReducedMotion();
     box.scrollTo({ left: px - box.clientWidth / 2, behavior: still ? "auto" : "smooth" });
   }, []);
 
