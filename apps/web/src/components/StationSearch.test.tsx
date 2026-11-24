@@ -447,7 +447,9 @@ describe("StationSearch", () => {
     pickArea("code:SAs");
     expect(areaSelect().value).toBe("code:SAs");
     expect(rowNames().map((n) => n!.match(/^[\d,.]+ kHz/)![0])).toEqual(["12,095 kHz"]);
-    expect(statusLine()).toBe("1 broadcast on now to South Asia, broadcast bands first. Type a name to find one station.");
+    expect(statusLine()).toBe(
+      "1 broadcast on now to South Asia, broadcast bands first. Type a name to find one station.",
+    );
     expect(JSON.parse(localStorage.getItem(FILTERS_KEY)!)).toMatchObject({ area: "code:SAs" });
     cleanup();
     localStorage.setItem(FILTERS_KEY, JSON.stringify({ area: "code:XYZ", languages: [], nonVoice: true }));
@@ -474,5 +476,16 @@ describe("StationSearch", () => {
     expect(screen.getByLabelText("Filter languages")).toBeTruthy();
     fireEvent.click(languagesButton());
     expect(screen.queryByLabelText("Filter languages")).toBeNull();
+  });
+
+  // Value: protects=with saved filters and the schedule still loading, screen readers hear nothing until it lands and then the filtered count once, not a stray "Loading the schedule…"; fails_when=the saved-filter announce runs before the schedule is ready; why_new=/ship adversarial review (native #4, owner granted the fix-check); seam=fake timers; no_claim=real screen reader behaviour
+  it("doesn't read out loading for saved filters before the schedule lands", () => {
+    vi.useFakeTimers();
+    localStorage.setItem(FILTERS_KEY, JSON.stringify({ area: "region:eu", languages: [], nonVoice: true }));
+    const { announced, rerender } = show({ schedule: undefined });
+    act(() => vi.advanceTimersByTime(ANNOUNCE_DELAY_MS * 2));
+    expect(announced()).toBe("");
+    rerender({ schedule: SCHEDULE });
+    expect(announced()).toMatch(/^1 broadcast on now to Europe,/);
   });
 });

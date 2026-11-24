@@ -238,4 +238,15 @@ describe("EiBi schedule", () => {
     expect(saved.at(-1)).toEqual({ name: "Vietnamese", codes: ["VN"], stale: true });
     expect(saved).toHaveLength(choices.length + 1);
   });
+
+  // Value: protects=a language code that is also a key on Object's prototype ("constructor", from tampered storage or an odd EiBi code) names itself, never Object's function, so the picker's filter and the status line don't break; fails_when=the LANGUAGES lookup loses its own-key guard; why_new=/ship adversarial review (native #1, owner granted the fix-check); seam=none; no_claim=none beyond protects
+  it("names prototype-key language codes as themselves", () => {
+    const choices = languageChoices([b({ lang: "E,constructor" })], ["toString"]);
+    expect(choices.map((c) => [c.name, typeof c.name, c.stale])).toEqual([
+      ["English", "string", false],
+      ["constructor", "string", false],
+      ["toString", "string", true],
+    ]);
+    expect(languageNames("constructor,E")).toBe("English");
+  });
 });

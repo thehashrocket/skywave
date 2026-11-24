@@ -258,11 +258,19 @@ export function scheduledOn(schedule: readonly Broadcast[], khz: number, ms: num
     .flatMap((c) => c.broadcasts);
 }
 
+/**
+ * A language code's name, or undefined. Own keys only: a code like
+ * "constructor" (tampered storage, an odd upstream code) mustn't name itself
+ * after Object's.
+ */
+const languageName = (code: string): string | undefined =>
+  Object.hasOwn(LANGUAGES, code) ? LANGUAGES[code] : undefined;
+
 /** "F,E" as "French, English". Unknown codes are left out. */
 export function languageNames(codes: string): string {
   return codes
     .split(",")
-    .map((c) => LANGUAGES[c.trim()])
+    .map((c) => languageName(c.trim()))
     .filter(Boolean)
     .join(", ");
 }
@@ -361,7 +369,7 @@ function scheduleChoices(broadcasts: readonly Broadcast[]): LanguageChoice[] {
   const names = new Set<string>();
   for (const b of broadcasts)
     for (const code of languageCodes(b.lang))
-      if (!NON_VOICE.has(code) && !PROGRAMMES.has(code)) names.add(LANGUAGES[code] ?? code);
+      if (!NON_VOICE.has(code) && !PROGRAMMES.has(code)) names.add(languageName(code) ?? code);
   const out = [...names].map((name) => ({ name, codes: CODES_BY_NAME.get(name) ?? [name], stale: false }));
   const rank = (name: string) => (COMMON.includes(name) ? COMMON.indexOf(name) : COMMON.length);
   out.sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
@@ -382,7 +390,7 @@ export function languageChoices(broadcasts: readonly Broadcast[], saved: readonl
   const stale = new Map<string, LanguageChoice>();
   for (const code of saved) {
     if (known.has(code)) continue;
-    const name = LANGUAGES[code] ?? code;
+    const name = languageName(code) ?? code;
     if (!stale.has(name)) stale.set(name, { name, codes: CODES_BY_NAME.get(name) ?? [code], stale: true });
   }
   return stale.size ? [...base, ...stale.values()] : base;

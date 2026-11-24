@@ -262,7 +262,8 @@ export function StationSearch({
     const saved = loadFilters();
     if (!saved) return;
     setFilters(saved);
-    restart();
+    // Before the schedule is in, the loading effect reads the filtered count out once it lands.
+    if (ready) restart();
   }, []);
 
   // After "Show more", focus moves to the first row it revealed.
