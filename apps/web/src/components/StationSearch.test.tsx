@@ -382,7 +382,6 @@ describe("StationSearch", () => {
     expect(props.onPickBest).toHaveBeenLastCalledWith(9410, "am", "search");
   });
 
-  // Value: protects=the Languages control: the button names the picks ("Any language", then names, "+N" past two), opens a panel whose filter field takes focus, filters by name, says when nothing matches, ticks a language into the filter, keeps picks first on the next opening, and Escape closes it with focus back on the button; fails_when=focus is lost on close, picks hide behind "+N" with no way to find them, or a tick doesn't filter; why_new=#110 design 3A, 4A; seam=none; no_claim=the floating/in-place layout (CSS, no media queries in jsdom)
   // Value: protects=typing in the Languages filter lists names that start with the text first, then a later word that does, then other matches, each group in the usual order, so "hin" then Tab lands on Hindi, not Chinese; fails_when=matches stay in common-first order or the groups lose their order; why_new=TODOS P2 from the #109/#110 /ship browser check (scripted "hin" landed on Chinese); seam=none; no_claim=screen reader announcement of the reordered list
   it("lists start-of-name language matches first", () => {
     const tongues: SearchSchedule = {
@@ -401,6 +400,25 @@ describe("StationSearch", () => {
     expect(panelOptions()).toEqual(["Chinese", "Chin-Asho", "Kachin"]);
   });
 
+  // Value: protects=a later-word match ("Pashto and Dari" for "dar") lists above a match inside a word ("Mandarin") even when that one is more common, and a pick stays on top while the filter text reorders the rest; fails_when=matchRank folds later-word matches into the inside-a-word group, or the ranking sort runs over picks and the rest together so a picked inside-a-word match drops below; why_new=the start-of-name test never puts a later-word match against an inside-a-word one, and no test types filter text with a pick pinned; seam=none; no_claim=the order inside the pinned group when several picks match
+  it("lists later-word language matches before inside-a-word ones and keeps picks on top", () => {
+    const tongues: SearchSchedule = {
+      ...SCHEDULE,
+      broadcasts: ["M", "DR", "AFG"].map((lang, i) => b(`Radio ${lang}`, 9000 + i * 10, 660, 780, { lang })),
+    };
+    show({ schedule: tongues });
+    fireEvent.click(languagesButton());
+    expect(panelOptions()).toEqual(["Mandarin", "Dari", "Pashto and Dari"]);
+    fireEvent.change(screen.getByLabelText("Filter languages"), { target: { value: "dar" } });
+    expect(panelOptions()).toEqual(["Dari", "Pashto and Dari", "Mandarin"]);
+    fireEvent.click(screen.getByLabelText("Mandarin"));
+    fireEvent.keyDown(screen.getByLabelText("Filter languages"), { key: "Escape" });
+    fireEvent.click(languagesButton());
+    fireEvent.change(screen.getByLabelText("Filter languages"), { target: { value: "dar" } });
+    expect(panelOptions()).toEqual(["Mandarin", "Dari", "Pashto and Dari"]);
+  });
+
+  // Value: protects=the Languages control: the button names the picks ("Any language", then names, "+N" past two), opens a panel whose filter field takes focus, filters by name, says when nothing matches, ticks a language into the filter, keeps picks first on the next opening, and Escape closes it with focus back on the button; fails_when=focus is lost on close, picks hide behind "+N" with no way to find them, or a tick doesn't filter; why_new=#110 design 3A, 4A; seam=none; no_claim=the floating/in-place layout (CSS, no media queries in jsdom)
   it("picks languages from a filterable panel", () => {
     const many: SearchSchedule = {
       ...SCHEDULE,
