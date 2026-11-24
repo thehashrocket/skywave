@@ -24,8 +24,12 @@ const LOCAL_MAX = 200;
 /** `savedAt`: when it was saved, ms since the epoch on the server's clock (#107); none for entries saved before. */
 type Local = { id: string; name: string; freqKhz: number; mode: Mode; savedAt?: number };
 
-/** A time `new Date` can hold: finite isn't enough (1e20 is an Invalid Date, and formatting it throws). */
-const isSavedAt = (v: unknown): v is number => typeof v === "number" && Number.isFinite(new Date(v).getTime());
+/** No save is older than the stamps themselves (#107, 2026): 0 or a negative number is a bad value, not 1970. */
+const EARLIEST_SAVED_AT = Date.UTC(2026, 0, 1);
+
+/** A time `new Date` can hold (finite isn't enough: 1e20 is an Invalid Date, and formatting it throws), and no earlier than the stamps. */
+const isSavedAt = (v: unknown): v is number =>
+  typeof v === "number" && Number.isFinite(new Date(v).getTime()) && v >= EARLIEST_SAVED_AT;
 
 /**
  * The browser's list, each entry rebuilt from the fields it should have, so a

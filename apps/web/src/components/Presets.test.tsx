@@ -75,7 +75,7 @@ describe("Presets", () => {
     expect(row.querySelector(".preset-saved")!.getAttribute("title")).toMatch(/^Saved Mon 23 Nov 2026, 2214 UTC · /);
   });
 
-  // Value: protects=entries saved before #107 still load and show with no stamp, and a corrupt savedAt drops only the stamp and is not written back (#107, eng O-C1, O-N8); fails_when=loadLocal rejects old entries, keeps a bad savedAt, or formatting 1e20 throws; why_new=#107 old-entry compatibility; seam=react-query mocked; no_claim=export/import (#97)
+  // Value: protects=entries saved before #107 still load and show with no stamp, and a corrupt savedAt (out of range, text, or before the stamps existed, like 0) drops only the stamp and is not written back (#107, eng O-C1, O-N8); fails_when=loadLocal rejects old entries, keeps a bad savedAt, shows "saved 1 Jan 1970", or formatting 1e20 throws; why_new=#107 old-entry compatibility; seam=react-query mocked; no_claim=export/import (#97)
   it("loads old and corrupt saves without stamps and drops the bad field", () => {
     vi.stubEnv("NEXT_PUBLIC_SITE_PUBLIC", "1");
     localStorage.setItem(
@@ -85,11 +85,12 @@ describe("Presets", () => {
         { id: "b", name: "Bad stamp", freqKhz: 7490, mode: "am", savedAt: 1e20 },
         { id: "c", name: "Text stamp", freqKhz: 9700, mode: "am", savedAt: "yesterday" },
         { id: "d", name: "Week old", freqKhz: 11_780, mode: "am", savedAt: Date.parse("2026-11-08T22:14:00Z") },
+        { id: "e", name: "Epoch stamp", freqKhz: 15_400, mode: "am", savedAt: 0 },
       ]),
     );
     render(<Presets freqKhz={9580} mode="am" onSelect={() => {}} />);
     const yours = screen.getByRole("list", { name: "Yours" });
-    expect(yours.querySelectorAll("li")).toHaveLength(4);
+    expect(yours.querySelectorAll("li")).toHaveLength(5);
     expect(yours.querySelectorAll(".preset-saved")).toHaveLength(1);
     expect(screen.getByRole("button", { name: /^6,070/ }).hasAttribute("aria-describedby")).toBe(false);
     expect(screen.getByRole("button", { name: /^11,780/, description: "saved 8 Nov 2214 UTC" })).toBeTruthy();
@@ -98,6 +99,7 @@ describe("Presets", () => {
     const stored = JSON.parse(localStorage.getItem("skywave.presets")!) as { id: string; savedAt?: unknown }[];
     expect(stored.find((p) => p.id === "b")).not.toHaveProperty("savedAt");
     expect(stored.find((p) => p.id === "c")).not.toHaveProperty("savedAt");
+    expect(stored.find((p) => p.id === "e")).not.toHaveProperty("savedAt");
   });
 
   // Value: protects=an open page's stamp moves from weekday to date by itself once the save is 7 UTC days old (#107), and render never reads the server clock; fails_when=now is read once per render, so the old weekday stays until something else re-renders; why_new=code review; seam=server-clock mocked, fake timers; no_claim=the real clock's corrections

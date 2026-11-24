@@ -1289,7 +1289,7 @@ export default function ListenPage() {
   return (
     <main className="console">
       <header className="console-header">
-        {/* The wordmark and the UTC clock (#106) share the first row, even on a phone. */}
+        {/* The wordmark and the UTC clock (#106) share the first row; the clock wraps under the wordmark only when it can't fit. */}
         <div className="brand-row">
           <h1 className="wordmark">skywave</h1>
           <UtcClock />
