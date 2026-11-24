@@ -100,6 +100,18 @@
 **Priority:** P2
 **Depends on:** None
 
+### Find a station: clear the filter row's design-lint findings (#109/#110 follow-up)
+
+**What:** Fix what gstack-design-lint flags on the lines the filters added. Two are at its top severity: a disabled "Aimed at" select or Languages button is shown by opacity alone (`globals.css` `.field select:disabled, .select-button:disabled`; add a fill and text change and `cursor: not-allowed`), and the "Outside the broadcast bands" heading is uppercase and letter-spaced (`.station-outside`; use sentence case at body size, untracked). Five are minor: `.language-panel` sets no text colour, the Languages button has no `:active` style, and three spacings are off the 4px scale (`.field select, .select-button` right padding, `.language-panel` padding, `.station-outside` margin).
+
+**Why:** A faded control alone is easy to miss for low-vision users, and the tracked uppercase heading breaks the type rules the rest of the page follows. Found by the lint run after PR #111 was posted; owner chose a TODO over another fix round.
+
+**Context:** `apps/web/src/app/globals.css` (filter row and `.language-panel` rules), `apps/web/src/components/LanguagePicker.tsx`. Rerun `gstack-design-lint` on those files and compare only the branch's lines; most of the file's other findings predate it.
+
+**Effort:** XS
+**Priority:** P2
+**Depends on:** None
+
 ### GhostNet: confirm the RTTY dial on a live slot (#91 follow-up)
 
 **What:** During a GhostNet RTTY slot (Thu 1900Z Europe, Thu 0800Z Australia, Fri 0200Z North America), watch a Kiwi waterfall around 7.073-7.081 MHz. If the two tones sit at 7.077 and 7.07683 MHz (mark on 7.077), keep the dial at 7.074875 USB. If they sit 1-2.5 kHz above 7.077, move the dial to 7.077 USB.
