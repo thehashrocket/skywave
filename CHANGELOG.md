@@ -2,6 +2,11 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.47.1.0] - 2026-11-23 ([#110](https://github.com/thehashrocket/skywave/issues/110))
+
+### Fixed
+- **Typing in the Languages filter puts the closest matches first.** Names that start with what you typed come first, then names with a later word that does, then names that only contain it. Typing "hin" lists Hindi above Chinese, so Tab lands on Hindi. Your picks still stay at the top.
+
 ## [0.47.0.0] - 2026-11-23 ([#109](https://github.com/thehashrocket/skywave/issues/109), [#110](https://github.com/thehashrocket/skywave/issues/110))
 
 ### Added

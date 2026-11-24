@@ -15,6 +15,10 @@ type Props = {
 
 const isPicked = (c: LanguageChoice, picked: readonly string[]) => c.codes.some((code) => picked.includes(code));
 
+/** 0: the name starts with the text, 1: a later word does, 2: it's inside a word. */
+const matchRank = (name: string, words: string) =>
+  name.startsWith(words) ? 0 : name.split(/[^\p{L}\p{N}]+/u).some((w) => w.startsWith(words)) ? 1 : 2;
+
 /** The button's words: "Any language", "English", "English, Spanish", "English, Spanish +3". */
 export function pickedSummary(choices: readonly LanguageChoice[], picked: readonly string[]): string {
   const names = pickedNames(choices, picked);
@@ -66,7 +70,15 @@ export function LanguagePicker({ choices, picked, onChange, disabled }: Props) {
 
   const listed = [...choices, ...staleAtOpen.filter((s) => !choices.some((c) => c.name === s.name))];
   const words = fold(text.trim());
-  const shown = words ? listed.filter((c) => fold(c.name).includes(words)) : listed;
+  // Names that start with the text first, then a later word that starts with it ("Kachin" for
+  // "kach"), then any other match; each group keeps the common-first order (sort is stable).
+  const shown = words
+    ? listed
+        .filter((c) => fold(c.name).includes(words))
+        .map((c) => ({ c, rank: matchRank(fold(c.name), words) }))
+        .sort((a, b) => a.rank - b.rank)
+        .map(({ c }) => c)
+    : listed;
   const top = shown.filter((c) => pinned.includes(c.name));
   const rest = shown.filter((c) => !pinned.includes(c.name));
 
