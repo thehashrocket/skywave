@@ -2,12 +2,21 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.48.0.1] - 2026-11-23
+
+### Changed
+- The README describes the UTC clock, the UTC time in the tuning bar, and when saved frequencies say they were saved.
+
 ## [0.48.0.0] - 2026-11-23 ([#106](https://github.com/thehashrocket/skywave/issues/106), [#107](https://github.com/thehashrocket/skywave/issues/107))
 
 ### Added
 - **A UTC clock in the header.** Next to the wordmark, the UTC weekday and date sit over a 24-hour clock that ticks each second ("Mon 23 Nov" over "14:05:09 UTC"), so you can read any schedule without checking another clock. It follows the server's time, so it agrees with the beacon slots and GhostNet countdowns even when your device's clock is off.
 - On wider screens the sticky tuning bar shows the time too ("14:05 UTC"), so it stays in view while you scroll down to the schedules.
 - **Saved frequencies say when you saved them.** A station you save in your browser shows "saved Sat 2214 UTC" under its name, or the date ("saved 8 Nov 2214 UTC") once it's a week old, and the year once it's from another year. Hover for the full date and your local time. Stations saved before this release show no time.
+
+### Fixed
+- **A full list says so instead of losing your save.** A browser keeps up to 200 saved frequencies. Saving another used to drop one without a word; now the save is refused with "You have 200 saved frequencies. Delete one to save another." and the name you typed stays in the box.
+- Local times (GhostNet's "Thu 5:00 pm PST" and the saved-time hover) follow a time-zone change made during a visit, such as after travel, without a reload.
 
 ## [0.47.1.0] - 2026-11-23 ([#110](https://github.com/thehashrocket/skywave/issues/110))
 
