@@ -383,6 +383,24 @@ describe("StationSearch", () => {
   });
 
   // Value: protects=the Languages control: the button names the picks ("Any language", then names, "+N" past two), opens a panel whose filter field takes focus, filters by name, says when nothing matches, ticks a language into the filter, keeps picks first on the next opening, and Escape closes it with focus back on the button; fails_when=focus is lost on close, picks hide behind "+N" with no way to find them, or a tick doesn't filter; why_new=#110 design 3A, 4A; seam=none; no_claim=the floating/in-place layout (CSS, no media queries in jsdom)
+  // Value: protects=typing in the Languages filter lists names that start with the text first, then a later word that does, then other matches, each group in the usual order, so "hin" then Tab lands on Hindi, not Chinese; fails_when=matches stay in common-first order or the groups lose their order; why_new=TODOS P2 from the #109/#110 /ship browser check (scripted "hin" landed on Chinese); seam=none; no_claim=screen reader announcement of the reordered list
+  it("lists start-of-name language matches first", () => {
+    const tongues: SearchSchedule = {
+      ...SCHEDULE,
+      broadcasts: ["C", "C-A", "HI", "KC"].map((lang, i) => b(`Radio ${lang}`, 9000 + i * 10, 660, 780, { lang })),
+    };
+    show({ schedule: tongues });
+    fireEvent.click(languagesButton());
+    expect(panelOptions()).toEqual(["Chinese", "Chin-Asho", "Hindi", "Kachin"]);
+    const filter = screen.getByLabelText("Filter languages");
+    fireEvent.change(filter, { target: { value: "hin" } });
+    expect(panelOptions()).toEqual(["Hindi", "Chinese", "Chin-Asho", "Kachin"]);
+    fireEvent.change(filter, { target: { value: "asho" } });
+    expect(panelOptions()).toEqual(["Chin-Asho"]);
+    fireEvent.change(filter, { target: { value: "ch" } });
+    expect(panelOptions()).toEqual(["Chinese", "Chin-Asho", "Kachin"]);
+  });
+
   it("picks languages from a filterable panel", () => {
     const many: SearchSchedule = {
       ...SCHEDULE,
