@@ -336,7 +336,7 @@ export default function ListenPage() {
   // object each press, so it's the newest message again; the text follows the
   // list as it loads or fails. `from` names the control to press again: after
   // the error link, Listen would redial the receiver that just failed.
-  const [pageMessage, setPageMessage] = useState<{ from: "listen" | "link" | "search" | "clock" } | null>(null);
+  const [pageMessage, setPageMessage] = useState<{ from: "listen" | "link" | "search" | "browse" | "clock" } | null>(null);
   // Where focus goes when the error link starts a run and goes away.
   const statusRef = useRef<HTMLDivElement>(null);
   // The sticky tuning bar (#90) shows once this group has scrolled up under it.
@@ -630,7 +630,7 @@ export default function ListenPage() {
    * covers the frequency.
    */
   const startPickBest = useCallback(
-    (from: "listen" | "link" | "search"): boolean => {
+    (from: "listen" | "link" | "search" | "browse"): boolean => {
       acted.current++;
       if (receivers) {
         const khz = latest.current.freqKhz;
@@ -1078,7 +1078,7 @@ export default function ListenPage() {
           : `The receiver list is still loading. Press ${
               pageMessage.from === "link"
                 ? "Pick best receiver"
-                : pageMessage.from === "search"
+                : pageMessage.from === "search" || pageMessage.from === "browse"
                   ? `Pick best for ${freqKhz.toLocaleString("en-US", { maximumFractionDigits: 2 })} kHz`
                   : "Listen"
             } again in a moment.`),
@@ -1109,6 +1109,14 @@ export default function ListenPage() {
   );
   // Where it is, when the list says.
   const listedPlace = playingListed ? placeName(playingListed.location) : "";
+  // Its position, for Find a station's area suggestion (#109 eng D2): only a listed receiver with both.
+  const receiverPlace = useMemo(
+    () =>
+      playingListed?.lat !== undefined && playingListed.lon !== undefined
+        ? { lat: playingListed.lat, lon: playingListed.lon }
+        : undefined,
+    [playingListed],
+  );
   // Where audio comes from, as the strip, the status row and the tuning bar all name it.
   const playingPlace = playingNow ? listedPlace || playingNow.host : "";
   // One wheel notch over the readout. Medium wave channels are 10 kHz apart in
@@ -1710,7 +1718,7 @@ export default function ListenPage() {
         idle={!busy}
         reaches={status.state === "listening" && playingListed ? (khz) => covers(playingListed, khz) : undefined}
         onTune={(khz, m) => changeFreq(clampKhz(khz), m)}
-        onPickBest={(khz, m) => {
+        onPickBest={(khz, m, from) => {
           // Pick best for the row the note is about, not wherever the dial has
           // settled since (a refused retune moves it back): set before the run
           // starts, as beacon Listen does, since its tunes read the dial from here.
@@ -1720,8 +1728,9 @@ export default function ListenPage() {
           setMode(m);
           // Nothing to try (no list, or nothing covers it): whatever plays is asked for
           // the frequency instead, so the dial settles on what really plays, as beacon Listen does.
-          if (!startPickBest("search")) sendRetune({ freqKhz: k, mode: m });
+          if (!startPickBest(from)) sendRetune({ freqKhz: k, mode: m });
         }}
+        receiverPlace={receiverPlace}
       />
 
       <SignalList
