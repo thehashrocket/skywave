@@ -14,6 +14,7 @@
 import { byRank, covers, isFull, type Receiver } from "./kiwi-list";
 import { formatCountdown } from "./reception";
 import type { Mode } from "./radio-types";
+import { utcHhmm } from "./utc-time";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -267,41 +268,9 @@ export function formatWait(ms: number, seconds = true): string {
   return seconds ? formatCountdown(t) : `${Math.max(1, Math.ceil(t / MINUTE))} min`;
 }
 
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const pad = (n: number) => String(n).padStart(2, "0");
-
-/** "Fri": the UTC weekday. */
-export const utcDay = (ms: number) => WEEKDAYS[new Date(ms).getUTCDay()]!;
-
-/** "Fri 0100 UTC". */
-export function utcLabel(ms: number): string {
-  const d = new Date(ms);
-  return `${utcDay(ms)} ${pad(d.getUTCHours())}${pad(d.getUTCMinutes())} UTC`;
-}
-
-/** "0100–0130 UTC" for a slot's span (same UTC day for every GhostNet slot). */
+/** "0100–0130 UTC" for a slot's span (same UTC day for every GhostNet slot). The weekday, UTC and local labels live in utc-time.ts. */
 export function utcSpan(o: Occurrence): string {
-  const a = new Date(o.startMs);
-  const b = new Date(o.endMs);
-  return `${pad(a.getUTCHours())}${pad(a.getUTCMinutes())}–${pad(b.getUTCHours())}${pad(b.getUTCMinutes())} UTC`;
-}
-
-/**
- * "Thu 5:00 pm PST": the weekday always (owner D16, the NA net's Friday UTC is
- * Thursday in the Americas) and the device's short zone name (D17). `timeZone`
- * is for tests; the page passes none, so it's the device's zone.
- */
-export function localLabel(ms: number, timeZone?: string): string {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    weekday: "short",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-    timeZoneName: "short",
-    timeZone,
-  }).formatToParts(new Date(ms));
-  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? "";
-  return `${get("weekday")} ${get("hour")}:${get("minute")} ${get("dayPeriod").toLowerCase()} ${get("timeZoneName")}`;
+  return `${utcHhmm(o.startMs)}–${utcHhmm(o.endMs)} UTC`;
 }
 
 /** "7.107" from kHz, as the guide writes it; more digits for a dial like 7.0749. */

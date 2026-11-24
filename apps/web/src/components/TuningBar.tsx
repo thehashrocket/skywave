@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { PowerButton } from "@/components/PowerButton";
+import { UtcClock } from "@/components/UtcClock";
 import { formatKhz, MODE_LABELS, MODES, type Mode } from "@/lib/radio-types";
 
 /**
@@ -148,6 +149,10 @@ export function TuningBar({
         >
           {receiverText}
         </button>
+        {/* The UTC time while the header is out of view (#106); hidden at 860px and narrower, where the receiver needs the room. */}
+        <span className="tuning-bar-clock">
+          <UtcClock compact />
+        </span>
         <PowerButton busy={busy} onPress={onPower} />
       </section>
     </>

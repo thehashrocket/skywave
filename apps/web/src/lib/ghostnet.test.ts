@@ -10,14 +10,12 @@ import {
   isTuned,
   onSlotFrequency,
   listenOffered,
-  localLabel,
   msUntil,
   nextStart,
   nextWindow,
   rankForRegion,
   REGIONS,
   stripRows,
-  utcLabel,
   utcSpan,
   windowsAt,
   type RegionId,
@@ -236,19 +234,12 @@ describe("formatting", () => {
     expect(formatWait(ms, seconds)).toBe(expected);
   });
 
-  // Value: protects=UTC labels name the UTC weekday and a slot's span; fails_when=local time or a 12-hour clock leaks into the UTC label; why_new=new labels; seam=none; no_claim=none beyond protects
-  it("labels UTC times", () => {
-    expect(utcLabel(at("2026-11-27T01:00:00Z"))).toBe("Fri 0100 UTC");
+  // Value: protects=a slot's span is written in UTC HHMM; fails_when=local time or a 12-hour clock leaks into the span; why_new=new labels; seam=none; no_claim=weekday and UTC labels (utc-time.test.ts)
+  it("labels a slot's UTC span", () => {
     const [js8] = windowsAt(at("2026-11-27T01:10:00Z"));
     expect(utcSpan(js8!)).toBe("0100–0130 UTC");
   });
 
-  // Value: protects=local times always carry the local weekday (Fri 0100 UTC is Thu evening in Los Angeles, D16) and the device's short zone name, which follows daylight saving (PDT before 1 Nov 2026, PST after, D17); fails_when=the weekday or zone is dropped or the UTC day is shown as local; why_new=local time column; seam=timeZone argument (Intl); no_claim=every browser's zone names
-  it("labels local times with weekday and zone, both sides of a DST change", () => {
-    expect(localLabel(at("2026-11-27T01:00:00Z"), "America/Los_Angeles")).toBe("Thu 5:00 pm PST");
-    expect(localLabel(at("2026-10-30T01:00:00Z"), "America/Los_Angeles")).toBe("Thu 6:00 pm PDT");
-    expect(localLabel(at("2026-11-26T18:00:00Z"), "Europe/Berlin")).toMatch(/^Thu 7:00 pm (CET|GMT\+1)$/);
-  });
   // Value: protects=a GhostNet pick follows its net while the dial is on any of its frequencies, whatever the mode, within 0.1 kHz, and not on a nearby frequency or a null (ALE) dial (owner D11); fails_when=the check compares mode or uses the wrong tolerance; why_new=pick lifetime follows the net; seam=none; no_claim=page wiring (page tests)
   it("onSlotFrequency matches the slot's dial in any mode", () => {
     const voice = EVENTS.find((e) => e.id === "na")!.slots.find((sl) => sl.kind === "voice")!;

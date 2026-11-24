@@ -192,6 +192,19 @@ describe("TuningBar", () => {
     expect(bar()).not.toBeNull();
   });
 
+  // Value: protects=the bar holds the UTC clock (HH:MM, not focusable) between the receiver and Listen/Stop (design DD4, DD15); fails_when=the clock is missing, misordered, or a tab stop; why_new=design DD4; seam=none; no_claim=the hide at 860px and narrower (CSS, hand check at 860/861px)
+  it("shows the UTC clock between the receiver and Listen", () => {
+    renderBar();
+    report(false);
+    const clock = bar()!.querySelector(".tuning-bar-clock time")!;
+    expect(clock.textContent).toMatch(/^\d{2}:\d{2} UTC$/);
+    expect(clock.closest("button, [tabindex]")).toBeNull();
+    const receiver = screen.getByRole("button", { name: "Kyiv, change receiver" });
+    const listen = screen.getByRole("button", { name: "Listen" });
+    const follows = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    expect(follows(receiver, clock) && follows(clock, listen)).toBe(true);
+  });
+
   // Value: protects=a browser without IntersectionObserver keeps today's page (no bar, no error); fails_when=the bar constructs an observer unguarded; why_new=new dependency on IntersectionObserver; seam=none; no_claim=none beyond protects
   it("never shows without IntersectionObserver", () => {
     vi.stubGlobal("IntersectionObserver", undefined);

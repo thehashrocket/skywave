@@ -26,6 +26,7 @@ import { WideWaterfall } from "@/components/WideWaterfall";
 import { PowerButton } from "@/components/PowerButton";
 import { AUTO_LABEL, ReceiverChip } from "@/components/ReceiverChip";
 import { TuningBar } from "@/components/TuningBar";
+import { UtcClock } from "@/components/UtcClock";
 import { prefersReducedMotion } from "@/lib/reduced-motion";
 import { ReceptionPrompt } from "@/components/ReceptionPrompt";
 import { scheduledBetween, scheduledOn, shortLabel, stationLine } from "@/lib/eibi";
@@ -1288,7 +1289,11 @@ export default function ListenPage() {
   return (
     <main className="console">
       <header className="console-header">
-        <h1 className="wordmark">skywave</h1>
+        {/* The wordmark and the UTC clock (#106) share the first row; the clock wraps under the wordmark only when it can't fit. */}
+        <div className="brand-row">
+          <h1 className="wordmark">skywave</h1>
+          <UtcClock />
+        </div>
         <div className="tuned-to">
           {playingNow ? (
             <span className="tuned-to-text">
