@@ -192,6 +192,54 @@ html,
   color: var(--glass);
 }
 
+/* The wordmark and the UTC clock (#106) stay together on the header's first row. */
+.brand-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: last baseline;
+  gap: 20px;
+}
+
+/* A quiet reference, third after the wordmark and the readout: never lamp (#106). */
+.utc-clock {
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+/* Before mount it holds the clock's exact space with stand-in text, unseen (#106). */
+.utc-clock[data-pending] {
+  visibility: hidden;
+}
+
+.utc-clock-date,
+.utc-clock-unit {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* Proportional letters: kept out of the column's width (like the readout's station line), so only
+   the tabular time line sizes the clock and the swap from stand-in to real date can't move the header. */
+.utc-clock-date {
+  line-height: 1.2;
+  contain: inline-size;
+}
+
+.utc-clock-time {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.utc-clock-digits {
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 1.6rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Receiver picker */
 
 .receiver {
@@ -1055,8 +1103,8 @@ html:has(.tuning-bar:not([hidden])) {
   height: var(--tuning-bar-h);
   padding: 8px 16px;
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
-  grid-template-areas: "freq modes receiver power";
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  grid-template-areas: "freq modes receiver clock power";
   align-items: center;
   gap: 8px 20px;
   background: var(--enamel-raised);
@@ -1135,6 +1183,15 @@ html:has(.tuning-bar:not([hidden])) {
 .tuning-bar .power {
   grid-area: power;
   padding-block: 6px;
+}
+
+/* HH:MM UTC before Listen/Stop (#106); smaller digits than the header's. */
+.tuning-bar-clock {
+  grid-area: clock;
+}
+
+.tuning-bar-clock .utc-clock-digits {
+  font-size: 1.15rem;
 }
 
 /* S-meter */
@@ -1614,6 +1671,18 @@ html:has(.tuning-bar:not([hidden])) {
   background: none;
   border: 0;
   cursor: pointer;
+}
+
+/* The name, with when it was saved under it (#107); the stamp stays muted and isn't underlined. */
+.preset-what {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.preset-saved {
+  font-size: 0.85rem;
+  color: var(--muted);
 }
 
 .preset-tune:hover .preset-name {
@@ -2413,9 +2482,24 @@ html:has(.tuning-bar:not([hidden])) {
   .readout-input {
     font-size: 2.6rem;
   }
+  /* No room for the bar's clock beside the receiver here; the header has one. */
+  .tuning-bar {
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    grid-template-areas: "freq modes receiver power";
+  }
+  .tuning-bar-clock {
+    display: none;
+  }
 }
 
 @media (max-width: 520px) {
+  /* Wordmark and clock still share a row at 320px, font fallback included (#106). */
+  .brand-row {
+    gap: 12px;
+  }
+  .utc-clock-digits {
+    font-size: 1.4rem;
+  }
   /* Two rows on a phone: frequency, receiver and Listen/Stop, then the modes. */
   :root {
     /* Two 44px rows, the gap and the padding. */

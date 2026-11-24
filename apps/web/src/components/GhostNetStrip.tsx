@@ -8,16 +8,14 @@ import {
   isTuned,
   KIND_LABELS,
   listenOffered,
-  localLabel,
   mhz,
   stripRows,
-  utcDay,
-  utcLabel,
   utcSpan,
   type Occurrence,
   type SlotKind,
 } from "@/lib/ghostnet";
 import { MODE_LABELS, type Mode } from "@/lib/radio-types";
+import { localLabel, utcLabel, utcWeekday } from "@/lib/utc-time";
 import { useServerTick } from "@/lib/use-server-tick";
 
 /** The net or bridge a GhostNet Listen picked, and when that window ends (Unix ms, eventEnd). */
@@ -172,7 +170,7 @@ function Body({ now, freqKhz, mode, pick, connecting, playing, onListen }: BodyP
                   <Row
                     o={o}
                     {...row}
-                    utc={`${KIND_LABELS[o.slot.kind]} · ${utcDay(o.startMs)} ${utcSpan(o)}`}
+                    utc={`${KIND_LABELS[o.slot.kind]} · ${utcWeekday(o.startMs)} ${utcSpan(o)}`}
                     wait={`${formatWait(o.endMs - now)} left`}
                   />
                   {(note || after) && (
