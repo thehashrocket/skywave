@@ -8,7 +8,7 @@ import { receiverKey, type Receiver } from "./kiwi-list";
  */
 
 /** Which button started the run. "better" lists the offered receiver first by hand, not by rank. */
-export const PICK_SOURCES = ["beacon", "listen", "link", "drawer", "better", "search", "ghostnet"] as const;
+export const PICK_SOURCES = ["beacon", "listen", "link", "drawer", "better", "search", "ghostnet", "browse"] as const;
 export type PickSource = (typeof PICK_SOURCES)[number];
 
 /**
@@ -40,11 +40,15 @@ export type PickSource = (typeof PICK_SOURCES)[number];
  * (source "ghostnet", issue #91), ranked by the net's region (lib/ghostnet.ts);
  * again the pick rules are those of 6, so group 6, 7 and 8. GhostNet
  * frequencies rarely get a reception question (only when EiBi lists a station
- * there), so few rows will carry it (owner D11). The server still accepts 2
- * to 7 from tabs opened before those deploys.
+ * there), so few rows will carry it (owner D11). 9: station search lists
+ * what's on now when no name is typed (#109/#110), and its Pick best from
+ * that list is source "browse"; "search" stays for a typed name (eng D9), so
+ * #61 can tell browsing from searching. Pick rules are again those of 6:
+ * group 6 to 9. The server still accepts 2 to 8 from tabs opened before
+ * those deploys.
  * Raise it whenever what the page records, or when it records it, changes.
  */
-export const PICK_CONTEXT_VERSION = 8;
+export const PICK_CONTEXT_VERSION = 9;
 
 /** How many of the ranked list's receivers a report keeps, best first. */
 export const MAX_CANDIDATES = 10;

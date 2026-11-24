@@ -258,11 +258,19 @@ export function scheduledOn(schedule: readonly Broadcast[], khz: number, ms: num
     .flatMap((c) => c.broadcasts);
 }
 
+/**
+ * A language code's name, or undefined. Own keys only: a code like
+ * "constructor" (tampered storage, an odd upstream code) mustn't name itself
+ * after Object's.
+ */
+const languageName = (code: string): string | undefined =>
+  Object.hasOwn(LANGUAGES, code) ? LANGUAGES[code] : undefined;
+
 /** "F,E" as "French, English". Unknown codes are left out. */
 export function languageNames(codes: string): string {
   return codes
     .split(",")
-    .map((c) => LANGUAGES[c.trim()])
+    .map((c) => languageName(c.trim()))
     .filter(Boolean)
     .join(", ");
 }
@@ -299,4 +307,91 @@ export function stationLine(broadcasts: readonly Broadcast[]): StationLine | nul
     text: more > 0 ? `${describe(first)} +${more} more` : describe(first),
     all: broadcasts.map(describe).join("\n"),
   };
+}
+
+/** EiBi's codes for what isn't speech: time signals, Morse, data, music, empty carriers, aircraft data. */
+export const NON_VOICE: ReadonlySet<string> = new Set(["-TS", "-CW", "-TY", "-MX", "-EC", "-HF"]);
+
+/** Programme names in EiBi's language table (Vatican Radio's Angelus...), not languages: left out of the picker. */
+const PROGRAMMES: ReadonlySet<string> = new Set(["Ang", "Aud", "Ros", "Ves"]);
+
+/** A language field's codes: "F, E" is ["F", "E"]. */
+export function languageCodes(lang: string): string[] {
+  return lang
+    .split(",")
+    .map((c) => c.trim())
+    .filter(Boolean);
+}
+
+/** A broadcast whose codes are all non-voice ones (a time signal, Morse, data). Blank isn't. */
+export function isNonVoice(lang: string): boolean {
+  const codes = languageCodes(lang);
+  return codes.length > 0 && codes.every((c) => NON_VOICE.has(c));
+}
+
+/**
+ * The language filter (#110): codes picked (none is Any) and whether
+ * non-voice broadcasts show. Non-voice follows the toggle with or without a
+ * language picked (eng D7); otherwise a broadcast matches if any of its codes
+ * is picked ("F,E" matches English), and one with no language listed only
+ * under Any.
+ */
+export type LanguageFilter = { codes: readonly string[]; nonVoice: boolean };
+
+export function speaks(lang: string, filter: LanguageFilter): boolean {
+  if (isNonVoice(lang)) return filter.nonVoice;
+  if (filter.codes.length === 0) return true;
+  return languageCodes(lang).some((c) => filter.codes.includes(c));
+}
+
+/** One entry in the language picker: a name and every code EiBi gives it (Hmong is HM and HMQ). */
+export type LanguageChoice = { name: string; codes: string[]; stale: boolean };
+
+/** The names of the choices any of whose codes are picked, in the choices' order. */
+export const pickedNames = (choices: readonly LanguageChoice[], picked: readonly string[]) =>
+  choices.filter((c) => c.codes.some((code) => picked.includes(code))).map((c) => c.name);
+
+/** The picker's head, in the issue's order (#110), Mandarin beside Chinese since it's EiBi's commonest. */
+const COMMON = ["English", "Spanish", "French", "Arabic", "Mandarin", "Chinese", "Russian", "Portuguese", "German"];
+
+/** Every code by name, from the table: picking a name picks them all. */
+const CODES_BY_NAME = new Map<string, string[]>();
+for (const [code, name] of Object.entries(LANGUAGES))
+  if (!NON_VOICE.has(code) && !PROGRAMMES.has(code))
+    CODES_BY_NAME.set(name, [...(CODES_BY_NAME.get(name) ?? []), code]);
+
+// The schedule's languages, worked out once per schedule (it's refetched every few hours, not every minute).
+const choicesBySchedule = new WeakMap<readonly Broadcast[], LanguageChoice[]>();
+
+function scheduleChoices(broadcasts: readonly Broadcast[]): LanguageChoice[] {
+  const held = choicesBySchedule.get(broadcasts);
+  if (held) return held;
+  const names = new Set<string>();
+  for (const b of broadcasts)
+    for (const code of languageCodes(b.lang))
+      if (!NON_VOICE.has(code) && !PROGRAMMES.has(code)) names.add(languageName(code) ?? code);
+  const out = [...names].map((name) => ({ name, codes: CODES_BY_NAME.get(name) ?? [name], stale: false }));
+  const rank = (name: string) => (COMMON.includes(name) ? COMMON.indexOf(name) : COMMON.length);
+  out.sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
+  choicesBySchedule.set(broadcasts, out);
+  return out;
+}
+
+/**
+ * The language picker's entries (eng D5): languages the schedule uses, one per
+ * name, the common ones first and the rest A to Z; programme names and the
+ * non-voice codes are left out, and a code with no name shows as itself.
+ * Saved codes the schedule doesn't use are added at the end, marked stale, so
+ * a choice from last season can still be seen and unticked (eng D8).
+ */
+export function languageChoices(broadcasts: readonly Broadcast[], saved: readonly string[] = []): LanguageChoice[] {
+  const base = scheduleChoices(broadcasts);
+  const known = new Set(base.flatMap((c) => c.codes));
+  const stale = new Map<string, LanguageChoice>();
+  for (const code of saved) {
+    if (known.has(code)) continue;
+    const name = languageName(code) ?? code;
+    if (!stale.has(name)) stale.set(name, { name, codes: CODES_BY_NAME.get(name) ?? [code], stale: true });
+  }
+  return stale.size ? [...base, ...stale.values()] : base;
 }

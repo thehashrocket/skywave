@@ -223,6 +223,8 @@ html,
 }
 
 .field input,
+.field select,
+.select-button,
 .presets-save input {
   font: inherit;
   color: var(--text);
@@ -447,7 +449,8 @@ html,
   border-radius: var(--radius-panel);
 }
 
-.receivers-filters {
+.receivers-filters,
+.station-filters {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -1698,13 +1701,109 @@ html:has(.tuning-bar:not([hidden])) {
 /* Find a station (design review 10A): the presets' grid rows, filling across so "Show more"
    only adds rows at the end (11A), with a time column and a second line under the name. */
 
-.station-search-field {
-  max-width: 520px;
+/* The name, area, languages and non-voice in one wrapping row, like the receiver
+   table's filters (#109/#110 design 1A). */
+.station-filters {
   margin-bottom: 8px;
 }
 
 .station-search-field input {
+  width: min(280px, 100%);
   caret-color: var(--lamp);
+}
+
+/* Native select (design 6A) and the Languages button share the well's look, with a chevron. */
+.field select,
+.select-button {
+  appearance: none;
+  min-width: 11em;
+  padding-right: 30px;
+  text-align: left;
+  cursor: pointer;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    right 15px center,
+    right 10px center;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.select-button[aria-expanded="true"] {
+  border-color: var(--lamp);
+}
+
+.field select:disabled,
+.select-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The Languages panel floats under its button on wide screens (design 8A); phones open it in place. */
+.language-picker {
+  position: relative;
+}
+
+.language-panel {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 5;
+  width: 280px;
+  max-height: 360px;
+  overflow-y: auto;
+  margin-top: 4px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+  background: var(--enamel-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-panel);
+}
+
+.language-options {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: grid;
+}
+
+.language-option {
+  padding: 4px 0;
+}
+
+.language-stale {
+  margin-left: auto;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.language-rule {
+  width: 100%;
+  margin: 4px 0;
+  border: 0;
+  border-top: 1px solid var(--rule);
+}
+
+/* The receiver's area, offered on its own held line (design 7A). */
+.station-suggest {
+  margin: 0 0 4px;
+}
+
+.station-search-clear {
+  margin-bottom: 8px;
+}
+
+/* Rows outside the shortwave broadcast bands, after the ones in them (design 5A, 9A). */
+.station-outside {
+  margin: 4px 0 6px;
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-size: 1rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .station-search-status {
@@ -2375,8 +2474,23 @@ html:has(.tuning-bar:not([hidden])) {
   }
   .pick-best,
   .link-button,
-  .receivers-table th button {
+  .receivers-table th button,
+  .field select,
+  .select-button,
+  .language-option {
     min-height: 44px;
+  }
+  /* Find a station's filters each take the row; the Languages panel opens in place (design 8A). */
+  .station-filters > *,
+  .station-search-field input,
+  .field select,
+  .select-button {
+    width: 100%;
+  }
+  .language-panel {
+    position: static;
+    width: auto;
+    max-height: none;
   }
   .receivers-browse summary {
     padding-block: 10px;
@@ -2460,6 +2574,7 @@ html:has(.tuning-bar:not([hidden])) {
   /* Find a station: 8 rows first, as Strong signals (12A); its own button reveals the rest of the
      page, and only then the button that adds more. */
   .station-search:not([data-phone-open]) .station-results li[data-beyond],
+  .station-search:not([data-phone-open]) .station-outside[data-beyond],
   .station-search:not([data-phone-open]) .station-more {
     display: none;
   }

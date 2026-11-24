@@ -2114,6 +2114,33 @@ describe("ListenPage", () => {
       expect(pick).toMatchObject({ pickSource: "search", rankPos: 0, freqKhz: 9_580 });
     });
 
+    // Value: protects=a run started from Pick best under a row of the on-now list (nothing typed) is labelled "browse" on the answer, so #61 can tell browsing from searching (pick context 9); fails_when=page.tsx drops StationSearch's source and passes "search"; why_new=#109/#110 eng D9 (owner raised it); seam=useRadio, useSchedule and useSubmitReport mocked, list hook mocked; no_claim=the browse list's rules (station-search tests)
+    it("labels the context of a Pick best run from the on-now list", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));
+      receiverList.data = { receivers: [listed, { ...backup, snr: 10 }] };
+      const view = render(<ListenPage />);
+      fireEvent.click(screen.getByRole("button", { name: /^9,580 kHz/ }));
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Pick best for 9,580 kHz" })));
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 9_580, mode: "am" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(60_000));
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      const [, , , pick] = submitReport.mock.lastCall!;
+      expect(pick).toMatchObject({ pickSource: "browse", rankPos: 0, freqKhz: 9_580 });
+    });
+
+    // Value: protects=Find a station offers the area of the listed receiver that is playing, from its list position, and nothing for a playing receiver the list has no position for; fails_when=page.tsx passes the pinned receiver, the dial or nothing as the place, or offers an area with no position; why_new=#109 eng D2, A3; seam=useRadio and useSchedule mocked, list hook mocked; no_claim=the region boxes (eibi-targets tests)
+    it("offers the playing receiver's area in Find a station", () => {
+      receiverList.data = { receivers: [{ ...listed, lat: 44.3, lon: -72.6 }] };
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 9_580, mode: "am" };
+      const view = render(<ListenPage />);
+      expect(screen.getByRole("button", { name: "Aimed at North America" })).toBeTruthy();
+      receiverList.data = { receivers: [listed] };
+      view.rerender(<ListenPage />);
+      expect(screen.queryByRole("button", { name: /^Aimed at/ })).toBeNull();
+    });
+
     // Value: protects=a run started from a GhostNet row's Listen is labelled "ghostnet" on the answer, so #61 can tell region-ranked runs apart (pick context 8, owner D3/D11); fails_when=listenToGhostNet passes another source to listenAt, or picks for the dial as it was; why_new=plan Section 3 asked for the source (/ship plan audit); seam=useRadio, useSchedule and useSubmitReport mocked, list hook mocked, EiBi listing on 7107 stands in for a station there; no_claim=how often EiBi lists a GhostNet frequency
     it("labels the context of a GhostNet Listen run", () => {
       vi.setSystemTime(Date.UTC(2026, 10, 27, 1, 10, 3));
@@ -2843,6 +2870,21 @@ describe("ListenPage", () => {
       fireEvent.click(screen.getByRole("button", { name: /^8,957 kHz USB/ }));
       fireEvent.click(screen.getByRole("button", { name: "Pick best for 8,957 kHz" }));
       expect(screen.getByText("The receiver list is still loading. Press Pick best for 8,957 kHz again in a moment.")).toBeTruthy();
+    });
+
+    // Value: protects=Pick best under a row of the on-now list (nothing typed), with no receiver list yet, tells the listener to press that Pick best button again, not Listen; fails_when=the page's "still loading" text handles "search" but not the new "browse" source and names Listen; why_new=#109/#110 eng D9 added "browse" to pageMessage.from; only the "search" wording was tested; seam=useRadio and useSchedule mocked, list hook mocked; no_claim=the browse list's rules (station-search tests)
+    it("tells an on-now Pick best to press it again while the list loads", () => {
+      receiverList.data = undefined;
+      schedule.data = {
+        season: "b26",
+        bundled: false,
+        broadcasts: [{ khz: 9_410, start: 0, end: 1440, days: "", station: "BBC", lang: "E", target: "Eu" }],
+        targetNames: {},
+      };
+      render(<ListenPage />);
+      fireEvent.click(screen.getByRole("button", { name: /^9,410 kHz/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Pick best for 9,410 kHz" }));
+      expect(screen.getByText("The receiver list is still loading. Press Pick best for 9,410 kHz again in a moment.")).toBeTruthy();
     });
 
     // Value: protects=Find a station says a clicked row is out of range only for a listed receiver playing that stops short of it, by the list's range, and says nothing for a typed receiver whose range is unknown; fails_when=the page stops passing reaches (no range note), reads it from another receiver or the dial, or passes it for a typed receiver (a false "doesn't reach"); why_new=StationSearch's own test passes reaches by hand; the page's wiring of covers() and playingListed was untested (/ship coverage audit); seam=useRadio and useSchedule mocked, list hook mocked; no_claim=the receiver's real range (the list's minKhz/maxKhz stand in)

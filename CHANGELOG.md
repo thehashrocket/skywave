@@ -2,6 +2,19 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.47.0.0] - 2026-11-23 ([#109](https://github.com/thehashrocket/skywave/issues/109), [#110](https://github.com/thehashrocket/skywave/issues/110))
+
+### Added
+- **Browse what's on the air now.** With nothing typed, Find a station lists every broadcast the schedule has on now, the shortwave broadcast bands first and everything else under "Outside the broadcast bands". Typing a name still finds one station.
+- **Filter by where a broadcast is aimed.** Aimed at narrows the list to a broad region (North America, Europe, Asia, Africa, Middle East, Oceania, Latin America) or one of the schedule's area and country codes. A broadcast aimed at "the Americas" or at Russia counts for each region it covers.
+- **Filter by language.** Pick one or more languages from a searchable list of the languages on the schedule, your picks listed first; a broadcast in "French, English" counts for English. Include non-voice keeps or hides time signals, Morse and data.
+- Your filters are remembered in the browser. A language you saved that the new season doesn't carry stays picked and says so, so you can untick it.
+- While a receiver with a known location is playing, Find a station offers its region with one click ("Aimed at North America (where this receiver is)?"). It's never applied on its own.
+- When the filters hide everything, the line under the box says what they hid ("BBC has 3 broadcasts in the next 24 hours, none in Spanish to Asia.") and Clear filters puts them back.
+
+### Fixed
+- A station's "to …" line lists only where it's aimed at that time, so a weekend target no longer shows on its weekday broadcast.
+
 ## [0.46.0.0] - 2026-11-23 ([#91](https://github.com/thehashrocket/skywave/issues/91))
 
 ### Added
