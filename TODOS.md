@@ -364,7 +364,7 @@ RBN live goes through #69's single connection in the radio service once its logi
 **Effort:** XS
 **Priority:** P2
 **Depends on:** None
-**Completed:** fix/station-filters-polish (2026-11-24): `LanguagePicker.tsx` ranks matches (start of name, then start of a later word, then anywhere), each group in the usual order; test "lists start-of-name language matches first".
+**Completed:** v0.47.1.0 (2026-11-23), fix/station-filters-polish: `LanguagePicker.tsx` ranks matches (start of name, then start of a later word, then anywhere), each group in the usual order; test "lists start-of-name language matches first".
 
 ### Find a station: clear the filter row's design-lint findings (#109/#110 follow-up)
 
@@ -377,7 +377,7 @@ RBN live goes through #69's single connection in the radio service once its logi
 **Effort:** XS
 **Priority:** P2
 **Depends on:** None
-**Completed:** 2026-11-24, no code change (owner D1 on fix/station-filters-polish): checked against DESIGN.md, all seven follow the design system. Disabled controls dim to opacity 0.45 with `cursor: default` (DESIGN.md's Do list), the uppercase heading is design 5A/9A, 6, 10 and 12px are on DESIGN.md's spacing scale (30px is the chevron's room), the panel inherits `--text`, and no control on the page has an `:active` style.
+**Completed:** v0.47.1.0 (2026-11-23), no code change (owner D1 on fix/station-filters-polish): checked against DESIGN.md, all seven follow the design system. Disabled controls dim to opacity 0.45 with `cursor: default` (DESIGN.md's Do list), the uppercase heading is design 5A/9A, 6, 10 and 12px are on DESIGN.md's spacing scale (30px is the chevron's room), the panel inherits `--text`, and no control on the page has an `:active` style.
 
 ### After the #109/#110 deploy: count pick version 9 in #61 (#61)
 
