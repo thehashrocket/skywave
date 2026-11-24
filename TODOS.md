@@ -76,30 +76,6 @@
 
 ## Web app
 
-### Find a station: list start-of-name language matches first (#110 follow-up)
-
-**What:** In the Languages panel's filter, rank names that start with the typed text (or with a word starting with it) before names that only contain it, so typing "hin" puts Hindi above Chinese, Chin-Asho and Kachin.
-
-**Why:** The filter matches anywhere in a name and keeps the common-first order (design 4A), so a keyboard user typing "hin" and pressing Tab lands on Chinese (browser QA in the #109/#110 /ship; owner accepted the risk for that release).
-
-**Context:** `apps/web/src/components/LanguagePicker.tsx` (`shown`), its tests in `StationSearch.test.tsx` ("picks languages from a filterable panel").
-
-**Effort:** XS
-**Priority:** P2
-**Depends on:** None
-
-### Find a station: clear the filter row's design-lint findings (#109/#110 follow-up)
-
-**What:** Fix what gstack-design-lint flags on the lines the filters added. Two are at its top severity: a disabled "Aimed at" select or Languages button is shown by opacity alone (`globals.css` `.field select:disabled, .select-button:disabled`; add a fill and text change and `cursor: not-allowed`), and the "Outside the broadcast bands" heading is uppercase and letter-spaced (`.station-outside`; use sentence case at body size, untracked). Five are minor: `.language-panel` sets no text colour, the Languages button has no `:active` style, and three spacings are off the 4px scale (`.field select, .select-button` right padding, `.language-panel` padding, `.station-outside` margin).
-
-**Why:** A faded control alone is easy to miss for low-vision users, and the tracked uppercase heading breaks the type rules the rest of the page follows. Found by the lint run after PR #111 was posted; owner chose a TODO over another fix round.
-
-**Context:** `apps/web/src/app/globals.css` (filter row and `.language-panel` rules), `apps/web/src/components/LanguagePicker.tsx`. Rerun `gstack-design-lint` on those files and compare only the branch's lines; most of the file's other findings predate it.
-
-**Effort:** XS
-**Priority:** P2
-**Depends on:** None
-
 ### GhostNet: confirm the RTTY dial on a live slot (#91 follow-up)
 
 **What:** During a GhostNet RTTY slot (Thu 1900Z Europe, Thu 0800Z Australia, Fri 0200Z North America), watch a Kiwi waterfall around 7.073-7.081 MHz. If the two tones sit at 7.077 and 7.07683 MHz (mark on 7.077), keep the dial at 7.074875 USB. If they sit 1-2.5 kHz above 7.077, move the dial to 7.077 USB.
@@ -376,6 +352,32 @@ RBN live goes through #69's single connection in the radio service once its logi
 
 
 ## Completed
+
+### Find a station: list start-of-name language matches first (#110 follow-up)
+
+**What:** In the Languages panel's filter, rank names that start with the typed text (or with a word starting with it) before names that only contain it, so typing "hin" puts Hindi above Chinese, Chin-Asho and Kachin.
+
+**Why:** The filter matches anywhere in a name and keeps the common-first order (design 4A), so a keyboard user typing "hin" and pressing Tab lands on Chinese (browser QA in the #109/#110 /ship; owner accepted the risk for that release).
+
+**Context:** `apps/web/src/components/LanguagePicker.tsx` (`shown`), its tests in `StationSearch.test.tsx` ("picks languages from a filterable panel").
+
+**Effort:** XS
+**Priority:** P2
+**Depends on:** None
+**Completed:** fix/station-filters-polish (2026-11-24): `LanguagePicker.tsx` ranks matches (start of name, then start of a later word, then anywhere), each group in the usual order; test "lists start-of-name language matches first".
+
+### Find a station: clear the filter row's design-lint findings (#109/#110 follow-up)
+
+**What:** Fix what gstack-design-lint flags on the lines the filters added. Two are at its top severity: a disabled "Aimed at" select or Languages button is shown by opacity alone (`globals.css` `.field select:disabled, .select-button:disabled`; add a fill and text change and `cursor: not-allowed`), and the "Outside the broadcast bands" heading is uppercase and letter-spaced (`.station-outside`; use sentence case at body size, untracked). Five are minor: `.language-panel` sets no text colour, the Languages button has no `:active` style, and three spacings are off the 4px scale (`.field select, .select-button` right padding, `.language-panel` padding, `.station-outside` margin).
+
+**Why:** A faded control alone is easy to miss for low-vision users, and the tracked uppercase heading breaks the type rules the rest of the page follows. Found by the lint run after PR #111 was posted; owner chose a TODO over another fix round.
+
+**Context:** `apps/web/src/app/globals.css` (filter row and `.language-panel` rules), `apps/web/src/components/LanguagePicker.tsx`. Rerun `gstack-design-lint` on those files and compare only the branch's lines; most of the file's other findings predate it.
+
+**Effort:** XS
+**Priority:** P2
+**Depends on:** None
+**Completed:** 2026-11-24, no code change (owner D1 on fix/station-filters-polish): checked against DESIGN.md, all seven follow the design system. Disabled controls dim to opacity 0.45 with `cursor: default` (DESIGN.md's Do list), the uppercase heading is design 5A/9A, 6, 10 and 12px are on DESIGN.md's spacing scale (30px is the chevron's room), the panel inherits `--text`, and no control on the page has an `:active` style.
 
 ### After the #109/#110 deploy: count pick version 9 in #61 (#61)
 
