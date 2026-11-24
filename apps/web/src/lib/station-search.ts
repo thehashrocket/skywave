@@ -1,4 +1,5 @@
-import { type Broadcast, onAirAt, seasonFor } from "./eibi";
+import { type Broadcast, type LanguageFilter, onAirAt, seasonFor, speaks } from "./eibi";
+import { type BroadRegion, regionsOf } from "./eibi-targets";
 import { BROADCAST_BANDS, guessMode, HAM_BANDS, type Mode } from "./radio-types";
 
 /**
@@ -24,11 +25,35 @@ export type FoundBroadcast = {
 };
 
 export type SearchResult = {
-  /** On now first, lowest frequency first; then the rest by start time. */
+  /**
+   * A typed name: on now first, lowest frequency first; then the rest by start
+   * time. No name (what's on now, eng D1): the shortwave broadcast bands
+   * first, then everything else, each lowest frequency first (design 5A).
+   */
   found: FoundBroadcast[];
   /** Every station whose name matches, found or not, so an empty list can say why (design 4A). */
   names: string[];
+  /** How many rows there were before the filters, so an empty list can say they hid them (eng D6). */
+  unfiltered: number;
 };
+
+/** The area filter: a broad region, one target code, or neither (Any). */
+export type AreaFilter = { region: BroadRegion } | { code: string } | null;
+
+/** Both filters, ANDed (#109, #110). */
+export type Filters = { area: AreaFilter; language: LanguageFilter };
+
+export const NO_FILTERS: Filters = { area: null, language: { codes: [], nonVoice: true } };
+
+/** Whether any filter would hide something. */
+export const filtering = (f: Filters) => f.area !== null || f.language.codes.length > 0 || !f.language.nonVoice;
+
+/** Whether a row aimed at `targets` passes the area filter: any of them in the region, or the very code. */
+export function aimedAt(targets: readonly string[], area: AreaFilter): boolean {
+  if (area === null) return true;
+  if ("code" in area) return targets.includes(area.code);
+  return targets.some((t) => regionsOf(t).includes(area.region));
+}
 
 /**
  * EiBi's short forms and what they stand for, so "radio triunfal" finds
@@ -94,62 +119,78 @@ function nextStart(b: Broadcast, ms: number, season: string | null): number | un
 
 /**
  * Broadcasts whose station name holds every word of the query: on the air at
- * `ms`, or starting in the next 24 h. Each listing is checked on its own
- * before merging, since two listings alike but for their days or dates can be
- * on at different times (eng re-check, dedupe after onAirAt); merged listings
- * keep every target.
+ * `ms`, or starting in the next 24 h. With no query, every broadcast on the
+ * air at `ms` (eng D1). Each listing is checked on its own before merging,
+ * since two listings alike but for their days or dates can be on at different
+ * times (eng re-check, dedupe after onAirAt); a row keeps the targets of the
+ * listings on at its own time only, so a weekend target doesn't join a
+ * weekday row (eng D10). The filters apply last, to whole rows.
  */
 export function findBroadcasts(
   schedule: readonly Broadcast[],
   query: string,
   ms: number,
   season: string,
+  filters: Filters = NO_FILTERS,
 ): SearchResult {
   const words = queryWords(query);
-  if (!words.length) return { found: [], names: [] };
+  const browsing = words.length === 0;
   // The season cut only applies to this season's schedule: a fallback copy from
   // the season before (eibispace.de down at a switch) would lose every later row.
   const cutAt = season === seasonFor(ms) ? season : null;
   const names = new Set<string>();
-  const merged = new Map<string, FoundBroadcast>();
+  // Listings alike but for days, dates or target, each with when it's on.
+  type Listing = { target: string; onNow: boolean; startsAt?: number };
+  const merged = new Map<string, { khz: number; station: string; lang: string; listings: Listing[] }>();
   for (const b of schedule) {
-    const text = textFor(schedule, b.station);
-    if (!words.every((w) => text.includes(w))) continue;
-    names.add(b.station);
+    if (!browsing) {
+      const text = textFor(schedule, b.station);
+      if (!words.every((w) => text.includes(w))) continue;
+      names.add(b.station);
+    }
     const onNow = onAirAt(b, ms);
-    const startsAt = onNow ? undefined : nextStart(b, ms, cutAt);
+    const startsAt = onNow || browsing ? undefined : nextStart(b, ms, cutAt);
     if (!onNow && startsAt === undefined) continue;
     const key = `${b.khz}|${b.start}|${b.end}|${b.station}|${b.lang}`;
-    let f = merged.get(key);
-    if (!f) merged.set(key, (f = { khz: b.khz, station: b.station, lang: b.lang, targets: [], onNow: false }));
-    f.onNow ||= onNow;
-    if (startsAt !== undefined && (f.startsAt === undefined || startsAt < f.startsAt)) f.startsAt = startsAt;
-    const target = b.target.trim();
-    if (target && !f.targets.includes(target)) f.targets.push(target);
+    let m = merged.get(key);
+    if (!m) merged.set(key, (m = { khz: b.khz, station: b.station, lang: b.lang, listings: [] }));
+    m.listings.push({ target: b.target.trim(), onNow, startsAt });
   }
-  // Listings that overlap but differ in their times are one row too: one per
-  // frequency, station, language and "on now" or start time, as the page keys them.
+  // One row per frequency, station, language and "on now" or start time, as the
+  // page keys them; listings that overlap but differ in their times share it.
   const rows = new Map<string, FoundBroadcast>();
   for (const m of merged.values()) {
-    const f = m.onNow ? { ...m, startsAt: undefined } : m;
-    const key = `${f.khz}|${f.station}|${f.lang}|${f.startsAt ?? "now"}`;
-    const row = rows.get(key);
-    if (!row) rows.set(key, f);
-    else for (const t of f.targets) if (!row.targets.includes(t)) row.targets.push(t);
+    const onNow = m.listings.some((l) => l.onNow);
+    const startsAt = onNow ? undefined : Math.min(...m.listings.map((l) => l.startsAt!));
+    const atThen = m.listings.filter((l) => (onNow ? l.onNow : l.startsAt === startsAt));
+    const key = `${m.khz}|${m.station}|${m.lang}|${startsAt ?? "now"}`;
+    let row = rows.get(key);
+    if (!row) {
+      row = { khz: m.khz, station: m.station, lang: m.lang, targets: [], onNow };
+      if (startsAt !== undefined) row.startsAt = startsAt;
+      rows.set(key, row);
+    }
+    for (const { target } of atThen) if (target && !row.targets.includes(target)) row.targets.push(target);
   }
-  const found = [...rows.values()];
+  const all = [...rows.values()];
+  const found = all.filter((f) => aimedAt(f.targets, filters.area) && speaks(f.lang, filters.language));
   found.sort(
-    (a, b) =>
-      Number(b.onNow) - Number(a.onNow) ||
-      (a.startsAt ?? 0) - (b.startsAt ?? 0) ||
-      a.khz - b.khz ||
-      a.station.localeCompare(b.station),
+    browsing
+      ? (a, b) => Number(inBroadcastBand(b.khz)) - Number(inBroadcastBand(a.khz)) || a.khz - b.khz || a.station.localeCompare(b.station)
+      : (a, b) =>
+          Number(b.onNow) - Number(a.onNow) ||
+          (a.startsAt ?? 0) - (b.startsAt ?? 0) ||
+          a.khz - b.khz ||
+          a.station.localeCompare(b.station),
   );
-  return { found, names: [...names] };
+  return { found, names: [...names], unfiltered: all.length };
 }
 
 type Range = readonly { startKhz: number; endKhz: number }[];
 const inBand = (khz: number, bands: Range) => bands.some((b) => khz >= b.startKhz && khz <= b.endKhz);
+
+/** Inside one of the shortwave broadcast bands the dial marks in brass (120 m to 11 m). */
+export const inBroadcastBand = (khz: number) => inBand(khz, BROADCAST_BANDS);
 
 /**
  * The HF aeronautical (R and OR) and maritime mobile allocations of the ITU

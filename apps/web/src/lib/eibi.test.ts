@@ -3,6 +3,7 @@ import snapshot from "@/server/eibi-snapshot.json";
 import {
   type Broadcast,
   forPage,
+  languageChoices,
   languageNames,
   onAirAt,
   onDay,
@@ -11,6 +12,7 @@ import {
   scheduledOn,
   seasonFor,
   shortLabel,
+  speaks,
   stationLine,
 } from "./eibi";
 
@@ -207,5 +209,33 @@ describe("EiBi schedule", () => {
       text: "Radio X · English +1 more",
       all: "Radio X · English\nRadio Y · Mandarin",
     });
+  });
+
+  // Value: protects=a broadcast matches a picked language if any of its codes is picked ("F,E" and " E" both count for English), one with no language only under Any, and a non-voice one follows the toggle with or without a language picked; fails_when=the whole field is compared, a blank language slips through a pick, or the toggle is ignored under Any; why_new=#110 Done-when, eng D7; seam=none; no_claim=none beyond protects
+  it.each([
+    ["F,E", ["E"], true, true],
+    ["F, E", ["E"], true, true],
+    ["F", ["E"], true, false],
+    ["", [], true, true],
+    ["", ["E"], true, false],
+    ["-TS", ["E"], true, true],
+    ["-TS", ["E"], false, false],
+    ["-TS", [], false, false],
+    ["-CW,-TY", [], true, true],
+    ["E", [], false, true],
+  ])("matches %j against %j (non-voice %s)", (lang, codes, nonVoice, match) => {
+    expect(speaks(lang, { codes, nonVoice })).toBe(match);
+  });
+
+  // Value: protects=the picker offers the schedule's languages once per name (Hmong covers HM and HMQ), the common ones first in the issue's order and the rest A to Z, without programme names or non-voice codes, an unnamed code as itself, and a saved language the schedule lacks kept at the end as stale; fails_when=dead, duplicate or programme entries appear, the order breaks, or a saved pick disappears (eng D8); why_new=#110 eng D5, D8; seam=none; no_claim=README name accuracy
+  it("lists the schedule's languages for the picker", () => {
+    const rows = ["Z", "E", "HMQ", "S,F", "-TS", "Ros", "Tig", "M", "E"].map((lang) => b({ lang }));
+    const choices = languageChoices(rows);
+    expect(choices.map((c) => c.name)).toEqual(["English", "Spanish", "French", "Mandarin", "Hmong", "Tig", "Zulu"]);
+    expect(choices.find((c) => c.name === "Hmong")!.codes).toEqual(["HM", "HMQ"]);
+    expect(choices.some((c) => c.stale)).toBe(false);
+    const saved = languageChoices(rows, ["E", "HM", "VN"]);
+    expect(saved.at(-1)).toEqual({ name: "Vietnamese", codes: ["VN"], stale: true });
+    expect(saved).toHaveLength(choices.length + 1);
   });
 });

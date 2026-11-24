@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Broadcast } from "./eibi";
-import { clickMode, findBroadcasts, fold, startsParts, startsSentence } from "./station-search";
+import { clickMode, findBroadcasts, type Filters, fold, NO_FILTERS, startsParts, startsSentence } from "./station-search";
 
 const MIN = 60_000;
 /** Thursday 19 November 2026, 12:00 UTC, in season b26. */
@@ -17,8 +17,8 @@ const b = (station: string, khz: number, start: string, end: string, more: Parti
   ...more,
 });
 
-const find = (schedule: Broadcast[], query: string, ms = NOW, season = "b26") =>
-  findBroadcasts(schedule, query, ms, season);
+const find = (schedule: Broadcast[], query: string, ms = NOW, season = "b26", filters: Filters = NO_FILTERS) =>
+  findBroadcasts(schedule, query, ms, season, filters);
 const rows = (schedule: Broadcast[], query: string, ms = NOW) =>
   find(schedule, query, ms).found.map(
     (f) => `${f.khz} ${f.station} ${f.onNow ? "now" : new Date(f.startsAt!).toISOString().slice(5, 16)}`,
@@ -124,8 +124,8 @@ describe("station search", () => {
   // Value: protects=an empty result says why: the station names that matched are reported even when none is on in the next 24 hours, and none when the name matches nothing; fails_when=a correctly typed station that's off today reads as a spelling mistake; why_new=design review 4A; seam=none; no_claim=none beyond protects
   it("reports matching names even when nothing is on", () => {
     const schedule = [b("NHK Radio Japan", 9750, "0000", "0100", { days: "Sa" })];
-    expect(find(schedule, "radio japan")).toEqual({ found: [], names: ["NHK Radio Japan"] });
-    expect(find(schedule, "radio xyz")).toEqual({ found: [], names: [] });
+    expect(find(schedule, "radio japan")).toEqual({ found: [], names: ["NHK Radio Japan"], unfiltered: 0 });
+    expect(find(schedule, "radio xyz")).toEqual({ found: [], names: [], unfiltered: 0 });
   });
 
   // Value: protects=a "-CW" (Morse) row tunes CW in any band, the named AM broadcasters inside the mobile and ham bands (Sound of Hope, Firedrake, Voice of Korea...) tune AM while Volmets there keep USB, and otherwise a click tunes AM on long/medium wave, in the broadcast bands and for out-of-band broadcasters, what the dial picks in a ham band, and USB only in the HF aeronautical and maritime mobile bands; fails_when=a Morse row tunes AM (silence), Sound of Hope or Voice of Korea tunes a sideband (garbled), or VoA Ashna on 12,140 or R.Triunfal on 5,825 tune USB, Volmet tunes AM, or a 40 m row ignores the ham rule; why_new=/ship adversarial review (Codex O2, native N1 with the owner choosing a named list) and station search D11, reopened at build (owner: ITU mobile bands); seam=none; no_claim=DRM and data rows, noise in any mode
@@ -175,5 +175,64 @@ describe("station search", () => {
     expect(startsParts(Date.UTC(2026, 10, 20, 6, 0), NOW)).toEqual({ time: "06:00 UTC", until: "tomorrow, in 18 h" });
     expect(startsSentence(NOW + 40 * MIN, NOW)).toBe("starts at 12:40 UTC, in 40 min");
     expect(startsSentence(Date.UTC(2026, 10, 20, 6, 0), NOW)).toBe("starts tomorrow at 06:00 UTC, in 18 h");
+  });
+  // Value: protects=an empty query lists what's on now and nothing later, the shortwave broadcast bands first and then the rest, each lowest frequency first, with merged targets; fails_when=later rows leak into the on-now list, an empty query lists nothing again, or longwave utilities lead the list; why_new=#109/#110 eng D1, design 5A; seam=none; no_claim=the days field (eibi.test.ts covers onDay)
+  it("lists what's on now with no name, the broadcast bands first", () => {
+    const schedule = [
+      b("DCF77", 77.5, "0000", "2400", { lang: "-TS", target: "Eu" }),
+      b("VTX1 Indian Navy", 16.3, "0000", "2400", { lang: "" }),
+      b("BBC", 9410, "1100", "1300", { target: "Eu" }),
+      b("BBC", 9410, "1100", "1300", { target: "ENA" }),
+      b("WWV", 10000, "0000", "2400", { lang: "-TS", target: "Am" }),
+      b("Radio Habana Cuba", 6000, "1100", "1300", { lang: "S", target: "Car" }),
+      b("Later Radio", 7300, "1800", "1900"),
+    ];
+    const { found, names } = find(schedule, "  ");
+    expect(found.map((f) => `${f.khz} ${f.station}`)).toEqual([
+      "6000 Radio Habana Cuba",
+      "9410 BBC",
+      "16.3 VTX1 Indian Navy",
+      "77.5 DCF77",
+      "10000 WWV",
+    ]);
+    expect(found.every((f) => f.onNow)).toBe(true);
+    expect(found[1]!.targets).toEqual(["Eu", "ENA"]);
+    expect(names).toEqual([]);
+  });
+
+  // Value: protects=the area, language and non-voice filters narrow rows together (AND): a broad region matches any of a row's targets (keeping its whole "to" list), a code matches only itself, a spanning code counts for each region, "F,E" counts as English, a blank language only shows under Any, non-voice follows its toggle; and the count before filtering is kept; fails_when=filters OR together, a region drops a spanning target, targets get trimmed to the matching one, or the unfiltered count is lost; why_new=#109/#110, eng D4, D6, D7; seam=none; no_claim=the region table's geography (eibi-targets.test.ts)
+  it("narrows by area, language and non-voice together", () => {
+    const schedule = [
+      b("BBC", 9410, "1100", "1300", { target: "Eu" }),
+      b("BBC", 9410, "1100", "1300", { target: "ENA" }),
+      b("Radio France", 9790, "1100", "1300", { lang: "F,E", target: "Am" }),
+      b("REE", 9690, "1100", "1300", { lang: "S", target: "LAm" }),
+      b("Mystery", 9600, "1100", "1300", { lang: "", target: "NAm" }),
+      b("WWV", 10000, "0000", "2400", { lang: "-TS", target: "NAm" }),
+    ];
+    const names = (filters: Filters, query = "") => find(schedule, query, NOW, "b26", filters).found.map((f) => f.station);
+    const lang = (codes: string[], nonVoice = true) => ({ codes, nonVoice });
+    const na = { region: "na" as const };
+    expect(names({ area: na, language: lang([]) })).toEqual(["BBC", "Mystery", "Radio France", "WWV"]);
+    expect(find(schedule, "bbc", NOW, "b26", { area: na, language: lang([]) }).found[0]!.targets).toEqual(["Eu", "ENA"]);
+    expect(names({ area: { region: "la" }, language: lang([]) })).toEqual(["REE", "Radio France"]);
+    expect(names({ area: { code: "ENA" }, language: lang([]) })).toEqual(["BBC"]);
+    expect(names({ area: na, language: lang(["E"]) })).toEqual(["BBC", "Radio France", "WWV"]);
+    expect(names({ area: na, language: lang(["E"], false) })).toEqual(["BBC", "Radio France"]);
+    expect(names({ area: null, language: lang([], false) })).not.toContain("WWV");
+    const none = find(schedule, "bbc", NOW, "b26", { area: { region: "af" }, language: lang([]) });
+    expect(none).toEqual({ found: [], names: ["BBC"], unfiltered: 1 });
+  });
+
+  // Value: protects=a row lists only the targets of listings on at its own time, so RNZ Pacific's weekday WOc and weekend Oc at the same times don't share a row's "to" line, and a specific-code filter doesn't match a weekend target on a weekday; fails_when=targets merge across days again; why_new=eng D10 (outside voice O1), RNZ Pacific 9700 in b26; seam=none; no_claim=none beyond protects
+  it("lists only the targets on at the row's time", () => {
+    const schedule = [
+      b("RNZ Pacific", 9700, "1059", "1258", { days: "Mo-Fr", target: "WOc" }),
+      b("RNZ Pacific", 9700, "1059", "1258", { days: "SaSu", target: "Oc" }),
+    ];
+    const friday = Date.UTC(2026, 10, 20, 12, 0);
+    // Saturday's listing folds into Friday's on-now row (same times), but its target stays out.
+    expect(find(schedule, "rnz", friday).found.map((f) => [f.onNow, f.targets])).toEqual([[true, ["WOc"]]]);
+    expect(find(schedule, "", friday, "b26", { area: { code: "Oc" }, language: NO_FILTERS.language }).found).toEqual([]);
   });
 });
