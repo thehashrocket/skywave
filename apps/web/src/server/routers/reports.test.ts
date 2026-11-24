@@ -408,6 +408,8 @@ describe("reports.submit checks what it's told", () => {
     ["a fractional rule", { askRule: 1.5 }, { askRule: undefined }, true],
     ["an unknown region", { askRule: 1, askRegion: "xx" }, { askRule: 1, askRegion: undefined }, true],
     ["a region that isn't text", { askRule: 1, askRegion: 7 }, { askRule: 1, askRegion: undefined }, true],
+    // superjson can deliver a BigInt; logging it must not fail the report.
+    ["a BigInt rule", { askRule: BigInt(1) }, { askRule: undefined }, true],
   ])("stores the question's rule and region: %s", async (_, sent, stored, warned) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { caller, receptionReport } = setup();

@@ -78,8 +78,11 @@ function orList(names: readonly string[]): string {
  * D1/D2). None (null): a page from before the column, which asked about EiBi's
  * first listing. 1: with more than MAX_LISTED stations on the frequency, the one
  * aimed at the receiver's region (askRegion) is asked about; with no region
- * known that's still EiBi's first. Bump it, and say what changed here, when the
- * choice of station changes.
+ * known that's still EiBi's first. Also from 1, with a region known, a station
+ * EiBi lists more than once in one language (several sites) is described by its
+ * row aimed at that region, so txDetail's target can differ from EiBi's first
+ * row on any frequency (scheduledBetween). Bump it, and say what changed here,
+ * when the choice of station or row changes.
  */
 export const ASK_RULE_VERSION = 1;
 

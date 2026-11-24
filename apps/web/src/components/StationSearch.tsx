@@ -246,7 +246,9 @@ export function StationSearch({
   const status = statusText(ready, loadFailed, query, result, described);
   const suggested = receiverPlace && area === null ? broadRegionAt(receiverPlace.lat, receiverPlace.lon) : undefined;
   const areaRegion = area && "region" in area ? area.region : undefined;
-  useEffect(() => onAreaRegion?.(areaRegion), [areaRegion, onAreaRegion]);
+  useEffect(() => {
+    onAreaRegion?.(areaRegion);
+  }, [areaRegion, onAreaRegion]);
 
   // The count is read out once typing pauses; loading, a failure and paging
   // at once, and any of those cancels a count still waiting (design 13A). A

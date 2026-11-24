@@ -257,8 +257,10 @@ const optionalText = (max: number) =>
  * context is.
  */
 const droppable = <T extends z.ZodType>(name: string, schema: T) =>
+  // Logs the kind of value only: the input is untrusted, and superjson can deliver
+  // values (a BigInt) that JSON.stringify would throw on, failing the whole report.
   schema.optional().catch(({ input }) => {
-    console.warn(`reports.submit: dropped malformed ${name}:`, JSON.stringify(input)?.slice(0, 40));
+    console.warn(`reports.submit: dropped malformed ${name} (${typeof input})`);
     return undefined;
   });
 
