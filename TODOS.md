@@ -76,6 +76,30 @@
 
 ## Web app
 
+### After the #109/#110 deploy: count pick version 9 in #61 (#61)
+
+**What:** Once the Find a station filters deploy, record the deploy time on #61, change both `"pickVersion" IN (5, 6, 7, 8)` filters in `.local-data/61-step0.sql` (lines 113 and 128) to include 9, add the version 8 (#91) and version 9 deploy cutoffs to its `server_rules` CASE, and update the #61 query notes to group versions 6 to 9, with `browse` (a Pick best started from Find a station's on-now list) new in 9.
+
+**Why:** Every Pick best answer from a current tab carries version 9 after the deploy; the Step 0 query would drop them all without an error. Deferred from plan: ~/.gstack/projects/skywave/feat-ghostnet-strip-eng-review-20261123-152437.md (T7), plus the /ship red-team finding.
+
+**Context:** `apps/web/src/lib/pick-context.ts` (`PICK_CONTEXT_VERSION` docblock), README's pickVersion paragraph. The SQL file is local analysis data, not in the repo.
+
+**Effort:** XS
+**Priority:** P1
+**Depends on:** The #109/#110 deploy
+
+### Find a station: list start-of-name language matches first (#110 follow-up)
+
+**What:** In the Languages panel's filter, rank names that start with the typed text (or with a word starting with it) before names that only contain it, so typing "hin" puts Hindi above Chinese, Chin-Asho and Kachin.
+
+**Why:** The filter matches anywhere in a name and keeps the common-first order (design 4A), so a keyboard user typing "hin" and pressing Tab lands on Chinese (browser QA in the #109/#110 /ship; owner accepted the risk for that release).
+
+**Context:** `apps/web/src/components/LanguagePicker.tsx` (`shown`), its tests in `StationSearch.test.tsx` ("picks languages from a filterable panel").
+
+**Effort:** XS
+**Priority:** P2
+**Depends on:** None
+
 ### GhostNet: confirm the RTTY dial on a live slot (#91 follow-up)
 
 **What:** During a GhostNet RTTY slot (Thu 1900Z Europe, Thu 0800Z Australia, Fri 0200Z North America), watch a Kiwi waterfall around 7.073-7.081 MHz. If the two tones sit at 7.077 and 7.07683 MHz (mark on 7.077), keep the dial at 7.074875 USB. If they sit 1-2.5 kHz above 7.077, move the dial to 7.077 USB.
