@@ -192,10 +192,11 @@ html,
   color: var(--glass);
 }
 
-/* The wordmark and the UTC clock (#106) stay together on the header's first row. */
+/* The wordmark and the UTC clock (#106) share the header's first row. If they can't fit (a 320px
+   phone before Barlow Condensed loads), the clock drops under the wordmark rather than scrolling the page. */
 .brand-row {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: last baseline;
   gap: 20px;
 }
@@ -2493,7 +2494,7 @@ html:has(.tuning-bar:not([hidden])) {
 }
 
 @media (max-width: 520px) {
-  /* Wordmark and clock still share a row at 320px, font fallback included (#106). */
+  /* Room for the wordmark and clock on one row at 320px with Barlow Condensed loaded (#106). */
   .brand-row {
     gap: 12px;
   }
