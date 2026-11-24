@@ -2,6 +2,15 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.48.1.0] - 2026-11-24 ([#115](https://github.com/thehashrocket/skywave/issues/115))
+
+### Fixed
+- **A shared frequency names the station you're most likely hearing.** When several broadcasts share a frequency, the readout, the waterfall labels and "Did you hear it?" now lead with the one aimed at where the receiver playing is. On 5,935 kHz through a North American receiver, that's WWCR 2 instead of Xizang RTV. With nothing playing, Find a station's "Aimed at" region decides; with neither, the order is EiBi's, as before.
+- "Did you hear it?" goes by the receiver's own listed location only, never your Find a station filter, so an answer is saved under the station the receiver could actually pick up.
+
+### Changed
+- Each "Did you hear it?" answer about a scheduled station also records which rule chose the station and the region it ranked by, so the receiver-ranking study (#61) can tell answers from before and after this change apart.
+
 ## [0.48.0.1] - 2026-11-23
 
 ### Changed
