@@ -97,18 +97,23 @@ export function LanguagePicker({ choices, picked, onChange, disabled }: Props) {
         if (open && e.relatedTarget && !rootRef.current?.contains(e.relatedTarget as Node)) setOpen(false);
       }}
     >
-      <label htmlFor={`${id}-button`}>Languages</label>
+      <label id={`${id}-label`} htmlFor={`${id}-button`}>
+        Languages
+      </label>
+      {/* Named by the label and the picks' summary, so a screen reader hears the picks too
+          ("Languages, English, Spanish +3"), not just "Languages". */}
       <button
         ref={buttonRef}
         id={`${id}-button`}
         type="button"
         className="select-button"
+        aria-labelledby={`${id}-label ${id}-summary`}
         aria-expanded={open}
         aria-controls={`${id}-panel`}
         disabled={disabled}
         onClick={toggleOpen}
       >
-        {pickedSummary(choices, picked)}
+        <span id={`${id}-summary`}>{pickedSummary(choices, picked)}</span>
       </button>
       {open && (
         <div id={`${id}-panel`} className="language-panel">

@@ -68,7 +68,7 @@ const BROWSE = "3 broadcasts on now, broadcast bands first. Type a name to find 
 
 const areaSelect = () => screen.getByLabelText("Aimed at") as HTMLSelectElement;
 const pickArea = (value: string) => fireEvent.change(areaSelect(), { target: { value } });
-const languagesButton = () => screen.getByRole("button", { name: "Languages" });
+const languagesButton = () => screen.getByRole("button", { name: /^Languages / });
 const panelOptions = () => [...document.querySelectorAll(".language-option")].map((l) => l.textContent);
 
 /** Shows the section and picks an area, for tests that only need the save. */
@@ -432,9 +432,9 @@ describe("StationSearch", () => {
     localStorage.setItem(FILTERS_KEY, JSON.stringify({ area: "", languages: ["VN"], nonVoice: true }));
     show();
     fireEvent.click(languagesButton());
-    fireEvent.click(screen.getByLabelText(/Vietnamese/));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Vietnamese/ }));
     expect(panelOptions()).toContain("Vietnamesenone in this schedule");
-    expect((screen.getByLabelText(/Vietnamese/) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole("checkbox", { name: /Vietnamese/ }) as HTMLInputElement).checked).toBe(false);
     fireEvent.blur(screen.getByLabelText("Filter languages"), { relatedTarget: areaSelect() });
     expect(screen.queryByLabelText("Filter languages")).toBeNull();
     fireEvent.click(languagesButton());
@@ -487,5 +487,18 @@ describe("StationSearch", () => {
     expect(announced()).toBe("");
     rerender({ schedule: SCHEDULE });
     expect(announced()).toMatch(/^1 broadcast on now to Europe,/);
+  });
+
+  // Value: protects=the Languages button's accessible name carries the current picks after its label ("Languages Any language", "Languages French"), so a screen-reader user hears what is picked without opening the panel; fails_when=the button is named by its label alone (a bare <label for>) or loses its summary; why_new=/ship structured review (Codex P2), owner added it to the fix round; seam=none; no_claim=how a given screen reader voices the name (jsdom computes it)
+  it("names the Languages button with its picks", () => {
+    const many: SearchSchedule = {
+      ...SCHEDULE,
+      broadcasts: [...SCHEDULE.broadcasts, b("Radio Paris", 9800, 660, 780, { lang: "F" })],
+    };
+    show({ schedule: many });
+    expect(screen.getByRole("button", { name: "Languages Any language" })).toBeTruthy();
+    fireEvent.click(languagesButton());
+    fireEvent.click(screen.getByLabelText("French"));
+    expect(screen.getByRole("button", { name: "Languages French" })).toBeTruthy();
   });
 });
