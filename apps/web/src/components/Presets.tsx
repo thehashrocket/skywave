@@ -106,8 +106,9 @@ export function Presets({ freqKhz, mode, onSelect }: Props) {
   }));
   // The stamps' "now", for the weekday-or-date rule: ticks once a minute, so a
   // stamp moves from weekday to date by itself, and render never reads the clock.
-  // Null until mounted, which is also when the browser's list loads.
-  const now = useServerTick(60_000);
+  // Null until mounted, which is also when the browser's list loads, and on a
+  // private site, where no row is stamped.
+  const now = useServerTick(60_000, isPublic);
 
   const renderList = (items: Item[], label: string) => (
     <ul className="presets-list" aria-label={label}>

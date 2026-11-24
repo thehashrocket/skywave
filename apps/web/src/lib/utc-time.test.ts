@@ -64,7 +64,12 @@ describe("utc-time", () => {
     ["weeks ago", "2026-11-08T22:14:00Z", "saved 8 Nov 2214 UTC"],
     ["last year", "2025-12-31T22:14:00Z", "saved 31 Dec 2025"],
     ["a little ahead of now (clock corrected since)", "2026-11-23T12:00:30Z", "saved Mon 1200 UTC"],
-    ["days ahead of now (a fast device clock, never measured)", "2026-11-26T22:14:00Z", "saved 26 Nov 2214 UTC"],
+    [
+      "hours ahead into tomorrow (a fast device clock, never measured)",
+      "2026-11-24T03:00:00Z",
+      "saved 24 Nov 0300 UTC",
+    ],
+    ["days ahead of now", "2026-11-26T22:14:00Z", "saved 26 Nov 2214 UTC"],
   ])("stamp: %s", (_name, iso, label) => {
     expect(savedLabel(at(iso), now)).toBe(label);
   });

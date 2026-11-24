@@ -15,6 +15,8 @@
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DAY_MS = 24 * 60 * 60_000;
+/** How far ahead of "now" a save may be and still read as this week: the list's minute tick plus clock slack. */
+const AHEAD_SLACK_MS = 5 * 60_000;
 const pad = (n: number) => String(n).padStart(2, "0");
 /** The UTC hour and minute, two digits each. */
 const hourMinute = (ms: number) => {
@@ -59,14 +61,15 @@ export function utcClockShort(ms: number): string {
  * When a frequency was saved (#107): "saved Sat 2214 UTC"
  * within the last 6 UTC days, so the weekday can't be read as last week's;
  * "saved 8 Nov 2214 UTC" for older saves this UTC year; "saved 8 Nov 2025"
- * from another year. A save stamped up to a UTC day ahead of `nowMs` (a
- * clock corrected since) still reads as this week; further ahead (a device
- * clock days fast before the server's was measured) gets the date, so it
- * can't pass for a weekday of this week.
+ * from another year. A save stamped a few minutes ahead of `nowMs` (the list's
+ * minute tick, a clock corrected since) still reads as this week; further ahead
+ * (a device clock running fast before the server's was measured) gets the
+ * date, since a later weekday would read as one from last week.
  */
 export function savedLabel(savedMs: number, nowMs: number): string {
   const daysAgo = Math.floor(nowMs / DAY_MS) - Math.floor(savedMs / DAY_MS);
-  if (daysAgo >= -1 && daysAgo <= 6) return `saved ${utcLabel(savedMs)}`;
+  const ahead = savedMs - nowMs > AHEAD_SLACK_MS;
+  if (!ahead && daysAgo <= 6) return `saved ${utcLabel(savedMs)}`;
   if (new Date(savedMs).getUTCFullYear() !== new Date(nowMs).getUTCFullYear()) {
     return `saved ${utcDate(savedMs, true)}`;
   }
