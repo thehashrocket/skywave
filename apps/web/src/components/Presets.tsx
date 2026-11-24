@@ -79,17 +79,26 @@ export function Presets({ freqKhz, mode, onSelect }: Props) {
   };
   const [name, setName] = useState("");
   const trimmedName = name.trim();
+  // Set when a save was refused because the list is full; shown only while it still is.
+  const [refusedFull, setRefusedFull] = useState(false);
+  const full = local.length >= LOCAL_MAX;
 
   const save = (e: FormEvent) => {
     e.preventDefault();
     if (!trimmedName) return;
     if (isPublic) {
+      // A full list refuses the save and keeps the name, rather than cutting the new one off.
+      if (full) {
+        setRefusedFull(true);
+        return;
+      }
       const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      updateLocal(
-        [...local, { id, name: trimmedName.slice(0, 80), freqKhz, mode, savedAt: serverNow() }]
-          .sort((a, b) => a.freqKhz - b.freqKhz)
-          .slice(0, LOCAL_MAX),
-      );
+      const entry: Local = { id, name: trimmedName.slice(0, 80), freqKhz, mode };
+      // The same check loadLocal applies: a clock reading before the stamps existed gives no stamp.
+      const savedAt = serverNow();
+      if (isSavedAt(savedAt)) entry.savedAt = savedAt;
+      updateLocal([...local, entry].sort((a, b) => a.freqKhz - b.freqKhz).slice(0, LOCAL_MAX));
+      setRefusedFull(false);
       setName("");
       return;
     }
@@ -192,6 +201,11 @@ export function Presets({ freqKhz, mode, onSelect }: Props) {
           </button>
         </div>
         {create.isError && <p className="presets-note">Couldn't save that. Is the database running?</p>}
+        {refusedFull && full && (
+          <p className="presets-note" role="status">
+            You have {LOCAL_MAX} saved frequencies. Delete one to save another.
+          </p>
+        )}
       </form>
     </section>
   );

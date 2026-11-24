@@ -125,6 +125,32 @@ describe("Presets", () => {
     }
   });
 
+  // Value: protects=a save made while the clock reads before the stamps existed (an unmeasured device clock years slow) stores and shows no stamp, instead of a 2014 date that vanishes on reload (#107, /review finding); fails_when=savedAt is written without the check loadLocal applies; why_new=/review adversarial finding; seam=server-clock mocked; no_claim=a device clock that is wrong but after 2026
+  it("leaves the stamp off a save made on a clock before 2026", () => {
+    vi.stubEnv("NEXT_PUBLIC_SITE_PUBLIC", "1");
+    serverMs = Date.parse("2014-01-03T10:00:00Z");
+    const { container } = render(<Presets freqKhz={9580} mode="am" onSelect={() => {}} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Radio Australia" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(JSON.parse(localStorage.getItem("skywave.presets")!)[0]).not.toHaveProperty("savedAt");
+    expect(container.querySelector(".preset-saved")).toBeNull();
+  });
+
+  // Value: protects=a full list (200) refuses a new save with a note and keeps the typed name, instead of silently dropping the save that sorts last (/review finding, pre-existing); fails_when=the save is accepted and cut by the 200 limit, or the name clears; why_new=/review core finding (owner chose refuse); seam=react-query mocked; no_claim=lists over 200 from older versions
+  it("refuses a save when 200 are saved, with a note", () => {
+    vi.stubEnv("NEXT_PUBLIC_SITE_PUBLIC", "1");
+    const full = Array.from({ length: 200 }, (_, i) => ({ id: `p${i}`, name: `S${i}`, freqKhz: 1000 + i, mode: "am" }));
+    localStorage.setItem("skywave.presets", JSON.stringify(full));
+    render(<Presets freqKhz={29_000} mode="am" onSelect={() => {}} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Top of the band" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const stored = JSON.parse(localStorage.getItem("skywave.presets")!) as { name: string }[];
+    expect(stored).toHaveLength(200);
+    expect(stored.some((p) => p.name === "Top of the band")).toBe(false);
+    expect(screen.getByText("You have 200 saved frequencies. Delete one to save another.")).toBeTruthy();
+    expect((screen.getByRole("textbox") as HTMLInputElement).value).toBe("Top of the band");
+  });
+
   // Value: protects=shared presets show no saved time in either mode, so an owner's add time or a seed time never reads as when someone heard it (eng D2, D5); fails_when=createdAt is rendered as a stamp; why_new=#107 scope; seam=react-query mocked; no_claim=server presets router
   it.each([
     ["public", "1"],

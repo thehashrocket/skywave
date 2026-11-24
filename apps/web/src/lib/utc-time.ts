@@ -90,24 +90,13 @@ const LOCAL_OPTIONS: Intl.DateTimeFormatOptions = {
 };
 
 /**
- * The device zone's formatter, made on first use and kept: building one per
- * call is slow, and a saved list can label 200 rows per render. Made lazily so
- * a test that sets the zone before its first call gets that zone. A zone
- * changed mid-visit (travel) keeps the old one until reload (accepted).
- */
-let deviceFormat: Intl.DateTimeFormat | undefined;
-
-/**
  * "Thu 5:00 pm PST": the weekday always (owner D16, the NA net's Friday UTC is
  * Thursday in the Americas) and the device's short zone name (D17). `timeZone`
  * is for tests; the page passes none, so it's the device's zone.
  */
 export function localLabel(ms: number, timeZone?: string): string {
-  const format =
-    timeZone === undefined
-      ? (deviceFormat ??= new Intl.DateTimeFormat("en-US", LOCAL_OPTIONS))
-      : new Intl.DateTimeFormat("en-US", { ...LOCAL_OPTIONS, timeZone });
-  const parts = format.formatToParts(new Date(ms));
+  // A new formatter each call, so a zone changed mid-visit (travel, a change by hand) shows at once.
+  const parts = new Intl.DateTimeFormat("en-US", { ...LOCAL_OPTIONS, timeZone }).formatToParts(new Date(ms));
   const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? "";
   return `${get("weekday")} ${get("hour")}:${get("minute")} ${get("dayPeriod").toLowerCase()} ${get("timeZoneName")}`;
 }

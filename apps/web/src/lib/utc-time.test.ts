@@ -39,6 +39,17 @@ describe("utc-time", () => {
     expect(localLabel(at("2026-11-27T01:00:00Z"))).toBe("Thu 5:00 pm PST");
   });
 
+  // Value: protects=local times follow a time-zone change made mid-visit (travel, a manual change), as the GhostNet strip's did before #106; fails_when=the device zone's formatter is cached for the visit; why_new=/review core finding (owner chose to drop the cache); seam=process.env.TZ; no_claim=how each browser reports a zone change
+  it("follows a device time-zone change without a reload", () => {
+    expect(localLabel(at("2026-11-26T18:00:00Z"))).toBe("Thu 10:00 am PST");
+    process.env.TZ = "Europe/Berlin";
+    try {
+      expect(localLabel(at("2026-11-26T18:00:00Z"))).toMatch(/^Thu 7:00 pm (CET|GMT\+1)$/);
+    } finally {
+      process.env.TZ = "America/Los_Angeles";
+    }
+  });
+
   // Value: protects=the header clock is 24-hour UTC and its weekday and date flip together at UTC midnight, not local midnight; fails_when=a 12-hour or local field leaks in, or the date lags the time; why_new=#106 done-when; seam=process.env.TZ; no_claim=the ticking (UtcClock test)
   it.each([
     ["one second before UTC midnight", "2026-11-23T23:59:59Z", "Mon 23 Nov", "23:59:59"],
@@ -56,7 +67,7 @@ describe("utc-time", () => {
 
   const now = at("2026-11-23T12:00:00Z"); // Monday
 
-  // Value: protects=a stamp names a weekday only within 6 UTC days, a date after that, and a year once it's another year (design DD5/DD6); fails_when=the 6/7-day or New Year boundary slips, a save days ahead passes for this week, or "saved" is dropped; why_new=#107 stamp; seam=now passed in; no_claim=when the list re-renders
+  // Value: protects=a stamp names a weekday only within 6 UTC days, a date after that, and a year once it's another year (design DD5/DD6); fails_when=the 6/7-day or New Year boundary slips, the ahead window widens past 5 minutes or a save ahead passes for this week, or "saved" is dropped; why_new=#107 stamp; seam=now passed in; no_claim=when the list re-renders
   it.each([
     ["today", "2026-11-23T03:10:00Z", "saved Mon 0310 UTC"],
     ["6 UTC days ago", "2026-11-17T23:59:00Z", "saved Tue 2359 UTC"],
@@ -70,6 +81,9 @@ describe("utc-time", () => {
       "saved 24 Nov 0300 UTC",
     ],
     ["days ahead of now", "2026-11-26T22:14:00Z", "saved 26 Nov 2214 UTC"],
+    ["an hour ahead, same UTC day (fast device clock)", "2026-11-23T13:00:00Z", "saved 23 Nov 1300 UTC"],
+    ["exactly 5 minutes ahead (the minute tick plus slack)", "2026-11-23T12:05:00Z", "saved Mon 1205 UTC"],
+    ["just past 5 minutes ahead", "2026-11-23T12:05:01Z", "saved 23 Nov 1205 UTC"],
   ])("stamp: %s", (_name, iso, label) => {
     expect(savedLabel(at(iso), now)).toBe(label);
   });
