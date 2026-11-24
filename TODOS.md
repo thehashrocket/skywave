@@ -253,7 +253,7 @@ RBN live goes through #69's single connection in the radio service once its logi
 
 **What:** Show the first 24 saved frequencies plus the one now tuned, with a "Show all N" button, in `apps/web/src/components/Presets.tsx`.
 
-**Why:** Issue #89 moves Saved frequencies above Find a station and Strong signals now, with every row shown (owner, eng review D5, 2026-11-22). A browser can keep 200 (`LOCAL_MAX`, `Presets.tsx:19`), each with two buttons, so a long list pushes search far down the page and adds hundreds of tab stops.
+**Why:** Issue #89 moves Saved frequencies above Find a station and Strong signals now, with every row shown (owner, eng review D5, 2026-11-22). A browser can keep 200 (`LOCAL_MAX`, `Presets.tsx:23`), each with two buttons, so a long list pushes search far down the page and adds hundreds of tab stops.
 
 **Pros:** Search and Strong signals stay near the top whatever the list size.
 
