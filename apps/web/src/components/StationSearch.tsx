@@ -2,7 +2,7 @@
 
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { type Broadcast, languageChoices, languageNames, type LanguageChoice, MATCH_KHZ, pickedNames } from "@/lib/eibi";
-import { areaCodes, BROAD_REGIONS, broadRegionAt, isBroadRegion, regionName } from "@/lib/eibi-targets";
+import { areaCodes, BROAD_REGIONS, type BroadRegion, broadRegionAt, isBroadRegion, regionName } from "@/lib/eibi-targets";
 import type { Mode } from "@/lib/radio-types";
 import {
   type AreaFilter,
@@ -47,6 +47,12 @@ type Props = {
   onPickBest: (freqKhz: number, mode: Mode, source: "search" | "browse") => void;
   /** Where the receiver playing is, when the list gives its position: the area filter suggests its region (eng D2). */
   receiverPlace?: { lat: number; lon: number };
+  /**
+   * The broad region the area filter is set to, undefined for none or one code:
+   * with no receiver playing, the page names a shared frequency's stations aimed
+   * there first (#115). Called again whenever it changes.
+   */
+  onAreaRegion?: (region: BroadRegion | undefined) => void;
 };
 
 /** Rows per page (D5). */
@@ -202,6 +208,7 @@ export function StationSearch({
   onTune,
   onPickBest,
   receiverPlace,
+  onAreaRegion,
 }: Props) {
   const [query, setQuery] = useState("");
   const [shown, setShown] = useState(PAGE_ROWS);
@@ -238,6 +245,8 @@ export function StationSearch({
   const described = describeFilters(filters, choices, areaName);
   const status = statusText(ready, loadFailed, query, result, described);
   const suggested = receiverPlace && area === null ? broadRegionAt(receiverPlace.lat, receiverPlace.lon) : undefined;
+  const areaRegion = area && "region" in area ? area.region : undefined;
+  useEffect(() => onAreaRegion?.(areaRegion), [areaRegion, onAreaRegion]);
 
   // The count is read out once typing pauses; loading, a failure and paging
   // at once, and any of those cancels a count still waiting (design 13A). A

@@ -29,7 +29,8 @@ import { TuningBar } from "@/components/TuningBar";
 import { UtcClock } from "@/components/UtcClock";
 import { prefersReducedMotion } from "@/lib/reduced-motion";
 import { ReceptionPrompt } from "@/components/ReceptionPrompt";
-import { scheduledBetween, scheduledOn, shortLabel, stationLine } from "@/lib/eibi";
+import { rankBroadcasts, scheduledBetween, scheduledOn, shortLabel, stationLine } from "@/lib/eibi";
+import { type BroadRegion, broadRegionAt } from "@/lib/eibi-targets";
 import { covers, findReceiver, placeName, rankReceivers, receiverKey, type Receiver } from "@/lib/kiwi-list";
 import {
   MODE_LABELS,
@@ -1153,27 +1154,42 @@ export default function ListenPage() {
   const scheduleQuery = useSchedule();
   const schedule = scheduleQuery.data?.broadcasts;
   const clock = sun?.at ?? null;
+  // Where the audio comes from, for which of a shared frequency's stations leads (#115):
+  // while a receiver plays, its listed position only (none if the list doesn't say, or
+  // it's typed in); with nothing playing, the region Find a station is filtered to. A
+  // saved filter never reorders what a receiver plays, and the reception prompt, whose
+  // answers are saved under the station it names (#61's data), always ranks the same.
+  const [finderRegion, setFinderRegion] = useState<BroadRegion | undefined>(undefined);
+  const receiverRegion = receiverPlace ? broadRegionAt(receiverPlace.lat, receiverPlace.lon) : undefined;
+  const audioRegion = playingNow ? receiverRegion : finderRegion;
   const stationNow = useMemo(
-    () => (schedule && clock !== null ? stationLine(scheduledOn(schedule, freqKhz, clock)) : null),
-    [schedule, clock, freqKhz],
+    () => (schedule && clock !== null ? stationLine(scheduledOn(schedule, freqKhz, clock, audioRegion)) : null),
+    [schedule, clock, freqKhz, audioRegion],
   );
   const stationAt = useCallback(
-    (khz: number) => (schedule && clock !== null ? stationLine(scheduledOn(schedule, khz, clock)) : null),
-    [schedule, clock],
+    (khz: number) => (schedule && clock !== null ? stationLine(scheduledOn(schedule, khz, clock, audioRegion)) : null),
+    [schedule, clock, audioRegion],
   );
   const wideStations = useMemo(() => {
     if (!schedule || clock === null || !wideView) return [];
     // Twice the view's width: a receiver can show a view off-centre, near the edge of what it covers.
     const span = spanKhz(wideView.zoom);
-    return scheduledBetween(schedule, wideView.cfKhz - span, wideView.cfKhz + span, clock).map((c) => ({
+    return scheduledBetween(schedule, wideView.cfKhz - span, wideView.cfKhz + span, clock, audioRegion).map((c) => ({
       khz: c.khz,
-      label: shortLabel(c.broadcasts)!,
+      label: shortLabel(rankBroadcasts(c.broadcasts, audioRegion))!,
     }));
-  }, [schedule, clock, wideView]);
+  }, [schedule, clock, wideView, audioRegion]);
 
   // "Did you hear it?" after a minute on a scheduled station (issue #60), only
   // on a listed receiver: the server keeps no report about one typed in.
-  const reception = useReceptionPrompt(status, radio.heardAudio, schedule, playingListed !== undefined, beaconPick);
+  const reception = useReceptionPrompt(
+    status,
+    radio.heardAudio,
+    schedule,
+    playingListed !== undefined,
+    beaconPick,
+    receiverRegion,
+  );
   const submitReport = useSubmitReport();
   const receptionPlace = useMemo(() => {
     const p = reception.prompt;
@@ -1736,6 +1752,7 @@ export default function ListenPage() {
           if (!startPickBest(from)) sendRetune({ freqKhz: k, mode: m });
         }}
         receiverPlace={receiverPlace}
+        onAreaRegion={setFinderRegion}
       />
 
       <SignalList

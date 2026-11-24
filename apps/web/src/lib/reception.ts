@@ -1,4 +1,5 @@
 import type { Broadcast } from "./eibi";
+import type { BroadRegion } from "./eibi-targets";
 import { BEACONS, CYCLE_MS, IBP_BANDS_KHZ, SLOT_MS } from "./ibp";
 
 /**
@@ -51,6 +52,10 @@ export type Transmitter = {
   label: string;
   /** Beacons: the UTC start of the 10 s slot asked about, by the server-corrected clock. */
   slotStartMs?: number;
+  /** EiBi only, stored as askRule: which rules chose the station(s) asked about (ASK_RULE_VERSION). */
+  askRule?: number;
+  /** EiBi only, stored as askRegion: the receiver's broad region the stations were ranked by; absent when none was known. */
+  askRegion?: BroadRegion;
 };
 
 /** Up to this many stations sharing a frequency are asked about together. */
@@ -68,20 +73,51 @@ function orList(names: readonly string[]): string {
 }
 
 /**
- * What to ask about, from what's scheduled on the frequency (nearest listing
- * first, as `scheduledOn` returns it). One station is named; two or three are
- * asked about together ("anything from A, B or C"); more than that, only the
- * nearest listing. Null if nothing is scheduled.
+ * Which rules choose the EiBi station(s) a question asks about, saved with each
+ * answer as askRule so the #61 replay can tell them apart (owner, #115 review
+ * D1/D2). None (null): a page from before the column, which asked about EiBi's
+ * first listing. 1: with more than MAX_LISTED stations on the frequency, the one
+ * aimed at the receiver's region (askRegion) is asked about; with no region
+ * known that's still EiBi's first. Bump it, and say what changed here, when the
+ * choice of station changes.
  */
-export function eibiTransmitter(broadcasts: readonly Broadcast[]): Transmitter | null {
-  const first = broadcasts[0];
+export const ASK_RULE_VERSION = 1;
+
+/**
+ * What to ask about, from what's scheduled on the frequency: `broadcasts`
+ * nearest listing first in EiBi's order (as `listedOn` returns it), `ranked`
+ * the same with those aimed at where the receiver is first (`rankBroadcasts`,
+ * #115). One station is named; two or three are asked about together
+ * ("anything from A, B or C"); more than that, only the first ranked. Null if
+ * nothing is scheduled.
+ *
+ * Two or three are saved (`name`) in EiBi's order whatever the ranking, so one
+ * channel is always stored as the same txName; only the question (`label`)
+ * follows the ranking.
+ *
+ * `region` is the one `ranked` was ranked by, recorded with the rule
+ * (ASK_RULE_VERSION) for the #61 replay; undefined when none was known.
+ */
+export function eibiTransmitter(
+  broadcasts: readonly Broadcast[],
+  ranked: readonly Broadcast[] = broadcasts,
+  region?: BroadRegion,
+): Transmitter | null {
+  const first = ranked[0];
   if (!first) return null;
+  const rule = { askRule: ASK_RULE_VERSION, ...(region && { askRegion: region }) };
   // EiBi lists a station once per language and site; ask about each station once.
-  const names = [...new Set(broadcasts.map((b) => b.station))];
+  const stations = (list: readonly Broadcast[]) => [...new Set(list.map((b) => b.station))];
+  const names = stations(broadcasts);
   if (names.length >= 2 && names.length <= MAX_LISTED) {
-    return { kind: "eibi", name: names.join(TX_NAME_SEPARATOR), label: `anything from ${orList(names)}` };
+    return {
+      kind: "eibi",
+      name: names.join(TX_NAME_SEPARATOR),
+      label: `anything from ${orList(stations(ranked))}`,
+      ...rule,
+    };
   }
-  return { kind: "eibi", name: first.station, detail: `${first.lang}/${first.target}`, label: first.station };
+  return { kind: "eibi", name: first.station, detail: `${first.lang}/${first.target}`, label: first.station, ...rule };
 }
 
 /**

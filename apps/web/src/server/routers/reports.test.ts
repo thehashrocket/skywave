@@ -5,6 +5,7 @@ import type { IbpStatus } from "@/lib/ibp-status";
 import type { RbnDay } from "@/lib/rbn";
 import type { Receiver } from "@/lib/kiwi-list";
 import { PICK_CONTEXT_VERSION } from "@/lib/pick-context";
+import { ASK_RULE_VERSION } from "@/lib/reception";
 import type { createContext } from "@/server/trpc";
 import {
   candidateKeyOk,
@@ -315,6 +316,15 @@ describe("reports.submit checks what it's told", () => {
       expect(data.beaconStatus).toBe(stored);
     });
 
+    // Value: protects=the EiBi question markers are never stored on a beacon answer, even when a page sends them; fails_when=a beacon row gets askRule/askRegion and #61 counts it among station questions; why_new=#115 review D1; seam=in-memory db; no_claim=none
+    it("stores no question rule or region for a beacon", async () => {
+      const { caller, receptionReport } = setup();
+      await expect(caller.reports.submit({ ...beacon, askRule: 1, askRegion: "na" })).resolves.toEqual({ accepted: true });
+      const { data } = receptionReport.create.mock.calls[0]![0] as { data: Record<string, unknown> };
+      expect(data).not.toHaveProperty("askRule");
+      expect(data).not.toHaveProperty("askRegion");
+    });
+
     // Value: protects=a beacon report is kept when the schedule had that beacon on that band in the slot it names, judged by the server's clock (not EiBi), and the slot is stored with it; fails_when=the slot isn't checked or stored, or beacon reports go through the EiBi check; why_new=tightened beacon check (owner: the 5-minute window passed any beacon); seam=getSchedule mocked empty, in-memory db; no_claim=that the listener heard it
     it("accepts the right beacon in the right slot, and stores the slot", async () => {
       const { caller, receptionReport } = setup();
@@ -386,6 +396,27 @@ describe("reports.submit checks what it's told", () => {
     expect(getSchedule).toHaveBeenCalledTimes(1);
     expect(getReceivers).toHaveBeenCalledTimes(1);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=a station answer stores the question's rule and region as sent, a malformed one is dropped (logged) while the answer is kept, a region never stands without a rule, and an answer from an older page stores neither; fails_when=a bad marker rejects the answer, a forged value is stored, or old pages get a default rule; why_new=#115 review D1/D2 (askRule, askRegion); seam=in-memory db; no_claim=Postgres column types (prisma-migrations.test checks the columns exist)
+  it.each<[string, Record<string, unknown>, Record<string, unknown>, boolean]>([
+    ["rule and region", { askRule: ASK_RULE_VERSION, askRegion: "na" }, { askRule: ASK_RULE_VERSION, askRegion: "na" }, false],
+    ["a rule with no region", { askRule: 1 }, { askRule: 1, askRegion: undefined }, false],
+    ["an older page", {}, { askRule: undefined, askRegion: undefined }, false],
+    ["rule 0", { askRule: 0, askRegion: "na" }, { askRule: undefined, askRegion: undefined }, true],
+    ["a rule past the current one", { askRule: ASK_RULE_VERSION + 1 }, { askRule: undefined }, true],
+    ["a fractional rule", { askRule: 1.5 }, { askRule: undefined }, true],
+    ["an unknown region", { askRule: 1, askRegion: "xx" }, { askRule: 1, askRegion: undefined }, true],
+    ["a region that isn't text", { askRule: 1, askRegion: 7 }, { askRule: 1, askRegion: undefined }, true],
+  ])("stores the question's rule and region: %s", async (_, sent, stored, warned) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { caller, receptionReport } = setup();
+    await expect(caller.reports.submit({ ...valid, ...sent } as ReportInput)).resolves.toEqual({ accepted: true });
+    const { data } = receptionReport.create.mock.calls[0]![0] as { data: Record<string, unknown> };
+    expect({ askRule: data.askRule, askRegion: data.askRegion }).toMatchObject(stored);
+    for (const [k, v] of Object.entries(stored)) if (v === undefined) expect(data).not.toHaveProperty(k);
+    expect(warn.mock.calls.some(([m]) => String(m).startsWith("reports.submit: dropped malformed ask"))).toBe(warned);
+    warn.mockRestore();
   });
 });
 

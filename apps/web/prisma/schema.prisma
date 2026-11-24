@@ -105,6 +105,17 @@ model ReceptionReport {
   /// which site. Null for beacons, rows from before this column, or when the
   /// lookup failed (logged; the answer is kept).
   txSites      Json?
+  /// EiBi answers only (#115 review, owner D1/D2): which rules chose the
+  /// station(s) the question asked about (ASK_RULE_VERSION in
+  /// src/lib/reception.ts). Null: a page from before this column (EiBi's first
+  /// listing was asked about), a beacon, or a value the server couldn't read.
+  /// 1: with more than 3 stations on the frequency, the one aimed at
+  /// `askRegion` was asked about. The page's word; the server can't check it.
+  askRule      Int?
+  /// The receiver's broad region ("na", "eu", "as", "af", "me", "oc", "la")
+  /// the stations were ranked by, from its listed position. Null with askRule
+  /// 1: no position was known, so EiBi's order was kept.
+  askRegion    String?
 
   @@index([receiverHost, receiverPort, freqKhz])
   @@index([listenerId, createdAt])

@@ -1,5 +1,6 @@
 import { LANGUAGES } from "./eibi-languages";
 import { siteKey } from "./eibi-sites";
+import { type BroadRegion, regionsOf } from "./eibi-targets";
 
 /**
  * The EiBi shortwave schedule (http://www.eibispace.de/dx/): who's scheduled
@@ -230,17 +231,30 @@ export function onAirBetween<B extends Broadcast>(
 /** Broadcasts on one frequency. */
 export type Channel = { khz: number; broadcasts: Broadcast[] };
 
+/** Whether a broadcast is aimed at a broad region. */
+const aimedAt = (b: Broadcast, region: BroadRegion) => regionsOf(b.target).includes(region);
+
 /**
  * What's scheduled between two frequencies now, one entry per listed
  * frequency, lowest first. The same station in the same language is listed
- * once (EiBi lists each transmitter site).
+ * once (EiBi lists each transmitter site), where it first appears in the file;
+ * with a `region`, the row kept is one aimed there if any is (#115), so a
+ * station with a site aimed elsewhere listed first still ranks as aimed.
  */
-export function scheduledBetween(schedule: readonly Broadcast[], loKhz: number, hiKhz: number, ms: number): Channel[] {
+export function scheduledBetween(
+  schedule: readonly Broadcast[],
+  loKhz: number,
+  hiKhz: number,
+  ms: number,
+  region?: BroadRegion,
+): Channel[] {
   const out: Channel[] = [];
   for (const b of onAirBetween(schedule, loKhz, hiKhz, ms)) {
     let channel = out.at(-1);
     if (channel?.khz !== b.khz) out.push((channel = { khz: b.khz, broadcasts: [] }));
-    if (!channel.broadcasts.some((o) => o.station === b.station && o.lang === b.lang)) channel.broadcasts.push(b);
+    const i = channel.broadcasts.findIndex((o) => o.station === b.station && o.lang === b.lang);
+    if (i < 0) channel.broadcasts.push(b);
+    else if (region && !aimedAt(channel.broadcasts[i]!, region) && aimedAt(b, region)) channel.broadcasts[i] = b;
   }
   return out;
 }
@@ -251,11 +265,41 @@ export function scheduledBetween(schedule: readonly Broadcast[], loKhz: number, 
  */
 export const MATCH_KHZ = 0.5;
 
-/** What's scheduled on a frequency now, nearest listing first. */
-export function scheduledOn(schedule: readonly Broadcast[], khz: number, ms: number): Broadcast[] {
-  return scheduledBetween(schedule, khz - MATCH_KHZ, khz + MATCH_KHZ, ms)
+/**
+ * Broadcasts with, on each listed frequency, the ones aimed at `region` first
+ * (#115): where the audio comes from, so the one a listener there most likely
+ * hears leads. Frequencies keep their order (a list from `listedOn` stays
+ * nearest first); within one, ties and every broadcast when no region is
+ * known keep their order.
+ */
+export function rankBroadcasts(broadcasts: readonly Broadcast[], region?: BroadRegion): Broadcast[] {
+  if (!region) return [...broadcasts];
+  const firstAt = new Map<number, number>();
+  broadcasts.forEach((b, i) => firstAt.has(b.khz) || firstAt.set(b.khz, i));
+  const key = (b: Broadcast) => firstAt.get(b.khz)! * 2 + (aimedAt(b, region) ? 0 : 1);
+  return broadcasts
+    .map((b, i) => ({ b, i }))
+    .sort((x, y) => key(x.b) - key(y.b) || x.i - y.i)
+    .map(({ b }) => b);
+}
+
+/**
+ * What's scheduled on a frequency now, nearest listing first, each station in
+ * EiBi's order (with `region`, a row aimed there kept for it; see
+ * scheduledBetween). `scheduledOn` ranks this; `eibiTransmitter` needs both.
+ */
+export function listedOn(schedule: readonly Broadcast[], khz: number, ms: number, region?: BroadRegion): Broadcast[] {
+  return scheduledBetween(schedule, khz - MATCH_KHZ, khz + MATCH_KHZ, ms, region)
     .sort((a, b) => Math.abs(a.khz - khz) - Math.abs(b.khz - khz))
     .flatMap((c) => c.broadcasts);
+}
+
+/**
+ * What's scheduled on a frequency now, nearest listing first; on one listing,
+ * those aimed at `region` (where the audio comes from) first.
+ */
+export function scheduledOn(schedule: readonly Broadcast[], khz: number, ms: number, region?: BroadRegion): Broadcast[] {
+  return rankBroadcasts(listedOn(schedule, khz, ms, region), region);
 }
 
 /**

@@ -1,11 +1,13 @@
 import { z } from "zod";
 import { MATCH_KHZ, onAirBetween, scheduledOn, type Broadcast, type ListedBroadcast } from "@/lib/eibi";
 import { byKey, candidateFor, type SiteCandidate, type SiteTable } from "@/lib/eibi-sites";
+import { isBroadRegion } from "@/lib/eibi-targets";
 import { beaconOnBand, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
 import { findReceiver, MAX_PLAUSIBLE_SNR, MAX_ROWS, type Receiver } from "@/lib/kiwi-list";
 import { MAX_CANDIDATES, MAX_USERS, PICK_CONTEXT_VERSION, PICK_SOURCES, pickKey } from "@/lib/pick-context";
 import { MODES } from "@/lib/radio-types";
 import {
+  ASK_RULE_VERSION,
   BEACON_MIN_HEARD_MS,
   COMMENT_MAX,
   LISTING_GRACE_MS,
@@ -249,6 +251,17 @@ const optionalText = (max: number) =>
     .optional()
     .transform((s) => s || undefined);
 
+/**
+ * An optional marker the page sends with an answer: a bad value is dropped
+ * (and logged) rather than failing the whole report, as malformed pick
+ * context is.
+ */
+const droppable = <T extends z.ZodType>(name: string, schema: T) =>
+  schema.optional().catch(({ input }) => {
+    console.warn(`reports.submit: dropped malformed ${name}:`, JSON.stringify(input)?.slice(0, 40));
+    return undefined;
+  });
+
 const reportInput = z.object({
   listenerId: z.uuid(),
   // Lowercase, as receiverKey compares them, so one receiver isn't two in the data.
@@ -262,6 +275,10 @@ const reportInput = z.object({
   txDetail: optionalText(100),
   // Beacons: the UTC start of the 10 s slot asked about (beaconSlotChecks).
   slotStartMs: z.number().int().optional(),
+  // EiBi answers: which rules chose the station asked about and the region they ranked
+  // by (#115; lib/reception.ts ASK_RULE_VERSION). The page's word; kept for EiBi rows only.
+  askRule: droppable("askRule", z.number().int().min(1).max(ASK_RULE_VERSION)),
+  askRegion: droppable("askRegion", z.string().refine(isBroadRegion)),
   outcome: z.enum(OUTCOMES),
   comment: optionalText(COMMENT_MAX),
   // Malformed context is dropped here rather than failing the whole report.
@@ -296,7 +313,7 @@ export const reportsRouter = router({
     // and a station the schedule had on that frequency just now (or the
     // beacon the schedule had on that band in the slot asked about). From this
     // server's cached copies; neither fetches per request.
-    const { slotStartMs, pick, ...report } = input;
+    const { slotStartMs, pick, askRule, askRegion, ...report } = input;
     let listed: readonly ListedBroadcast[] | undefined;
     if (input.txKind === "beacon") {
       if (slotStartMs === undefined || !beaconSlotChecks(input.txName, freqKhz, slotStartMs, now))
@@ -355,6 +372,8 @@ export const reportsRouter = router({
         ...(official && { beaconStatus: official.off ? "OFF" : "OK" }),
         ...(rbn && rbnDay && { rbnSpots: rbn.spots, rbnDay: rbnDay.day }),
         ...(txSites && { txSites }),
+        // The question's rule and region, for a station only; a region only with a rule.
+        ...(input.txKind === "eibi" && askRule !== undefined && { askRule, ...(askRegion && { askRegion }) }),
         ...(fit && {
           pickVersion: fit.version,
           pickedAtMs: BigInt(fit.pickedAtMs),

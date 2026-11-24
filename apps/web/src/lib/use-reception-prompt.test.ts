@@ -2,6 +2,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Broadcast } from "./eibi";
+import type { BroadRegion } from "./eibi-targets";
 import type { RadioStatus } from "./use-radio";
 import {
   DWELL_MS,
@@ -32,6 +33,11 @@ const schedule: Broadcast[] = [
   allDay(9_580, "KBS World Radio", "K", "NAm"),
   allDay(11_700, "Radio A"),
   allDay(11_700, "Radio B"),
+  // Four stations on one frequency: only one is named, by the receiver's region (#115).
+  allDay(15_000, "Asia One", "M", "CHN"),
+  allDay(15_000, "Euro Two", "E", "Eu"),
+  allDay(15_000, "Africa Three", "F", "Af"),
+  allDay(15_000, "WWCR 2", "E", "NAm"),
 ];
 
 const listening = (freqKhz = 9_580, host = "a.example"): RadioStatus => ({
@@ -49,12 +55,13 @@ type Props = {
   schedule: readonly Broadcast[] | undefined;
   onList?: boolean;
   beacon?: BeaconPick | null;
+  region?: BroadRegion;
 };
 
 function setup(initial: Partial<Props> = {}) {
   const initialProps: Props = { status: listening(), heard: true, schedule, ...initial };
   return renderHook(
-    (p: Props) => useReceptionPrompt(p.status, p.heard, p.schedule, p.onList ?? true, p.beacon ?? null),
+    (p: Props) => useReceptionPrompt(p.status, p.heard, p.schedule, p.onList ?? true, p.beacon ?? null, p.region),
     { initialProps },
   );
 }
@@ -87,7 +94,7 @@ describe("useReceptionPrompt", () => {
       port: 8073,
       freqKhz: 9_580,
       mode: "am",
-      tx: { kind: "eibi", name: "KBS World Radio", detail: "E/NAm", label: "KBS World Radio" },
+      tx: { kind: "eibi", name: "KBS World Radio", detail: "E/NAm", label: "KBS World Radio", askRule: 1 },
     });
   });
 
@@ -111,7 +118,20 @@ describe("useReceptionPrompt", () => {
       kind: "eibi",
       name: "Radio A / Radio B",
       label: "anything from Radio A or Radio B",
+      askRule: 1,
     });
+  });
+
+  // Value: protects=with 4+ stations the hook asks about the one aimed at the region it was given and records that region with the rule, and with none keeps EiBi's first and records no region; fails_when=the hook ranks by one region but records another, or drops the region; why_new=#115 review D2 (askRegion); seam=fake timers; no_claim=the page passing the receiver's region (page.test)
+  it.each<[BroadRegion | undefined, string, Record<string, unknown>]>([
+    ["na", "WWCR 2", { askRule: 1, askRegion: "na" }],
+    [undefined, "Asia One", { askRule: 1 }],
+  ])("asks a crowded frequency's station by region %s and records it", (region, name, rule) => {
+    const hook = setup({ status: listening(15_000), region });
+    wait(DWELL_MS);
+    const tx = hook.result.current.prompt?.tx;
+    expect(tx).toMatchObject({ name, ...rule });
+    expect(tx?.askRegion).toBe(rule.askRegion);
   });
 
   // Value: protects=the minute is a minute unchanged: a retune, mode change, receiver change, Stop, error or audio dropping starts it over; fails_when=any of these doesn't reset the timer; why_new=reception prompt; seam=fake timers; no_claim=none beyond protects

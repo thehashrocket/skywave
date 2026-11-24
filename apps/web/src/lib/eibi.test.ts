@@ -8,6 +8,7 @@ import {
   onAirAt,
   onDay,
   parseEibi,
+  rankBroadcasts,
   scheduledBetween,
   scheduledOn,
   seasonFor,
@@ -193,6 +194,39 @@ describe("EiBi schedule", () => {
       [9_580.4, 1],
       [9_590, 1],
     ]);
+  });
+
+  // Value: protects=on a shared frequency, the broadcast aimed at the region the audio comes from leads the readout line and the waterfall label, ties and the no-region case keep EiBi's order, and nearer listings still come first; fails_when=a North American listener on 5,935 kHz is told it's Xizang RTV, not WWCR; why_new=#115; seam=none; no_claim=the reception prompt (reception.test.ts) or which region the page passes; propagation: an aimed broadcast may still not be the one heard
+  it("puts what's aimed at the audio's region first on a shared frequency", () => {
+    const schedule = [
+      b({ khz: 5_935, station: "Xizang RTV", lang: "M", target: "CHN" }),
+      b({ khz: 5_935, station: "Other Asia", lang: "M", target: "As" }),
+      b({ khz: 5_935, station: "WWCR 2", target: "NAm" }),
+      b({ khz: 5_935.4, station: "Off grid", target: "Eu" }),
+    ];
+    const t = at("2026-11-24T05:56:00Z");
+    const names = (region?: "na" | "as") => scheduledOn(schedule, 5_935.3, t, region).map((x) => x.station);
+    expect(names("na")).toEqual(["Off grid", "WWCR 2", "Xizang RTV", "Other Asia"]);
+    expect(names("as")).toEqual(["Off grid", "Xizang RTV", "Other Asia", "WWCR 2"]);
+    expect(names()).toEqual(["Off grid", "Xizang RTV", "Other Asia", "WWCR 2"]);
+    const channel = schedule.slice(0, 3);
+    expect(stationLine(rankBroadcasts(channel, "na"))?.text).toBe("WWCR 2 · English +2 more");
+    expect(shortLabel(rankBroadcasts(channel, "na"))).toBe("WWCR 2 +2");
+    expect(rankBroadcasts(channel)).toEqual(channel);
+  });
+
+  // Value: protects=a station with several sites on one frequency counts as aimed at a region when any of its on-air rows is, keeping its place in EiBi's order, and with no region the first row is kept as before; fails_when=a station's site aimed elsewhere is listed first and hides its North American row, so another station leads; why_new=#115 review; seam=none; no_claim=none
+  it("keeps a station's row aimed at the region when it has several sites", () => {
+    const schedule = [
+      b({ khz: 5_935, station: "Two sites", target: "As" }),
+      b({ khz: 5_935, station: "Other", target: "NAm" }),
+      b({ khz: 5_935, station: "Two sites", target: "NAm" }),
+    ];
+    const t = at("2026-11-24T05:56:00Z");
+    const rows = (region?: "na") => scheduledOn(schedule, 5_935, t, region).map((x) => `${x.station}/${x.target}`);
+    expect(rows("na")).toEqual(["Two sites/NAm", "Other/NAm"]);
+    expect(rows()).toEqual(["Two sites/As", "Other/NAm"]);
+    expect(scheduledBetween(schedule, 5_935, 5_935, t, "na")[0]!.broadcasts.map((x) => x.target)).toEqual(["NAm", "NAm"]);
   });
 
   // Value: protects=a line names the first broadcast and its languages, counts the rest, lists all for the tooltip, and leaves out language codes it doesn't know; the waterfall's short label is the name and a count only; fails_when=a shared frequency hides that others share it, or a raw code like "M" shows; why_new=plan: "9,580 · Radio Australia · English"; seam=none; no_claim=none

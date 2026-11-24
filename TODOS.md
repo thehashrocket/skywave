@@ -117,6 +117,18 @@ RBN live goes through #69's single connection in the radio service once its logi
 **Priority:** P3
 **Depends on:** #61 replay passing (D10's 0.03 floor); #69 login (RBN live half only, not needed for the daily-batch path)
 
+### Read the question rule in the #61 broadcast probe (#115)
+
+**What:** Have `apps/radio/spikes/spots/broadcast_wspr_probe.py` read block 10's optional `ask_rule` and `ask_region` columns (blank = null, so older exports still load) and report results per question rule.
+
+**Why:** Since #115, a frequency with 4+ stations asks about the one aimed at the receiver's region instead of EiBi's first. Each row's geometry already uses the station actually asked (`tx_sites`), but without these columns the replay pools both rules and can't report them apart.
+
+**Context:** #115 eng review (2026-11-24), owner D5: defer until there are rows to read, so collection starts on deploy. `askRule`/`askRegion` are on `ReceptionReport` (schema docblock); block 10 of `.local-data/61-step0.sql` already exports them. On the b26 snapshot, 2% of on-air channel-hours have 4+ stations, and ranking changes the asked station on about a third of those.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** #115 deployed and answers collected
+
 ### Rank receivers for a broadcaster by transmitter site (#72)
 
 **What:** Order Pick best's receivers for an EiBi broadcast by where they sit relative to its transmitter site, the way `rankForBeacon` does for beacons (`apps/web/src/lib/beacon-rank.ts:67`): past the skip zone, within one or two hops, sunlit midpoint.
