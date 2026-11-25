@@ -66,6 +66,9 @@ export function SignalLive({ slug }: { slug: string }) {
           </Link>
         </>
       );
+    } else if (on) {
+      // On the air with no frequency yet (Priyom's "Search" slots), as the panel shows it: no Listen.
+      status = <>On the air now; Priyom hasn&rsquo;t listed the frequency yet.</>;
     } else if (next) {
       status = (
         <>
