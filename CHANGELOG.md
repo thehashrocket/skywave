@@ -2,6 +2,18 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.53.0.0] - 2026-11-25 ([#98](https://github.com/thehashrocket/skywave/issues/98))
+
+### Added
+- **The signal stations catalog**, the groundwork for a Signal stations panel (#100). Nothing shows on the page yet. It lists:
+  - time signals: WWV, WWVH and RWM
+  - markers: UVB-76 "The Buzzer", The Pip and The Squeaky Wheel
+  - numbers stations: E07, E11, S06, S11a, V07 and M12
+  - stations now off the air: CHU, Lincolnshire Poacher and Cherry Ripe
+
+  Each entry has its frequencies, mode, transmitter site and sources, and the catalog can tell which stations are on the air at any moment. The Pip and The Squeaky Wheel change frequency between day and night; the catalog follows the sun at the transmitter to pick which.
+- **Numbers-station times from Priyom.** The server reads [Priyom's schedule](https://priyom.org/number-stations/station-schedule) for the coming week, at most every six hours, and logs which stations' times or frequencies changed between reads. If Priyom can't be reached, it keeps the last good copy. Numbers-station details come from Priyom (CC BY-NC-SA 4.0) and are credited to it.
+
 ## [0.52.0.0] - 2026-11-25 ([#108](https://github.com/thehashrocket/skywave/issues/108))
 
 ### Added

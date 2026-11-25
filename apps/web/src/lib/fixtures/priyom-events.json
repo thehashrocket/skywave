@@ -1,0 +1,64 @@
+{
+ "items": [
+  {
+   "summary": "E07 17428kHz USB",
+   "start": {
+    "dateTime": "2026-11-26T10:00:00.000Z"
+   }
+  },
+  {
+   "summary": "E11 8102kHz USB",
+   "start": {
+    "dateTime": "2026-11-25T03:15:00.000Z"
+   }
+  },
+  {
+   "summary": "S11a 21906kHz USB",
+   "start": {
+    "dateTime": "2026-11-25T05:10:00.000Z"
+   }
+  },
+  {
+   "summary": "S06 11616kHz USB/AM [Target: Pacific]",
+   "start": {
+    "dateTime": "2026-11-25T04:00:00.000Z"
+   }
+  },
+  {
+   "summary": "M12 Search",
+   "start": {
+    "dateTime": "2026-11-26T04:00:00.000Z"
+   }
+  },
+  {
+   "summary": "M12 12135kHz CW",
+   "start": {
+    "dateTime": "2026-11-25T19:00:00.000Z"
+   }
+  },
+  {
+   "summary": "V13 15388kHz USB/AM [Target: East Asia]",
+   "start": {
+    "dateTime": "2026-11-25T00:00:00.000Z"
+   }
+  },
+  {
+   "summary": "F06a 17532kHz RTTY [Target: Pacific]",
+   "start": {
+    "dateTime": "2026-11-25T01:00:00.000Z"
+   }
+  },
+  {
+   "summary": "M14 17458kHz CW (May not always transmit)",
+   "start": {
+    "dateTime": "2026-11-25T09:30:00.000Z"
+   }
+  },
+  {
+   "summary": "F03 Search (May not always transmit)",
+   "start": {
+    "dateTime": "2026-11-26T07:20:00.000Z"
+   }
+  }
+ ]
+}

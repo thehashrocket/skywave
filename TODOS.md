@@ -76,6 +76,18 @@
 
 ## Web app
 
+### Signal stations: verify the seed catalog before the panel ships (#98 follow-up)
+
+**What:** Before #100 shows the panel, check these entries in `apps/web/src/lib/signal-stations.ts` against Priyom (priyom.org) or the operators, and fix any that are wrong: (1) CHU is listed as off the air since 2023-10-09, on Wikipedia's word alone (NRC's page refused automated fetches); (2) The Pip's and Squeaky Wheel's mode, set to USB like UVB-76's but stated on neither page; (3) their day/night switch times: `dayNight` follows the sun at the transmitter, so check a dawn and a dusk on a live Kiwi; (4) Squeaky Wheel's channels: Wikipedia gives 5367/3363.5 kHz, VE3SUN's list 3829.18/3830.45; (5) the credit line the panel shows for Priyom (CC BY-NC-SA 4.0), which the numbers-station entries come from; (6) how long numbers-station transmissions last: `PRIYOM_ON_AIR_MS` in `apps/web/src/lib/priyom-schedule.ts` counts a transmission as on air for 10 minutes after its listed start, an estimate, since Priyom gives no end time (its pages bound it only from above: E07, V07 and M12 repeat every 20 minutes). Listen by ear to a few E11, E07, S06 and M12 slots on a Kiwi, note when each ends, and set the window to the shortest typical length so Listen never lands after a message has ended.
+
+**Why:** #104's rule is that Listen must never land in dead air. A wrong frequency or mode is silence, and a live station marked defunct loses its Listen.
+
+**Context:** Built in PR #123 from operator pages (NIST) and Wikipedia; the numbers stations (E07, E11, S06, S11a, V07, M12) come from Priyom's station pages and list no frequencies, because Priyom's change monthly or by season. The VE3SUN and Priyom asks are drafted in the Notion Bot Inbox; their answers may also add UVB-76's night channel, Swedish Rhapsody, VE3SUN-only entries such as HD2IOA, and a feed of Priyom's schedule calendar (listed in the file's header).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** #100 starting
+
 ### GhostNet: confirm the RTTY dial on a live slot (#91 follow-up)
 
 **What:** During a GhostNet RTTY slot (Thu 1900Z Europe, Thu 0800Z Australia, Fri 0200Z North America), watch a Kiwi waterfall around 7.073-7.081 MHz. If the two tones sit at 7.077 and 7.07683 MHz (mark on 7.077), keep the dial at 7.074875 USB. If they sit 1-2.5 kHz above 7.077, move the dial to 7.077 USB.
