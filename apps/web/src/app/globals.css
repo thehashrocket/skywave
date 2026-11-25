@@ -2519,6 +2519,9 @@ html:has(.tuning-bar:not([hidden])) {
    push the rows below down under a press. */
 .signals-heard {
   display: block;
+  /* 1.5em first: browsers without the lh unit (Safari < 16.4, Firefox < 120) keep it,
+     so the reserved line holds there too (#102 review). */
+  min-height: 1.5em;
   min-height: 1lh;
   overflow: hidden;
   font-family: var(--font-ui);
