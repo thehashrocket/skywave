@@ -7,15 +7,20 @@ export const alt = "A signal station on skywave";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
+// Only catalog stations get a card; any other slug is a 404, not an image rendered on demand.
+export const dynamicParams = false;
+
 export function generateStaticParams() {
   return SIGNAL_STATIONS.map((s) => ({ slug: s.slug }));
 }
 
 export default async function StationImage({ params }: { params: Promise<{ slug: string }> }) {
   const station = findStation((await params).slug);
-  const name = station?.name ?? "Signal stations";
-  const aka = station?.aka[0];
-  const defunct = station?.schedule.kind === "defunct";
+  // Any other slug is a 404, never a card rendered on demand.
+  if (!station) return new Response(null, { status: 404 });
+  const name = station.name;
+  const aka = station.aka[0];
+  const defunct = station.schedule.kind === "defunct";
   return new ImageResponse(
     <div
       style={{

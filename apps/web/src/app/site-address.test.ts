@@ -32,12 +32,14 @@ describe("the site's own address (#103)", () => {
 });
 
 describe("signals/[slug]/opengraph-image.tsx", () => {
-  // Value: protects=#103 each station page has a share card (one per catalog station, 1200x630 PNG) that renders for a live and a defunct station; fails_when=a station has no card, the size drifts, or rendering throws at build; why_new=#103 per-station card (owner asked); seam=none (renders with next/og); no_claim=how each site crops it
+  // Value: protects=#103 each station page has a share card (one per catalog station, 1200x630 PNG) that renders for a live and a defunct station; fails_when=a station has no card, the size drifts, rendering throws at build, or an unknown slug renders an image on demand instead of a 404 (Codex full-branch review: /signals/<junk>/opengraph-image was a 200 PNG); why_new=#103 per-station card (owner asked); seam=none (renders with next/og); no_claim=how each site crops it
   it("builds a 1200x630 card for every station", async () => {
     const og = await import("./signals/[slug]/opengraph-image");
     const { SIGNAL_STATIONS } = await import("@/lib/signal-stations");
     expect(og.size).toEqual({ width: 1200, height: 630 });
     expect(og.generateStaticParams().map((p) => p.slug)).toEqual(SIGNAL_STATIONS.map((s) => s.slug));
+    expect(og.dynamicParams).toBe(false);
+    expect((await og.default({ params: Promise.resolve({ slug: "zz-junk" }) })).status).toBe(404);
     for (const slug of ["uvb-76", "cherry-ripe"]) {
       const res = await og.default({ params: Promise.resolve({ slug }) });
       expect(res.headers.get("content-type")).toBe("image/png");
