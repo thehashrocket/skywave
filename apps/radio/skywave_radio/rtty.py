@@ -210,6 +210,12 @@ class RttyDecoder:
         self._ita2 = Ita2()
         self._recent: list[np.ndarray] = []
         self._recent_n = 0
+        # Input samples seen so far, and the work-rate position of _d[0] on the
+        # same clock, so a replayed character can be told from one already shown.
+        self._n_in = 0
+        self._d_abs0 = 0.0
+        # Work-rate position of the start edge of the last character shown.
+        self._shown_to = -math.inf
 
         # Tone-pair search state.
         self._spec_buf = np.zeros(0, dtype=np.complex64)
@@ -259,6 +265,7 @@ class RttyDecoder:
             return ""
         self._recent.append(iq)
         self._recent_n += iq.size
+        self._n_in += iq.size
         while self._recent_n - self._recent[0].size >= REPLAY_S * self.fs:
             self._recent_n -= self._recent.pop(0).size
         was_open = self.squelch_open
@@ -270,10 +277,23 @@ class RttyDecoder:
             self._restart()
         # Just locked, or the squelch just opened: decode the last REPLAY_S,
         # which ends with this block.
-        feed = np.concatenate(self._recent) if self._relocked else iq
+        if self._relocked:
+            feed = np.concatenate(self._recent)
+            self._d_abs0 = (self._n_in - feed.size) / self._decim
+        else:
+            feed = iq
         d, e = self._discriminate(feed)
-        text = self._slice(d, e)
-        return text if self.squelch_open else ""
+        chars = self._slice(d, e)
+        if not self.squelch_open:
+            return ""
+        # A replay goes back over up to REPLAY_S, which may hold characters
+        # already shown before a fade closed the squelch: show only newer ones.
+        # (Half a bit of slack: the same character's edge lands within a sample
+        # or two when decoded again.)
+        new = [(at, ch) for at, ch in chars if at > self._shown_to + self._spb / 2]
+        if new:
+            self._shown_to = new[-1][0]
+        return "".join(ch for _, ch in new)
 
     # --- tone pair ---------------------------------------------------------
 
@@ -372,13 +392,14 @@ class RttyDecoder:
 
     # --- slicing -----------------------------------------------------------
 
-    def _slice(self, d: np.ndarray, e: np.ndarray) -> str:
+    def _slice(self, d: np.ndarray, e: np.ndarray) -> list[tuple[float, str]]:
+        """Characters found, each with its start edge's work-rate position."""
         self._d = np.concatenate((self._d, d))
         self._e = np.concatenate((self._e, e))
         keep = int(LEVEL_S * self.work_fs)
         self._level_buf = np.concatenate((self._level_buf, e))[-keep:]
         level = float(np.percentile(self._level_buf, LEVEL_PERCENTILE)) if self._level_buf.size else 0.0
-        out: list[str] = []
+        out: list[tuple[float, str]] = []
         spb = self._spb
         # From a start edge, the stop bit's sample is this far on.
         frame = (DATA_BITS + 1.5) * spb
@@ -410,7 +431,7 @@ class RttyDecoder:
                 self._pos = int(edge + frame)
             elif samples[0] < 0 and samples[-1] > 0:
                 code = sum(1 << i for i, v in enumerate(samples[1:-1]) if v > 0)
-                out.append(self._ita2.feed(code))
+                out.append((self._d_abs0 + edge, self._ita2.feed(code)))
                 self._pos = int(edge + frame)
             else:
                 # Not a character (noise, or we came in mid-character): look on.
@@ -419,6 +440,7 @@ class RttyDecoder:
         drop = max(0, self._pos - 1)
         if drop:
             self._d = self._d[drop:]
+            self._d_abs0 += drop
             self._e = self._e[drop:]
             self._pos -= drop
-        return "".join(out)
+        return out

@@ -8,7 +8,9 @@ function statusLine(state: DecodeState, canDecode: boolean, playing: boolean): s
   if (!playing) return "Decodes RTTY (45.45 baud, 170 Hz shift) once a receiver plays.";
   if (!canDecode) return "This radio service can't decode RTTY yet.";
   if (state.state === "locked" && state.markHz !== undefined) {
-    return `Decoding. Mark tone at ${Math.round(state.markHz)} Hz.`;
+    // The service gives the offset from the dial, negative below it (LSB);
+    // the listener hears it as a pitch.
+    return `Decoding. Mark tone at ${Math.round(Math.abs(state.markHz))} Hz.`;
   }
   return "Looking for RTTY tones (45.45 baud, 170 Hz shift)…";
 }

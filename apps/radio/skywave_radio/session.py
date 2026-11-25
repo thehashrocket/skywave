@@ -664,6 +664,7 @@ class ListenSession:
                     # failure and reports it, so don't send a second error.
                     return
             moved = freq != self._freq_khz or mode != self._mode
+            freq_moved = freq != self._freq_khz
             self._freq_khz = freq
             if mode != self._mode:
                 # The demodulator first: if building it fails, _mode and the
@@ -678,7 +679,12 @@ class ListenSession:
                 self._mode = mode
             had_decode = moved and self._decode is not None
             if had_decode:
-                self._forget_mark()
+                # A new mode only moves the search range and CW's offset (the
+                # mark is from the dial, so it still holds); a new frequency
+                # puts the signal elsewhere.
+                if freq_moved:
+                    self._forget_mark()
+                await self._flush_decoded()
                 self._start_decoder()
             if self._listening:
                 await self._status("listening")
@@ -686,7 +692,7 @@ class ListenSession:
                     await self._decode_reply()
             return
 
-        if self._freq_khz and (freq != self._freq_khz or mode != self._mode):
+        if self._freq_khz and freq != self._freq_khz:
             # Another receiver on another frequency: same rule as a retune. (A
             # mark set before the first Listen is for that Listen: kept.)
             self._forget_mark()
@@ -948,6 +954,8 @@ class ListenSession:
         # cancelled before it started, while listening (Stop, a switch) or
         # during teardown, or failing its teardown with no ending to report.
         self._pump_done(asyncio.current_task())
+        # Text decoded in the last moments goes before the ending's status.
+        await self._flush_decoded()
         if ending is not None:
             # Same-receiver tunes stay held through this send: a switch now
             # would cancel it, losing the reason (a refusal, the limit) and
@@ -1008,6 +1016,7 @@ class ListenSession:
         except Exception as e:
             # Its waterfall is closed either way (_end_scan's finally).
             log.warning("the stopped session's scan had failed: %r", e, exc_info=e)
+        await self._flush_decoded()
         if message:
             await self._status("stopped", message=message)
 
@@ -1016,6 +1025,9 @@ class ListenSession:
 
     async def _set_decode(self, msg: dict[str, Any]) -> None:
         mode, mark, reverse = msg.get("mode"), msg.get("markHz"), msg.get("reverse", False)
+        # Whatever the old decoder found still goes out (a Reverse toggle
+        # rebuilds it); the browser ignores it if this turns decoding off.
+        await self._flush_decoded()
         if mode is None:
             self._decode = None
             self._start_decoder()
@@ -1047,7 +1059,6 @@ class ListenSession:
     def _start_decoder(self) -> None:
         """(Re)build the decoder for what the browser asked and what plays now."""
         self._decoder = None
-        self._decoded_pending = ""
         self._decode_sent = None
         client = self._client
         if self._decode is None or not self._listening or client is None or not client.info.sample_rate:
@@ -1120,6 +1131,19 @@ class ListenSession:
             await self._send_text(
                 {"type": "decoded", "mode": self._decode[0], "text": text, "atMs": int(time.time() * 1000)}
             )
+
+    async def _flush_decoded(self) -> None:
+        """Send decoded text still waiting for its batch: called before the
+        decoder is rebuilt or dropped, so the last characters aren't lost."""
+        text, self._decoded_pending = self._decoded_pending, ""
+        if not text:
+            return
+        self._decoded_at = time.monotonic()
+        try:
+            await self._send_text({"type": "decoded", "mode": "rtty", "text": text, "atMs": int(time.time() * 1000)})
+        except Exception:
+            # The browser went away; like _send_status, nothing more to do.
+            pass
 
     async def _start_scan(self, msg: dict[str, Any]) -> None:
         scan_id = msg.get("id")

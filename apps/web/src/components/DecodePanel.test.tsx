@@ -8,7 +8,7 @@ afterEach(cleanup);
 const noop = () => {};
 
 describe("DecodePanel", () => {
-  // Value: protects=the status line tells searching from locked (with the mark tone), and says when the service can't decode or nothing plays; fails_when=a locked decoder reads as searching, or an older service silently shows nothing; why_new=RTTY decoding (#92); seam=none; no_claim=the hook's state handling (use-radio tests)
+  // Value: protects=the status line tells searching from locked (with the mark tone), and says when the service can't decode or nothing plays; fails_when=a locked decoder reads as searching, an LSB lock shows a negative pitch, or an older service silently shows nothing; why_new=RTTY decoding (#92); seam=none; no_claim=the hook's state handling (use-radio tests)
   it("says what the decoder is doing", () => {
     const props = { text: "", onReverse: noop, onClear: noop, onOff: noop };
     const { rerender } = render(
@@ -16,6 +16,9 @@ describe("DecodePanel", () => {
     );
     expect(screen.getByRole("status").textContent).toMatch(/Looking for RTTY tones/);
     rerender(<DecodePanel {...props} state={{ state: "locked", markHz: 2124.6, reverse: false }} canDecode playing />);
+    expect(screen.getByRole("status").textContent).toBe("Decoding. Mark tone at 2125 Hz.");
+    // In LSB the tone sits below the dial; it still reads as the pitch heard.
+    rerender(<DecodePanel {...props} state={{ state: "locked", markHz: -2125, reverse: false }} canDecode playing />);
     expect(screen.getByRole("status").textContent).toBe("Decoding. Mark tone at 2125 Hz.");
     rerender(<DecodePanel {...props} state={{ state: "searching", reverse: false }} canDecode={false} playing />);
     expect(screen.getByRole("status").textContent).toMatch(/can't decode RTTY yet/);

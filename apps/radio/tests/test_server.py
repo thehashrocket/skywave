@@ -6090,3 +6090,48 @@ def test_switching_receiver_and_frequency_forgets_the_mark():
     set_, switched = run_with_fake(body)
     assert set_[-1]["markHz"] == 1600
     assert "markHz" not in switched[-1]
+
+
+# Value: protects=decoded text still waiting for its half-second batch goes out before the decoder is rebuilt (Reverse) or dropped (Stop), in order before the reply or status; fails_when=pending text is cleared on rebuild or never flushed at an ending, so the last characters of an over ("SK") vanish; why_new=second review of PR 120; seam=a session with pending text set by hand, no Kiwi; no_claim=the pump's own ending path (same helper)
+@pytest.mark.parametrize("how", ["reverse", "stop"])
+async def test_pending_decoded_text_is_sent_before_rebuild_or_stop(how):
+    from skywave_radio.session import ListenSession
+
+    sent: list[dict] = []
+
+    async def record(payload):
+        sent.append(payload)
+
+    session = ListenSession(settings(), record, _ignore)
+    await session.handle({"type": "decode", "mode": "rtty"})
+    session._decoded_pending = "73 SK"
+    sent.clear()
+    if how == "reverse":
+        await session.handle({"type": "decode", "mode": "rtty", "reverse": True})
+        follows = "decode"
+    else:
+        await session.handle({"type": "stop"})
+        follows = "status"
+    assert sent[0]["type"] == "decoded" and sent[0]["text"] == "73 SK"
+    assert sent[1]["type"] == follows
+    assert session._decoded_pending == ""
+
+
+# Value: protects=a hand-set mark survives a mode change on the same frequency (the mark is from the dial), and still goes back to automatic on a frequency change; fails_when=a mode-only retune forgets the mark, against the protocol doc; why_new=second review of PR 120; seam=FakeKiwi; no_claim=none
+@pytest.mark.timeout(30)
+def test_mode_change_keeps_the_mark():
+    def body(kiwi):
+        with TestClient(create_app(settings())).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port, freq=7077, mode="usb"))
+            until_state(ws, "listening")
+            ws.send_text(json.dumps({"type": "decode", "mode": "rtty", "markHz": 2125}))
+            until_type(ws, "decode")
+            ws.send_text(tune_msg(kiwi.port, freq=7077, mode="cw"))
+            after_mode = until_type(ws, "decode")
+            ws.send_text(tune_msg(kiwi.port, freq=7080, mode="cw"))
+            after_freq = until_type(ws, "decode")
+        return after_mode, after_freq
+
+    after_mode, after_freq = run_with_fake(body)
+    assert after_mode[-1]["markHz"] == 2125
+    assert "markHz" not in after_freq[-1]

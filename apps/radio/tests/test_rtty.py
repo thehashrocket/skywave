@@ -219,3 +219,16 @@ def test_second_over_on_same_tones_prints_from_its_start():
     assert not d.squelch_open
     d._ita2.figs = True  # as if junk read during the gap decoded as FIGS
     assert run(noisy(np.concatenate((second, gap[: int(FS * 3)])))).strip() == "CQ CQ DE K1ABC K"
+
+
+# Value: protects=when the squelch shuts and reopens within the replay window (a short fade mid-over), the replay doesn't print words again that were already shown; fails_when=replayed characters aren't checked against what was shown; why_new=second review of PR 120; seam=the squelch forced shut by hand (a real fade needs a weak signal and exact timing); no_claim=a different station starting on a drifted pair inside the replay window (its first characters may be dropped)
+def test_reopening_squelch_does_not_repeat_text():
+    text = "CQ CQ DE W1AW W1AW TU K"
+    iq = hand_fsk(text, FS, upper_hz=2125, lower_hz=1955)
+    d = RttyDecoder(FS)
+    half = iq.size // 2
+    out = "".join(d.process(iq[i : min(i + 512, half)]) for i in range(0, half, 512))
+    assert d.squelch_open and out.strip()
+    d.squelch_open = False  # as if a fade had closed it; the next search reopens it and replays
+    out += "".join(d.process(iq[i : i + 512]) for i in range(half, iq.size, 512))
+    assert out.strip() == text

@@ -449,6 +449,9 @@ export function useRadio() {
           if (!decodeRef.current) setDecodeState(null);
           return;
         }
+        // A state from before the listener turned it off, still in flight,
+        // must not bring the panel back.
+        if (!decodeRef.current && state !== "error") return;
         if (state === "error") decodeRef.current = null;
         setDecodeState({
           state,
