@@ -2,6 +2,16 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.56.0.0] - 2026-11-25 ([#101](https://github.com/thehashrocket/skywave/issues/101))
+
+### Added
+- **Tell us whether you heard a signal station.** After you press Listen on a signal station and a minute of its audio has played, "Did you hear it?" asks about that station: Heard, Not heard or Didn't open, with an optional comment. It asks only after a Listen, never for a station a shared link named or a frequency you tuned by hand, and never about a station that went off the air before the minute was up.
+- **WWV or WWVH?** The two share 2.5, 5, 10 and 15 MHz, so their questions name the voice that tells them apart: "Did you hear WWV (a man's voice)…?" or "WWVH (a woman's voice)".
+- **Answers are checked before they're kept.** The server accepts an answer only about a station in the catalog that was on the air on that frequency, and a numbers-station answer only when Priyom's schedule lists that transmission. WWV and WWVH on one frequency count separately, and a signal answer doesn't stop you answering about a broadcast there later.
+
+### Fixed
+- **Numbers stations that started just before midnight or noon UTC stay listed.** A transmission that began a few minutes before 00:00 or 12:00 UTC could drop out of "On now" when the schedule refreshed just after; the server now keeps the 12 hours before as well.
+
 ## [0.55.0.0] - 2026-11-25
 
 ### Added
