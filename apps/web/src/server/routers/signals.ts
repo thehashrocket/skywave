@@ -129,8 +129,14 @@ export function priyomScheduleSource({ fetchImpl = (...args) => fetch(...args), 
 /** The one cached Priyom schedule for this server. */
 export const getPriyomSchedule = priyomScheduleSource();
 
-/** How long the server keeps a lastHeard answer before reading the reports again (#102). */
-export const LAST_HEARD_TTL_MS = 60_000;
+/**
+ * How long the server keeps a lastHeard answer before reading the reports
+ * again (#102). Ten minutes, not one (owner decision on the #102 review): the
+ * database (Neon) only sleeps after five idle minutes, so reading every minute
+ * while anyone has the page open would keep it awake and billing; a "heard"
+ * can take up to ~20 minutes (this plus the page's poll) to show instead.
+ */
+export const LAST_HEARD_TTL_MS = 10 * 60_000;
 
 /**
  * How long a lastHeard read may take (#102 review). A hung read (a database

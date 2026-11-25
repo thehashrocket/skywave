@@ -178,8 +178,9 @@ describe("lastHeardSource", () => {
     expect(heard["wwvh"]).toMatchObject({ heardMs: NOW - 60 * 60_000, either: ["WWV", "WWVH"] });
   });
 
-  // Value: protects=the answer is cached for LAST_HEARD_TTL_MS (one read a minute however many pages poll), concurrent callers share one read, and a failed read serves the last good answer and waits a TTL before reading again; fails_when=every request hits the database (healthy or failing), or a database blip errors the badges away; why_new=#102 server cache, backoff from the #102 review; seam=groupBy faked, clock injected; no_claim=none
-  it("caches for a minute and keeps the last answer through a failed read", async () => {
+  // Value: protects=the answer is cached for LAST_HEARD_TTL_MS, longer than Neon's five idle minutes before it sleeps (owner decision on the #102 review), however many pages poll; concurrent callers share one read; a failed read serves the last good answer and waits a TTL before reading again; fails_when=the TTL is cut so the database never sleeps, every request hits the database (healthy or failing), or a database blip errors the badges away; why_new=#102 server cache, backoff and TTL from the #102 review; seam=groupBy faked, clock injected; no_claim=Neon's actual autosuspend setting
+  it("caches past Neon's idle window and keeps the last answer through a failed read", async () => {
+    expect(LAST_HEARD_TTL_MS).toBeGreaterThan(5 * 60_000);
     let clock = NOW;
     const get = lastHeardSource({ now: () => clock });
     const { db, groupBy, reads } = fakeDb([row("signal", "rwm", 9_996, "heard", 5)]);
