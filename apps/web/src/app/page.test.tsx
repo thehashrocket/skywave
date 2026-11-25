@@ -5,7 +5,7 @@ import type { Broadcast } from "@/lib/eibi";
 import type { Receiver } from "@/lib/kiwi-list";
 import { noteResponse, resetServerClock } from "@/lib/server-clock";
 import { fakeIntersectionObserver } from "@/test/fake-intersection-observer";
-import type { RadioStatus, ScanState, Settled } from "@/lib/use-radio";
+import type { DecodeState, RadioStatus, ScanState, Settled } from "@/lib/use-radio";
 
 const radio = {
   status: { state: "idle" } as RadioStatus,
@@ -20,6 +20,11 @@ const radio = {
   viewError: null as string | null,
   showView: vi.fn(),
   onWideFrame: () => () => {},
+  canDecode: false,
+  decodeState: null as DecodeState | null,
+  decoded: "",
+  setDecode: vi.fn(),
+  clearDecoded: vi.fn(),
   tune: vi.fn(async () => {}),
   retune: vi.fn(),
   stop: vi.fn(),
@@ -214,11 +219,15 @@ beforeEach(() => {
   radio.scan = null;
   radio.canView = false;
   radio.viewError = null;
+  radio.canDecode = false;
+  radio.decodeState = null;
+  radio.decoded = "";
   schedule.data = undefined;
   noise.current = null;
   beaconsOff.current = new Map();
   rbnQuiet.current = { day: null, quiet: new Set() };
   radio.showView.mockClear();
+  radio.setDecode.mockClear();
   radio.startScan.mockClear();
   radio.tune.mockClear();
   radio.stop.mockClear();
@@ -3078,6 +3087,24 @@ describe("ListenPage", () => {
 
     const openGhostNet = () => act(() => fireEvent.click(screen.getByRole("button", { name: "GhostNet" })));
 
+    // Value: protects=Listen on the RTTY slot turns the decoder on (and a JS8 Listen doesn't), so the strip's "text shows under the waterfall" holds; fails_when=listenToGhostNet stops calling setDecode for RTTY or calls it for other slots; why_new=RTTY decoding (#92); seam=useRadio mocked, real GhostNetStrip; no_claim=whether the 7.077 dial reading is right (TODOS.md)
+    it("turns the decoder on for the RTTY slot only", () => {
+      render(<ListenPage />);
+      openGhostNet();
+      act(() => fireEvent.click(screen.getByRole("button", { name: NA_JS8 })));
+      expect(radio.setDecode).not.toHaveBeenCalled();
+      act(() => vi.setSystemTime(Date.UTC(2026, 10, 27, 2, 5)));
+      resetServerClock();
+      noteResponse(new Headers({ "x-server-ms": String(Date.now()) }), Date.now(), Date.now());
+      act(() => vi.advanceTimersByTime(1000));
+      act(() =>
+        fireEvent.click(
+          screen.getByRole("button", { name: "Listen to North America net, RTTY on 7.077 MHz, dial 7.0749 USB" }),
+        ),
+      );
+      expect(radio.setDecode).toHaveBeenCalledWith({ mode: "rtty" });
+    });
+
     // Value: protects=GhostNet Listen hands Pick best the net's dial and mode (7.107 USB), not the dial as it was, and tries the receiver inside the net's region before a stronger one outside it (review A1, owner D2/D5); fails_when=the dial is set only through changeFreq/the next render, or ranking ignores the region; why_new=new Listen through listenAt; seam=MapPanel/picker/radio mocked, real GhostNetStrip and ranking; no_claim=Kiwi audio
     it("tunes the net's frequency on a receiver in its region", () => {
       render(<ListenPage />);
@@ -3897,5 +3924,20 @@ describe("ListenPage", () => {
         expect(pickedRow()).toBeNull();
       });
     });
+  });
+
+  // Value: protects=the Decode RTTY switch asks for (and turns off) the decoder, and the panel with its text shows only while one is on; fails_when=the switch isn't wired to setDecode or the panel shows with decoding off; why_new=RTTY decoding (#92); seam=useRadio mocked; no_claim=the decoder itself (radio tests) or the hook (use-radio tests)
+  it("turns RTTY decoding on and off, showing the panel only while on", () => {
+    const { rerender } = render(<ListenPage />);
+    expect(screen.queryByRole("region", { name: "Decoded RTTY" })).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Decode RTTY" }));
+    expect(radio.setDecode).toHaveBeenLastCalledWith({ mode: "rtty" });
+    radio.decodeState = { state: "locked", markHz: 2125, reverse: false };
+    radio.decoded = "CQ DE W1AW";
+    radio.canDecode = true;
+    rerender(<ListenPage />);
+    expect(screen.getByLabelText("Decoded text").textContent).toBe("CQ DE W1AW");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Decode RTTY" }));
+    expect(radio.setDecode).toHaveBeenLastCalledWith(null);
   });
 });

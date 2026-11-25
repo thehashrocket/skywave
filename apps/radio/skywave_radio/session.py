@@ -19,6 +19,14 @@ Browser -> service (JSON text frames):
     channel, pauses while a scan sweeps, and points again after it. Ask again
     after each "listening" status for a new receiver. Needs "view" in
     "features".)
+    {"type": "decode", "mode": "rtty", "markHz": 1585, "reverse": false}
+    {"type": "decode", "mode": null}
+    (decode RTTY, 45.45 baud 170 Hz shift, from the audio's own I/Q: no extra
+    Kiwi channel. "markHz" is the mark tone's offset from the dial frequency,
+    the pitch it has in USB; leave it out or null to find the tone pair
+    automatically. A retune to another frequency goes back to automatic.
+    "reverse" swaps mark and space (normal: mark is the higher tone). Kept
+    across receivers until turned off. Needs "decode" in "features".)
 
 Service -> browser:
     JSON text: {"type": "status", "state": "connecting|listening|stopped|error", "features": ["scan"], ...}
@@ -33,6 +41,15 @@ Service -> browser:
     JSON text: {"type": "meter", "rssi": -73.1, "overflow": false}
     JSON text: {"type": "view", "id": 4, "state": "error", "message": "..."}
                (the view asked for can't be shown; the audio plays on)
+    JSON text: {"type": "decode", "mode": "rtty", "state": "searching|locked|off|error",
+                "markHz": 1585, "reverse": false, "message": "..."}
+               (the decoder's state: on each decode request, and when it finds,
+               moves or loses its tone pair. "locked" means text is coming
+               out; markHz is set once a pair is found. "error": the request
+               was refused or the decoder failed and is off; the audio plays on)
+    JSON text: {"type": "decoded", "mode": "rtty", "text": "...", "atMs": 1764000000000}
+               (decoded text, batched about every DECODED_INTERVAL_S; atMs is
+               wall-clock ms when the batch went out)
     Binary:    0x03 + int16 LE mono audio at `sampleRate` (full scale = 32767)
     Binary:    0x04 + float32 LE base dB + uint8 bins spanning -sampleRate/2..+sampleRate/2,
                each bin base + v * 0.5 dB
@@ -55,10 +72,11 @@ from functools import partial
 from typing import Any
 
 from .config import Settings
-from .dsp import CW_PITCH_HZ, MODES, Demodulator, Spectrum, encode_audio, encode_spectrum
+from .dsp import CW_PITCH_HZ, MODES, PASSBANDS, Demodulator, Spectrum, encode_audio, encode_spectrum
 from .hostguard import HostRejected, is_public_address, resolve_receiver
 from .kiwi import CLOSE_TIMEOUT_S, DEFAULT_PORT, KiwiClient, KiwiError
 from .noise import OVERFLOW_HOLD_S, NoiseSampler
+from .rtty import RttyDecoder
 from .scan import ScanResult, sweep
 from .waterfall import MAX_ZOOM, View, WaterfallClient, WaterfallFrame
 
@@ -77,7 +95,13 @@ METER_INTERVAL_S = 0.25
 SEND_TIMEOUT_S = 15.0
 
 # Statuses list what this service can do, so a newer web app knows whether to ask.
-FEATURES = ["scan", "view"]
+FEATURES = ["scan", "view", "decode"]
+# Decoders a "decode" request can name.
+DECODE_MODES = ("rtty",)
+# Decoded text goes out in batches at most this often.
+DECODED_INTERVAL_S = 0.5
+# A mark tone further than this from the dial is outside any I/Q the Kiwi sends.
+MAX_MARK_HZ = 5000.0
 # How long a receiver's scan is reused before a new one is made.
 SCAN_CACHE_S = 600.0
 # A receiver that refused a scan isn't asked again for this long. Only refusals
@@ -456,6 +480,18 @@ class ListenSession:
         # connection lasts. A new connection waits out the interval instead
         # (SweepTimes) and sweeps again.
         self._last_sweep: tuple[float, Target, str, dict[str, Any]] | None = None
+        # The decoder the browser asked for, (mode, mark Hz from the dial or
+        # None for automatic, reverse), or None. Kept across receivers.
+        self._decode: tuple[str, float | None, bool] | None = None
+        # The running decoder, built for the pump's sample rate and mode.
+        self._decoder: RttyDecoder | None = None
+        # Decoded text not sent yet, and when the last batch went (monotonic).
+        self._decoded_pending = ""
+        self._decoded_at = 0.0
+        # The last decode state sent, so changes go out once.
+        self._decode_sent: dict[str, Any] | None = None
+        # Why the decoder couldn't be built, until the next decode reply says so.
+        self._decode_error: str | None = None
 
     @property
     def lookup_owner(self) -> Hashable:
@@ -496,6 +532,8 @@ class ListenSession:
                 await self._start_scan(msg)
             elif kind == "view":
                 await self._set_view(msg)
+            elif kind == "decode":
+                await self._set_decode(msg)
             else:
                 # Echo only a short string type: never repr() a list or object whole.
                 shown = f" {kind[:40]!r}" if isinstance(kind, str) else ""
@@ -523,6 +561,10 @@ class ListenSession:
                 )
             elif kind == "view":
                 await self._view_reply("error", message="The waterfall broke. Check the radio service's logs.")
+            elif kind == "decode":
+                self._decode = None
+                self._decoder = None
+                await self._decode_reply("error", message="The decoder broke. Check the radio service's logs.")
             elif self._pump is None or self._pump.done():
                 await self._status("error", message="Something broke in the radio service. Try again.")
             elif kind == "tune" and self._pump_owns_receiver():
@@ -621,6 +663,8 @@ class ListenSession:
                     # it up when the Kiwi stopped reading); the pump sees that
                     # failure and reports it, so don't send a second error.
                     return
+            moved = freq != self._freq_khz or mode != self._mode
+            freq_moved = freq != self._freq_khz
             self._freq_khz = freq
             if mode != self._mode:
                 # The demodulator first: if building it fails, _mode and the
@@ -633,10 +677,25 @@ class ListenSession:
                 if self._listening and client is not None:
                     self._demod = Demodulator(client.info.sample_rate, mode)
                 self._mode = mode
+            had_decode = moved and self._decode is not None
+            if had_decode:
+                # A new mode only moves the search range and CW's offset (the
+                # mark is from the dial, so it still holds); a new frequency
+                # puts the signal elsewhere.
+                if freq_moved:
+                    self._forget_mark()
+                await self._flush_decoded()
+                self._start_decoder()
             if self._listening:
                 await self._status("listening")
+                if had_decode:
+                    await self._decode_reply()
             return
 
+        if self._freq_khz and freq != self._freq_khz:
+            # Another receiver on another frequency: same rule as a retune. (A
+            # mark set before the first Listen is for that Listen: kept.)
+            self._forget_mark()
         self._freq_khz = freq
 
         receiver = (host, port)
@@ -748,7 +807,10 @@ class ListenSession:
             self._demod = Demodulator(info.sample_rate, self._mode)
             self._spectrum = Spectrum(info.sample_rate)
             self._listening = True
+            self._start_decoder()
             await self._status("listening")
+            if self._decode is not None or self._decode_error is not None:
+                await self._decode_reply()
 
             last_meter = 0.0
 
@@ -776,6 +838,8 @@ class ListenSession:
                             self._overflow_at = time.monotonic()
                         audio = self._demod.process(block.samples)
                         await self._send_bytes(AUDIO_TAG + encode_audio(audio))
+                        if self._decoder is not None:
+                            await self._feed_decoder(block.samples)
                         for frame in self._spectrum.process(block.samples):
                             await self._send_bytes(SPECTRUM_TAG + encode_spectrum(frame.db))
                         now = time.monotonic()
@@ -828,6 +892,7 @@ class ListenSession:
             ending = self._status_payload("error", message="Something broke in the radio service. Check its logs.")
         finally:
             self._listening = False
+            self._decoder = None
             # This pump is done with its receiver even while the teardown below
             # waits, so a tune for it now must start over, not retune a dead client.
             # One that ended on its own holds same-receiver tunes until its
@@ -889,6 +954,8 @@ class ListenSession:
         # cancelled before it started, while listening (Stop, a switch) or
         # during teardown, or failing its teardown with no ending to report.
         self._pump_done(asyncio.current_task())
+        # Text decoded in the last moments goes before the ending's status.
+        await self._flush_decoded()
         if ending is not None:
             # Same-receiver tunes stay held through this send: a switch now
             # would cancel it, losing the reason (a refusal, the limit) and
@@ -949,11 +1016,134 @@ class ListenSession:
         except Exception as e:
             # Its waterfall is closed either way (_end_scan's finally).
             log.warning("the stopped session's scan had failed: %r", e, exc_info=e)
+        await self._flush_decoded()
         if message:
             await self._status("stopped", message=message)
 
     async def close(self) -> None:
         await self.stop(None)
+
+    async def _set_decode(self, msg: dict[str, Any]) -> None:
+        mode, mark, reverse = msg.get("mode"), msg.get("markHz"), msg.get("reverse", False)
+        # Whatever the old decoder found still goes out (a Reverse toggle
+        # rebuilds it); the browser ignores it if this turns decoding off.
+        await self._flush_decoded()
+        if mode is None:
+            self._decode = None
+            self._start_decoder()
+            await self._decode_reply()
+            return
+        if (
+            mode not in DECODE_MODES
+            or not (mark is None or (isinstance(mark, (int, float)) and not isinstance(mark, bool)))
+            # Also refuses NaN and infinity, which Python's JSON reads.
+            or (mark is not None and not abs(mark) <= MAX_MARK_HZ)
+            or not isinstance(reverse, bool)
+        ):
+            # Answered as a decode error, never a status one: the audio is fine.
+            self._decode = None
+            self._start_decoder()
+            await self._decode_reply("error", message="That isn't a decoder this service can run.")
+            return
+        self._decode = (mode, None if mark is None else float(mark), reverse)
+        self._start_decoder()
+        await self._decode_reply()
+
+    def _forget_mark(self) -> None:
+        """The signal sits somewhere else now: a mark set for the old frequency
+        means nothing here, so the decoder looks for the pair again."""
+        if self._decode is not None:
+            dmode, _, reverse = self._decode
+            self._decode = (dmode, None, reverse)
+
+    def _start_decoder(self) -> None:
+        """(Re)build the decoder for what the browser asked and what plays now."""
+        self._decoder = None
+        self._decode_sent = None
+        client = self._client
+        if self._decode is None or not self._listening or client is None or not client.info.sample_rate:
+            return
+        _, mark, reverse = self._decode
+        # Baseband is the Kiwi's tuning, which sits CW_PITCH_HZ under the dial in CW.
+        shift = (self._freq_khz - kiwi_freq_khz(self._freq_khz, self._mode)) * 1000
+        try:
+            self._decoder = RttyDecoder(
+                client.info.sample_rate,
+                mark_hz=None if mark is None else mark + shift,
+                reverse=reverse,
+                search=PASSBANDS[self._mode],  # type: ignore[index]
+            )
+        except Exception:
+            # Like a failure while decoding: never let it reach the pump and
+            # end the audio. The next decode reply says it's off.
+            log.exception("building the %s decoder failed; turning it off", self._decode[0])
+            self._decode = None
+            self._decode_error = "The decoder couldn't start and was turned off. The audio plays on."
+
+    def _decode_state(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"type": "decode", "mode": None, "state": "off"}
+        if self._decode is None:
+            return payload
+        mode, mark, reverse = self._decode
+        payload.update(mode=mode, reverse=reverse, state="searching")
+        decoder = self._decoder
+        if decoder is not None and decoder.mark_hz is not None:
+            shift = (self._freq_khz - kiwi_freq_khz(self._freq_khz, self._mode)) * 1000
+            payload["markHz"] = round(decoder.mark_hz - shift, 1)
+            if decoder.squelch_open:
+                payload["state"] = "locked"
+        elif mark is not None:
+            payload["markHz"] = mark
+        return payload
+
+    async def _decode_reply(self, state: str | None = None, **extra: Any) -> None:
+        payload = self._decode_state()
+        error, self._decode_error = self._decode_error, None
+        if state is None and error is not None:
+            state, extra = "error", {**extra, "message": error}
+        if state is not None:
+            payload["state"] = state
+        payload.update({k: v for k, v in extra.items() if v is not None})
+        self._decode_sent = payload
+        await self._send_text(payload)
+
+    async def _feed_decoder(self, samples: Any) -> None:
+        decoder = self._decoder
+        assert decoder is not None and self._decode is not None
+        try:
+            text = decoder.process(samples)
+        except Exception:
+            # A decoder bug must never end the audio: turn it off and say so.
+            log.exception("the %s decoder failed; turning it off", self._decode[0])
+            self._decode = None
+            self._decoder = None
+            await self._decode_reply("error", message="The decoder broke and was turned off. The audio plays on.")
+            return
+        self._decoded_pending += text
+        state = self._decode_state()
+        if state != self._decode_sent:
+            self._decode_sent = state
+            await self._send_text(state)
+        now = time.monotonic()
+        if self._decoded_pending and now - self._decoded_at >= DECODED_INTERVAL_S:
+            text, self._decoded_pending = self._decoded_pending, ""
+            self._decoded_at = now
+            await self._send_text(
+                {"type": "decoded", "mode": self._decode[0], "text": text, "atMs": int(time.time() * 1000)}
+            )
+
+    async def _flush_decoded(self) -> None:
+        """Send decoded text still waiting for its batch: called before the
+        decoder is rebuilt or dropped, so the last characters aren't lost."""
+        text, self._decoded_pending = self._decoded_pending, ""
+        if not text:
+            return
+        self._decoded_at = time.monotonic()
+        try:
+            await self._send_text({"type": "decoded", "mode": "rtty", "text": text, "atMs": int(time.time() * 1000)})
+        except Exception:
+            # The browser went away; like _send_status, nothing more to do.
+            pass
 
     async def _start_scan(self, msg: dict[str, Any]) -> None:
         scan_id = msg.get("id")

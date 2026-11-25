@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IDLE_CLOSE_CODE, TOO_MANY_SOCKETS_CODE, useRadio, type Tuning } from "./use-radio";
+import { DECODED_MAX_CHARS, IDLE_CLOSE_CODE, TOO_MANY_SOCKETS_CODE, useRadio, type Tuning } from "./use-radio";
 
 /** A WebSocket whose close completes only when the test says so, like a real close handshake. */
 class FakeSocket {
@@ -1388,5 +1388,70 @@ describe("useRadio", () => {
       expect(result.current.canView).toBe(false);
     });
   });
-});
 
+  describe("decoding", () => {
+    const on = { host: "kiwi.example", port: 8073, features: ["scan", "view", "decode"] };
+    const decodes = (ws: FakeSocket) => ws.sent.filter((m) => m.type === "decode");
+    const text = (ws: FakeSocket, payload: Record<string, unknown>) =>
+      ws.onmessage?.({ data: JSON.stringify(payload) });
+
+    // Value: protects=a decode request goes only to a service that lists "decode", is sent again on a new socket, and an off is sent as mode null; fails_when=it's sent to an older service (which answers with a status error), lost across a reconnect, or off isn't sent; why_new=RTTY decoding (#92); seam=FakeSocket; no_claim=what the service does with it (radio tests)
+    it("asks a service that can decode, and again on a new socket", async () => {
+      const { result } = renderHook(() => useRadio());
+      act(() => result.current.setDecode({ mode: "rtty" }));
+      await act(() => result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.status("listening", { ...on, features: ["scan", "view"] }));
+      expect(result.current.canDecode).toBe(false);
+      expect(decodes(ws)).toEqual([]);
+      act(() => ws.status("listening", on));
+      expect(decodes(ws)).toEqual([{ type: "decode", mode: "rtty" }]);
+      act(() => ws.status("listening", on)); // a retune's answer: not again
+      expect(decodes(ws)).toHaveLength(1);
+      act(() => ws.finishClose());
+      await act(() => result.current.tune(tuning));
+      const next = FakeSocket.instances[1]!;
+      act(() => next.status("listening", on));
+      expect(decodes(next)).toEqual([{ type: "decode", mode: "rtty" }]);
+      act(() => result.current.setDecode(null));
+      expect(decodes(next).at(-1)).toEqual({ type: "decode", mode: null });
+      expect(result.current.decodeState).toBeNull();
+    });
+
+    // Value: protects=decoded text accumulates (capped), state follows the service, text arriving after Off is dropped, and turning it on again starts a clean panel; fails_when=batches overwrite each other, the cap is missing, late text lands after Off, the service's "off" reply or a late "locked" brings the panel back, or a stale "off" wipes a fresh request; why_new=RTTY decoding (#92); seam=FakeSocket; no_claim=the panel's rendering
+    it("collects text and follows the decoder's state", async () => {
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      act(() => ws.status("listening", on));
+      act(() => result.current.setDecode({ mode: "rtty", reverse: true }));
+      expect(result.current.decodeState).toEqual({ state: "searching", markHz: undefined, reverse: true });
+      // A late "off" from before the request doesn't undo it.
+      act(() => text(ws, { type: "decode", mode: null, state: "off" }));
+      expect(result.current.decodeState?.state).toBe("searching");
+      act(() => text(ws, { type: "decode", mode: "rtty", state: "locked", markHz: 1585, reverse: true }));
+      expect(result.current.decodeState).toEqual({ state: "locked", markHz: 1585, reverse: true, message: undefined });
+      act(() => text(ws, { type: "decoded", mode: "rtty", text: "CQ CQ ", atMs: 1 }));
+      act(() => text(ws, { type: "decoded", mode: "rtty", text: "DE W1AW", atMs: 2 }));
+      expect(result.current.decoded).toBe("CQ CQ DE W1AW");
+      act(() => text(ws, { type: "decoded", mode: "rtty", text: "X".repeat(DECODED_MAX_CHARS), atMs: 3 }));
+      expect(result.current.decoded).toHaveLength(DECODED_MAX_CHARS);
+      act(() => result.current.setDecode(null));
+      // The service's answer to the off leaves it off: no panel, box unchecked.
+      act(() => text(ws, { type: "decode", mode: null, state: "off" }));
+      expect(result.current.decodeState).toBeNull();
+      // A "locked" sent just before the off was read changes nothing either.
+      act(() => text(ws, { type: "decode", mode: "rtty", state: "locked", markHz: 1585, reverse: true }));
+      expect(result.current.decodeState).toBeNull();
+      act(() => text(ws, { type: "decoded", mode: "rtty", text: "LATE", atMs: 4 }));
+      expect(result.current.decoded.endsWith("LATE")).toBe(false);
+      act(() => result.current.setDecode({ mode: "rtty" }));
+      expect(result.current.decoded).toBe("");
+      // An error turns it off: no more text is taken.
+      act(() => text(ws, { type: "decode", mode: null, state: "error", message: "The decoder broke." }));
+      expect(result.current.decodeState?.state).toBe("error");
+      act(() => text(ws, { type: "decoded", mode: "rtty", text: "AFTER", atMs: 5 }));
+      expect(result.current.decoded).toBe("");
+    });
+  });
+});
