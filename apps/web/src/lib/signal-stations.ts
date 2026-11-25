@@ -22,8 +22,6 @@
  * - UVB-76's night channel, Swedish Rhapsody (no end date found), and
  *   VE3SUN-only entries such as HD2IOA (waiting on his OK).
  * - Priyom's other active stations (M01, M14, M23, V13, V28, V32...): their pages aren't read yet.
- * - Numbers-station times and frequencies: Priyom's schedule is a live calendar,
- *   not a fixed table, so they'd need a feed, not a copy (#104 owner task).
  */
 
 import { onDay } from "./eibi";
@@ -78,6 +76,8 @@ export type SignalStation = {
   schedule: Schedule;
   /** Required for every station that isn't defunct (receiver ranking, #99). */
   tx?: Transmitter;
+  /** Priyom's designator, when the station's transmissions come from Priyom's schedule (priyom-schedule.ts). */
+  priyom?: string;
   blurb: string;
   sources: readonly string[];
 };
@@ -86,15 +86,16 @@ const am = (khz: number): SignalChannel => ({ khz, mode: "am" });
 const usb = (khz: number): SignalChannel => ({ khz, mode: "usb" });
 const cw = (khz: number): SignalChannel => ({ khz, mode: "cw" });
 
-// Numbers stations (Priyom, read 2026-11-25): Priyom publishes no fixed
-// frequencies (they change monthly or by season), so these list no channels and
-// offer no Listen; the panel should link Priyom's schedule. Sites are as Priyom gives them.
+// Numbers stations (Priyom, read 2026-11-25): no fixed frequencies (they change
+// monthly or by season), so these list no channels here. Their times and
+// frequencies come from Priyom's live schedule (priyom-schedule.ts, served by
+// signals.priyom); without it they're listed with no Listen. Sites are as Priyom gives them.
 const MOSCOW: Transmitter = { lat: 55.75, lon: 37.62, label: "Moscow, Russia", confidence: "approx" };
 const WARSAW: Transmitter = { lat: 52.4294, lon: 20.8814, label: "near Warsaw, Poland", confidence: "known" };
 const RUSSIAN_7_NOTE =
-  "Usually twice a week, three transmissions 20 minutes apart on different frequencies, which change monthly. See Priyom's schedule.";
+  "Usually twice a week, three transmissions 20 minutes apart on different frequencies, which change monthly.";
 const POLISH_11_NOTE =
-  "Twice a week on year-round UTC times, on a frequency that changes with the season. See Priyom's schedule.";
+  "Twice a week on year-round UTC times, on a frequency that changes with the season.";
 
 export const SIGNAL_STATIONS: readonly SignalStation[] = [
   {
@@ -176,6 +177,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
   {
     slug: "e07",
     name: "E07",
+    priyom: "E07",
     aka: ["English Man"],
     category: "numbers",
     channels: [],
@@ -187,6 +189,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
   {
     slug: "e11",
     name: "E11",
+    priyom: "E11",
     aka: ["Oblique"],
     category: "numbers",
     channels: [],
@@ -198,12 +201,13 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
   {
     slug: "s06",
     name: "S06",
+    priyom: "S06",
     aka: ["Russian Man"],
     category: "numbers",
     channels: [],
     schedule: {
       kind: "irregular",
-      note: "Two transmissions 30 or 60 minutes apart on different frequencies, often repeated the next day. See Priyom's schedule.",
+      note: "Two transmissions 30 or 60 minutes apart on different frequencies, often repeated the next day.",
     },
     tx: MOSCOW,
     blurb: "A man's voice reading groups of numbers in Russian, sent from several sites across Russia.",
@@ -212,6 +216,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
   {
     slug: "s11a",
     name: "S11a",
+    priyom: "S11a",
     aka: ["Cherta"],
     category: "numbers",
     channels: [],
@@ -223,6 +228,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
   {
     slug: "v07",
     name: "V07",
+    priyom: "V07",
     aka: ["Spanish Lady"],
     category: "numbers",
     channels: [],
@@ -234,6 +240,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
   {
     slug: "m12",
     name: "M12",
+    priyom: "M12",
     aka: [],
     category: "numbers",
     channels: [],
