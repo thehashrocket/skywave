@@ -1,16 +1,21 @@
 import { inTuneRange, isMode, type Mode } from "@/lib/radio-types";
 import { formatHostPort, parseReceiver } from "@/lib/receiver";
+import { findStation } from "@/lib/signal-stations";
 
 /**
  * Links that open skywave tuned somewhere: `?f=9580&m=am`, plus
  * `&rx=host:port` (and `&tls=1` for an https-only receiver) to name the
  * receiver. Without rx, Listen picks the best receiver for the frequency.
+ * `&sig=<slug>` names a signal station (#100): the page shows it in the
+ * Signal stations panel, and Listen ranks receivers by its path.
  * A link never starts audio: browsers only allow that after a click.
  */
 export type SharedTuning = {
   freqKhz?: number;
   mode?: Mode;
   receiver?: { host: string; port: number; secure: boolean };
+  /** A signal station's slug, only when it's in the catalog. */
+  signal?: string;
 };
 
 // Longer than any DNS name: refused rather than shown or dialed.
@@ -46,13 +51,20 @@ export function parseShareLink(search: string): SharedTuning | null {
       out.receiver = { host: parsed.host.toLowerCase(), port, secure };
     }
   }
-  return out.freqKhz === undefined && out.mode === undefined && !out.receiver ? null : out;
+  const sig = q.get("sig")?.trim().toLowerCase();
+  if (sig && findStation(sig)) out.signal = sig;
+  return out.freqKhz === undefined && out.mode === undefined && !out.receiver && !out.signal ? null : out;
 }
 
 /** A link to `base` (origin and path) that opens tuned like this. */
 export function buildShareLink(
   base: string,
-  t: { freqKhz: number; mode: Mode; receiver?: { host: string; port: number; secure: boolean } | null },
+  t: {
+    freqKhz: number;
+    mode: Mode;
+    receiver?: { host: string; port: number; secure: boolean } | null;
+    signal?: string | null;
+  },
 ): string {
   const q = new URLSearchParams();
   q.set("f", String(Math.round(t.freqKhz * 100) / 100));
@@ -61,5 +73,6 @@ export function buildShareLink(
     q.set("rx", formatHostPort(t.receiver.host, t.receiver.port));
     if (t.receiver.secure) q.set("tls", "1");
   }
+  if (t.signal) q.set("sig", t.signal);
   return `${base}?${q.toString()}`;
 }

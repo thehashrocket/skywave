@@ -4,7 +4,7 @@
  * page passes the result to Pick best, which works down it.
  */
 
-import { distanceKm, midpoint } from "./great-circle";
+import { distanceKm, kmOutsideRange, midpoint } from "./great-circle";
 import type { Beacon } from "./ibp";
 import { byRank, covers, isFull, type Receiver } from "./kiwi-list";
 import { NIGHT_ELEVATION, sunElevation, type SunPosition } from "./solar";
@@ -47,7 +47,7 @@ export function beaconFit(r: Receiver, beacon: Beacon, bandKhz: number, sun: Sun
     return { distanceKm: null, inRange: false, kmOutside: Infinity, sunlit: false };
   const at = { lat: r.lat, lon: r.lon };
   const km = distanceKm(beacon, at);
-  const kmOutside = km < MIN_BEACON_KM ? MIN_BEACON_KM - km : km > MAX_BEACON_KM ? km - MAX_BEACON_KM : 0;
+  const kmOutside = kmOutsideRange(km, MIN_BEACON_KM, MAX_BEACON_KM);
   const mid = midpoint(beacon, at);
   const sunlit = bandKhz < DAYLIGHT_KHZ || sunElevation(mid.lat, mid.lon, sun) >= NIGHT_ELEVATION;
   return { distanceKm: km, inRange: kmOutside === 0, kmOutside, sunlit };

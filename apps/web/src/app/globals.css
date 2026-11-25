@@ -2250,7 +2250,8 @@ html:has(.tuning-bar:not([hidden])) {
 }
 
 .beacons summary:hover,
-.ghostnet summary:hover {
+.ghostnet summary:hover,
+.signals-history > summary:hover {
   color: var(--text);
 }
 
@@ -2446,6 +2447,51 @@ html:has(.tuning-bar:not([hidden])) {
   display: block;
 }
 
+/* Signal stations (#100): its own section after Find a station, on the shared .sched-* look. */
+.signals-about {
+  margin: 4px 0 0;
+  max-width: 68ch;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.signals-name {
+  display: block;
+  color: var(--text);
+}
+
+.signals-aka {
+  color: var(--muted);
+}
+
+/* The category: a quiet outlined label, not a lamp (lamp means live or the one). */
+.signals-kind {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.signals-wait {
+  margin-right: 10px;
+  white-space: nowrap;
+}
+
+.signals-history {
+  margin-top: 12px;
+}
+
+.signals-history > summary {
+  width: fit-content;
+  cursor: pointer;
+  font-family: var(--font-instrument);
+  font-size: 1.05rem;
+  color: var(--glass);
+}
+
 .map-note {
   margin: 0;
   font-size: 0.85rem;
@@ -2604,20 +2650,25 @@ html:has(.tuning-bar:not([hidden])) {
      so the name and times get the width (review D6). The table carries explicit ARIA
      roles in GhostNetStrip, so these display changes keep its semantics. */
   .ghostnet .sched-strip,
-  .ghostnet .sched-strip tbody {
+  .ghostnet .sched-strip tbody,
+  .signals .sched-strip,
+  .signals .sched-strip tbody {
     display: block;
   }
-  .ghostnet .sched-strip tr {
+  .ghostnet .sched-strip tr,
+  .signals .sched-strip tr {
     display: grid;
     grid-template-columns: auto 1fr;
   }
   .ghostnet .sched-strip tr.ghostnet-note-row {
     display: block;
   }
-  .ghostnet .sched-strip tr > th {
+  .ghostnet .sched-strip tr > th,
+  .signals .sched-strip tr > th {
     grid-row: span 2;
   }
-  .ghostnet .sched-strip tr > td:last-child {
+  .ghostnet .sched-strip tr > td:last-child,
+  .signals .sched-strip tr > td:last-child {
     grid-column: 2;
     border-top: 0;
     padding-top: 0;

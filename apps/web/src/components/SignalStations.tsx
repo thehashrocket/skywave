@@ -1,0 +1,269 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { formatWait, mhz } from "@/lib/ghostnet";
+import { PRIYOM_ON_AIR_MS, PRIYOM_SCHEDULE_PAGE, type PriyomTx } from "@/lib/priyom-schedule";
+import { MODE_LABELS, type Mode } from "@/lib/radio-types";
+import { onKhz, panelGroups, type PanelGroups, type PanelRow } from "@/lib/signal-panel";
+import type { SignalCategory, SignalChannel, SignalStation } from "@/lib/signal-stations";
+import { localLabel, utcLabel } from "@/lib/utc-time";
+import { useServerTick } from "@/lib/use-server-tick";
+
+const MINUTE = 60_000;
+
+const CATEGORY_LABELS: Record<SignalCategory, string> = {
+  numbers: "Numbers",
+  time: "Time signal",
+  marker: "Marker",
+  military: "Military",
+  other: "Other",
+};
+
+type Props = {
+  /** Where the dial is, for the tuned marker. */
+  freqKhz: number;
+  mode: Mode;
+  /** Priyom's schedule for the numbers stations; null while the server has none. */
+  priyom: readonly PriyomTx[] | null;
+  /** The station a Listen or a shared link picked (its slug), while the dial stays on it. */
+  picked: string | null;
+  /** A receiver is being tuned or connected for that pick, with no audio yet. */
+  connecting?: boolean;
+  /** Audio is playing. */
+  playing?: boolean;
+  onListen: (station: SignalStation, channel: SignalChannel) => void;
+};
+
+/** The panel's heading, where a shared link with a station brings the page (#100). */
+export function focusSignalStations() {
+  document.getElementById("signal-stations-heading")?.scrollIntoView?.({ block: "start" });
+}
+
+/** "4.625 USB" for a channel; more digits for a frequency like 3363.5 kHz. */
+function channelText(ch: SignalChannel): string {
+  const digits = Number.isInteger(ch.khz) ? 3 : 4;
+  return `${mhz(ch.khz, digits)} ${MODE_LABELS[ch.mode]}`;
+}
+
+/** Listen's accessible name: station and what it tunes. */
+function listenLabel(station: SignalStation, ch: SignalChannel): string {
+  return `Listen to ${station.name} on ${channelText(ch)}`;
+}
+
+/**
+ * The Signal stations panel (issue #100): time signals, markers and numbers
+ * stations, grouped as on now, up next, always on, later, and history. Listen
+ * on a row tunes the station and runs Pick best ranked by its path
+ * (lib/signal-rank.ts); it shows only when there's something on the air to
+ * tune, so it never lands in a schedule's silence, and never for a station
+ * that's off the air for good.
+ */
+export function SignalStations({ freqKhz, mode, priyom, picked, connecting = false, playing = false, onListen }: Props) {
+  const now = useServerTick(MINUTE);
+  const groups = now === null ? null : panelGroups(now, priyom);
+  const announce = useAnnouncements(groups?.onNow ?? null, picked, connecting, playing);
+  return (
+    <section className="presets signals" aria-labelledby="signal-stations-heading">
+      <h2 id="signal-stations-heading">Signal stations</h2>
+      <p className="signals-about">
+        Time signals, markers and numbers stations: the oddities people tune shortwave to find.
+      </p>
+      {now !== null && groups && (
+        <Groups
+          groups={groups}
+          now={now}
+          freqKhz={freqKhz}
+          mode={mode}
+          priyom={priyom}
+          picked={picked}
+          busy={connecting || playing}
+          onListen={onListen}
+        />
+      )}
+      <p className="sched-note">
+        Numbers-station schedules from{" "}
+        <a href={PRIYOM_SCHEDULE_PAGE} target="_blank" rel="noreferrer">
+          Priyom.org
+        </a>{" "}
+        (CC BY-NC-SA 4.0). Priyom lists start times only, so a transmission counts as on for{" "}
+        {PRIYOM_ON_AIR_MS / MINUTE} minutes from its start. Times are UTC; local times follow your device clock.
+      </p>
+      <div className="visually-hidden" role="status">
+        {announce}
+      </div>
+    </section>
+  );
+}
+
+type RowProps = {
+  now: number;
+  freqKhz: number;
+  mode: Mode;
+  priyom: readonly PriyomTx[] | null;
+  picked: string | null;
+  busy: boolean;
+  onListen: Props["onListen"];
+};
+
+function Groups({ groups: g, now, freqKhz, mode, priyom, picked, busy, onListen }: { groups: PanelGroups } & RowProps) {
+  const rowProps = { now, freqKhz, mode, priyom, picked, busy, onListen };
+  return (
+    <>
+      {g.onNow.length > 0 && <Group title="On now" caption="Signal stations on the air now" rows={g.onNow} {...rowProps} />}
+      {g.upNext.length > 0 && <Group title="Up next" caption="Starting in the next 6 hours" rows={g.upNext} {...rowProps} />}
+      <Group title="Always on" caption="Stations on the air around the clock" rows={g.always} {...rowProps} />
+      {g.later.length > 0 && <Group title="Later" caption="Later, or at irregular times" rows={g.later} {...rowProps} />}
+      <details className="signals-history">
+        <summary>History ({g.history.length})</summary>
+        <Group title={null} caption="Stations no longer on the air" rows={g.history} {...rowProps} />
+      </details>
+    </>
+  );
+}
+
+function Group({
+  title,
+  caption,
+  rows,
+  ...row
+}: { title: string | null; caption: string; rows: PanelRow[] } & RowProps) {
+  return (
+    <>
+      {title && <p className="sched-head">{title}</p>}
+      <table className="sched-strip" role="table">
+        <caption className="visually-hidden">{caption}</caption>
+        <tbody role="rowgroup">
+          {rows.map((r) => (
+            <Row key={r.station.slug} r={r} {...row} />
+          ))}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
+/** What a row's time cell says. */
+function timeText(r: PanelRow, now: number, priyom: readonly PriyomTx[] | null): { text: string; checkPriyom: boolean } {
+  const { schedule } = r.station;
+  if (schedule.kind === "defunct")
+    return { text: schedule.ended ? `Off the air since ${schedule.ended}` : "Off the air", checkPriyom: false };
+  if (r.group === "always") return { text: "Always on", checkPriyom: false };
+  if (r.group === "onNow") return { text: r.atMs === null ? "On now" : `${formatWait(r.atMs - now, false)} left`, checkPriyom: false };
+  if (r.atMs !== null) return { text: `in ${formatWait(r.atMs - now, false)}`, checkPriyom: false };
+  // A Priyom station with no slot listed this week, or no schedule from the server.
+  if (r.station.priyom) return { text: priyom ? "Irregular" : "Schedule unavailable", checkPriyom: true };
+  return { text: "Irregular", checkPriyom: false };
+}
+
+function Row({
+  r,
+  now,
+  freqKhz,
+  mode,
+  priyom,
+  picked,
+  busy,
+  onListen,
+}: { r: PanelRow } & RowProps) {
+  const { station, listen, shown } = r;
+  const ch = listen ?? shown;
+  const tuned = ch !== null && ch.mode === mode && onKhz(freqKhz, ch.khz);
+  // The picked station by frequency alone: after a mode change its row still counts as
+  // picked, so a second press while it connects or plays can't restart Pick best.
+  const isPicked = picked === station.slug && ch !== null && onKhz(freqKhz, ch.khz);
+  const { text, checkPriyom } = timeText(r, now, priyom);
+  const aka = station.aka.length ? ` · ${station.aka.join(", ")}` : "";
+  return (
+    // Explicit roles: on phones the rows are laid out as a grid, as in the GhostNet strip.
+    <tr role="row" data-current={tuned || undefined} data-picked={isPicked || undefined} data-slug={station.slug}>
+      <th scope="row" role="rowheader" className="sched-freq">
+        {ch ? channelText(ch) : "—"}
+      </th>
+      <td role="cell">
+        <span className="signals-name">
+          {station.name}
+          <span className="signals-aka">{aka}</span> <span className="signals-kind">{CATEGORY_LABELS[station.category]}</span>
+        </span>
+        <span className="sched-place">
+          {station.tx?.label ?? station.blurb}
+          {r.atMs !== null && (r.group === "upNext" || r.group === "later") && (
+            <>
+              {" · "}
+              {utcLabel(r.atMs)} ({localLabel(r.atMs)})
+            </>
+          )}
+        </span>
+      </td>
+      <td role="cell">
+        <span className="sched-next signals-wait">
+          {text}
+          {checkPriyom && (
+            <>
+              ,{" "}
+              <a href={PRIYOM_SCHEDULE_PAGE} target="_blank" rel="noreferrer">
+                check Priyom
+              </a>
+            </>
+          )}
+        </span>
+        {listen && (
+          <button
+            type="button"
+            className="link-button inline"
+            aria-label={listenLabel(station, listen)}
+            aria-pressed={isPicked}
+            onClick={(e) => {
+              // Pressing the picked row's Listen again while it connects or plays would restart
+              // Pick best and could cut the audio, as on the GhostNet strip.
+              if (e.detail <= 1 && !(isPicked && busy)) onListen(station, listen);
+            }}
+          >
+            Listen
+          </button>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * What the hidden status line says: only changes, never the countdowns. A
+ * station coming on or going off the air, and the picked station connecting
+ * or playing.
+ */
+function useAnnouncements(
+  onNow: readonly PanelRow[] | null,
+  picked: string | null,
+  connecting: boolean,
+  playing: boolean,
+): string {
+  const [text, setText] = useState("");
+  const last = useRef<{ names: Map<string, string>; state: string } | null>(null);
+  let phase = "";
+  if (connecting) phase = "connecting";
+  else if (playing) phase = "playing";
+  const state = picked ? `${picked}:${phase}` : "";
+  // The on-air names as one string, so a new groups object each tick doesn't re-run the effect.
+  const onAir = onNow ? JSON.stringify(onNow.map((r) => [r.station.slug, r.station.name])) : null;
+
+  useEffect(() => {
+    if (onAir === null) {
+      last.current = null;
+      return;
+    }
+    const names = new Map(JSON.parse(onAir) as [string, string][]);
+    const prev = last.current;
+    last.current = { names, state };
+    if (!prev) return;
+    const lines: string[] = [];
+    for (const [slug, name] of names) if (!prev.names.has(slug)) lines.push(`${name} on the air now.`);
+    for (const [slug, name] of prev.names) if (!names.has(slug)) lines.push(`${name} ended.`);
+    if (picked && state !== prev.state) {
+      if (connecting) lines.push("Connecting…");
+      else if (playing) lines.push("Playing.");
+    }
+    if (lines.length) setText(lines.join(" "));
+  }, [onAir, picked, state, connecting, playing]);
+
+  return text;
+}

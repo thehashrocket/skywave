@@ -297,16 +297,24 @@ function spanOn(w: SignalWindow, dayStart: number): { startMs: number; endMs: nu
   return { startMs, endMs };
 }
 
-/** The window open at `ms`: one that started today, or yesterday and runs past midnight. */
-function windowAt(station: SignalStation, ms: number): SignalWindow | null {
+/** The window open at `ms`, with its span: one that started today, or yesterday and runs past midnight. */
+function openWindow(station: SignalStation, ms: number): { w: SignalWindow; startMs: number; endMs: number } | null {
   if (station.schedule.kind !== "windows") return null;
   const today = dayStartOf(ms);
   for (const w of station.schedule.windows)
     for (const dayStart of [today, today - DAY]) {
       const span = spanOn(w, dayStart);
-      if (span && span.startMs <= ms && ms < span.endMs) return w;
+      if (span && span.startMs <= ms && ms < span.endMs) return { w, ...span };
     }
   return null;
+}
+
+const windowAt = (station: SignalStation, ms: number) => openWindow(station, ms)?.w ?? null;
+
+/** When the window open at `ms` started and ends (Unix ms), or null when none is open (always-on stations included). */
+export function windowSpanAt(station: SignalStation, ms: number): { startMs: number; endMs: number } | null {
+  const o = openWindow(station, ms);
+  return o && { startMs: o.startMs, endMs: o.endMs };
 }
 
 /** Whether `station` is scheduled on the air at `ms`. Irregular and defunct stations never are. */

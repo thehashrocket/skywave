@@ -2,6 +2,20 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.54.0.0] - 2026-11-25 ([#99](https://github.com/thehashrocket/skywave/issues/99), [#100](https://github.com/thehashrocket/skywave/issues/100))
+
+### Added
+- **Signal stations.** A new section after Find a station lists the shortwave oddities people go looking for: time signals (WWV, WWVH, RWM), markers (UVB-76 "The Buzzer", The Pip, The Squeaky Wheel) and numbers stations (E07, E11, S06, S11a, V07, M12). It groups them as:
+  - **On now**, with the time left.
+  - **Up next**, within 6 hours, with UTC and local times.
+  - **Always on.**
+  - **Later**, for numbers stations with nothing in the next 6 hours, with a link to Priyom when no time is known.
+  - **History**, folded, for stations off the air for good.
+
+  Numbers-station times and frequencies come from Priyom's schedule and are credited to Priyom.
+- **Listen on a signal station** tunes it and picks a receiver by the path from the transmitter. Below 8 MHz it prefers a receiver with a dark path, or one within 800 km by day. From 10 MHz up it prefers a daylit path, like the IBP beacons. Listen shows only when there's something on the air to tune, so it doesn't land in dead air.
+- **Share a station:** a link with `&sig=` (for example `?sig=uvb-76`) opens the page tuned to the station and scrolled to the panel, and Listen then picks by its path. Copy link keeps it.
+
 ## [0.53.0.0] - 2026-11-25 ([#98](https://github.com/thehashrocket/skywave/issues/98))
 
 ### Added

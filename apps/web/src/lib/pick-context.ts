@@ -8,7 +8,7 @@ import { receiverKey, type Receiver } from "./kiwi-list";
  */
 
 /** Which button started the run. "better" lists the offered receiver first by hand, not by rank. */
-export const PICK_SOURCES = ["beacon", "listen", "link", "drawer", "better", "search", "ghostnet", "browse"] as const;
+export const PICK_SOURCES = ["beacon", "listen", "link", "drawer", "better", "search", "ghostnet", "browse", "signal"] as const;
 export type PickSource = (typeof PICK_SOURCES)[number];
 
 /**
@@ -44,11 +44,16 @@ export type PickSource = (typeof PICK_SOURCES)[number];
  * what's on now when no name is typed (#109/#110), and its Pick best from
  * that list is source "browse"; "search" stays for a typed name (eng D9), so
  * #61 can tell browsing from searching. Pick rules are again those of 6:
- * group 6 to 9. The server still accepts 2 to 8 from tabs opened before
+ * group 6 to 9. 10: a run can start from a signal station's Listen (source
+ * "signal", issues #99/#100), ranked by the path from the station's
+ * transmitter (lib/signal-rank.ts): a panel row's Listen, or header Listen
+ * while the dial is on a station the panel or a shared link picked and it's
+ * on the air (the two aren't told apart); the pick rules are again those of 6, so
+ * group 6 to 10. The server still accepts 2 to 9 from tabs opened before
  * those deploys.
  * Raise it whenever what the page records, or when it records it, changes.
  */
-export const PICK_CONTEXT_VERSION = 9;
+export const PICK_CONTEXT_VERSION = 10;
 
 /** How many of the ranked list's receivers a report keeps, best first. */
 export const MAX_CANDIDATES = 10;

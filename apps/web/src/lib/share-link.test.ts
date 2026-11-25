@@ -51,3 +51,20 @@ describe("buildShareLink", () => {
     );
   });
 });
+
+describe("signal station links (#100)", () => {
+  // Value: protects=&sig names a catalog station (case-insensitive) and a link with only sig still counts, while an unknown slug is dropped; fails_when=any string is trusted as a station, or a sig-only link reads as nothing; why_new=#100 share links; seam=signal-stations catalog; no_claim=none
+  it("reads a catalog station and drops an unknown one", () => {
+    expect(parseShareLink("?f=4625&m=usb&sig=UVB-76")).toEqual({ freqKhz: 4625, mode: "usb", signal: "uvb-76" });
+    expect(parseShareLink("?sig=the-pip")).toEqual({ signal: "the-pip" });
+    expect(parseShareLink("?sig=not-a-station")).toBeNull();
+    expect(parseShareLink("?f=4625&sig=%3Cscript%3E")).toEqual({ freqKhz: 4625 });
+  });
+
+  // Value: protects=a link built with a station carries sig and reads back the same; fails_when=Copy link drops the station; why_new=#100 share links; seam=none; no_claim=none
+  it("round-trips sig", () => {
+    const url = buildShareLink("https://skywave.example/", { freqKhz: 4625, mode: "usb", signal: "uvb-76" });
+    expect(url).toBe("https://skywave.example/?f=4625&m=usb&sig=uvb-76");
+    expect(parseShareLink(new URL(url).search)).toEqual({ freqKhz: 4625, mode: "usb", signal: "uvb-76" });
+  });
+});

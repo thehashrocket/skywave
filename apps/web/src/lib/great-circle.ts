@@ -29,6 +29,13 @@ function centralAngle(a: LatLon, b: LatLon): number {
   return 2 * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
+/** How far `km` lies outside `min`..`max`, in km: 0 inside it. */
+export function kmOutsideRange(km: number, min: number, max: number): number {
+  if (km < min) return min - km;
+  if (km > max) return km - max;
+  return 0;
+}
+
 /** Short-path distance, in km (haversine). */
 export function distanceKm(a: LatLon, b: LatLon): number {
   return centralAngle(a, b) * EARTH_RADIUS_KM;

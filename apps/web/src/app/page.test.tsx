@@ -151,6 +151,9 @@ vi.mock("@/lib/use-beacon-status", () => ({
   useRbnQuiet: () => rbnQuiet.current,
 }));
 const submitReport = vi.fn();
+// Priyom's numbers-station schedule (#100): none from the server unless a test sets it.
+const priyomSchedule: { current: import("@/lib/priyom-schedule").PriyomTx[] | null } = { current: null };
+vi.mock("@/lib/use-priyom-schedule", () => ({ usePriyomSchedule: () => priyomSchedule.current }));
 vi.mock("@/lib/use-submit-report", () => ({ useSubmitReport: () => submitReport }));
 // The radio service's measured noise floors (issue #67), as useNoise hands them to the page.
 const noise: { current: import("@/lib/noise-rank").NoiseLevels | null } = { current: null };
@@ -458,6 +461,82 @@ describe("ListenPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
     expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/?f=10000&m=am&rx=kiwi.example%3A8073`);
     expect(await screen.findByRole("button", { name: "Link copied" })).toBeTruthy();
+  });
+
+  // Value: protects=a share link naming a signal station (&sig, #100) with no frequency tunes the station's frequency, and header Listen ranks receivers by the path from its transmitter: a European receiver (low SNR, in range of UVB-76) before a stronger one in Australia (out of range), where the list's own order would pick Australia; Copy link keeps sig beside the receiver Pick best tuned; fails_when=sig is ignored, Listen falls back to the list's order, or Copy link drops the station; why_new=#100 share links and #99 ranking; seam=useRadio and the list hook mocked; no_claim=the ranking rules (signal-rank tests)
+  it("opens a station from a shared link and ranks Listen by its path", async () => {
+    const sydney = { ...listed, snr: 50, lat: -33.9, lon: 151.2 };
+    const berlin = { ...backup, snr: 5, lat: 52.5, lon: 13.4 };
+    receiverList.data = { receivers: [sydney, berlin] };
+    window.history.replaceState(null, "", "/?sig=uvb-76");
+    render(<ListenPage />);
+    expect(window.location.search).toBe("");
+    act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+    expect(radio.tune).toHaveBeenLastCalledWith(
+      expect.objectContaining({ host: berlin.host, freqKhz: 4_625, mode: "usb" }),
+    );
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
+    expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/?f=4625&m=usb&rx=backup.example%3A8073&sig=uvb-76`);
+  });
+
+  // Value: protects=a shared link naming a station with nothing of it to tune (off the air for good, a numbers station without its frequency, or a frequency that isn't the station's) leaves header Listen as plain Pick best on the dial (the list's order: Sydney's higher SNR), never a dead button or a path-ranked "signal" run on an unrelated frequency; fails_when=sig sets a station pick it can't tune (Listen does nothing, or #61 gets a false signal row); why_new=#100 review findings 1 and 2, then the /ship review (an unrelated f); seam=useRadio and the list hook mocked; no_claim=none
+  it.each([
+    ["?sig=chu", 10_000, "am"],
+    ["?sig=e07", 10_000, "am"],
+    ["?f=9580&m=am&sig=uvb-76", 9_580, "am"],
+  ])("keeps plain Listen for %s, which has nothing of the station to tune", (search, freqKhz, mode) => {
+    const sydney = { ...listed, snr: 50, lat: -33.9, lon: 151.2 };
+    const berlin = { ...backup, snr: 5, lat: 52.5, lon: 13.4 };
+    receiverList.data = { receivers: [sydney, berlin] };
+    window.history.replaceState(null, "", `/${search}`);
+    render(<ListenPage />);
+    act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+    expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: sydney.host, freqKhz, mode }));
+  });
+
+  // Value: protects=a station link with its frequency but no mode tunes the station's mode (USB for UVB-76), not the mode this browser last saved, and Listen ranks by its path; fails_when=the saved mode (AM) wins; why_new=/ship review of #100; seam=useRadio and the list hook mocked; no_claim=none
+  it("takes a station link's mode from its channel", () => {
+    const sydney = { ...listed, snr: 50, lat: -33.9, lon: 151.2 };
+    const berlin = { ...backup, snr: 5, lat: 52.5, lon: 13.4 };
+    receiverList.data = { receivers: [sydney, berlin] };
+    window.history.replaceState(null, "", "/?f=4625&sig=uvb-76");
+    render(<ListenPage />);
+    act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+    expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: berlin.host, freqKhz: 4_625, mode: "usb" }));
+  });
+
+  // Value: protects=header Listen on a picked numbers station ranks by its path only while Priyom lists it on the air; once its slot is over it's plain Pick best, so no "signal" run goes into silence; fails_when=the pick outlives the schedule; why_new=/ship review of #100; seam=usePriyomSchedule mocked, real clock; no_claim=the 10-minute on-air estimate
+  it.each([
+    ["on the air", 60_000, "backup.example"],
+    ["over", 20 * 60_000, "sdr.k1vl.com"],
+  ])("ranks header Listen by path only while the picked slot is %s", (_, agoMs, host) => {
+    const sydney = { ...listed, snr: 50, lat: -33.9, lon: 151.2 };
+    const berlin = { ...backup, snr: 5, lat: 52.5, lon: 13.4 };
+    receiverList.data = { receivers: [sydney, berlin] };
+    priyomSchedule.current = [
+      { station: "E11", startMs: Date.now() - agoMs, khz: 20_167, mode: "usb", summary: "E11 20167kHz USB" },
+    ];
+    window.history.replaceState(null, "", "/?f=20167&m=usb&sig=e11");
+    try {
+      render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host, freqKhz: 20_167 }));
+    } finally {
+      priyomSchedule.current = null;
+    }
+  });
+
+  // Value: protects=with no receiver list yet, header Listen on a picked station opens the drawer, so the page message's Receiver field and Try again are in view, as plain Listen does; fails_when=the signal path sets the message but leaves the drawer shut; why_new=/ship review of #100 (important); seam=the list hook mocked; no_claim=none
+  it("opens the drawer for a station's Listen with no receiver list", () => {
+    receiverList.data = undefined;
+    window.history.replaceState(null, "", "/?sig=uvb-76");
+    render(<ListenPage />);
+    const drawer = document.getElementById("receiver-drawer")!;
+    expect(drawer.hasAttribute("inert")).toBe(true);
+    act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+    expect(drawer.hasAttribute("inert")).toBe(false);
   });
 
   it("tunes Pick best's choice", () => {

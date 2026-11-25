@@ -69,6 +69,12 @@ export function relativeNoiseDb(stat: NoiseStat | undefined): number | null {
   return stat.medianDb - stat.baselineDb;
 }
 
+/** `r`'s noise for `levels`' band and hour in NOISE_STEP_DB steps (lower is quieter), or null when it isn't measured enough. */
+export function noiseStep(levels: NoiseLevels, r: { host: string; port: number }): number | null {
+  const db = relativeNoiseDb(levels.receivers[noiseKey(r)]);
+  return db === null ? null : Math.floor(db / NOISE_STEP_DB);
+}
+
 /**
  * Re-orders a ranked list (rankReceivers' order) by noise where it's known.
  *
@@ -84,7 +90,7 @@ export function relativeNoiseDb(stat: NoiseStat | undefined): number | null {
 export function rankByNoise(ranked: readonly Receiver[], levels: NoiseLevels | null, freqKhz: number): Receiver[] {
   const out = [...ranked];
   if (!levels || levels.band !== noiseBand(freqKhz)?.id) return out;
-  const step = (r: Receiver) => Math.floor(relativeNoiseDb(levels.receivers[noiseKey(r)])! / NOISE_STEP_DB);
+  const step = (r: Receiver) => noiseStep(levels, r)!;
   for (const full of [false, true]) {
     const slots = ranked
       .map((r, i) => ({ r, i }))
