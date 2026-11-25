@@ -113,6 +113,10 @@ apps/web/
   src/lib/signal-rank.ts             receivers for a signal station, ranked by the path from its transmitter (#99)
   src/lib/signal-panel.ts            the Signal stations panel's groups: on now, up next, always on, later, history (#100)
   src/lib/signal-heard.ts            "heard 40 min ago" badges from listeners' answers, summed per station by the database (#102)
+  src/app/signals/                   the signal stations index and one page per station, with share cards (#103)
+  src/lib/signal-page.ts             what a station's page says: schedule in words, category headings, links that open skywave tuned to it (#103)
+  src/components/SignalLive.tsx      a station page's live line: on now with Listen, or next on; when listeners last heard it (#103)
+  src/lib/site-url.ts                the site's own address for absolute links; app/sitemap.ts and app/robots.ts use it (#103)
   src/lib/use-signal-last-heard.ts   the page's signals.lastHeard query: every 10 minutes, no retries or refetch on focus (#102)
   src/lib/priyom-schedule.ts         Priyom's numbers-station schedule: parsing, on now and next, changes between fetches
   src/lib/kiwi-list.ts               parses and ranks the public receiver list (with positions)

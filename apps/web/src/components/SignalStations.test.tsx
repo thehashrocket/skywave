@@ -261,4 +261,16 @@ describe("SignalStations", () => {
     expect(history.length).toBeGreaterThan(0);
     expect(history.every((r) => r.querySelector(".signals-heard") === null)).toBe(true);
   });
+
+  // Value: protects=#103 each station's name in the panel links to its own page (/signals/<slug>) in a new tab, so following it from the listening page never stops the audio (owner decision D1, DESIGN.md's rule for that page) and never sends the listening page's URL, which can name a receiver (?rx=), as the referrer; fails_when=the link is dropped, points at another slug, drops noreferrer, or opens in the same tab (which unmounts the player, ending the audio and possibly finishing a tune with no UI); why_new=#103 pages, #103 review; seam=useServerTick mocked; no_claim=browser tab behaviour
+  it("links each station's name to its page in a new tab", () => {
+    renderPanel("2026-11-25T12:00:00Z");
+    const link = within(rowOf("UVB-76")).getByRole("link", { name: "UVB-76" });
+    expect(link.getAttribute("href")).toBe("/signals/uvb-76");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
+    // The listening page URL can carry a receiver address (?rx=); it mustn't ride along as the referrer.
+    expect(link.getAttribute("rel")).toContain("noreferrer");
+    expect(within(rowOf("Cherry Ripe")).getByRole("link", { name: "Cherry Ripe" }).getAttribute("href")).toBe("/signals/cherry-ripe");
+  });
 });

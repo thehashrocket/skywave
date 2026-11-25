@@ -2,6 +2,17 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.58.0.0] - 2026-11-25 ([#103](https://github.com/thehashrocket/skywave/issues/103))
+
+### Added
+- **A page for every signal station.** Each station in Signal stations now has its own page, such as `/signals/uvb-76`. It covers what the station is and its other names, where it's sent from, its schedule in plain words, and links to where you can read more.
+- **Tune it from the page.** Each frequency on a station's page has a "Tune it" link that opens skywave tuned there with the station named, so Listen picks a receiver placed to hear it. A live line says whether the station is on the air now (with Listen) or when it's next on, in UTC and your own time, and when listeners last heard it.
+- **Numbers stations point to Priyom.** Their pages link Priyom's schedule (with its licence) instead of a fixed frequency, and say "on the air now" even before Priyom lists the frequency. Stations off the air for good get their history and nothing to tune.
+- **All stations on one page.** `/signals` lists every station, grouped like the panel, with the ones off the air last.
+- **Share a station.** A shared station link shows that station's own preview card, such as "UVB-76 · The Buzzer".
+- **Station names link to their pages.** In Signal stations, a station's name opens its page in a new tab, so what you're listening to keeps playing.
+- **Easier to find in search.** The site now has a sitemap and a robots.txt, both on www.skywavehf.com.
+
 ## [0.57.0.0] - 2026-11-25 ([#102](https://github.com/thehashrocket/skywave/issues/102))
 
 ### Added

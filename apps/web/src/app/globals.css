@@ -2961,6 +2961,69 @@ body:has(> .analytics-consent) {
   background: var(--enamel-deep);
 }
 
+/* Signal station pages (#103): the /owners page's frame, plus the live line and the lists. */
+.signal-crumbs {
+  margin: 0 0 4px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.signal-aka {
+  margin: 0 0 8px;
+  color: var(--muted);
+}
+
+.signal-live {
+  min-height: 1.5em;
+  margin: 8px 0;
+}
+
+.signal-status,
+.signal-heard-line {
+  margin: 0 0 4px;
+}
+
+.signal-heard-line {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.signal-listen {
+  font-weight: 700;
+}
+
+.signal-channels {
+  list-style: none;
+  padding-left: 0;
+}
+
+.signal-freq {
+  font-family: var(--font-instrument);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.signal-note {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.signal-index {
+  list-style: none;
+  padding-left: 0;
+}
+
+.signal-index-blurb {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* A station's name in the panel links to its page (#103), in the name's own color. */
+.signals-page-link {
+  color: inherit;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .smeter-fill {
     transition: none;
