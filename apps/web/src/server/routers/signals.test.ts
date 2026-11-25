@@ -140,7 +140,7 @@ describe("lastHeardSource", () => {
     return { db: { receptionReport: { groupBy } } as never, groupBy, reads };
   }
 
-  // Value: protects=signals.lastHeard sums only signal answers from the last week per station (a beacon or EiBi row never badges a station; mixed answers give the latest heard and day counts; a week-old heard is dropped); fails_when=another kind's rows leak in, the window is wrong, or the query isn't wired to the router; why_new=#102 query; seam=ctx.db.receptionReport.groupBy faked; no_claim=Postgres behavior (checked against a real Postgres in /ship QA)
+  // Value: protects=signals.lastHeard sums only signal answers from the last week per station (a beacon or EiBi row never badges a station; mixed answers give the latest heard and day counts; a week-old heard is dropped; a heard from two days ago badges but stays out of the day's counts); fails_when=another kind's rows leak in, the window is wrong (including the counts reading the week window instead of COUNT_MS), or the query isn't wired to the router; why_new=#102 query; the 2-day row added because no fixture sat between COUNT_MS and HEARD_SHOWN_MS; seam=ctx.db.receptionReport.groupBy faked; no_claim=Postgres behavior (checked against a real Postgres in /ship QA)
   it("sums the week's signal answers per station", async () => {
     vi.useFakeTimers({ now: NOW });
     try {
@@ -149,11 +149,13 @@ describe("lastHeardSource", () => {
         row("signal", "uvb-76", 4_625, "not_heard", 20),
         row("beacon", "uvb-76", 4_625, "heard", 1),
         row("signal", "the-pip", 5_448, "heard", 8 * 24 * 60),
+        row("signal", "rwm", 9_996, "heard", 2 * 24 * 60),
       ]);
       const caller = appRouter.createCaller({ db } as never);
       const { heard } = await caller.signals.lastHeard();
       expect(heard).toEqual({
         "uvb-76": { heardMs: NOW - 40 * 60_000, either: null, heard24h: 1, notHeard24h: 1 },
+        rwm: { heardMs: NOW - 2 * 24 * 60 * 60_000, either: null, heard24h: 0, notHeard24h: 0 },
       });
     } finally {
       vi.useRealTimers();
