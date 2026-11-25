@@ -442,9 +442,13 @@ export function useRadio() {
       } else if (msg.type === "decode") {
         const state = msg.state;
         if (state !== "searching" && state !== "locked" && state !== "off" && state !== "error") return;
-        // An "off" while one is still asked for is the service catching up; the
-        // request that follows answers it.
-        if (state === "off" && decodeRef.current) return;
+        // "off" answers a request to stop: nothing more to show. One that comes
+        // while a decoder is asked for is the service catching up; the request
+        // that follows answers it.
+        if (state === "off") {
+          if (!decodeRef.current) setDecodeState(null);
+          return;
+        }
         if (state === "error") decodeRef.current = null;
         setDecodeState({
           state,

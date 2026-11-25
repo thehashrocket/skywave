@@ -1418,7 +1418,7 @@ describe("useRadio", () => {
       expect(result.current.decodeState).toBeNull();
     });
 
-    // Value: protects=decoded text accumulates (capped), state follows the service, text arriving after Off is dropped, and turning it on again starts a clean panel; fails_when=batches overwrite each other, the cap is missing, late text lands after Off, or a stale "off" wipes a fresh request; why_new=RTTY decoding (#92); seam=FakeSocket; no_claim=the panel's rendering
+    // Value: protects=decoded text accumulates (capped), state follows the service, text arriving after Off is dropped, and turning it on again starts a clean panel; fails_when=batches overwrite each other, the cap is missing, late text lands after Off, the service's "off" reply brings the panel back, or a stale "off" wipes a fresh request; why_new=RTTY decoding (#92); seam=FakeSocket; no_claim=the panel's rendering
     it("collects text and follows the decoder's state", async () => {
       const { result } = renderHook(() => useRadio());
       await act(() => result.current.tune(tuning));
@@ -1437,6 +1437,9 @@ describe("useRadio", () => {
       act(() => text(ws, { type: "decoded", mode: "rtty", text: "X".repeat(DECODED_MAX_CHARS), atMs: 3 }));
       expect(result.current.decoded).toHaveLength(DECODED_MAX_CHARS);
       act(() => result.current.setDecode(null));
+      // The service's answer to the off leaves it off: no panel, box unchecked.
+      act(() => text(ws, { type: "decode", mode: null, state: "off" }));
+      expect(result.current.decodeState).toBeNull();
       act(() => text(ws, { type: "decoded", mode: "rtty", text: "LATE", atMs: 4 }));
       expect(result.current.decoded.endsWith("LATE")).toBe(false);
       act(() => result.current.setDecode({ mode: "rtty" }));

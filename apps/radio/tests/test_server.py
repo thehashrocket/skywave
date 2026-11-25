@@ -6016,7 +6016,8 @@ def test_decoder_crash_keeps_audio(monkeypatch):
         return seen + statuses, audio
 
     seen, audio = run_with_fake(body)
-    assert "audio plays on" in seen[-1]["message"] if seen[-1].get("type") == "decode" else True
+    errors = [p for p in seen if p.get("type") == "decode" and p["state"] == "error"]
+    assert errors and "audio plays on" in errors[0]["message"]
     assert not [p for p in seen if p.get("type") == "status" and p["state"] in ("error", "stopped")]
     assert len(audio) >= 20
 
@@ -6040,3 +6041,52 @@ def test_decode_set_before_listen_and_reset_on_retune():
     assert on_listen[-1]["markHz"] == 1600
     assert "markHz" not in on_retune[-1] and on_retune[-1]["state"] == "searching"
     assert text
+
+
+# Value: protects=a decoder that can't even be built (asked for before Listen, or while playing) turns decoding off with a decode error and never ends the audio; fails_when=_start_decoder's exception escapes into the pump (a "Something broke" status and silence) or no decode reply goes out; why_new=code review of PR 120; seam=monkeypatched RttyDecoder.__init__; no_claim=which real sample rates could make it fail
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("before_listen", [True, False], ids=["asked before Listen", "asked while playing"])
+def test_decoder_that_cannot_start_keeps_audio(monkeypatch, before_listen):
+    from skywave_radio import rtty
+
+    def boom(self, *a, **kw):
+        raise ValueError("bad sample rate")
+
+    monkeypatch.setattr(rtty.RttyDecoder, "__init__", boom)
+    decode = json.dumps({"type": "decode", "mode": "rtty"})
+
+    def body(kiwi):
+        with TestClient(create_app(settings())).websocket_connect("/ws", headers=ORIGIN) as ws:
+            if before_listen:
+                ws.send_text(decode)
+            ws.send_text(tune_msg(kiwi.port))
+            seen = until_state(ws, "listening")
+            if not before_listen:
+                ws.send_text(decode)
+            seen += until_type(ws, "decode", lambda p: p["state"] == "error")
+            statuses, audio, _ = collect(ws, want_audio=20, want_spectrum=0)
+        return seen + statuses, audio
+
+    seen, audio = run_with_fake(body)
+    errors = [p for p in seen if p.get("type") == "decode" and p["state"] == "error"]
+    assert errors and "audio plays on" in errors[0]["message"] and errors[0]["mode"] is None
+    assert not [p for p in seen if p.get("type") == "status" and p["state"] in ("error", "stopped")]
+    assert len(audio) >= 20
+
+
+# Value: protects=a hand-set mark goes back to automatic when the listener switches to another receiver on another frequency, as the protocol docs promise; fails_when=only same-receiver retunes forget the mark; why_new=code review of PR 120; seam=FakeKiwi reached as 127.0.0.1 and as localhost (two receivers to the session); no_claim=none
+@pytest.mark.timeout(30)
+def test_switching_receiver_and_frequency_forgets_the_mark():
+    def body(kiwi):
+        with TestClient(create_app(settings())).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port, freq=7077))
+            until_state(ws, "listening")
+            ws.send_text(json.dumps({"type": "decode", "mode": "rtty", "markHz": 1600}))
+            set_ = until_type(ws, "decode")
+            ws.send_text(tune_msg(kiwi.port, freq=14080, host="localhost"))
+            switched = until_type(ws, "decode", lambda p: p["state"] in ("searching", "locked"))
+        return set_, switched
+
+    set_, switched = run_with_fake(body)
+    assert set_[-1]["markHz"] == 1600
+    assert "markHz" not in switched[-1]

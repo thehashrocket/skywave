@@ -34,14 +34,15 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from skywave_radio.hostguard import resolve_receiver  # noqa: E402
+from skywave_radio.hostguard import HostRejected, resolve_receiver  # noqa: E402
 from skywave_radio.kiwi import DEFAULT_PORT, KiwiClient, KiwiError  # noqa: E402
 
 # Each one holds a channel on a volunteer's receiver.
 MAX_RECEIVERS = 3
 RETRY_S = 20.0
-# KiwiError codes that mean the owner refuses this kind of connection; never retried.
-REFUSALS = frozenset({"no_apps", "password", "blocked"})
+# KiwiError codes that mean the owner refuses this kind of connection; never
+# retried. (A host hostguard refuses, private or unresolvable, isn't either.)
+REFUSALS = frozenset({"no_apps", "password"})
 
 
 def parse_host(raw: str) -> tuple[str, int, bool]:
@@ -72,8 +73,14 @@ async def record_segment(host: str, port: int, secure: bool, freq: float, end: f
     """One connection, recorded until `end` or until it drops. Returns seconds recorded."""
     ip = await resolve_receiver(host, port, allow_private=False)
     client = KiwiClient(host, port, connect_host=ip, secure=secure)
-    await client.tune(freq)
-    info = await client.connect()
+    try:
+        await client.tune(freq)
+        info = await client.connect()
+    except BaseException:
+        # A refused or failed handshake: close the socket now, not leave it
+        # open on the volunteer's receiver while we wait to redial.
+        await client.close()
+        raise
     rate = info.sample_rate or 12000.0
     started = time.time()
     path = out_dir / f"{host}_{port}_{freq:g}kHz_{stamp(started)}.wav"
@@ -129,9 +136,12 @@ async def record_receiver(raw: str, freq: float, start: float, end: float, out_d
         except KiwiError as e:
             log(name, f"dropped: {e}")
             if e.code in REFUSALS:
-                # The owner said no (apps not allowed, a password, blocked): don't keep asking.
+                # The owner said no (apps not allowed, a password): don't keep asking.
                 log(name, "giving up on this receiver; start another in its place")
                 break
+        except HostRejected as e:
+            log(name, f"refused: {e}; giving up on this receiver")
+            break
         except (OSError, asyncio.TimeoutError) as e:
             log(name, f"dropped: {e}")
         except Exception as e:  # keep the other receivers going whatever happens here

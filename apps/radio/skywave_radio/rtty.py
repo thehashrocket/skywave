@@ -61,9 +61,11 @@ LEVEL_SHARE = 0.4
 # hopping across both, two unrelated carriers 170 Hz apart, PSK) doesn't: either
 # energy is on neither tone or on both at once.
 DECISIVE = 0.5
-# I/Q kept so a newly found pair is decoded from here back, not just from the
-# moment the search noticed it (it needs about SEARCH_EVERY_S of keying first).
-REPLAY_S = 2.0
+# I/Q kept so a newly found pair, or a squelch that has just opened, is decoded
+# from here back, not just from the moment the search noticed (the search runs
+# every SEARCH_EVERY_S on a spectrum averaged over about 4 s, so it can take a
+# few seconds of keying to open).
+REPLAY_S = 4.0
 
 # ITA2 as US teleprinters (and fldigi) use it. None marks LTRS/FIGS shifts and
 # codes that print nothing.
@@ -230,7 +232,17 @@ class RttyDecoder:
 
     def _set_mark(self, mark_hz: float) -> None:
         self.mark_hz = mark_hz
-        # A new pair: what's in flight belongs to the old one.
+        self._restart()
+
+    def _restart(self) -> None:
+        """Start decoding afresh from the last REPLAY_S of I/Q, on the next block.
+
+        On a new pair, what's in flight belongs to the old one. When the
+        squelch opens again on the same pair (the next over on a net), what
+        the slicer made meanwhile was thrown away, so it is decoded again;
+        and the letters/figures shift starts clean, not wherever junk read
+        while the squelch was shut left it.
+        """
         self._d = np.zeros(0, dtype=np.float64)
         self._e = np.zeros(0, dtype=np.float64)
         self._level_buf = np.zeros(0, dtype=np.float64)
@@ -249,11 +261,15 @@ class RttyDecoder:
         self._recent_n += iq.size
         while self._recent_n - self._recent[0].size >= REPLAY_S * self.fs:
             self._recent_n -= self._recent.pop(0).size
+        was_open = self.squelch_open
         self._relocked = False
         self._search(iq)
         if self.mark_hz is None:
             return ""
-        # Just locked: decode the last REPLAY_S, which ends with this block.
+        if self.squelch_open and not was_open and not self._relocked:
+            self._restart()
+        # Just locked, or the squelch just opened: decode the last REPLAY_S,
+        # which ends with this block.
         feed = np.concatenate(self._recent) if self._relocked else iq
         d, e = self._discriminate(feed)
         text = self._slice(d, e)

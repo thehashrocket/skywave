@@ -490,6 +490,8 @@ class ListenSession:
         self._decoded_at = 0.0
         # The last decode state sent, so changes go out once.
         self._decode_sent: dict[str, Any] | None = None
+        # Why the decoder couldn't be built, until the next decode reply says so.
+        self._decode_error: str | None = None
 
     @property
     def lookup_owner(self) -> Hashable:
@@ -674,18 +676,20 @@ class ListenSession:
                 if self._listening and client is not None:
                     self._demod = Demodulator(client.info.sample_rate, mode)
                 self._mode = mode
-            if moved and self._decode is not None:
-                # The signal sits somewhere else now: a mark set for the old
-                # frequency means nothing here, so look for the pair again.
-                dmode, _, reverse = self._decode
-                self._decode = (dmode, None, reverse)
+            had_decode = moved and self._decode is not None
+            if had_decode:
+                self._forget_mark()
                 self._start_decoder()
             if self._listening:
                 await self._status("listening")
-                if moved and self._decode is not None:
+                if had_decode:
                     await self._decode_reply()
             return
 
+        if self._freq_khz and (freq != self._freq_khz or mode != self._mode):
+            # Another receiver on another frequency: same rule as a retune. (A
+            # mark set before the first Listen is for that Listen: kept.)
+            self._forget_mark()
         self._freq_khz = freq
 
         receiver = (host, port)
@@ -799,7 +803,7 @@ class ListenSession:
             self._listening = True
             self._start_decoder()
             await self._status("listening")
-            if self._decode is not None:
+            if self._decode is not None or self._decode_error is not None:
                 await self._decode_reply()
 
             last_meter = 0.0
@@ -1033,6 +1037,13 @@ class ListenSession:
         self._start_decoder()
         await self._decode_reply()
 
+    def _forget_mark(self) -> None:
+        """The signal sits somewhere else now: a mark set for the old frequency
+        means nothing here, so the decoder looks for the pair again."""
+        if self._decode is not None:
+            dmode, _, reverse = self._decode
+            self._decode = (dmode, None, reverse)
+
     def _start_decoder(self) -> None:
         """(Re)build the decoder for what the browser asked and what plays now."""
         self._decoder = None
@@ -1044,12 +1055,19 @@ class ListenSession:
         _, mark, reverse = self._decode
         # Baseband is the Kiwi's tuning, which sits CW_PITCH_HZ under the dial in CW.
         shift = (self._freq_khz - kiwi_freq_khz(self._freq_khz, self._mode)) * 1000
-        self._decoder = RttyDecoder(
-            client.info.sample_rate,
-            mark_hz=None if mark is None else mark + shift,
-            reverse=reverse,
-            search=PASSBANDS[self._mode],  # type: ignore[index]
-        )
+        try:
+            self._decoder = RttyDecoder(
+                client.info.sample_rate,
+                mark_hz=None if mark is None else mark + shift,
+                reverse=reverse,
+                search=PASSBANDS[self._mode],  # type: ignore[index]
+            )
+        except Exception:
+            # Like a failure while decoding: never let it reach the pump and
+            # end the audio. The next decode reply says it's off.
+            log.exception("building the %s decoder failed; turning it off", self._decode[0])
+            self._decode = None
+            self._decode_error = "The decoder couldn't start and was turned off. The audio plays on."
 
     def _decode_state(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"type": "decode", "mode": None, "state": "off"}
@@ -1069,6 +1087,9 @@ class ListenSession:
 
     async def _decode_reply(self, state: str | None = None, **extra: Any) -> None:
         payload = self._decode_state()
+        error, self._decode_error = self._decode_error, None
+        if state is None and error is not None:
+            state, extra = "error", {**extra, "message": error}
         if state is not None:
             payload["state"] = state
         payload.update({k: v for k, v in extra.items() if v is not None})

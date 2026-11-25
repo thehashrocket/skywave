@@ -118,6 +118,7 @@ ITA2_PUBLISHED = {
     "LTRS": "11111", "FIGS": "11011", " ": "00100",
     "C": "01110", "D": "10010", "E": "10000", "Q": "11101", "R": "01010",
     "W": "11001", "Y": "10101", "A": "11000", "T": "00001", "U": "11100",
+    "K": "11110", "B": "10011",
 }  # fmt: skip
 # Figures sit on the top row's letter codes: 1 on Q, 2 on W ... 7 on U (US TTY).
 FIG_ON = {"1": "Q", "2": "W", "3": "E", "4": "R", "5": "T", "6": "Y", "7": "U"}
@@ -199,3 +200,22 @@ def test_two_steady_carriers_print_nothing():
     iq = 0.1 * np.exp(2j * np.pi * 1500 * t) + 0.1 * (1 + 0.5 * np.sin(2 * np.pi * 0.7 * t)) * np.exp(2j * np.pi * 1670 * t)
     got, _ = decode(iq.astype(np.complex64))
     assert got == ""
+
+
+# Value: protects=the next over on the same tones (a net taking turns) prints from its first word, and starts in letters even if junk left the decoder in figures; fails_when=the replay runs only on a new pair, or the ITA2 shift survives a closed squelch; why_new=code review of PR 120; seam=hand-built FSK; no_claim=overs that start within a second of the last one ending (the squelch never closes)
+def test_second_over_on_same_tones_prints_from_its_start():
+    rng = np.random.default_rng(11)
+    gap = np.zeros(int(FS * 12), dtype=np.complex64)
+    first = hand_fsk("CQ DE W1AW", FS, upper_hz=2125, lower_hz=1955)
+    second = hand_fsk("CQ CQ DE K1ABC K", FS, upper_hz=2125, lower_hz=1955)
+
+    def noisy(x):
+        return (x + 0.003 * (rng.standard_normal(x.size) + 1j * rng.standard_normal(x.size))).astype(np.complex64)
+
+    d = RttyDecoder(FS)
+    run = lambda x: "".join(d.process(x[i : i + 512]) for i in range(0, x.size, 512))  # noqa: E731
+    assert run(noisy(first)).strip() == "CQ DE W1AW"
+    assert run(noisy(gap)) == ""
+    assert not d.squelch_open
+    d._ita2.figs = True  # as if junk read during the gap decoded as FIGS
+    assert run(noisy(np.concatenate((second, gap[: int(FS * 3)])))).strip() == "CQ CQ DE K1ABC K"
