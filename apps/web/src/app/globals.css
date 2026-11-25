@@ -2759,6 +2759,46 @@ html:has(.tuning-bar:not([hidden])) {
   color: var(--muted);
 }
 
+/* Asks before Google Tag Manager loads; shown only where NEXT_PUBLIC_GTM_ID is set. */
+.analytics-consent {
+  position: fixed;
+  inset: auto 12px 12px;
+  /* Above the map, its drawers and the tuning bar (z-index 10 and under). */
+  z-index: 50;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 10px 14px;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--enamel-deep);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-panel);
+}
+
+.analytics-consent p {
+  margin: 0;
+  flex: 1 1 280px;
+}
+
+.analytics-consent-answers {
+  display: inline-flex;
+  gap: 16px;
+}
+
+/* Room under the page while the bar is up (up to three lines on a phone), so
+   the footer and last controls can scroll clear of it. */
+html:has(.analytics-consent) {
+  scroll-padding-bottom: 8rem;
+}
+
+body:has(> .analytics-consent) {
+  padding-bottom: 8rem;
+}
+
 /* The /owners page: running text for KiwiSDR owners, in the console's frame. */
 
 .owners-wordmark {

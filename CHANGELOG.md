@@ -2,10 +2,16 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
-## [0.50.0.0] - 2026-11-25 ([#108](https://github.com/thehashrocket/skywave/issues/108))
+## [0.52.0.0] - 2026-11-25 ([#108](https://github.com/thehashrocket/skywave/issues/108))
 
 ### Added
 - **Show up by name on receivers.** An optional "Your call sign or name" field in the receiver drawer. When set, the receiver's user list shows you as "skywave N0CALL" instead of the plain Skywave name, so other listeners on that Kiwi can see who's there. The field previews exactly what most receivers will show (many cut names at 16 characters), and notes that the receiver's owner and its other listeners can see it. Letters, digits, `/`, `-`, `_` and spaces, up to 24 characters; anything else falls back to the default. It applies from your next Listen, even on the receiver already playing. Your name stays out of the radio service's logs.
+
+## [0.51.0.0] - 2026-11-25
+
+### Added
+- **Google Tag Manager, with consent.** Where `NEXT_PUBLIC_GTM_ID` is set (Production only), a slim bar at the bottom asks whether skywave may use Google Analytics cookies to count visits. Tag Manager loads only after Accept, with Google's ad storage left off (the bar asks about analytics only); Decline loads nothing, and the answer is remembered and applies in every open tab. On a first visit the bar never takes focus, and the page leaves room under it, so the dial, controls and footer stay usable while it's up.
+- "Cookie settings" in the footer reopens the bar. It takes focus, so screen readers land on it. Withdrawing consent switches off Google Analytics on the page and deletes Google's analytics and ads cookies without reloading it, so whatever's playing keeps playing; accepting again on the same page turns analytics back on.
 
 ## [0.49.0.0] - 2026-11-25 ([#92](https://github.com/thehashrocket/skywave/issues/92))
 
