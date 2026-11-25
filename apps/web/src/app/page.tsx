@@ -1,6 +1,6 @@
 "use client";
 
-import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Dial } from "@/components/Dial";
 import { FrequencyReadout } from "@/components/FrequencyReadout";
 import { MapPanel } from "@/components/MapPanel";
@@ -22,6 +22,7 @@ import { rankForSignal } from "@/lib/signal-rank";
 import { activeChannelAt, findStation, onAirAt, type SignalChannel, type SignalStation } from "@/lib/signal-stations";
 import { onAirTx, type PriyomTx } from "@/lib/priyom-schedule";
 import { usePriyomSchedule } from "@/lib/use-priyom-schedule";
+import { type Fold, loadFolded, saveFolded, type SectionId } from "@/lib/section-folds";
 import { eventEnd, eventStart, EVENTS, isTuned, onSlotFrequency, rankForRegion, WEEK_MS, type Occurrence, type Slot } from "@/lib/ghostnet";
 import { rankForBeacon } from "@/lib/beacon-rank";
 import { beaconOnBand, IBP_BANDS_KHZ, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
@@ -350,6 +351,34 @@ export default function ListenPage() {
   const [tuningRestored, setTuningRestored] = useState(false);
   const [volume, setVolume] = useState(0.8);
   const [letterKeys, setLetterKeys] = useState(true);
+  // The main page's folded sections (collapsible sections): all open in the server's
+  // render, then this browser's saved folds before the first paint (below), so a
+  // returning listener never sees folded sections open and collapse.
+  const [folded, setFolded] = useState<ReadonlySet<SectionId>>(() => new Set());
+  useLayoutEffect(() => {
+    const shown = new Set(loadFolded());
+    // A link naming a signal station opens that section for this visit, folded or not.
+    // Read before the mount effect clears the query.
+    const sig = parseShareLink(window.location.search)?.signal;
+    if (sig) shown.delete("signal-stations");
+    setFolded(shown);
+  }, []);
+  const foldOf = (id: SectionId): Fold => ({
+    folded: folded.has(id),
+    onToggle: () => {
+      const nowFolded = !folded.has(id);
+      const shown = new Set(folded);
+      // What's remembered changes by this one section, read afresh: a share link may have
+      // opened another for this visit, and another tab may have saved since this one loaded.
+      const saved = new Set(loadFolded());
+      for (const set of [shown, saved]) {
+        if (nowFolded) set.add(id);
+        else set.delete(id);
+      }
+      setFolded(shown);
+      saveFolded(saved);
+    },
+  });
   const [browseOpen, setBrowseOpen] = useState(false);
   // The receiver drawer under the header strip: the Receiver field, Pick best, the map and the table.
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -1855,9 +1884,10 @@ export default function ListenPage() {
 
       {/* Above Find a station and Strong signals now (#89): a listener working from saved
           frequencies reaches them without scrolling past both. */}
-      <Presets freqKhz={freqKhz} mode={mode} onSelect={(p) => changeFreq(clampKhz(p.freqKhz), p.mode)} />
+      <Presets fold={foldOf("presets")} freqKhz={freqKhz} mode={mode} onSelect={(p) => changeFreq(clampKhz(p.freqKhz), p.mode)} />
 
       <StationSearch
+        fold={foldOf("station-search")}
         schedule={scheduleQuery.data}
         loadFailed={scheduleQuery.isError}
         onRetry={() => void scheduleQuery.refetch()}
@@ -1884,6 +1914,7 @@ export default function ListenPage() {
       />
 
       <SignalStations
+        fold={foldOf("signal-stations")}
         freqKhz={freqKhz}
         mode={mode}
         priyom={priyom}
@@ -1894,6 +1925,7 @@ export default function ListenPage() {
       />
 
       <SignalList
+        fold={foldOf("signals")}
         scan={scan}
         canScan={canScan}
         listening={status.state === "listening"}

@@ -217,4 +217,16 @@ describe("SignalList", () => {
     expect(shared!.querySelector(".signal-station-more")!.textContent).toBe(" +2 more");
     expect(shared!.querySelector<HTMLElement>(".signal-station")!.title).toContain("Channel 292 · German");
   });
+
+  // Value: protects=while folded the heading says where the scan stands: scanning, how many were found, that the receiver covers no broadcast bands (not a misleading "0 found"), or that the scan failed (not a blank that looks idle); fails_when=a converter receiver reads "0 found" or a failed scan shows nothing; why_new=collapsible sections review (PR #126); seam=none; no_claim=none
+  it.each<[ScanState, string]>([
+    [{ state: "scanning", ...at }, "scanning…"],
+    [{ state: "done", ...at, signals: [], hidden: 0, bandsDone: 15, bandsTotal: 15, partial: false }, "0 found"],
+    [{ state: "done", ...at, signals: [], hidden: 0, bandsDone: 0, bandsTotal: 0, partial: false }, "no broadcast bands"],
+    [{ state: "error", ...at, message: "Couldn't scan this receiver: full." }, "scan failed"],
+  ])("summarises the scan while folded (%#)", (scan, tail) => {
+    show(scan, { fold: { folded: true, onToggle: () => {} } });
+    expect(screen.getByRole("heading", { level: 2 }).textContent).toBe(`Strong signals now · ${tail}`);
+    expect(document.getElementById("signals-body")!.hidden).toBe(true);
+  });
 });

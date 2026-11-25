@@ -180,4 +180,17 @@ describe("SignalStations", () => {
     rerenderAt("2026-11-25T07:12:00Z", { picked: "the-pip", connecting: true });
     expect(status()).toBe("Connecting…");
   });
+
+  // Value: protects=folding the section hides its tables but not the status line, so the picked station's "Connecting…" is still spoken, and the folded heading summarises what's on ("6 always on"); fails_when=the live region sits inside the folded body and goes silent, or no summary shows; why_new=collapsible sections; seam=useServerTick mocked; no_claim=what a screen reader does with the text
+  it("keeps speaking the picked station while folded", () => {
+    nowMs = Date.parse("2026-11-25T07:10:00Z");
+    const fold = { folded: true, onToggle: () => {} };
+    const props = { fold, freqKhz: 4625, mode: "usb" as Mode, priyom: null, onListen: () => {} };
+    const view = render(<SignalStations {...props} picked={null} />);
+    expect(document.getElementById("signal-stations-body")!.hidden).toBe(true);
+    expect(screen.getByText(/6 always on/)).toBeTruthy();
+    nowMs = Date.parse("2026-11-25T07:11:00Z");
+    view.rerender(<SignalStations {...props} picked="uvb-76" connecting />);
+    expect(status()).toBe("Connecting…");
+  });
 });

@@ -1,5 +1,7 @@
 "use client";
 
+import { SectionBody, SectionHeading } from "@/components/SectionHeading";
+import type { Fold } from "@/lib/section-folds";
 import { useEffect, useRef, useState } from "react";
 import { formatWait, mhz } from "@/lib/ghostnet";
 import { PRIYOM_ON_AIR_MS, PRIYOM_SCHEDULE_PAGE, type PriyomTx } from "@/lib/priyom-schedule";
@@ -20,6 +22,8 @@ const CATEGORY_LABELS: Record<SignalCategory, string> = {
 };
 
 type Props = {
+  /** Folding this section (collapsible sections); without it the heading is a plain h2. */
+  fold?: Fold;
   /** Where the dial is, for the tuned marker. */
   freqKhz: number;
   mode: Mode;
@@ -58,36 +62,56 @@ function listenLabel(station: SignalStation, ch: SignalChannel): string {
  * tune, so it never lands in a schedule's silence, and never for a station
  * that's off the air for good.
  */
-export function SignalStations({ freqKhz, mode, priyom, picked, connecting = false, playing = false, onListen }: Props) {
+export function SignalStations({
+  fold,
+  freqKhz,
+  mode,
+  priyom,
+  picked,
+  connecting = false,
+  playing = false,
+  onListen,
+}: Props) {
   const now = useServerTick(MINUTE);
   const groups = now === null ? null : panelGroups(now, priyom);
   const announce = useAnnouncements(groups?.onNow ?? null, picked, freqKhz, connecting, playing);
+  // While folded: what's on the air (collapsible sections).
+  let foldTail: string | null = null;
+  if (groups?.onNow[0]) {
+    const more = groups.onNow.length - 1;
+    foldTail = `${groups.onNow[0].station.name} on now${more > 0 ? ` +${more} more` : ""}`;
+  } else if (groups) foldTail = `${groups.always.length} always on`;
   return (
     <section className="presets signals" aria-labelledby="signal-stations-heading">
-      <h2 id="signal-stations-heading">Signal stations</h2>
-      <p className="signals-about">
-        Time signals, markers and numbers stations: the oddities people tune shortwave to find.
-      </p>
-      {now !== null && groups && (
-        <Groups
-          groups={groups}
-          now={now}
-          freqKhz={freqKhz}
-          mode={mode}
-          priyom={priyom}
-          picked={picked}
-          busy={connecting || playing}
-          onListen={onListen}
-        />
-      )}
-      <p className="sched-note">
-        Numbers-station schedules from{" "}
-        <a href={PRIYOM_SCHEDULE_PAGE} target="_blank" rel="noreferrer">
-          Priyom.org
-        </a>{" "}
-        (CC BY-NC-SA 4.0). Priyom lists start times only, so a transmission counts as on for{" "}
-        {PRIYOM_ON_AIR_MS / MINUTE} minutes from its start. Times are UTC; local times follow your device clock.
-      </p>
+      <SectionHeading section="signal-stations" fold={fold} tail={foldTail}>
+        Signal stations
+      </SectionHeading>
+      <SectionBody section="signal-stations" fold={fold}>
+        <p className="signals-about">
+          Time signals, markers and numbers stations: the oddities people tune shortwave to find.
+        </p>
+        {now !== null && groups && (
+          <Groups
+            groups={groups}
+            now={now}
+            freqKhz={freqKhz}
+            mode={mode}
+            priyom={priyom}
+            picked={picked}
+            busy={connecting || playing}
+            onListen={onListen}
+          />
+        )}
+        <p className="sched-note">
+          Numbers-station schedules from{" "}
+          <a href={PRIYOM_SCHEDULE_PAGE} target="_blank" rel="noreferrer">
+            Priyom.org
+          </a>{" "}
+          (CC BY-NC-SA 4.0). Priyom lists start times only, so a transmission counts as on for{" "}
+          {PRIYOM_ON_AIR_MS / MINUTE} minutes from its start. Times are UTC; local times follow your device clock.
+        </p>
+      </SectionBody>
+      {/* Outside the fold: the picked station's lines are still spoken while the section is folded. */}
       <div className="visually-hidden" role="status">
         {announce}
       </div>

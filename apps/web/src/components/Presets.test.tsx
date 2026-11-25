@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // createdAt as superjson delivers it: a Date. Shared rows never show it (eng D2, D5).
 const shared = [{ id: "s1", name: "WWV", freqKhz: 10_000, mode: "am", createdAt: new Date("2026-11-22T10:00:00Z") }];
 const mutate = vi.fn();
+// The shared list query as useQuery hands it over; a test can make it pending or failed.
+const LOADED = { data: shared as typeof shared | undefined, isPending: false, isError: false };
+let query = LOADED;
 // The server's time, a Monday; the device clock is left alone so a save that used it would show.
 const NOW = Date.parse("2026-11-23T22:14:00Z");
 let serverMs = NOW;
@@ -21,7 +24,7 @@ vi.mock("@/lib/trpc", () => ({
   }),
 }));
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({ data: shared, isPending: false, isError: false }),
+  useQuery: () => query,
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
   useMutation: (o: { kind: string }) => ({
     mutate: (...a: unknown[]) => mutate(o.kind, ...a),
@@ -33,6 +36,7 @@ vi.mock("@tanstack/react-query", () => ({
 const { Presets } = await import("./Presets");
 
 beforeEach(() => {
+  query = LOADED;
   localStorage.clear();
   mutate.mockClear();
   serverMs = NOW;
@@ -183,5 +187,21 @@ describe("Presets", () => {
       { name: "Radio Australia", freqKhz: 9580, mode: "am" },
       expect.anything(),
     );
+  });
+
+  // Value: protects=while folded the heading says how many frequencies are saved, and says nothing while the saved list is still loading or couldn't load, rather than a false "none saved yet"; fails_when=the summary guesses during loading or after an error; why_new=collapsible sections review; seam=react-query mocked; no_claim=none
+  it("summarises the saved count when folded, and stays quiet while loading or failed", () => {
+    const fold = { folded: true, onToggle: () => {} };
+    const view = render(<Presets fold={fold} freqKhz={9580} mode="am" onSelect={() => {}} />);
+    expect(screen.getByRole("heading", { level: 2 }).textContent).toContain("1 saved");
+    expect(document.getElementById("presets-body")!.hidden).toBe(true);
+    for (const state of [
+      { data: undefined, isPending: true, isError: false },
+      { data: undefined, isPending: false, isError: true },
+    ]) {
+      query = state;
+      view.rerender(<Presets fold={fold} freqKhz={9580} mode="am" onSelect={() => {}} />);
+      expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Saved frequencies");
+    }
   });
 });

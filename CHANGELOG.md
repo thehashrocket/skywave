@@ -2,6 +2,13 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.55.0.0] - 2026-11-25
+
+### Added
+- **Fold the sections you don't need.** Saved frequencies, Find a station, Signal stations and Strong signals now each fold under their heading, so there's less to scroll past on the main page. Click a heading (it has a small arrow) to fold or open it.
+- **Folded sections stay useful.** A folded section's heading shows what's inside in one muted line, such as "12 saved", "1,240 on now in English", "E11 on now" or "14 found". Find a station keeps its filters while folded, and Signal stations keeps announcing the station you picked to screen readers.
+- **Remembered.** Everything starts open on a first visit. A section you fold stays folded on your next visit in the same browser. A link to a signal station opens Signal stations for that visit without changing what you folded.
+
 ## [0.54.1.0] - 2026-11-25
 
 ### Fixed
