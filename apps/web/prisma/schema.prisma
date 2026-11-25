@@ -40,8 +40,9 @@ model ReceptionReport {
   txKind       String
   /// The EiBi station, the beacon's callsign, or the signal station's slug.
   txName       String
-  /// EiBi language/target codes ("E/NAm"), the beacon's band, or the signal
-  /// station's channel in kHz.
+  /// EiBi language/target codes ("E/NAm"), the beacon's band, or, for a signal
+  /// station, the dial frequency in kHz the server checked (within 0.05 kHz of
+  /// the station's channel).
   txDetail     String?
   /// Beacons: the UTC start (ms since the epoch) of the 10 s slot the prompt
   /// asked about, which the server checked against the schedule. Numbers
