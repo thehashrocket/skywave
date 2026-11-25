@@ -22,6 +22,8 @@ class FakeKiwi:
     # A MSG frame to send instead of the handshake, e.g. b"MSG too_busy=4".
     reject: bytes | None = None
     tone_hz: float = 1000.0
+    # Stream these I/Q samples (looped) instead of the tone.
+    iq_source: np.ndarray | None = None
     # What the fake reports as its I/Q rate (it always streams at RATE).
     sample_rate: str = "12000.000"
     # Seconds to wait before starting the handshake.
@@ -148,7 +150,10 @@ class FakeKiwi:
                 )
                 size = 0 if empty else self.block_size
                 t = (np.arange(size) + n) / RATE
-                iq = 0.2 * np.exp(2j * np.pi * self.tone_hz * t)
+                if self.iq_source is not None:
+                    iq = np.take(self.iq_source, np.arange(n, n + size), mode="wrap")
+                else:
+                    iq = 0.2 * np.exp(2j * np.pi * self.tone_hz * t)
                 inter = np.empty(size * 2, dtype=">i2")
                 inter[0::2] = (iq.real * 32767).astype(np.int16)
                 inter[1::2] = (iq.imag * 32767).astype(np.int16)

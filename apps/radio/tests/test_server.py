@@ -3057,7 +3057,7 @@ def test_scan_lists_signals_and_audio_keeps_playing():
         return statuses, replies, listeners, playing, paths, wf_closed
 
     statuses, replies, listeners, playing, paths, wf_closed = run_with_fake(body, wf_bins=carrier_bins(9_420.0))
-    assert statuses[-1]["features"] == ["scan", "view"]
+    assert statuses[-1]["features"] == ["scan", "view", "decode"]
     scan = [r for r in replies if r["type"] == "scan"]
     assert [r["state"] for r in scan] == ["scanning", "done"]
     done = scan[-1]
@@ -5913,3 +5913,130 @@ def test_json_nested_too_deep_is_bad_json_not_a_dropped_session():
     assert first == {"type": "status", "state": "error", "message": "Expected JSON."}
     assert "between 0 and 32,000" in second["message"]
 
+
+
+# --- RTTY decoding (#92) -----------------------------------------------------
+
+RTTY_TEXT = "RYRY CQ DE TEST 73 12345 "
+
+
+def rtty_iq():
+    from skywave_radio.rtty import modulate
+
+    # Mark 1585 Hz above a USB dial: what the fake Kiwi streams, looped.
+    return modulate(RTTY_TEXT * 4, 12000.0, mark_hz=1585, lead_s=0.1)
+
+
+def until_type(ws, want, pred=lambda p: True, limit=20000):
+    seen = []
+    for _ in range(limit):
+        msg = ws.receive()
+        if msg.get("text"):
+            payload = json.loads(msg["text"])
+            seen.append(payload)
+            if payload.get("type") == want and pred(payload):
+                return seen
+    raise AssertionError(f"never got {want}: {seen}")
+
+
+# Value: protects=turning RTTY on mid-session streams decoded text over the socket, locks on the tone pair, and turning it off stops the text while the audio plays on; fails_when=the decode message isn't routed, the decoder isn't fed the session's I/Q, or off doesn't stop it; why_new=first decoder in the session; seam=FakeKiwi streams synthetic FSK; no_claim=a real Kiwi's I/Q levels
+@pytest.mark.timeout(30)
+def test_rtty_decode_on_and_off_over_socket():
+    def body(kiwi):
+        with TestClient(create_app(settings())).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "listening")
+            ws.send_text(json.dumps({"type": "decode", "mode": "rtty"}))
+            seen = until_type(ws, "decoded", lambda p: "CQ DE TEST" in p["text"])
+            seen += until_type(ws, "decoded", lambda p: "12345" in p["text"])
+            ws.send_text(json.dumps({"type": "decode", "mode": None}))
+            off = until_type(ws, "decode", lambda p: p["state"] == "off")
+            # Audio keeps coming, and no more text after the off.
+            _, audio, _ = collect(ws, want_audio=40, want_spectrum=0, limit=4000)
+            after, _, _ = collect(ws, want_audio=40, want_spectrum=0, limit=4000)
+        return seen, off, audio, after
+
+    seen, off, audio, after = run_with_fake(body, iq_source=rtty_iq())
+    states = [p for p in seen if p["type"] == "decode"]
+    assert states[0] == {"type": "decode", "mode": "rtty", "state": "searching", "reverse": False}
+    locked = [p for p in states if p["state"] == "locked"]
+    assert locked and locked[0]["markHz"] == pytest.approx(1585, abs=6)
+    decoded = [p for p in seen if p["type"] == "decoded"]
+    assert all(p["mode"] == "rtty" and isinstance(p["atMs"], int) for p in decoded)
+    assert "CQ DE TEST 73 12345" in "".join(p["text"] for p in decoded)
+    assert off[-1] == {"type": "decode", "mode": None, "state": "off"}
+    assert len(audio) >= 40
+    assert not [p for p in after if p.get("type") == "decoded"]
+
+
+# Value: protects=a malformed decode request is answered as a decode error and never touches the audio or the status; fails_when=validation raises BadRequest (a status error the browser reads as stopped) or accepts NaN/huge marks; why_new=new message type; seam=none; no_claim=none
+@pytest.mark.parametrize(
+    "msg",
+    [
+        {"type": "decode", "mode": "psk31"},
+        {"type": "decode", "mode": "rtty", "markHz": "1585"},
+        {"type": "decode", "mode": "rtty", "markHz": 99999},
+        {"type": "decode", "mode": "rtty", "markHz": True},
+        {"type": "decode", "mode": "rtty", "reverse": "yes"},
+    ],
+)
+def test_bad_decode_request_is_a_decode_error(msg):
+    def body(kiwi):
+        with TestClient(create_app(settings())).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "listening")
+            ws.send_text(json.dumps(msg))
+            seen = until_type(ws, "decode")
+            _, audio, _ = collect(ws, want_audio=5, want_spectrum=0)
+        return seen, audio
+
+    seen, audio = run_with_fake(body)
+    assert seen[-1]["state"] == "error" and seen[-1]["mode"] is None
+    assert not [p for p in seen if p.get("type") == "status" and p["state"] == "error"]
+    assert len(audio) >= 5
+
+
+# Value: protects=a decoder crash turns decoding off with a decode error and the audio keeps playing (a decoder bug must never cut audio); fails_when=the exception escapes the pump loop and ends the session; why_new=decoding runs inside the audio loop; seam=monkeypatched RttyDecoder.process; no_claim=which real inputs could crash it
+@pytest.mark.timeout(30)
+def test_decoder_crash_keeps_audio(monkeypatch):
+    from skywave_radio import rtty
+
+    def boom(self, iq):
+        raise RuntimeError("decoder bug")
+
+    monkeypatch.setattr(rtty.RttyDecoder, "process", boom)
+
+    def body(kiwi):
+        with TestClient(create_app(settings())).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(tune_msg(kiwi.port))
+            until_state(ws, "listening")
+            ws.send_text(json.dumps({"type": "decode", "mode": "rtty"}))
+            seen = until_type(ws, "decode", lambda p: p["state"] == "error")
+            statuses, audio, _ = collect(ws, want_audio=20, want_spectrum=0)
+        return seen + statuses, audio
+
+    seen, audio = run_with_fake(body)
+    assert "audio plays on" in seen[-1]["message"] if seen[-1].get("type") == "decode" else True
+    assert not [p for p in seen if p.get("type") == "status" and p["state"] in ("error", "stopped")]
+    assert len(audio) >= 20
+
+
+# Value: protects=decoding asked for before Listen starts once the receiver plays, and a retune to a new frequency drops a hand-set mark back to automatic; fails_when=the decoder is only built on a decode message, or a stale mark survives a retune; why_new=decode settings outlive the pump; seam=FakeKiwi; no_claim=none
+@pytest.mark.timeout(30)
+def test_decode_set_before_listen_and_reset_on_retune():
+    def body(kiwi):
+        with TestClient(create_app(settings())).websocket_connect("/ws", headers=ORIGIN) as ws:
+            ws.send_text(json.dumps({"type": "decode", "mode": "rtty", "markHz": 1600}))
+            first = until_type(ws, "decode")
+            ws.send_text(tune_msg(kiwi.port))
+            on_listen = until_type(ws, "decode")
+            ws.send_text(tune_msg(kiwi.port, freq=7201))
+            on_retune = until_type(ws, "decode")
+            text = until_type(ws, "decoded", lambda p: "CQ DE TEST" in p["text"])
+        return first, on_listen, on_retune, text
+
+    first, on_listen, on_retune, text = run_with_fake(body, iq_source=rtty_iq())
+    assert first[-1]["state"] == "searching" and first[-1]["markHz"] == 1600
+    assert on_listen[-1]["markHz"] == 1600
+    assert "markHz" not in on_retune[-1] and on_retune[-1]["state"] == "searching"
+    assert text

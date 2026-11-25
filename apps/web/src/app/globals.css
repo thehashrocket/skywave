@@ -2822,3 +2822,75 @@ html:has(.tuning-bar:not([hidden])) {
     animation: none;
   }
 }
+
+/* Decoded RTTY under the waterfall (#92): a status row, then the text. */
+.decode-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.decode-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.decode-title {
+  font-family: var(--font-instrument);
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.decode-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.decode-button {
+  padding: 4px 10px;
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-knob);
+  cursor: pointer;
+}
+
+.decode-button[aria-pressed="true"] {
+  background: var(--glass);
+  border-color: var(--glass);
+  color: var(--ink);
+}
+
+.decode-button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.decode-button:focus-visible,
+.decode-text:focus-visible {
+  outline: 2px solid var(--lamp);
+  outline-offset: 2px;
+}
+
+.decode-text {
+  margin: 0;
+  min-height: 4.5em;
+  max-height: 12em;
+  overflow-y: auto;
+  padding: 8px 10px;
+  font-family: var(--font-instrument);
+  font-size: 0.95rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-knob);
+}
