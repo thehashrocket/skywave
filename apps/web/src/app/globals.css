@@ -2514,6 +2514,12 @@ html:has(.tuning-bar:not([hidden])) {
   white-space: nowrap;
 }
 
+/* "heard 40 min ago" (#102): listeners' word, quiet like the place line it sits in. */
+.signals-heard {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .signals-wait {
   margin-right: 10px;
   white-space: nowrap;

@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PriyomTx } from "@/lib/priyom-schedule";
 import type { Mode } from "@/lib/radio-types";
+import type { LastHeard } from "@/lib/signal-heard";
 import { SignalStations } from "./SignalStations";
 
 // The server's time the panel sees: useServerTick rounds down to its step; null before the page knows it.
@@ -29,6 +30,7 @@ function renderPanel(
   iso: string,
   props: {
     priyom?: readonly PriyomTx[] | null;
+    heard?: Record<string, LastHeard> | null;
     freqKhz?: number;
     mode?: Mode;
     picked?: string | null;
@@ -43,6 +45,7 @@ function renderPanel(
       freqKhz={p.freqKhz ?? 9420}
       mode={p.mode ?? "am"}
       priyom={p.priyom ?? null}
+      heard={p.heard ?? null}
       picked={p.picked ?? null}
       connecting={p.connecting ?? false}
       playing={p.playing ?? false}
@@ -192,5 +195,40 @@ describe("SignalStations", () => {
     nowMs = Date.parse("2026-11-25T07:11:00Z");
     view.rerender(<SignalStations {...props} picked="uvb-76" connecting />);
     expect(status()).toBe("Connecting…");
+  });
+
+  // Value: protects=#102 badge: a station heard this week shows "heard N ago" in its row, a shared WWV/WWVH frequency reads "WWV or WWVH heard", a station heard today moves to the top of Always on, and a station with no heard time shows no badge; fails_when=the badge is missing or on the wrong row, the shared wording is lost, or the order ignores reports; why_new=#102 panel badge; seam=useServerTick mocked, heard passed as the query would return it; no_claim=layout
+  it("shows when listeners last heard a station and lists today's first", () => {
+    const now = Date.parse("2026-11-25T12:00:00Z");
+    const ago = (min: number) => now - min * 60_000;
+    renderPanel("2026-11-25T12:00:00Z", {
+      heard: {
+        "uvb-76": { heardMs: ago(40), either: null, heard24h: 1, notHeard24h: 0 },
+        wwv: { heardMs: ago(125), either: ["WWV", "WWVH"], heard24h: 0, notHeard24h: 0 },
+        wwvh: { heardMs: ago(125), either: ["WWV", "WWVH"], heard24h: 1, notHeard24h: 0 },
+        rwm: { heardMs: null, either: null, heard24h: 0, notHeard24h: 2 },
+      },
+    });
+    expect(rowOf("UVB-76").textContent).toContain("heard 40 min ago");
+    expect(rowOf("WWV").textContent).toContain("WWV or WWVH heard 2h 5m ago");
+    expect(rowOf("WWVH").textContent).toContain("WWV or WWVH heard 2h 5m ago");
+    expect(rowOf("RWM").textContent).not.toContain("heard");
+    const always = [...document.querySelectorAll(".signals tr[data-slug]")].map((r) => r.getAttribute("data-slug"));
+    expect(always.slice(0, 4)).toEqual(["uvb-76", "wwv", "wwvh", "rwm"]);
+  });
+
+  // Value: protects=#102 On now also lists the stations listeners confirmed in the last day first (a report beats the schedule), while unconfirmed rows stay ending-soonest first; fails_when=withHeard reorders only Always on, so a heard numbers station stays below one ending sooner; why_new=the existing badge test only checks Always on and confirmedFirst's unit test is given Always on rows; seam=useServerTick mocked, heard passed as the query would return it; no_claim=layout
+  it("lists a station heard today first under On now", () => {
+    const priyom = [tx("E07", "2026-11-25T07:12:00Z", 9_150), tx("E11", "2026-11-25T07:15:00Z", 20_167)];
+    const onNow = () => [...document.querySelectorAll(".signals tr[data-slug]")].map((r) => r.getAttribute("data-slug")).slice(0, 2);
+    const at = "2026-11-25T07:17:00Z";
+    renderPanel(at, { priyom });
+    expect(heads()[0]).toBe("On now");
+    expect(onNow()).toEqual(["e07", "e11"]);
+    cleanup();
+    const heardMs = Date.parse(at) - 30 * 60_000;
+    renderPanel(at, { priyom, heard: { e11: { heardMs, either: null, heard24h: 1, notHeard24h: 0 } } });
+    expect(onNow()).toEqual(["e11", "e07"]);
+    expect(rowOf("E11").textContent).toContain("heard 30 min ago");
   });
 });
