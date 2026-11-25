@@ -9,8 +9,13 @@ import {
   eibiTransmitter,
   formatCountdown,
   noQuestionReason,
+  signalAsk,
+  signalPromptAt,
+  signalTransmitter,
   STREAM_LATENCY_MS,
 } from "./reception";
+import { PRIYOM_ON_AIR_MS, type PriyomTx } from "./priyom-schedule";
+import { findStation, type SignalStation } from "./signal-stations";
 
 const b = (station: string, lang = "E", target = "Eu", khz = 9_580): Broadcast => ({
   khz,
@@ -208,5 +213,78 @@ describe("noQuestionReason", () => {
     expect(why(askAt)).toBe("none");
     // Questions off still wins.
     expect(noQuestionReason({ turnStartMs: TURN, askSlotMs: ended, questionsOff: true, nowMs: askAt - 1 })).toBe("off");
+  });
+});
+
+describe("signalAsk (#101)", () => {
+  const NOON = Date.UTC(2026, 10, 18, 12);
+  const station = (slug: string) => findStation(slug)!;
+
+  // Value: protects=a question is offered only for a station on the air on the dial's frequency: an always-on one on any catalog channel, a day/night one on either channel, never a defunct one or another frequency; fails_when=Listen on a station leads to a question about a frequency it isn't on, or about CHU; why_new=issue #101; seam=catalog as shipped; no_claim=the catalog's accuracy
+  it("offers always-on and day/night stations on their channels only, and never a defunct one", () => {
+    expect(signalAsk(station("wwv"), 15_000, null, NOON)).toEqual({
+      slug: "wwv",
+      name: "WWV",
+      khz: 15_000,
+      untilMs: Infinity,
+      hint: "a man's voice",
+    });
+    expect(signalAsk(station("the-pip"), 3_756, null, NOON)?.untilMs).toBe(Infinity);
+    expect(signalAsk(station("the-pip"), 5_448, null, NOON)?.untilMs).toBe(Infinity);
+    expect(signalAsk(station("wwv"), 9_580, null, NOON)).toBeNull();
+    expect(signalAsk(station("chu"), 7_850, null, NOON)).toBeNull();
+  });
+
+  // Value: protects=a numbers station is offered only while Priyom lists it on the air on that frequency, carrying the transmission's start and ending PRIYOM_ON_AIR_MS after it; with no schedule, nothing; fails_when=a question is planned without a slot for the server to check, past the estimated end, or on last month's frequency; why_new=issue #101 (exact-slot check); seam=none; no_claim=Priyom's accuracy
+  it("offers a numbers station inside Priyom's transmission on its frequency", () => {
+    const tx: PriyomTx = { station: "E11", startMs: NOON - 60_000, khz: 20_167, mode: "usb", summary: "E11 20167kHz USB" };
+    expect(signalAsk(station("e11"), 20_167, [tx], NOON)).toEqual({
+      slug: "e11",
+      name: "E11",
+      khz: 20_167,
+      untilMs: tx.startMs + PRIYOM_ON_AIR_MS,
+      slotStartMs: tx.startMs,
+    });
+    expect(signalAsk(station("e11"), 20_167, null, NOON)).toBeNull();
+    expect(signalAsk(station("e11"), 18_000, [tx], NOON)).toBeNull();
+    expect(signalAsk(station("e11"), 20_167, [tx], tx.startMs + PRIYOM_ON_AIR_MS)).toBeNull();
+  });
+
+  // Value: protects=a scheduled window counts only while it's open and on its own channel, ending at the window's end; fails_when=a windows station (none in the catalog yet) is asked about outside its window; why_new=issue #101; seam=a made-up station; no_claim=none
+  it("offers a windows station only inside its window, on its channel", () => {
+    const s: SignalStation = {
+      ...station("wwv"),
+      slug: "test",
+      channels: [{ khz: 6_000, mode: "usb" }, { khz: 7_000, mode: "usb" }],
+      schedule: { kind: "windows", windows: [{ startUtc: 11 * 60, endUtc: 13 * 60, khz: 7_000 }] },
+    };
+    expect(signalAsk(s, 7_000, null, NOON)?.untilMs).toBe(NOON + 60 * 60_000);
+    expect(signalAsk(s, 6_000, null, NOON)).toBeNull();
+    expect(signalAsk(s, 7_000, null, NOON + 2 * 60 * 60_000)).toBeNull();
+  });
+});
+
+describe("signalPromptAt (#101)", () => {
+  const ask = { slug: "e11", name: "E11", khz: 20_167, untilMs: 200_000 };
+
+  // Value: protects=the question comes after the dwell counted from first audio plus the stream's lag, waits for the gap between questions, and is dropped when either would land after the station goes off; fails_when=a question about dead air is asked, or one is asked early; why_new=issue #101 (beacon rule's counting); seam=none; no_claim=none
+  it("asks after the dwell from first audio plus the lag, never after the station is off", () => {
+    expect(signalPromptAt(ask, 0, 0, 60_000)).toBe(STREAM_LATENCY_MS + 60_000);
+    expect(signalPromptAt(ask, 0, 100_000, 60_000)).toBe(100_000);
+    expect(signalPromptAt(ask, 0, 200_001, 60_000)).toBeNull();
+    expect(signalPromptAt(ask, 200_000 - 60_000 - STREAM_LATENCY_MS, 0, 60_000)).toBe(200_000);
+    expect(signalPromptAt(ask, 200_000 - 60_000 - STREAM_LATENCY_MS + 1, 0, 60_000)).toBeNull();
+  });
+});
+
+describe("signalTransmitter (#101)", () => {
+  const NOON = Date.UTC(2026, 10, 18, 12);
+  const ask = (slug: string, khz: number) => signalAsk(findStation(slug)!, khz, null, NOON)!;
+
+  // Value: protects=WWV and WWVH, which share 2.5-15 MHz, are each asked about with the voice that tells them apart, while the answer is still stored under the slug alone; a station with no partner keeps its plain name; fails_when=a listener who picked WWV but hears WWVH has nothing to go on and answers "heard", so #102's badge marks WWV heard on WWVH's strength; why_new=review of #101 (WWV answers may really be WWVH); seam=catalog as shipped; no_claim=that listeners read the hint
+  it("adds the voice that tells WWV from WWVH to the question, not to what's stored", () => {
+    expect(signalTransmitter(ask("wwv", 10_000))).toEqual({ kind: "signal", name: "wwv", detail: "10000", label: "WWV (a man's voice)" });
+    expect(signalTransmitter(ask("wwvh", 10_000)).label).toBe("WWVH (a woman's voice)");
+    expect(signalTransmitter(ask("uvb-76", 4_625)).label).toBe("UVB-76");
   });
 });

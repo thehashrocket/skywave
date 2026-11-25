@@ -34,15 +34,20 @@ model ReceptionReport {
   receiverPort Int
   freqKhz      Float
   mode         String
-  /// "eibi" for a station in the EiBi schedule, "beacon" for a beacon (#59).
+  /// "eibi" for a station in the EiBi schedule, "beacon" for a beacon (#59),
+  /// "signal" for a signal station (#101, lib/signal-stations.ts).
   /// Text rather than an enum, so adding a kind needs no migration.
   txKind       String
-  /// The EiBi station, or the beacon's callsign.
+  /// The EiBi station, the beacon's callsign, or the signal station's slug.
   txName       String
-  /// EiBi language/target codes ("E/NAm"), or the beacon's band.
+  /// EiBi language/target codes ("E/NAm"), the beacon's band, or the signal
+  /// station's channel in kHz.
   txDetail     String?
-  /// Beacons only: the UTC start (ms since the epoch) of the 10 s slot the
-  /// prompt asked about, which the server checked against the schedule.
+  /// Beacons: the UTC start (ms since the epoch) of the 10 s slot the prompt
+  /// asked about, which the server checked against the schedule. Numbers
+  /// stations (signal stations on Priyom's schedule): the start of the
+  /// transmission asked about, checked against the server's copy of Priyom's.
+  /// Null otherwise.
   slotStartMs  BigInt?
   /// "heard" | "not_heard" | "no_open"
   outcome      String

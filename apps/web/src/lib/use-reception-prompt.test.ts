@@ -13,7 +13,13 @@ import {
   THANKS_MS,
   useReceptionPrompt,
 } from "./use-reception-prompt";
-import { LISTING_GRACE_MS, SAME_CHANNEL_MS, STREAM_LATENCY_MS, type BeaconPick } from "./reception";
+import {
+  LISTING_GRACE_MS,
+  SAME_CHANNEL_MS,
+  STREAM_LATENCY_MS,
+  type BeaconPick,
+  type SignalAsk,
+} from "./reception";
 import { noteResponse, resetServerClock, serverNow } from "./server-clock";
 
 const allDay = (khz: number, station: string, lang = "E", target = "Eu"): Broadcast => ({
@@ -56,12 +62,14 @@ type Props = {
   onList?: boolean;
   beacon?: BeaconPick | null;
   region?: BroadRegion;
+  signal?: SignalAsk | null;
 };
 
 function setup(initial: Partial<Props> = {}) {
   const initialProps: Props = { status: listening(), heard: true, schedule, ...initial };
   return renderHook(
-    (p: Props) => useReceptionPrompt(p.status, p.heard, p.schedule, p.onList ?? true, p.beacon ?? null, p.region),
+    (p: Props) =>
+      useReceptionPrompt(p.status, p.heard, p.schedule, p.onList ?? true, p.beacon ?? null, p.region, p.signal ?? null),
     { initialProps },
   );
 }
@@ -463,5 +471,100 @@ describe("useReceptionPrompt", () => {
     expect(hook.result.current).toMatchObject({ prompt: null, thanked: true });
     wait(THANKS_MS);
     expect(hook.result.current.thanked).toBe(false);
+  });
+});
+
+describe("useReceptionPrompt for a signal station (#101)", () => {
+  const NOW = Date.UTC(2026, 10, 18, 12);
+  // WWV on 10 MHz, picked with Listen: on the air all the time. 10 MHz has nothing in the EiBi fixture.
+  const wwv: SignalAsk = { slug: "wwv", name: "WWV", khz: 10_000, untilMs: Infinity };
+  const onWwv = { status: listening(10_000), heard: true, schedule, signal: wwv };
+  /** How long after first audio the question comes: the dwell, counted from first audio plus the stream's lag. */
+  const ASK_AFTER = STREAM_LATENCY_MS + DWELL_MS;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOW });
+    sessionStorage.clear();
+    resetServerClock();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    resetServerClock();
+  });
+
+  // Value: protects=a signal Listen pick is asked about once DWELL_MS has played after first audio plus STREAM_LATENCY_MS (the beacon rule's counting, owner 2026-11-25), naming the station by slug with the channel as detail; fails_when=it asks from connect, before the lag is allowed for, or stores the wrong name or detail; why_new=issue #101; seam=fake timers; no_claim=the page passing the pick (page.test)
+  it("asks after the dwell, counted from first audio plus the stream's lag", () => {
+    const hook = setup({ ...onWwv, heard: false });
+    wait(ASK_AFTER * 2);
+    expect(hook.result.current.prompt).toBeNull();
+    hook.rerender(onWwv);
+    wait(ASK_AFTER - 1);
+    expect(hook.result.current.prompt).toBeNull();
+    wait(1);
+    expect(hook.result.current.prompt).toEqual({
+      host: "a.example",
+      port: 8073,
+      freqKhz: 10_000,
+      mode: "am",
+      tx: { kind: "signal", name: "wwv", detail: "10000", label: "WWV" },
+    });
+  });
+
+  // Value: protects=questions follow a Listen pick only: the same frequency without one (tuned by hand, or a link) asks nothing, and with one the station is asked about instead of an EiBi listing there; fails_when=a hand-tuned signal frequency is asked about, or the EiBi question wins over the picked station; why_new=issue #101 under the beacon prompt rule (Listen-pick only); seam=fake timers; no_claim=none
+  it("asks only with a Listen pick, and then about the station, not EiBi's listing", () => {
+    const hand = setup({ ...onWwv, signal: null });
+    wait(ASK_AFTER * 2);
+    expect(hand.result.current.prompt).toBeNull();
+    // 9,580 kHz has KBS in the EiBi fixture; a pick there asks about the picked station.
+    const picked = setup({ status: listening(9_580), heard: true, schedule, signal: { ...wwv, khz: 9_580 } });
+    wait(ASK_AFTER);
+    expect(picked.result.current.prompt?.tx).toMatchObject({ kind: "signal", name: "wwv", detail: "9580" });
+  });
+
+  // Value: protects=the whole dwell must fall while the station is on the air (as it reaches the listener), and a Priyom transmission's start goes with the question; fails_when=a station that goes off mid-dwell is asked about (a question about dead air), or the slot isn't sent; why_new=issue #101 (a Listen must not end in a question about silence); seam=fake timers; no_claim=Priyom's 10-minute estimate
+  it("asks only if the station stays on through the dwell, carrying Priyom's slot", () => {
+    const slot = NOW - 2 * 60_000;
+    const e11: SignalAsk = { slug: "e11", name: "E11", khz: 20_167, untilMs: NOW + ASK_AFTER - 1, slotStartMs: slot };
+    const short = setup({ status: listening(20_167), heard: true, schedule, signal: e11 });
+    wait(ASK_AFTER * 2);
+    expect(short.result.current.prompt).toBeNull();
+    // A second listen, starting now: on the air exactly long enough.
+    const long = setup({ status: listening(20_167), heard: true, schedule, signal: { ...e11, untilMs: Date.now() + ASK_AFTER } });
+    wait(ASK_AFTER);
+    expect(long.result.current.prompt?.tx).toEqual({
+      kind: "signal",
+      name: "e11",
+      detail: "20167",
+      label: "E11",
+      slotStartMs: slot,
+    });
+  });
+
+  // Value: protects=a retune off the picked channel ends the plan (no question about a station not being heard) and coming back starts the dwell over; fails_when=the timer survives a channel change, or a question is asked while the dial is off the station's channel; why_new=issue #101 acceptance (prompt tests for dwell and channel change); seam=fake timers; no_claim=none
+  it("starts over on a channel change, and asks nothing off the station's channel", () => {
+    const hook = setup(onWwv);
+    wait(ASK_AFTER - 1_000);
+    hook.rerender({ ...onWwv, status: listening(5_000) });
+    wait(ASK_AFTER * 2);
+    expect(hook.result.current.prompt).toBeNull();
+    hook.rerender(onWwv);
+    wait(ASK_AFTER - 1);
+    expect(hook.result.current.prompt).toBeNull();
+    wait(1);
+    expect(hook.result.current.prompt?.tx.name).toBe("wwv");
+  });
+
+  // Value: protects=after an answer about a station, this tab doesn't ask about it on that receiver and frequency again until the server would take another (SAME_CHANNEL_MS plus slack), so it never thanks for a dropped answer; fails_when=the answer isn't remembered for signal stations, and a second question's answer is silently dropped by the server; why_new=issue #101 (the server counts each signal station on a frequency as its own channel); seam=fake timers, sessionStorage; no_claim=the server's count (reports.test)
+  it("doesn't ask about the same station there again before the server would take it", () => {
+    const hook = setup(onWwv);
+    wait(ASK_AFTER);
+    act(() => hook.result.current.answered());
+    hook.rerender({ ...onWwv, status: listening(5_000), signal: null });
+    hook.rerender(onWwv);
+    wait(SAME_CHANNEL_MS + SAME_CHANNEL_SLACK_MS - ASK_AFTER - 1_000);
+    expect(hook.result.current.prompt).toBeNull();
+    wait(1_000 + ASK_AFTER);
+    expect(hook.result.current.prompt?.tx.name).toBe("wwv");
   });
 });

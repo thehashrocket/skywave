@@ -65,7 +65,7 @@ import { useNoise } from "@/lib/use-noise";
 import { useBetterReceiver } from "@/lib/use-better-receiver";
 import { useMapAdmission } from "@/lib/use-map-admission";
 import { useListenTracking } from "@/lib/use-listen-tracking";
-import type { BeaconPick, Outcome } from "@/lib/reception";
+import { signalAsk, type BeaconPick, type Outcome } from "@/lib/reception";
 import { useRadio } from "@/lib/use-radio";
 import { useReceptionPrompt } from "@/lib/use-reception-prompt";
 import { useSubmitReport } from "@/lib/use-submit-report";
@@ -465,7 +465,7 @@ export default function ListenPage() {
     // isn't the station's just brings the panel into view.
     const onStation = linkKhz === undefined ? stationCh !== null : linkCh !== undefined || station?.priyom !== undefined;
     if (station?.tx && station.schedule.kind !== "defunct" && onStation)
-      setSignalPick({ slug: station.slug, khzs: stationKhzs(station, startKhz) });
+      setSignalPick({ slug: station.slug, khzs: stationKhzs(station, startKhz), listened: false });
     setTuningRestored(true);
     if (shared) {
       // Applied once: a reload then keeps whatever the listener tunes to next.
@@ -687,7 +687,11 @@ export default function ListenPage() {
   // The signal station picked with Listen or named by a shared link (#100), and the
   // frequencies that count as on it: it lasts while the dial stays on one, and ends
   // like the other picks on a change of receiver. Header Listen ranks by its path.
-  const [signalPick, setSignalPick] = useState<{ slug: string; khzs: readonly number[] } | null>(null);
+  // `listened`: it came from a Listen (a row's, or header Listen on it), not only a
+  // link; only then is it asked about (#101: questions follow a Listen pick only).
+  const [signalPick, setSignalPick] = useState<{ slug: string; khzs: readonly number[]; listened: boolean } | null>(
+    null,
+  );
   if (signalPick && !signalPick.khzs.some((k) => onKhz(freqKhz, k))) setSignalPick(null);
   // A shared link naming a station brings the page to the panel once, after the first render.
   const [scrollToSignals, setScrollToSignals] = useState(false);
@@ -874,7 +878,8 @@ export default function ListenPage() {
         latest.current = { freqKhz: ch.khz, mode: ch.mode };
         setFreqKhz(ch.khz);
         setMode(ch.mode);
-        setSignalPick({ slug: station.slug, khzs: [...new Set([...signalPick.khzs, ...khzs])] });
+        // A Listen on it, even if a link named it first: now it's asked about.
+        setSignalPick({ ...signalPick, khzs: [...new Set([...signalPick.khzs, ...khzs])], listened: true });
         sendRetune({ freqKhz: ch.khz, mode: ch.mode });
         return false;
       }
@@ -888,7 +893,7 @@ export default function ListenPage() {
       // which are in the drawer (the panel and header Listen are outside it), as startPickBest does.
       if (receivers === undefined) setDrawerOpen(true);
       // After the run starts, which ends any earlier pick.
-      setSignalPick({ slug: station.slug, khzs });
+      setSignalPick({ slug: station.slug, khzs, listened: true });
       return started;
     },
     [listenAt, signalPick, status.state, sendRetune, receivers],
@@ -1312,6 +1317,13 @@ export default function ListenPage() {
 
   // "Did you hear it?" after a minute on a scheduled station (issue #60), only
   // on a listed receiver: the server keeps no report about one typed in.
+  // The signal station a Listen picked, while it's on the air on the dial's
+  // frequency (#101): what its question would be about. Worked out when the pick,
+  // the dial or Priyom's schedule changes; the prompt waits out the dwell itself.
+  const signalQuestion = useMemo(() => {
+    const station = signalPick?.listened ? findStation(signalPick.slug) : undefined;
+    return station ? signalAsk(station, freqKhz, priyom, serverNow()) : null;
+  }, [signalPick, freqKhz, priyom]);
   const reception = useReceptionPrompt(
     status,
     radio.heardAudio,
@@ -1319,6 +1331,7 @@ export default function ListenPage() {
     playingListed !== undefined,
     beaconPick,
     receiverRegion,
+    signalQuestion,
   );
   const submitReport = useSubmitReport();
   const receptionPlace = useMemo(() => {

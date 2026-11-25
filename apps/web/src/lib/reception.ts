@@ -1,6 +1,9 @@
 import type { Broadcast } from "./eibi";
 import type { BroadRegion } from "./eibi-targets";
 import { BEACONS, CYCLE_MS, IBP_BANDS_KHZ, SLOT_MS } from "./ibp";
+import { onAirTx, PRIYOM_ON_AIR_MS, type PriyomTx } from "./priyom-schedule";
+import { onKhz } from "./signal-panel";
+import { activeChannelAt, windowSpanAt, type SignalStation } from "./signal-stations";
 
 /**
  * Reception reports (issue #60): "Did you hear it?" about a known transmitter
@@ -13,11 +16,12 @@ export const OUTCOMES = ["heard", "not_heard", "no_open"] as const;
 export type Outcome = (typeof OUTCOMES)[number];
 
 /**
- * What a report is about: an EiBi listing, or an IBP beacon (#59) with its
- * callsign as the name and its band as the detail. The column is text, so a
- * new kind needs no migration.
+ * What a report is about: an EiBi listing, an IBP beacon (#59) with its
+ * callsign as the name and its band as the detail, or a signal station (#101)
+ * with its catalog slug as the name and the channel's kHz as the detail. The
+ * column is text, so a new kind needs no migration.
  */
-export const TX_KINDS = ["eibi", "beacon"] as const;
+export const TX_KINDS = ["eibi", "beacon", "signal"] as const;
 export type TxKind = (typeof TX_KINDS)[number];
 
 /** The longest comment kept, in characters. */
@@ -50,7 +54,11 @@ export type Transmitter = {
   detail?: string;
   /** For the question: "KBS World Radio", or "anything from A, B or C". */
   label: string;
-  /** Beacons: the UTC start of the 10 s slot asked about, by the server-corrected clock. */
+  /**
+   * Beacons: the UTC start of the 10 s slot asked about, by the server-corrected
+   * clock. Signal stations on Priyom's schedule: the start of the transmission
+   * asked about, as Priyom lists it.
+   */
   slotStartMs?: number;
   /** EiBi only, stored as askRule: which rules chose the station(s) asked about (ASK_RULE_VERSION). */
   askRule?: number;
@@ -257,5 +265,76 @@ export function beaconTransmitter(pick: BeaconPick, slotStartMs: number): Transm
     detail: String(IBP_BANDS_KHZ[pick.bandIndex]),
     label: pick.call,
     slotStartMs,
+  };
+}
+
+/**
+ * What a signal-station question (#101) can be about: the station picked with
+ * Listen, while the dial is on the channel it's on the air on now. `untilMs`
+ * is when that stops being so (server time): Infinity for a station that's
+ * always on, a window's end, or PRIYOM_ON_AIR_MS after a Priyom transmission's
+ * start, which is `slotStartMs`.
+ */
+export type SignalAsk = { slug: string; name: string; khz: number; untilMs: number; slotStartMs?: number; hint?: string };
+
+/**
+ * The question `station` allows at `ms` with the dial on `freqKhz`, or null:
+ * defunct, no transmitter, or not on the air on that frequency now. A day/night
+ * station counts on either of its channels, since its switch times are only the
+ * sun's guess. A numbers station needs Priyom's schedule (`priyom`) to have it
+ * on that frequency now.
+ */
+export function signalAsk(
+  station: SignalStation,
+  freqKhz: number,
+  priyom: readonly PriyomTx[] | null,
+  ms: number,
+): SignalAsk | null {
+  const { schedule, slug, name } = station;
+  if (!station.tx) return null;
+  const base = { slug, name, khz: freqKhz, ...(station.askHint && { hint: station.askHint }) };
+  if (schedule.kind === "always")
+    return station.channels.some((c) => onKhz(freqKhz, c.khz)) ? { ...base, untilMs: Infinity } : null;
+  if (schedule.kind === "dayNight")
+    return [schedule.dayKhz, schedule.nightKhz].some((k) => onKhz(freqKhz, k)) ? { ...base, untilMs: Infinity } : null;
+  if (schedule.kind === "windows") {
+    const ch = activeChannelAt(station, ms);
+    const span = windowSpanAt(station, ms);
+    return ch && span && onKhz(freqKhz, ch.khz) ? { ...base, untilMs: span.endMs } : null;
+  }
+  if (station.priyom && priyom) {
+    const tx = onAirTx(priyom, station.priyom, ms);
+    if (tx && tx.khz !== null && onKhz(freqKhz, tx.khz))
+      return { ...base, untilMs: tx.startMs + PRIYOM_ON_AIR_MS, slotStartMs: tx.startMs };
+  }
+  return null;
+}
+
+/**
+ * When to ask about the signal station in `ask` (server time), or null if it
+ * won't be on the air long enough. As for a beacon (heardEnough), what's heard
+ * counts from first audio (`audioStartMs`) plus STREAM_LATENCY_MS, and
+ * `dwellMs` of it (the page's DWELL_MS) must play before the station goes off
+ * (`untilMs`). Never before `notBeforeMs`, and never once the station is off:
+ * a question held back by the gap between questions isn't asked about dead
+ * air, and its answer reaches the server while it still takes it.
+ */
+export function signalPromptAt(ask: SignalAsk, audioStartMs: number, notBeforeMs: number, dwellMs: number): number | null {
+  const askAt = Math.max(audioStartMs + STREAM_LATENCY_MS + dwellMs, notBeforeMs);
+  return askAt <= ask.untilMs ? askAt : null;
+}
+
+/**
+ * What a signal-station prompt asks about: "Did you hear UVB-76 …?", or with
+ * the station's hint, "Did you hear WWV (a man's voice) …?". The hint is only
+ * in the question; the answer is stored under the slug.
+ */
+export function signalTransmitter(ask: SignalAsk): Transmitter {
+  return {
+    kind: "signal",
+    name: ask.slug,
+    detail: String(ask.khz),
+    label: ask.hint ? `${ask.name} (${ask.hint})` : ask.name,
+    ...(ask.slotStartMs !== undefined && { slotStartMs: ask.slotStartMs }),
   };
 }

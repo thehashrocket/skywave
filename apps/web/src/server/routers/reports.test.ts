@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ListedBroadcast } from "@/lib/eibi";
 import type { SiteTable } from "@/lib/eibi-sites";
 import type { IbpStatus } from "@/lib/ibp-status";
+import { PRIYOM_ON_AIR_MS, type PriyomTx } from "@/lib/priyom-schedule";
 import type { RbnDay } from "@/lib/rbn";
 import type { Receiver } from "@/lib/kiwi-list";
 import { PICK_CONTEXT_VERSION } from "@/lib/pick-context";
@@ -14,6 +15,7 @@ import {
   RECEIVER_REPORTS_PER_HOUR,
   REPORTS_PER_HOUR,
   SAME_CHANNEL_MS,
+  signalChecks,
   type ReportInput,
 } from "./reports";
 
@@ -28,6 +30,7 @@ const cache = {
   listDown: false,
   beaconStatus: null as IbpStatus | null,
   rbn: null as RbnDay | null,
+  priyom: null as PriyomTx[] | null,
 };
 vi.mock("./beacons", async (actual) => ({
   ...(await actual<typeof import("./beacons")>()),
@@ -43,6 +46,10 @@ vi.mock("./stations", async (actual) => ({
     listed: cache.broadcasts,
   })),
   getSites: vi.fn(() => cache.sites),
+}));
+vi.mock("./signals", async (actual) => ({
+  ...(await actual<typeof import("./signals")>()),
+  getPriyomSchedule: vi.fn(async () => cache.priyom && { transmissions: cache.priyom, fetchedAt: 0 }),
 }));
 vi.mock("./receivers", async (actual) => ({
   ...(await actual<typeof import("./receivers")>()),
@@ -748,5 +755,116 @@ describe("transmitter sites on an EiBi answer (#72)", () => {
       expect(receptionReport.create.mock.calls[0]![0].data).not.toHaveProperty("txSites");
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("transmitter sites"), expect.any(Error));
     });
+  });
+});
+
+describe("a signal-station report (#101)", () => {
+  const NOON = Date.UTC(2026, 10, 18, 12);
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOON });
+    cache.broadcasts = [];
+    cache.priyom = null;
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const wwv = {
+    ...valid,
+    freqKhz: 10_000,
+    txKind: "signal" as const,
+    txName: "wwv",
+    txDetail: "10000",
+  };
+  // E11 on Priyom's schedule: a transmission that started 3 minutes ago on 20,167 kHz.
+  const SLOT = NOON - 3 * 60_000;
+  const e11Tx: PriyomTx = { station: "E11", startMs: SLOT, khz: 20_167, mode: "usb", summary: "E11 20167kHz USB" };
+  const e11 = { ...valid, freqKhz: 20_167, mode: "usb" as const, txKind: "signal" as const, txName: "e11", txDetail: "20167", slotStartMs: SLOT };
+
+  const submit = async (input: ReportInput) => {
+    const { caller, receptionReport } = setup();
+    const result = await caller.reports.submit(input);
+    return { result, data: receptionReport.create.mock.lastCall?.[0].data as Record<string, unknown> | undefined };
+  };
+
+  // Value: protects=a report about a station that's always on, on one of its catalog channels, is kept with its kind, slug and channel, and no slot (only Priyom's stations have one); fails_when=signal reports go through the EiBi check (and are all declined), or a stray slot is stored; why_new=issue #101; seam=in-memory db; no_claim=that the listener heard it
+  it("keeps a report about an always-on station on its channel, with no slot", async () => {
+    const { result, data } = await submit({ ...wwv, slotStartMs: NOON });
+    expect(result).toEqual({ accepted: true });
+    expect(data).toMatchObject({ txKind: "signal", txName: "wwv", txDetail: "10000", freqKhz: 10_000 });
+    expect(data).not.toHaveProperty("slotStartMs");
+  });
+
+  // Value: protects=the server vouches for the station itself: an unknown slug, a frequency that isn't the station's, and a defunct station are all refused; fails_when=any client-sent slug or frequency is stored, or CHU (off the air since 2023) can be reported heard; why_new=issue #101 acceptance (wrong frequency, unknown slug, defunct: refused); seam=catalog as shipped; no_claim=the catalog's accuracy
+  it.each([
+    ["an unknown slug", { ...wwv, txName: "uvb-77" }],
+    ["a frequency that isn't the station's", { ...wwv, freqKhz: 9_580 }],
+    ["a defunct station on its old channel", { ...wwv, txName: "chu", freqKhz: 7_850, mode: "usb" as const }],
+  ])("declines %s", async (_, input) => {
+    const { result, data } = await submit(input);
+    expect(result).toEqual({ accepted: false });
+    expect(data).toBeUndefined();
+  });
+
+  // Value: protects=a numbers station is checked against the exact Priyom transmission named (station, start and frequency) and stored with that slot; fails_when=any time or frequency passes, or the slot isn't kept for the replay; why_new=issue #101 under the beacon rule's exact-slot server check (owner 2026-11-25); seam=getPriyomSchedule mocked; no_claim=Priyom's accuracy
+  it("keeps a numbers-station report naming Priyom's transmission, and stores the slot", async () => {
+    cache.priyom = [e11Tx];
+    const { result, data } = await submit(e11);
+    expect(result).toEqual({ accepted: true });
+    expect(data).toMatchObject({ txName: "e11", slotStartMs: BigInt(SLOT) });
+  });
+
+  // Value: protects=a numbers-station report is refused off its schedule: no slot, a slot Priyom doesn't list, another frequency, another station's transmission, one long over, one not started, or no schedule on the server; fails_when=the server takes a numbers-station answer it can't place in a real transmission; why_new=issue #101 acceptance (off-schedule time refused); seam=getPriyomSchedule mocked; no_claim=none
+  it("declines a numbers-station report off Priyom's schedule", async () => {
+    const no = async (input: ReportInput) => expect((await submit(input)).result).toEqual({ accepted: false });
+    await no(e11);
+    cache.priyom = [e11Tx];
+    await no({ ...e11, slotStartMs: undefined });
+    await no({ ...e11, slotStartMs: SLOT + 60_000 });
+    await no({ ...e11, freqKhz: 20_168 });
+    cache.priyom = [{ ...e11Tx, station: "S11a" }];
+    await no(e11);
+    // Off the air (PRIYOM_ON_AIR_MS after its start) more than 5 minutes ago; and starting in a minute.
+    const long = NOON - PRIYOM_ON_AIR_MS - 5 * 60_000 - 1;
+    cache.priyom = [{ ...e11Tx, startMs: long }];
+    await no({ ...e11, slotStartMs: long });
+    cache.priyom = [{ ...e11Tx, startMs: NOON + 60_000 }];
+    await no({ ...e11, slotStartMs: NOON + 60_000 });
+  });
+
+  // Value: protects=the same-channel limit counts each signal station on a frequency as its own (WWV and WWVH share 10 MHz), while a second answer about one station there within 30 minutes is declined; fails_when=a WWVH answer is refused after a WWV one, or WWV is taken twice; why_new=issue #101; seam=in-memory db; no_claim=none
+  it("counts WWV and WWVH on one frequency as two channels", async () => {
+    const { caller } = setup();
+    await expect(caller.reports.submit(wwv)).resolves.toEqual({ accepted: true });
+    await expect(caller.reports.submit({ ...wwv, txName: "wwvh" })).resolves.toEqual({ accepted: true });
+    await expect(caller.reports.submit(wwv)).resolves.toEqual({ accepted: false });
+  });
+
+  // Value: protects=a signal answer keeps Pick best's context only when a signal Listen made the pick (the only run the page asks after); fails_when=context from another button is stored on a signal row and #61 credits the wrong ranking; why_new=issue #101; seam=in-memory db; no_claim=none
+  it("keeps pick context only from a signal Listen", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const pick = {
+      version: 10,
+      pickedAtMs: NOON - 90_000,
+      rankPos: 0,
+      candidates: ["kiwi.example.org:8073"],
+      freqKhz: 10_000,
+      snr: 20,
+      users: 1,
+    };
+    const signal = await submit({ ...wwv, pick: { ...pick, pickSource: "signal" } });
+    expect(signal.data).toMatchObject({ pickSource: "signal" });
+    const listen = await submit({ ...wwv, pick: { ...pick, pickSource: "listen" } });
+    expect(listen.result).toEqual({ accepted: true });
+    expect(listen.data).not.toHaveProperty("pickSource");
+  });
+
+  // Value: protects=a day/night station is taken on either of its channels (its switch times are only the sun's guess), and an always-on one on any of its catalog channels; fails_when=a correct report is refused around dawn or dusk; why_new=issue #101; seam=catalog as shipped; no_claim=when The Pip really switches
+  it("takes a day/night station on either channel", () => {
+    expect(signalChecks("the-pip", 5_448, undefined, null, NOON)).toBe(true);
+    expect(signalChecks("the-pip", 3_756, undefined, null, NOON)).toBe(true);
+    expect(signalChecks("the-pip", 4_625, undefined, null, NOON)).toBe(false);
+    expect(signalChecks("wwv", 20_000, undefined, null, NOON)).toBe(true);
   });
 });
