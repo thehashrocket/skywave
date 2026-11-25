@@ -1,6 +1,6 @@
 "use client";
 
-import { SectionHeading } from "@/components/SectionHeading";
+import { SectionBody, SectionHeading } from "@/components/SectionHeading";
 import type { Fold } from "@/lib/section-folds";
 import { useEffect, useRef, useState } from "react";
 import { formatWait, mhz } from "@/lib/ghostnet";
@@ -83,10 +83,10 @@ export function SignalStations({
   } else if (groups) foldTail = `${groups.always.length} always on`;
   return (
     <section className="presets signals" aria-labelledby="signal-stations-heading">
-      <SectionHeading id="signal-stations-heading" bodyId="signal-stations-body" fold={fold} tail={foldTail}>
+      <SectionHeading section="signal-stations" fold={fold} tail={foldTail}>
         Signal stations
       </SectionHeading>
-      <div id="signal-stations-body" hidden={fold?.folded || undefined}>
+      <SectionBody section="signal-stations" fold={fold}>
         <p className="signals-about">
           Time signals, markers and numbers stations: the oddities people tune shortwave to find.
         </p>
@@ -110,7 +110,7 @@ export function SignalStations({
           (CC BY-NC-SA 4.0). Priyom lists start times only, so a transmission counts as on for{" "}
           {PRIYOM_ON_AIR_MS / MINUTE} minutes from its start. Times are UTC; local times follow your device clock.
         </p>
-      </div>
+      </SectionBody>
       {/* Outside the fold: the picked station's lines are still spoken while the section is folded. */}
       <div className="visually-hidden" role="status">
         {announce}

@@ -354,16 +354,23 @@ export default function ListenPage() {
   // The main page's folded sections (collapsible sections): all open until the
   // mount effect reads this browser's saved folds, so the server's render matches.
   const [folded, setFolded] = useState<ReadonlySet<SectionId>>(() => new Set());
+  // What this browser remembers, kept apart from what shows: a share link can open a
+  // section for this visit, and a later toggle of another section mustn't forget its fold.
+  const savedFolds = useRef<ReadonlySet<SectionId>>(new Set());
   const foldOf = (id: SectionId): Fold => ({
     folded: folded.has(id),
-    onToggle: () =>
-      setFolded((prev) => {
-        const next = new Set(prev);
-        if (!next.delete(id)) next.add(id);
-        // Saved on the listener's own toggle only: a share link opening a section doesn't change what's remembered.
-        saveFolded(next);
-        return next;
-      }),
+    onToggle: () => {
+      const nowFolded = !folded.has(id);
+      const shown = new Set(folded);
+      const saved = new Set(savedFolds.current);
+      for (const set of [shown, saved]) {
+        if (nowFolded) set.add(id);
+        else set.delete(id);
+      }
+      setFolded(shown);
+      savedFolds.current = saved;
+      saveFolded(saved);
+    },
   });
   const [browseOpen, setBrowseOpen] = useState(false);
   // The receiver drawer under the header strip: the Receiver field, Pick best, the map and the table.
@@ -432,7 +439,6 @@ export default function ListenPage() {
     const firstVisit = !p && !last.host && !shared;
     setBrowseOpen(firstVisit);
     setLetterKeys(loadLetterKeys());
-    const savedFolds = loadFolded();
     const t = loadTuning();
     // A link naming a signal station (#100) tunes it (its frequency now, when the link
     // gives none) and marks it in the Signal stations panel, so Listen ranks by its path.
@@ -446,7 +452,10 @@ export default function ListenPage() {
     setMode(shared?.mode ?? linkCh?.mode ?? stationCh?.mode ?? t.mode);
     if (station) setScrollToSignals(true);
     // A link naming a signal station opens that section for this visit, folded or not.
-    setFolded(station ? new Set([...savedFolds].filter((id) => id !== "signal-stations")) : savedFolds);
+    savedFolds.current = loadFolded();
+    const shownFolds = new Set(savedFolds.current);
+    if (station) shownFolds.delete("signal-stations");
+    setFolded(shownFolds);
     // Header Listen ranks by the station's path only when the dial is on a frequency of
     // it: a catalog channel, its channel now, or (for a numbers station, whose
     // frequencies come from Priyom's schedule) the one the link gives. A station off the

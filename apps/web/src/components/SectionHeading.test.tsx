@@ -8,8 +8,8 @@ afterEach(cleanup);
 describe("SectionHeading", () => {
   // Value: protects=without a fold the heading renders as the plain h2 it was, so sections used outside the page (and their tests) are unchanged; fails_when=a stray button appears or the id is lost; why_new=collapsible sections; seam=none; no_claim=none
   it("is a plain heading without a fold", () => {
-    render(<SectionHeading id="h" bodyId="b">Saved frequencies</SectionHeading>);
-    expect(screen.getByRole("heading", { level: 2, name: "Saved frequencies" }).id).toBe("h");
+    render(<SectionHeading section="presets">Saved frequencies</SectionHeading>);
+    expect(screen.getByRole("heading", { level: 2, name: "Saved frequencies" }).id).toBe("presets-heading");
     expect(screen.queryByRole("button")).toBeNull();
   });
 
@@ -17,20 +17,20 @@ describe("SectionHeading", () => {
   it("folds through a button inside the h2 and shows a summary only while folded", () => {
     const onToggle = vi.fn();
     const { rerender } = render(
-      <SectionHeading id="h" bodyId="b" fold={{ folded: false, onToggle }} tail="12 saved">
+      <SectionHeading section="presets" fold={{ folded: false, onToggle }} tail="12 saved">
         Saved frequencies
       </SectionHeading>,
     );
     const button = screen.getByRole("button", { name: "Saved frequencies" });
-    expect(button.closest("h2")?.id).toBe("h");
+    expect(button.closest("h2")?.id).toBe("presets-heading");
     expect(button.getAttribute("aria-expanded")).toBe("true");
-    expect(button.getAttribute("aria-controls")).toBe("b");
+    expect(button.getAttribute("aria-controls")).toBe("presets-body");
     expect(screen.queryByText(/12 saved/)).toBeNull();
     fireEvent.click(button);
     expect(onToggle).toHaveBeenCalledTimes(1);
 
     rerender(
-      <SectionHeading id="h" bodyId="b" fold={{ folded: true, onToggle }} tail="12 saved">
+      <SectionHeading section="presets" fold={{ folded: true, onToggle }} tail="12 saved">
         Saved frequencies
       </SectionHeading>,
     );

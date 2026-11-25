@@ -1,6 +1,6 @@
 "use client";
 
-import { SectionHeading } from "@/components/SectionHeading";
+import { SectionBody, SectionHeading } from "@/components/SectionHeading";
 import type { Fold } from "@/lib/section-folds";
 import { useEffect, useRef, useState } from "react";
 import type { StationLine } from "@/lib/eibi";
@@ -69,10 +69,10 @@ export function SignalList({
 
   return (
     <section className="presets signals" aria-labelledby="signals-heading">
-      <SectionHeading id="signals-heading" bodyId="signals-body" fold={fold} tail={foldTail}>
+      <SectionHeading section="signals" fold={fold} tail={foldTail}>
         Strong signals now
       </SectionHeading>
-      <div id="signals-body" hidden={fold?.folded || undefined}>
+      <SectionBody section="signals" fold={fold}>
         {/* Only the text is announced; the button sits outside the live region. */}
         <div role="status">
           {!scan && (
@@ -160,7 +160,7 @@ export function SignalList({
             Show all {scan.signals.length}
           </button>
         )}
-      </div>
+      </SectionBody>
     </section>
   );
 }

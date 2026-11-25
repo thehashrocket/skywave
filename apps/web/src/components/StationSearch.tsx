@@ -1,6 +1,6 @@
 "use client";
 
-import { SectionHeading } from "@/components/SectionHeading";
+import { SectionBody, SectionHeading } from "@/components/SectionHeading";
 import type { Fold } from "@/lib/section-folds";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { type Broadcast, languageChoices, languageNames, type LanguageChoice, MATCH_KHZ, pickedNames } from "@/lib/eibi";
@@ -263,12 +263,10 @@ export function StationSearch({
   const described = describeFilters(filters, choices, areaName);
   const status = statusText(ready, loadFailed, query, result, described);
   // While folded: what the list holds (collapsible sections), its filters included.
-  const onNowCount = found.filter((f) => f.onNow).length;
-  const foldTail = !ready
-    ? null
-    : typed
-      ? `“${query.trim()}”`
-      : `${onNowCount.toLocaleString("en-US")} on now${described ? ` ${described}` : ""}`;
+  // Browsing (nothing typed), every row found is on now.
+  let foldTail: string | null = null;
+  if (ready && typed) foldTail = `“${query.trim()}”`;
+  else if (ready) foldTail = `${found.length.toLocaleString("en-US")} on now${described ? ` ${described}` : ""}`;
   const suggested = receiverPlace && area === null ? broadRegionAt(receiverPlace.lat, receiverPlace.lon) : undefined;
   const areaRegion = area && "region" in area ? area.region : undefined;
   useEffect(() => {
@@ -418,10 +416,10 @@ export function StationSearch({
       data-phone-open={phoneOpen || undefined}
       data-browse={(ready && !typed) || undefined}
     >
-      <SectionHeading id="station-search-heading" bodyId="station-search-body" fold={fold} tail={foldTail}>
+      <SectionHeading section="station-search" fold={fold} tail={foldTail}>
         Find a station
       </SectionHeading>
-      <div id="station-search-body" hidden={fold?.folded || undefined}>
+      <SectionBody section="station-search" fold={fold}>
         <div className="station-filters">
           <div className="field station-search-field">
             <label htmlFor="station-search-input">Station name</label>
@@ -569,7 +567,7 @@ export function StationSearch({
             {remaining > PAGE_ROWS ? `Show ${PAGE_ROWS} more of ${remaining}` : `Show the last ${remaining}`}
           </button>
         )}
-      </div>
+      </SectionBody>
     </section>
   );
 }

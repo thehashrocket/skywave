@@ -1,6 +1,6 @@
 "use client";
 
-import { SectionHeading } from "@/components/SectionHeading";
+import { SectionBody, SectionHeading } from "@/components/SectionHeading";
 import type { Fold } from "@/lib/section-folds";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent } from "react";
@@ -165,16 +165,19 @@ export function Presets({ fold, freqKhz, mode, onSelect }: Props) {
   );
 
   // While folded: how many frequencies the list holds (collapsible sections).
+  // No count while the saved list is still loading or couldn't load: "none" would be a guess.
   const savedCount = mine.length + (isPublic ? 0 : shared.length);
-  const foldTail = savedCount > 0 ? `${savedCount} saved` : "none saved yet";
+  const countKnown = isPublic || (!list.isPending && !list.isError);
+  let foldTail: string | null = null;
+  if (savedCount > 0) foldTail = `${savedCount} saved`;
+  else if (countKnown) foldTail = "none saved yet";
 
   return (
     <section className="presets" aria-labelledby="presets-heading">
-      <SectionHeading id="presets-heading" bodyId="presets-body" fold={fold} tail={foldTail}>
+      <SectionHeading section="presets" fold={fold} tail={foldTail}>
         Saved frequencies
       </SectionHeading>
-      <div id="presets-body" hidden={fold?.folded || undefined}>
-
+      <SectionBody section="presets" fold={fold}>
         {isPublic && mine.length > 0 && renderList(mine, "Yours")}
         {isPublic && mine.length === 0 && (
           <p className="presets-note">Tune somewhere good and save it below. It stays in this browser.</p>
@@ -218,7 +221,7 @@ export function Presets({ fold, freqKhz, mode, onSelect }: Props) {
             </p>
           )}
         </form>
-      </div>
+      </SectionBody>
     </section>
   );
 }
