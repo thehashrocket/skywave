@@ -2,7 +2,16 @@
 
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { type Broadcast, languageChoices, languageNames, type LanguageChoice, MATCH_KHZ, pickedNames } from "@/lib/eibi";
-import { areaCodes, BROAD_REGIONS, type BroadRegion, broadRegionAt, isBroadRegion, regionName } from "@/lib/eibi-targets";
+import {
+  areaCodes,
+  areaLabel,
+  BROAD_REGIONS,
+  type BroadRegion,
+  broadRegionAt,
+  displayName,
+  isBroadRegion,
+  regionName,
+} from "@/lib/eibi-targets";
 import type { Mode } from "@/lib/radio-types";
 import {
   type AreaFilter,
@@ -335,7 +344,7 @@ export function StationSearch({
   const row = (f: FoundBroadcast, i: number): ReactNode => {
     const mode = clickMode(f.khz, f.lang, f.station);
     const targets = f.targets
-      .map((t) => (Object.hasOwn(targetNames, t) ? targetNames[t] : undefined))
+      .map((t) => (Object.hasOwn(targetNames, t) ? displayName(targetNames[t]!) : undefined))
       .filter((n): n is string => !!n);
     const to = [...new Set(targets)].join(", ");
     const strongHere = isStrong(f);
@@ -434,7 +443,7 @@ export function StationSearch({
             <optgroup label="Areas and countries">
               {codes.map((c) => (
                 <option key={c.code} value={`code:${c.code}`}>
-                  {c.stale ? `${c.name} (none in this schedule)` : c.name}
+                  {c.stale ? `${areaLabel(c)} (none in this schedule)` : areaLabel(c)}
                 </option>
               ))}
             </optgroup>

@@ -60,12 +60,13 @@ const RESPELLED: Readonly<Record<string, string>> = { "Bangla Desh": "Bangladesh
 
 /**
  * A README name as a row or the area filter shows it: without EiBi's trailing
- * " *" footnote marker ("Taiwan *" is "Taiwan") and in the usual spelling
- * ("Bangla Desh" is "Bangladesh"). Applied when names are read, so the
- * bundled table stays as EiBi wrote it (#117).
+ * " *" footnote marker ("Taiwan *" is "Taiwan"), then without the bracketed
+ * note the marker hid from cleanName ("Ogasawara (Bonin, Iwo Jima) *" is
+ * "Ogasawara"), and in the usual spelling ("Bangla Desh" is "Bangladesh").
+ * Applied when names are read, so the bundled table stays as EiBi wrote it (#117).
  */
 export function displayName(name: string): string {
-  const bare = name.replace(/\s*\*$/, "");
+  const bare = cleanName(name.replace(/\s*\*$/, "")) || name;
   return Object.hasOwn(RESPELLED, bare) ? RESPELLED[bare]! : bare;
 }
 
@@ -296,24 +297,29 @@ export function broadRegionAt(lat: number, lon: number): BroadRegion | undefined
 export type AreaCode = { code: string; name: string; stale: boolean };
 
 /**
+ * An area code's option text in the filter (#117): a code on UNNAMED_TARGETS
+ * says EiBi doesn't name it, and a compass code says it's a beam heading, not
+ * a place. Only the option says so; the status line uses the bare name.
+ */
+export function areaLabel({ code, name }: AreaCode): string {
+  if (UNNAMED_TARGETS.has(code) && name === code) return `${code} (unnamed in EiBi)`;
+  return COMPASS.includes(code) ? `${name} (beam heading)` : name;
+}
+
+/**
  * The specific target codes for the area filter: every code the broadcasts
  * use, named from `targetNames` where it has a name (the server leaves
  * unnamed ones out, so the codes come from the rows: eng outside voice O2),
  * sorted by name; then a saved code the schedule no longer uses, kept and
- * marked stale so it can be cleared (eng D8). Labels only (#117): a code on
- * UNNAMED_TARGETS says EiBi doesn't name it, and a compass code says it's a
- * beam heading, not a place.
+ * marked stale so it can be cleared (eng D8). Names go through displayName,
+ * as an older server's names weren't tidied (#117).
  */
 export function areaCodes(
   broadcasts: readonly { target: string }[],
   targetNames: Readonly<Record<string, string>>,
   saved?: string,
 ): AreaCode[] {
-  const name = (code: string) => {
-    if (!Object.hasOwn(targetNames, code)) return UNNAMED_TARGETS.has(code) ? `${code} (unnamed in EiBi)` : code;
-    const named = displayName(targetNames[code]!);
-    return COMPASS.includes(code) ? `${named} (beam heading)` : named;
-  };
+  const name = (code: string) => (Object.hasOwn(targetNames, code) ? displayName(targetNames[code]!) : code);
   const codes = new Set<string>();
   for (const { target } of broadcasts) if (target.trim()) codes.add(target.trim());
   const out = [...codes].map((code) => ({ code, name: name(code), stale: false }));

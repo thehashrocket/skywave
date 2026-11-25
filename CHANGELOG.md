@@ -7,7 +7,7 @@ Notable changes to skywave, newest first. Versions come from `VERSION` (four par
 ### Fixed
 - Find a station's status line no longer says "in English" over non-voice rows: with a language picked and non-voice included, it reads "in English (plus non-voice)" (#116).
 - Rows in the on-now list stop repeating "on now" (the status line says it), so station names get the width; screen readers still hear "on now", and name-search rows still show it (#116).
-- "Aimed at" and the rows' "to …" line show tidy names: no EiBi footnote asterisk ("Taiwan", not "Taiwan *"), "Bangladesh" not "Bangla Desh", "Tas (unnamed in EiBi)", and "West-northwest (beam heading)". Codes and filtering are unchanged (#117).
+- "Aimed at" and the rows' "to …" line show tidy names: no EiBi footnote asterisk ("Taiwan", not "Taiwan *"), no bracketed note it hid ("Ogasawara"), and "Bangladesh" not "Bangla Desh". In the "Aimed at" list only, "Tas" reads "Tas (unnamed in EiBi)" and compass headings read like "West-northwest (beam heading)". Codes and filtering are unchanged (#117).
 
 ## [0.48.1.0] - 2026-11-24 ([#115](https://github.com/thehashrocket/skywave/issues/115))
 

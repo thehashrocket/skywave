@@ -179,6 +179,22 @@ describe("StationSearch", () => {
     expect(visibleWhen()).toEqual(["on now", "on now", "18:00 UTCin 6 h"]);
   });
 
+  // Value: protects=names from a schedule cached before this deploy show tidied in rows as in the area filter, and the filter's "(beam heading)" option suffix stays out of the status line, which uses the bare name; fails_when=a row says "to Taiwan *" beside a "Taiwan" option, or the status reads "to West-northwest (beam heading)"; why_new=/ship review of PR #119 (#117 follow-up); seam=none; no_claim=react-query's cache lifetime
+  it("tidies cached target names in rows and keeps option labels out of the status line", () => {
+    const cached: SearchSchedule = {
+      ...SCHEDULE,
+      targetNames: { ...SCHEDULE.targetNames, TWN: "Taiwan *", WNW: "West-northwest" },
+      broadcasts: [b("RTI", 9735, 660, 780, { target: "TWN" }), b("CNR1", 9800, 660, 780, { lang: "M", target: "WNW" })],
+    };
+    show({ schedule: cached });
+    expect(rowNames()).toContain("9,735 kHz, RTI, English, on now, to Taiwan");
+    const options = [...areaSelect().options].map((o) => o.textContent);
+    expect(options).toContain("Taiwan");
+    expect(options).toContain("West-northwest (beam heading)");
+    pickArea("code:WNW");
+    expect(statusLine()).toMatch(/^1 broadcast on now to West-northwest,/);
+  });
+
   // Value: protects=a schedule cached from a server older than this deploy (no targetNames) still lists rows, just without a "to" line; fails_when=the list crashes on deploy skew; why_new=station search build review (correctness reviewer); seam=none; no_claim=react-query's cache lifetime
   it("lists rows from a schedule without target names", () => {
     const old = { ...SCHEDULE, targetNames: undefined } as unknown as SearchSchedule;
