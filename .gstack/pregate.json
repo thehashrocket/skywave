@@ -42,6 +42,11 @@
     ],
     "apps/web/prisma/**": [
       "apps/web/prisma-migrations.test.ts"
+    ],
+    "package.json": [
+      "apps/radio/tests/test_error_codes.py",
+      "apps/radio/tests/test_pregate_run.py",
+      "apps/web/src/lib/use-radio.test.ts"
     ]
   },
   "strays": {
