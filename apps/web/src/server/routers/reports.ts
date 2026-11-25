@@ -388,9 +388,13 @@ export const reportsRouter = router({
           receiverHost,
           receiverPort,
           freqKhz,
-          // A beacon frequency carries a new beacon every 10 s: each callsign is its own
-          // channel. Signal stations share frequencies too (WWV and WWVH): each is its own.
-          ...(input.txKind !== "eibi" && { txKind: input.txKind, txName: input.txName }),
+          // Each kind counts only its own answers, so an answer about a signal station
+          // after a Listen doesn't block the EiBi question about that frequency later
+          // (the page asks it), nor the other way round. A beacon frequency carries a
+          // new beacon every 10 s: each callsign is its own channel. Signal stations
+          // share frequencies too (WWV and WWVH): each is its own.
+          txKind: input.txKind,
+          ...(input.txKind !== "eibi" && { txName: input.txName }),
           createdAt: { gte: new Date(now - SAME_CHANNEL_MS) },
         },
       }),
@@ -422,6 +426,8 @@ export const reportsRouter = router({
     await ctx.db.receptionReport.create({
       data: {
         ...report,
+        // A signal station's detail is the channel the server checked, not the page's word.
+        ...(input.txKind === "signal" && { txDetail: String(freqKhz) }),
         // The slot is kept for beacons and Priyom's numbers stations only.
         ...(slot !== undefined && { slotStartMs: BigInt(slot) }),
         ...(official && { beaconStatus: official.off ? "OFF" : "OK" }),

@@ -532,13 +532,35 @@ describe("useReceptionPrompt for a signal station (#101)", () => {
     // A second listen, starting now: on the air exactly long enough.
     const long = setup({ status: listening(20_167), heard: true, schedule, signal: { ...e11, untilMs: Date.now() + ASK_AFTER } });
     wait(ASK_AFTER);
+    const untilMs = long.result.current.prompt?.tx.answerByMs;
     expect(long.result.current.prompt?.tx).toEqual({
       kind: "signal",
       name: "e11",
       detail: "20167",
       label: "E11",
       slotStartMs: slot,
+      answerByMs: untilMs,
     });
+    // The server's last chance: LISTING_GRACE_MS after the station goes off (the asked-at moment here).
+    expect(untilMs).toBe(Date.now() + LISTING_GRACE_MS);
+  });
+
+  // Value: protects=a numbers-station prompt left on screen through a sleep (its timer paused) closes when the clock moves past the server's last chance for it (the station's end plus LISTING_GRACE_MS), while a fresh one survives a small clock move, as for beacons; fails_when=only beacon prompts close on a clock move, so a stale signal answer is thanked and then refused; why_new=#101 review (important); seam=fake timers (setSystemTime models the wall clock moving on while performance.now paused), the real server clock fed a response, a fetch that never answers; no_claim=how a real browser runs timers across a sleep
+  it("closes a numbers-station prompt a sleep left too old, and keeps a fresh one", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    noteResponse(new Headers({ "x-server-ms": String(Date.now()) }), Date.now(), Date.now());
+    const e11: SignalAsk = { slug: "e11", name: "E11", khz: 20_167, untilMs: NOW + 5 * 60_000, slotStartMs: NOW - 60_000 };
+    const hook = setup({ status: listening(20_167), heard: true, schedule, signal: e11 });
+    wait(ASK_AFTER);
+    expect(hook.result.current.prompt?.tx.name).toBe("e11");
+    vi.setSystemTime(Date.now() + 2_500);
+    await act(async () => void serverNow());
+    expect(hook.result.current.prompt?.tx.name).toBe("e11");
+    // Thirty minutes asleep: long past the station's end plus the server's grace.
+    vi.setSystemTime(Date.now() + 30 * 60_000);
+    await act(async () => void serverNow());
+    expect(hook.result.current.prompt).toBeNull();
+    vi.unstubAllGlobals();
   });
 
   // Value: protects=a retune off the picked channel ends the plan (no question about a station not being heard) and coming back starts the dwell over; fails_when=the timer survives a channel change, or a question is asked while the dial is off the station's channel; why_new=issue #101 acceptance (prompt tests for dwell and channel change); seam=fake timers; no_claim=none

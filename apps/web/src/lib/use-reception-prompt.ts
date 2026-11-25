@@ -215,16 +215,20 @@ export function useReceptionPrompt(
   // question waits one more turn. Broadcasts run on this browser's clock and
   // aren't restarted.
   const [clockEpoch, setClockEpoch] = useState(0);
-  // On every clock move, also close a beacon prompt whose turn the server would
-  // no longer take (it sat on screen through a sleep, its timer paused).
+  // On every clock move, also close a beacon or signal-station prompt whose
+  // answer the server would no longer take (it sat on screen through a sleep,
+  // its timer paused).
   useEffect(
     () =>
       onServerOffset(() => {
         setClockEpoch((e) => e + 1);
         setPrompt((p) =>
-          p?.tx.kind === "beacon" &&
-          p.tx.slotStartMs !== undefined &&
-          serverNow() > p.tx.slotStartMs + LISTING_GRACE_MS - LATE_ANSWER_SLACK_MS
+          (p?.tx.kind === "beacon" &&
+            p.tx.slotStartMs !== undefined &&
+            serverNow() > p.tx.slotStartMs + LISTING_GRACE_MS - LATE_ANSWER_SLACK_MS) ||
+          (p?.tx.kind === "signal" &&
+            p.tx.answerByMs !== undefined &&
+            serverNow() > p.tx.answerByMs - LATE_ANSWER_SLACK_MS)
             ? null
             : p,
         );

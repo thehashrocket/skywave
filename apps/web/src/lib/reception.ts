@@ -60,6 +60,12 @@ export type Transmitter = {
    * asked about, as Priyom lists it.
    */
   slotStartMs?: number;
+  /**
+   * Signal stations that go off (a window, a Priyom transmission): the last
+   * moment (server time) the server still takes an answer, LISTING_GRACE_MS
+   * after the station goes off. Never sent; the page closes the prompt by then.
+   */
+  answerByMs?: number;
   /** EiBi only, stored as askRule: which rules chose the station(s) asked about (ASK_RULE_VERSION). */
   askRule?: number;
   /** EiBi only, stored as askRegion: the receiver's broad region the stations were ranked by; absent when none was known. */
@@ -336,5 +342,6 @@ export function signalTransmitter(ask: SignalAsk): Transmitter {
     detail: String(ask.khz),
     label: ask.hint ? `${ask.name} (${ask.hint})` : ask.name,
     ...(ask.slotStartMs !== undefined && { slotStartMs: ask.slotStartMs }),
+    ...(Number.isFinite(ask.untilMs) && { answerByMs: ask.untilMs + LISTING_GRACE_MS }),
   };
 }

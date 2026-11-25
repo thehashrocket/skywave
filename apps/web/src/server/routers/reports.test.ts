@@ -841,6 +841,23 @@ describe("a signal-station report (#101)", () => {
     await expect(caller.reports.submit(wwv)).resolves.toEqual({ accepted: false });
   });
 
+  // Value: protects=a signal answer and an EiBi answer on the same receiver and frequency don't block each other (the page asks the EiBi question there once the pick ends), while a second EiBi answer within 30 minutes still is declined; fails_when=the EiBi count includes signal rows, so the listener is thanked for an answer the server drops; why_new=#101 review (important); seam=in-memory db, getSchedule mocked; no_claim=none
+  it("keeps a signal answer from blocking an EiBi answer on that frequency, and back", async () => {
+    cache.broadcasts = [{ khz: 10_000, start: 0, end: 1440, days: "", station: "WWV", lang: "E", target: "NAm", country: "USA" }];
+    const eibi = { ...valid, freqKhz: 10_000, txName: "WWV" };
+    const { caller } = setup();
+    await expect(caller.reports.submit(wwv)).resolves.toEqual({ accepted: true });
+    await expect(caller.reports.submit(eibi)).resolves.toEqual({ accepted: true });
+    await expect(caller.reports.submit(eibi)).resolves.toEqual({ accepted: false });
+    await expect(caller.reports.submit({ ...wwv, txName: "wwvh" })).resolves.toEqual({ accepted: true });
+  });
+
+  // Value: protects=a signal row's txDetail is the channel the server checked, whatever text the page sends; fails_when=a script stores any text there, contradicting the schema's "channel in kHz"; why_new=#101 review (nit); seam=in-memory db; no_claim=none
+  it("stores the checked channel as the detail, not the page's text", async () => {
+    const { data } = await submit({ ...wwv, txDetail: "anything" });
+    expect(data).toMatchObject({ txDetail: "10000" });
+  });
+
   // Value: protects=a signal answer keeps Pick best's context only when a signal Listen made the pick (the only run the page asks after); fails_when=context from another button is stored on a signal row and #61 credits the wrong ranking; why_new=issue #101; seam=in-memory db; no_claim=none
   it("keeps pick context only from a signal Listen", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});

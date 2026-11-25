@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@/server/db", () => ({ db: {} }));
 
 const { priyomScheduleSource } = await import("./signals");
+const { PRIYOM_SLICES } = await import("@/lib/priyom-schedule");
 
 const EVENTS = readFileSync(new URL("../../lib/fixtures/priyom-events.json", import.meta.url), "utf8");
 const HOUR = 60 * 60_000;
@@ -28,11 +29,11 @@ function setup() {
 }
 
 describe("priyomScheduleSource", () => {
-  // Value: protects=the week is fetched as seven slices without following redirects, merged with duplicates dropped, cut down to the catalog's stations (E07, E11, S06, S11a, V07, M12: not V13, F06a, M14, F03), and cached for hours; fails_when=the page gets every Priyom station, slices double up, or every request refetches; why_new=new feed (#98); seam=fetch; no_claim=Priyom's availability
+  // Value: protects=the week is fetched as PRIYOM_SLICES slices without following redirects, merged with duplicates dropped, cut down to the catalog's stations (E07, E11, S06, S11a, V07, M12: not V13, F06a, M14, F03), and cached for hours; fails_when=the page gets every Priyom station, slices double up, or every request refetches; why_new=new feed (#98); seam=fetch; no_claim=Priyom's availability
   it("fetches the week, keeps the catalog's stations, and caches it", async () => {
     const { get, fetchImpl, advance } = setup();
     const schedule = await get();
-    expect(fetchImpl).toHaveBeenCalledTimes(7);
+    expect(fetchImpl).toHaveBeenCalledTimes(PRIYOM_SLICES);
     expect(fetchImpl.mock.calls[0]![1]).toMatchObject({ redirect: "error" });
     // Every slice returns the same ten events: each appears once.
     expect(schedule?.transmissions.map((t) => t.summary)).toEqual([
@@ -45,7 +46,7 @@ describe("priyomScheduleSource", () => {
     ]);
     advance(5 * HOUR);
     await get();
-    expect(fetchImpl).toHaveBeenCalledTimes(7);
+    expect(fetchImpl).toHaveBeenCalledTimes(PRIYOM_SLICES);
   });
 
   // Value: protects=with nothing fetched yet, a failed, wrong or partial fetch (one bad day) serves null (schedule unknown: stations stay listed without times), never a guess, and the next try waits ten minutes; fails_when=the query errors, an error page or a missing day reads as an empty or gappy week, or a down site is hit on every request; why_new=new feed (#98); seam=fetch; no_claim=none

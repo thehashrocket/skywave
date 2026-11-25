@@ -18,8 +18,12 @@ export const PRIYOM_SCHEDULE_PAGE = "https://priyom.org/number-stations/station-
 const HOUR = 60 * 60_000;
 const DAY = 24 * HOUR;
 
-/** How many day-long slices the server asks for: a week covers twice-weekly schedules. */
-export const PRIYOM_SLICES = 7;
+/**
+ * How many day-long slices the server asks for: from 12 hours before the last
+ * 00:00/12:00 UTC boundary (priyomSpan) to at least a week ahead, which covers
+ * twice-weekly schedules.
+ */
+export const PRIYOM_SLICES = 8;
 
 /**
  * How long after its start a transmission counts as on the air. Priyom gives
@@ -111,9 +115,15 @@ export function nextTx(txs: readonly PriyomTx[], station: string, ms: number): P
   return found;
 }
 
-/** The span a fetch made at `ms` covers: from the first slice's start to the last one's end. */
+/**
+ * The span a fetch made at `ms` covers: from the first slice's start to the
+ * last one's end. It starts 12 hours before the 00:00/12:00 UTC boundary just
+ * passed, so a fetch made just after one still holds a transmission that began
+ * just before it and is still on the air: the server checks answers against
+ * this copy (#101), and the panel shows what's on from it.
+ */
 export function priyomSpan(ms: number): { fromMs: number; toMs: number } {
-  const fromMs = Math.floor(ms / (12 * HOUR)) * 12 * HOUR;
+  const fromMs = Math.floor(ms / (12 * HOUR)) * 12 * HOUR - 12 * HOUR;
   return { fromMs, toMs: fromMs + PRIYOM_SLICES * DAY };
 }
 
