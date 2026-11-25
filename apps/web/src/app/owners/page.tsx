@@ -3,7 +3,8 @@ import Link from "next/link";
 import { SiteFooter } from "@/components/SiteFooter";
 
 // Each Kiwi shows the radio service as KIWI_IDENT (skywavehf.com in production)
-// in its user list; this is the page that name leads an owner to.
+// in its user list, or a named listener as "skywave <name>" (session.py
+// IDENT_PREFIX); this is the page the domain leads an owner to.
 
 const REPO = "https://github.com/thehashrocket/skywave";
 const OPT_OUT = `${REPO}/issues/new?template=opt-out.yml`;
@@ -27,8 +28,10 @@ export default function OwnersPage() {
         <h1 className="owners-title">For KiwiSDR owners</h1>
         <p className="owners-lede">
           If <strong>skywavehf.com</strong> shows up in your Kiwi&rsquo;s user list, someone is listening to your
-          receiver through skywave, a free web app that plays public KiwiSDRs. Thank you for running it. This
-          page says what skywave does on your receiver, the limits it keeps to, and how to keep it off.
+          receiver through skywave, a free web app that plays public KiwiSDRs. A listener who has given skywave
+          their call sign or name shows as <strong>skywave</strong> followed by it, like &ldquo;skywave
+          N0CALL&rdquo;: the same kind of session. Thank you for running it. This page says what skywave does on
+          your receiver, the limits it keeps to, and how to keep it off.
         </p>
 
         <section aria-labelledby="owners-what">
