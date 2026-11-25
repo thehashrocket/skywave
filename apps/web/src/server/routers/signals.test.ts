@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 // The real module opens a Prisma client at import; this router never uses it.
 vi.mock("@/server/db", () => ({ db: {} }));
 
-const { priyomScheduleSource, lastHeardSource, LAST_HEARD_MAX_ROWS, LAST_HEARD_TTL_MS } = await import("./signals");
+const { priyomScheduleSource, lastHeardSource, LAST_HEARD_TTL_MS } = await import("./signals");
 const { appRouter } = await import("@/server/root");
 const { PRIYOM_SLICES } = await import("@/lib/priyom-schedule");
 
@@ -105,29 +105,42 @@ describe("priyomScheduleSource change log", () => {
 });
 
 describe("lastHeardSource", () => {
-  type Row = { txKind: string; txName: string; txDetail: string | null; outcome: string; createdAt: Date };
+  type Row = { txKind: string; txName: string; freqKhz: number; outcome: string; createdAt: Date };
   const NOW = Date.parse("2026-11-25T12:00:00Z");
   const row = (txKind: string, txName: string, khz: number, outcome: string, agoMin: number): Row => ({
     txKind,
     txName,
-    txDetail: String(khz),
+    freqKhz: khz,
     outcome,
     createdAt: new Date(NOW - agoMin * 60_000),
   });
+  type Range<T> = { gte: T; lte: T };
+  type Where = { txKind: string; outcome?: string; createdAt: Range<Date>; freqKhz?: Range<number> };
+  type GroupBy = { by: ("txName" | "outcome")[]; where: Where; _max?: { createdAt: true }; _count?: { _all: true } };
 
-  /** A ReceptionReport table answering findMany for the filter signals.lastHeard uses. */
+  /** A ReceptionReport table answering groupBy the way Postgres would for the filters signals.lastHeard uses. */
   function fakeDb(rows: Row[]) {
-    const findMany = vi.fn(
-      async ({ where, take }: { where: { txKind: string; createdAt: { gte: Date } }; take?: number }) =>
-        rows
-          .filter((r) => r.txKind === where.txKind && r.createdAt >= where.createdAt.gte)
-          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-          .slice(0, take),
-    );
-    return { db: { receptionReport: { findMany } } as never, findMany };
+    const within = <T>(v: T, r: Range<T>) => v >= r.gte && v <= r.lte;
+    const groupBy = vi.fn(async ({ by, where, _max, _count }: GroupBy) => {
+      const groups = new Map<string, Row[]>();
+      for (const r of rows) {
+        if (r.txKind !== where.txKind || (where.outcome !== undefined && r.outcome !== where.outcome)) continue;
+        if (!within(r.createdAt, where.createdAt) || (where.freqKhz && !within(r.freqKhz, where.freqKhz))) continue;
+        const key = by.map((k) => r[k]).join("\u0000");
+        groups.set(key, [...(groups.get(key) ?? []), r]);
+      }
+      return [...groups.values()].map((g) => ({
+        ...Object.fromEntries(by.map((k) => [k, g[0]![k]])),
+        ...(_max && { _max: { createdAt: new Date(Math.max(...g.map((r) => r.createdAt.getTime()))) } }),
+        ...(_count && { _count: { _all: g.length } }),
+      }));
+    });
+    /** How many reads ran: each read counts answers by outcome once. */
+    const reads = () => groupBy.mock.calls.filter(([a]) => a.by.includes("outcome")).length;
+    return { db: { receptionReport: { groupBy } } as never, groupBy, reads };
   }
 
-  // Value: protects=signals.lastHeard reads only signal answers from the last week and sums them per station (a beacon or EiBi row never badges a station; mixed answers give the latest heard and day counts); fails_when=another kind's rows leak in, or the query isn't wired to the router; why_new=#102 query; seam=ctx.db.receptionReport.findMany faked; no_claim=Postgres behavior
+  // Value: protects=signals.lastHeard sums only signal answers from the last week per station (a beacon or EiBi row never badges a station; mixed answers give the latest heard and day counts; a week-old heard is dropped); fails_when=another kind's rows leak in, the window is wrong, or the query isn't wired to the router; why_new=#102 query; seam=ctx.db.receptionReport.groupBy faked; no_claim=Postgres behavior (checked against a real Postgres in /ship QA)
   it("sums the week's signal answers per station", async () => {
     vi.useFakeTimers({ now: NOW });
     try {
@@ -147,49 +160,46 @@ describe("lastHeardSource", () => {
     }
   });
 
-  // Value: protects=the answer is cached for LAST_HEARD_TTL_MS (one query a minute however many pages poll), concurrent callers share one read, and a failed read serves the last good answer and waits a TTL before reading again; fails_when=every request hits the database (healthy or failing), or a database blip errors the badges away; why_new=#102 server cache, backoff from the #102 review; seam=findMany faked, clock injected; no_claim=none
+  // Value: protects=#102 review: a flood of answers about one station can't take another station's badge away (the newest heard is summed per station by the database, not cut from a capped row list), and a heard on 5 MHz still credits WWV and WWVH together; fails_when=the read goes back to a capped or global row list, or drops the shared-channel sums; why_new=four reviewers found the 5,000-row cap dropping real badges; seam=groupBy faked; no_claim=Postgres timing under a real flood
+  it("keeps every station's newest heard however many answers another station gets", async () => {
+    const flood = Array.from({ length: 6_000 }, (_, i) => row("signal", "uvb-76", 4_625, i % 2 ? "heard" : "not_heard", 1 + i / 1_000));
+    const { db } = fakeDb([...flood, row("signal", "rwm", 9_996, "heard", 3 * 24 * 60), row("signal", "wwvh", 5_000, "heard", 90)]);
+    const { heard } = await lastHeardSource({ now: () => NOW })(db);
+    expect(heard["rwm"]).toMatchObject({ heardMs: NOW - 3 * 24 * 60 * 60_000, either: null });
+    expect(heard["wwv"]).toMatchObject({ heardMs: NOW - 90 * 60_000, either: ["WWV", "WWVH"] });
+    expect(heard["uvb-76"]).toMatchObject({ heard24h: 3_000, notHeard24h: 3_000 });
+  });
+
+  // Value: protects=the answer is cached for LAST_HEARD_TTL_MS (one read a minute however many pages poll), concurrent callers share one read, and a failed read serves the last good answer and waits a TTL before reading again; fails_when=every request hits the database (healthy or failing), or a database blip errors the badges away; why_new=#102 server cache, backoff from the #102 review; seam=groupBy faked, clock injected; no_claim=none
   it("caches for a minute and keeps the last answer through a failed read", async () => {
     let clock = NOW;
     const get = lastHeardSource({ now: () => clock });
-    const { db, findMany } = fakeDb([row("signal", "rwm", 9_996, "heard", 5)]);
+    const { db, groupBy, reads } = fakeDb([row("signal", "rwm", 9_996, "heard", 5)]);
     const [a, b] = await Promise.all([get(db), get(db)]);
     expect(a).toBe(b);
-    expect(findMany).toHaveBeenCalledTimes(1);
+    expect(reads()).toBe(1);
     clock += LAST_HEARD_TTL_MS - 1;
     await get(db);
-    expect(findMany).toHaveBeenCalledTimes(1);
+    expect(reads()).toBe(1);
     clock += 1;
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    findMany.mockRejectedValueOnce(new Error("db down"));
+    groupBy.mockRejectedValueOnce(new Error("db down"));
     expect(await get(db)).toBe(a);
-    expect(findMany).toHaveBeenCalledTimes(2);
+    const callsAfterFailure = groupBy.mock.calls.length;
     // Backing off: the last answer again, without asking the database.
     clock += LAST_HEARD_TTL_MS - 1;
     expect(await get(db)).toBe(a);
-    expect(findMany).toHaveBeenCalledTimes(2);
+    expect(groupBy.mock.calls.length).toBe(callsAfterFailure);
     clock += 1;
     expect((await get(db)).at).toBe(clock);
-    expect(findMany).toHaveBeenCalledTimes(3);
+    expect(groupBy.mock.calls.length).toBeGreaterThan(callsAfterFailure);
   });
 
-  // Value: protects=a read loads at most LAST_HEARD_MAX_ROWS answers, newest first, so a scripted flood can't make every read load the whole week, the badge still comes from the newest answer, and the server logs that the cap was hit; fails_when=the take or the newest-first order is dropped (a capped read keeping the oldest rows would lose today's heard); why_new=#102 review (unbounded read); seam=findMany faked; no_claim=Postgres plan or timing
-  it("reads the newest answers only, up to the cap", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const rows = Array.from({ length: LAST_HEARD_MAX_ROWS + 1 }, (_, i) => row("signal", "uvb-76", 4_625, "not_heard", 30 + i / 1_000));
-    rows.push(row("signal", "uvb-76", 4_625, "heard", 2 * 24 * 60));
-    rows.push(row("signal", "uvb-76", 4_625, "heard", 10));
-    const { db, findMany } = fakeDb(rows);
-    const { heard } = await lastHeardSource({ now: () => NOW })(db);
-    expect(findMany.mock.calls[0]![0]).toMatchObject({ orderBy: { createdAt: "desc" }, take: LAST_HEARD_MAX_ROWS });
-    expect(heard["uvb-76"]).toMatchObject({ heardMs: NOW - 10 * 60_000, heard24h: 1, notHeard24h: LAST_HEARD_MAX_ROWS - 1 });
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`newest ${LAST_HEARD_MAX_ROWS} answers only`));
-  });
-
-  // Value: protects=with no answer cached yet, a failed read reaches the page as an error (it then shows no badges) rather than an empty answer that reads as "nobody heard anything"; fails_when=a database outage looks like silence; why_new=#102; seam=findMany faked; no_claim=none
+  // Value: protects=with no answer cached yet, a failed read reaches the page as an error (it then shows no badges) rather than an empty answer that reads as "nobody heard anything"; fails_when=a database outage looks like silence; why_new=#102; seam=groupBy faked; no_claim=none
   it("fails when the first read fails", async () => {
     const get = lastHeardSource({ now: () => NOW });
-    const { db, findMany } = fakeDb([]);
-    findMany.mockRejectedValueOnce(new Error("db down"));
+    const { db, groupBy } = fakeDb([]);
+    groupBy.mockRejectedValue(new Error("db down"));
     await expect(get(db)).rejects.toThrow("db down");
   });
 });

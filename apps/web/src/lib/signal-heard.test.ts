@@ -1,51 +1,94 @@
 import { describe, expect, it } from "vitest";
-import { COUNT_MS, HEARD_SHOWN_MS, lastHeard, type SignalAnswer } from "./signal-heard";
+import { HEARD_SHOWN_MS, lastHeard, sharedChannels, type HeardSums } from "./signal-heard";
 
 const NOW = Date.parse("2026-11-25T12:00:00Z");
 const MIN = 60_000;
-const answer = (txName: string, khz: number, outcome: string, agoMs: number): SignalAnswer => ({
-  txName,
-  txDetail: String(khz),
-  outcome,
-  createdAtMs: NOW - agoMs,
+/** Sums as the database returns them; each list empty unless given. */
+const sums = (s: Partial<HeardSums>): HeardSums => ({ latest: [], shared: [], counts: [], ...s });
+
+describe("sharedChannels", () => {
+  // Value: protects=the channels whose answers count for several stations are exactly WWV and WWVH's four shared ones (owner's option 1 on #102), so WWV's 20 MHz and every other station stay their own; fails_when=a catalog change makes another frequency shared silently, or WWV/WWVH lose one; why_new=#102 shared-channel sums; seam=signal-stations catalog; no_claim=none
+  it("lists WWV and WWVH's shared frequencies only", () => {
+    expect(sharedChannels().map((c) => [c.khz, c.stations.map((s) => s.slug)])).toEqual([
+      [10_000, ["wwv", "wwvh"]],
+      [5_000, ["wwv", "wwvh"]],
+      [15_000, ["wwv", "wwvh"]],
+      [2_500, ["wwv", "wwvh"]],
+    ]);
+  });
 });
 
 describe("lastHeard", () => {
-  // Value: protects=with no answers, or only "not heard" ones, no station gets a heard time (the badge stays hidden), while not-heard answers are still counted; fails_when=a not-heard answer shows as heard, or a station with no reports gets a badge; why_new=#102 acceptance fixtures; seam=none (pure); no_claim=the database query
+  // Value: protects=with no answers, or only "not heard" ones, no station gets a heard time (the badge stays hidden), while not-heard answers are still counted and "didn't open" isn't; fails_when=a not-heard answer shows as heard, or a station with no reports gets a badge; why_new=#102 acceptance fixtures; seam=none (pure); no_claim=the database query
   it("gives no heard time with no answers or only not-heard ones", () => {
-    expect(lastHeard([], NOW)).toEqual({});
-    const out = lastHeard([answer("uvb-76", 4_625, "not_heard", 10 * MIN), answer("uvb-76", 4_625, "no_open", MIN)], NOW);
+    expect(lastHeard(sums({}), NOW)).toEqual({});
+    const out = lastHeard(
+      sums({ counts: [{ txName: "uvb-76", outcome: "not_heard", n: 1 }, { txName: "uvb-76", outcome: "no_open", n: 3 }] }),
+      NOW,
+    );
     expect(out).toEqual({ "uvb-76": { heardMs: null, either: null, heard24h: 0, notHeard24h: 1 } });
   });
 
-  // Value: protects=mixed answers: the latest "heard" wins, counts cover only the last 24 h, and a heard older than 7 days shows no badge; fails_when=an older heard hides a newer one, last week's answers inflate today's counts, or a stale heard keeps a badge; why_new=#102 acceptance fixtures; seam=none (pure); no_claim=none
-  it("keeps the latest heard and counts the last day", () => {
+  // Value: protects=a station's newest heard and its day counts come through, and a heard older than 7 days or dated after now shows no badge; fails_when=a stale or future heard keeps a badge, or counts go to the wrong outcome; why_new=#102 acceptance fixtures; seam=none (pure); no_claim=none
+  it("keeps the newest heard in the week and the day's counts", () => {
     const out = lastHeard(
-      [
-        answer("uvb-76", 4_625, "heard", 90 * MIN),
-        answer("uvb-76", 4_625, "heard", 40 * MIN),
-        answer("uvb-76", 4_625, "not_heard", 20 * MIN),
-        answer("uvb-76", 4_625, "heard", COUNT_MS + MIN),
-        answer("the-pip", 5_448, "heard", HEARD_SHOWN_MS + MIN),
-      ],
+      sums({
+        latest: [
+          { txName: "uvb-76", ms: NOW - 40 * MIN },
+          { txName: "the-pip", ms: NOW - HEARD_SHOWN_MS - MIN },
+          { txName: "rwm", ms: NOW + 5 * MIN },
+        ],
+        counts: [
+          { txName: "uvb-76", outcome: "heard", n: 2 },
+          { txName: "uvb-76", outcome: "not_heard", n: 1 },
+        ],
+      }),
       NOW,
     );
     expect(out["uvb-76"]).toEqual({ heardMs: NOW - 40 * MIN, either: null, heard24h: 2, notHeard24h: 1 });
     expect(out["the-pip"]).toBeUndefined();
+    expect(out["rwm"]).toBeUndefined();
   });
 
-  // Value: protects=owner's option 1 on #102: a heard about WWV or WWVH on a shared frequency (2.5/5/10/15 MHz) shows on both rows as "WWV or WWVH", counts stay with the station named, and WWV on 20 MHz (its alone) is WWV's only; fails_when=a WWVH heard marks only WWVH (or WWV as plainly heard), counts merge, or 20 MHz credits WWVH; why_new=#102 WWV/WWVH decision; seam=signal-stations catalog; no_claim=which station the listener really heard
+  // Value: protects=owner's option 1 on #102: a heard about WWV or WWVH on a shared frequency shows on both rows as "WWV or WWVH" (a tie with a station's own newest reads shared, since that answer was on the shared channel), counts stay with the station named, and WWV's own newer 20 MHz heard is WWV's alone; fails_when=a WWVH heard marks only WWVH, counts merge, or 20 MHz credits WWVH; why_new=#102 WWV/WWVH decision; seam=signal-stations catalog; no_claim=which station the listener really heard
   it("credits WWV and WWVH together on the frequencies they share", () => {
-    const shared = lastHeard([answer("wwvh", 10_000, "heard", 10 * MIN)], NOW);
-    expect(shared["wwv"]).toEqual({ heardMs: NOW - 10 * MIN, either: ["WWV", "WWVH"], heard24h: 0, notHeard24h: 0 });
-    expect(shared["wwvh"]).toEqual({ heardMs: NOW - 10 * MIN, either: ["WWV", "WWVH"], heard24h: 1, notHeard24h: 0 });
-    const own = lastHeard([answer("wwv", 20_000, "heard", 5 * MIN), answer("wwvh", 10_000, "heard", 10 * MIN)], NOW);
-    expect(own["wwv"]).toMatchObject({ heardMs: NOW - 5 * MIN, either: null, heard24h: 1 });
-    expect(own["wwvh"]).toMatchObject({ heardMs: NOW - 10 * MIN, either: ["WWV", "WWVH"] });
+    const t = NOW - 10 * MIN;
+    const shared = lastHeard(
+      sums({
+        latest: [{ txName: "wwvh", ms: t }],
+        shared: [{ khz: 10_000, txName: "wwvh", ms: t }],
+        counts: [{ txName: "wwvh", outcome: "heard", n: 1 }],
+      }),
+      NOW,
+    );
+    expect(shared["wwv"]).toEqual({ heardMs: t, either: ["WWV", "WWVH"], heard24h: 0, notHeard24h: 0 });
+    expect(shared["wwvh"]).toEqual({ heardMs: t, either: ["WWV", "WWVH"], heard24h: 1, notHeard24h: 0 });
+    const own = lastHeard(
+      sums({
+        latest: [
+          { txName: "wwv", ms: NOW - 5 * MIN },
+          { txName: "wwvh", ms: t },
+        ],
+        shared: [{ khz: 10_000, txName: "wwvh", ms: t }],
+      }),
+      NOW,
+    );
+    expect(own["wwv"]).toMatchObject({ heardMs: NOW - 5 * MIN, either: null });
+    expect(own["wwvh"]).toMatchObject({ heardMs: t, either: ["WWV", "WWVH"] });
   });
 
-  // Value: protects=rows the catalog doesn't know (a renamed slug) or a defunct station are ignored rather than crashing or badging history; fails_when=an old slug throws or a defunct station looks alive; why_new=#102; seam=signal-stations catalog; no_claim=none
+  // Value: protects=names the catalog doesn't know (a renamed slug) or has as defunct are ignored rather than crashing or badging history; fails_when=an old slug throws or a defunct station looks alive; why_new=#102; seam=signal-stations catalog; no_claim=none
   it("ignores unknown and defunct stations", () => {
-    expect(lastHeard([answer("gone", 1_000, "heard", MIN), answer("lincolnshire-poacher", 1_000, "heard", MIN)], NOW)).toEqual({});
+    const out = lastHeard(
+      sums({
+        latest: [
+          { txName: "gone", ms: NOW - MIN },
+          { txName: "lincolnshire-poacher", ms: NOW - MIN },
+        ],
+        counts: [{ txName: "gone", outcome: "heard", n: 1 }],
+      }),
+      NOW,
+    );
+    expect(out).toEqual({});
   });
 });

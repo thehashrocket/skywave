@@ -8,7 +8,8 @@ import {
   priyomSpan,
   type PriyomTx,
 } from "@/lib/priyom-schedule";
-import { HEARD_SHOWN_MS, lastHeard, type LastHeard } from "@/lib/signal-heard";
+import { COUNT_MS, HEARD_SHOWN_MS, lastHeard, sharedChannels, type LastHeard } from "@/lib/signal-heard";
+import { ON_KHZ } from "@/lib/signal-panel";
 import { SIGNAL_STATIONS } from "@/lib/signal-stations";
 import type { db as Db } from "../db";
 import { readCapped } from "../read-capped";
@@ -131,22 +132,20 @@ export const getPriyomSchedule = priyomScheduleSource();
 /** How long the server keeps a lastHeard answer before reading the reports again (#102). */
 export const LAST_HEARD_TTL_MS = 60_000;
 
-/**
- * The most rows one lastHeard read loads, newest first (#102 review). A week of
- * real answers is far fewer; listener ids are the browser's own, so only
- * RECEIVER_REPORTS_PER_HOUR bounds a scripted flood, and this keeps such a
- * flood from making every read load it. The newest rows set every badge; past
- * the cap only the day's counts can come out low, and the server says so.
- */
-export const LAST_HEARD_MAX_ROWS = 5_000;
+/** The channels signal stations share (WWV and WWVH), from the catalog: fixed, so worked out once. */
+const SHARED_CHANNELS = sharedChannels();
 
 export type LastHeardAnswer = { heard: Record<string, LastHeard>; at: number };
 
 /**
- * The "last heard" badges' data (#102): signal-station answers from the last
- * HEARD_SHOWN_MS, summed per station by lib/signal-heard.ts, read at most once
- * a LAST_HEARD_TTL_MS per server instance and shared between concurrent
- * callers, so every open page polling it costs one small query a minute. When
+ * The "last heard" badges' data (#102): signal-station answers summed per
+ * station by the database (each station's newest "heard" of the last
+ * HEARD_SHOWN_MS, overall and on each channel stations share, and the last
+ * COUNT_MS's answers by outcome), so a read returns a few rows per station
+ * however many answers there are, and a flood of answers about one station
+ * can't push another's newest "heard" out of it (#102 review). Turned into
+ * badges by lib/signal-heard.ts, read at most once a LAST_HEARD_TTL_MS per
+ * server instance and shared between concurrent callers. When
  * a read fails, the last good answer is served, and the next read waits a
  * LAST_HEARD_TTL_MS, so a struggling database isn't asked on every poll; with
  * no answer yet, the error goes to the page, which shows no badges.
@@ -158,16 +157,30 @@ export function lastHeardSource({ now = () => Date.now() }: { now?: () => number
 
   async function read(db: typeof Db): Promise<LastHeardAnswer> {
     const at = now();
-    const rows = await db.receptionReport.findMany({
-      where: { txKind: "signal", createdAt: { gte: new Date(at - HEARD_SHOWN_MS) } },
-      select: { txName: true, txDetail: true, outcome: true, createdAt: true },
-      orderBy: { createdAt: "desc" },
-      take: LAST_HEARD_MAX_ROWS,
-    });
-    if (rows.length === LAST_HEARD_MAX_ROWS)
-      console.warn(`signals.lastHeard: read the newest ${LAST_HEARD_MAX_ROWS} answers only; the day's counts may be low`);
-    const answers = rows.map((r) => ({ ...r, createdAtMs: r.createdAt.getTime() }));
-    return { heard: lastHeard(answers, at), at };
+    const until = new Date(at);
+    const heard = { txKind: "signal", outcome: "heard", createdAt: { gte: new Date(at - HEARD_SHOWN_MS), lte: until } };
+    const newestBy = (where: typeof heard & { freqKhz?: { gte: number; lte: number } }) =>
+      db.receptionReport.groupBy({ by: ["txName"], where, _max: { createdAt: true } });
+    const [latest, shared, counts] = await Promise.all([
+      newestBy(heard),
+      Promise.all(
+        SHARED_CHANNELS.map(async ({ khz }) =>
+          (await newestBy({ ...heard, freqKhz: { gte: khz - ON_KHZ, lte: khz + ON_KHZ } })).map((r) => ({ khz, ...r })),
+        ),
+      ),
+      db.receptionReport.groupBy({
+        by: ["txName", "outcome"],
+        where: { txKind: "signal", createdAt: { gte: new Date(at - COUNT_MS), lte: until } },
+        _count: { _all: true },
+      }),
+    ]);
+    const ms = (r: { _max: { createdAt: Date | null } }) => r._max.createdAt?.getTime() ?? null;
+    const sums = {
+      latest: latest.flatMap((r) => (ms(r) === null ? [] : [{ txName: r.txName, ms: ms(r)! }])),
+      shared: shared.flat().flatMap((r) => (ms(r) === null ? [] : [{ khz: r.khz, txName: r.txName, ms: ms(r)! }])),
+      counts: counts.map((r) => ({ txName: r.txName, outcome: r.outcome, n: r._count._all })),
+    };
+    return { heard: lastHeard(sums, at), at };
   }
 
   return async function get(db: typeof Db): Promise<LastHeardAnswer> {

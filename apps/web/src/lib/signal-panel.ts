@@ -104,7 +104,7 @@ export function panelGroups(ms: number, priyom: readonly PriyomTx[] | null, stat
 }
 
 /** How close the dial must be to a station's frequency to count as on it (SSB tuning steps are 0.1 kHz). */
-const ON_KHZ = 0.05;
+export const ON_KHZ = 0.05;
 
 /** Whether the dial is on `khz`. */
 export function onKhz(freqKhz: number, khz: number): boolean {
