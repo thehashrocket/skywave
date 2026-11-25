@@ -112,6 +112,8 @@ apps/web/
   src/lib/signal-stations.ts         signal stations (time signals, markers, numbers stations): the catalog and what's on the air when (#98)
   src/lib/signal-rank.ts             receivers for a signal station, ranked by the path from its transmitter (#99)
   src/lib/signal-panel.ts            the Signal stations panel's groups: on now, up next, always on, later, history (#100)
+  src/lib/signal-heard.ts            "heard 40 min ago" badges from listeners' answers, summed per station by the database (#102)
+  src/lib/use-signal-last-heard.ts   the page's signals.lastHeard query: every 10 minutes, no retries or refetch on focus (#102)
   src/lib/priyom-schedule.ts         Priyom's numbers-station schedule: parsing, on now and next, changes between fetches
   src/lib/kiwi-list.ts               parses and ranks the public receiver list (with positions)
   src/lib/solar.ts                   where the sun is; which receivers are in darkness
