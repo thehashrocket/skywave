@@ -54,7 +54,7 @@ model ReceptionReport {
   /// the server's clock (version 5: good to about 2 s; version 6: to the
   /// measurement's error, under 1.5 s on an ordinary visit).
   pickedAtMs   BigInt?
-  /// "beacon" | "listen" | "link" | "drawer" | "better" | "search" | "ghostnet" | "browse"; text, like txKind.
+  /// "beacon" | "listen" | "link" | "drawer" | "better" | "search" | "ghostnet" | "browse" | "signal"; text, like txKind.
   pickSource   String?
   /// Place in the ranked list the run was given, from 0.
   rankPos      Int?
@@ -75,7 +75,7 @@ model ReceptionReport {
   /// (2026-11-19 02:52:57 UTC), that's PR #73's first rules; saved after it,
   /// a tab opened before the deploy, whose context passed the newer server
   /// checks. The replay splits null rows by createdAt. Each later version
-  /// (2 to 9, what each one changed: PICK_CONTEXT_VERSION's docblock in
+  /// (2 to 10, what each one changed: PICK_CONTEXT_VERSION's docblock in
   /// src/lib/pick-context.ts) saved after the next one's deploy is likewise a
   /// tab opened before it. The page sends this and the server can't check it;
   /// createdAt against the deploy times posted on #61 says which server rules
