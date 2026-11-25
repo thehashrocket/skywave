@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 // The real module opens a Prisma client at import; this router never uses it.
 vi.mock("@/server/db", () => ({ db: {} }));
 
-const { priyomScheduleSource } = await import("./signals");
+const { priyomScheduleSource, lastHeardSource, LAST_HEARD_TTL_MS } = await import("./signals");
+const { appRouter } = await import("@/server/root");
 const { PRIYOM_SLICES } = await import("@/lib/priyom-schedule");
 
 const EVENTS = readFileSync(new URL("../../lib/fixtures/priyom-events.json", import.meta.url), "utf8");
@@ -100,5 +101,73 @@ describe("priyomScheduleSource change log", () => {
     await get();
     await defer.mock.calls[1]![0];
     expect(info).toHaveBeenCalledWith("signals.priyom: schedule changed:", "E07: 1 changed");
+  });
+});
+
+describe("lastHeardSource", () => {
+  type Row = { txKind: string; txName: string; txDetail: string | null; outcome: string; createdAt: Date };
+  const NOW = Date.parse("2026-11-25T12:00:00Z");
+  const row = (txKind: string, txName: string, khz: number, outcome: string, agoMin: number): Row => ({
+    txKind,
+    txName,
+    txDetail: String(khz),
+    outcome,
+    createdAt: new Date(NOW - agoMin * 60_000),
+  });
+
+  /** A ReceptionReport table answering findMany for the filter signals.lastHeard uses. */
+  function fakeDb(rows: Row[]) {
+    const findMany = vi.fn(
+      async ({ where }: { where: { txKind: string; createdAt: { gte: Date } } }) =>
+        rows.filter((r) => r.txKind === where.txKind && r.createdAt >= where.createdAt.gte),
+    );
+    return { db: { receptionReport: { findMany } } as never, findMany };
+  }
+
+  // Value: protects=signals.lastHeard reads only signal answers from the last week and sums them per station (a beacon or EiBi row never badges a station; mixed answers give the latest heard and day counts); fails_when=another kind's rows leak in, or the query isn't wired to the router; why_new=#102 query; seam=ctx.db.receptionReport.findMany faked; no_claim=Postgres behavior
+  it("sums the week's signal answers per station", async () => {
+    vi.useFakeTimers({ now: NOW });
+    try {
+      const { db } = fakeDb([
+        row("signal", "uvb-76", 4_625, "heard", 40),
+        row("signal", "uvb-76", 4_625, "not_heard", 20),
+        row("beacon", "uvb-76", 4_625, "heard", 1),
+        row("signal", "the-pip", 5_448, "heard", 8 * 24 * 60),
+      ]);
+      const caller = appRouter.createCaller({ db } as never);
+      const { heard } = await caller.signals.lastHeard();
+      expect(heard).toEqual({
+        "uvb-76": { heardMs: NOW - 40 * 60_000, either: null, heard24h: 1, notHeard24h: 1 },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=the answer is cached for LAST_HEARD_TTL_MS (one query a minute however many pages poll), concurrent callers share one read, and a failed read serves the last good answer; fails_when=every request hits the database, or a database blip errors the badges away; why_new=#102 server cache; seam=findMany faked, clock injected; no_claim=none
+  it("caches for a minute and keeps the last answer through a failed read", async () => {
+    let clock = NOW;
+    const get = lastHeardSource({ now: () => clock });
+    const { db, findMany } = fakeDb([row("signal", "rwm", 9_996, "heard", 5)]);
+    const [a, b] = await Promise.all([get(db), get(db)]);
+    expect(a).toBe(b);
+    expect(findMany).toHaveBeenCalledTimes(1);
+    clock += LAST_HEARD_TTL_MS - 1;
+    await get(db);
+    expect(findMany).toHaveBeenCalledTimes(1);
+    clock += 1;
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    findMany.mockRejectedValueOnce(new Error("db down"));
+    expect(await get(db)).toBe(a);
+    expect(findMany).toHaveBeenCalledTimes(2);
+    expect((await get(db)).at).toBe(clock);
+  });
+
+  // Value: protects=with no answer cached yet, a failed read reaches the page as an error (it then shows no badges) rather than an empty answer that reads as "nobody heard anything"; fails_when=a database outage looks like silence; why_new=#102; seam=findMany faked; no_claim=none
+  it("fails when the first read fails", async () => {
+    const get = lastHeardSource({ now: () => NOW });
+    const { db, findMany } = fakeDb([]);
+    findMany.mockRejectedValueOnce(new Error("db down"));
+    await expect(get(db)).rejects.toThrow("db down");
   });
 });

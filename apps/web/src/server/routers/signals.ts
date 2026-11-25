@@ -8,7 +8,9 @@ import {
   priyomSpan,
   type PriyomTx,
 } from "@/lib/priyom-schedule";
+import { HEARD_SHOWN_MS, lastHeard, type LastHeard } from "@/lib/signal-heard";
 import { SIGNAL_STATIONS } from "@/lib/signal-stations";
+import type { db as Db } from "../db";
 import { readCapped } from "../read-capped";
 import { publicProcedure, router } from "../trpc";
 
@@ -126,6 +128,54 @@ export function priyomScheduleSource({ fetchImpl = (...args) => fetch(...args), 
 /** The one cached Priyom schedule for this server. */
 export const getPriyomSchedule = priyomScheduleSource();
 
+/** How long the server keeps a lastHeard answer before reading the reports again (#102). */
+export const LAST_HEARD_TTL_MS = 60_000;
+
+export type LastHeardAnswer = { heard: Record<string, LastHeard>; at: number };
+
+/**
+ * The "last heard" badges' data (#102): signal-station answers from the last
+ * HEARD_SHOWN_MS, summed per station by lib/signal-heard.ts, read at most once
+ * a LAST_HEARD_TTL_MS per server instance and shared between concurrent
+ * callers, so every open page polling it costs one small query a minute. When
+ * a read fails, the last good answer is served; with none yet, the error goes
+ * to the page, which shows no badges.
+ */
+export function lastHeardSource({ now = () => Date.now() }: { now?: () => number } = {}) {
+  let cached: LastHeardAnswer | null = null;
+  let inflight: Promise<LastHeardAnswer> | null = null;
+
+  async function read(db: typeof Db): Promise<LastHeardAnswer> {
+    const at = now();
+    const rows = await db.receptionReport.findMany({
+      where: { txKind: "signal", createdAt: { gte: new Date(at - HEARD_SHOWN_MS) } },
+      select: { txName: true, txDetail: true, outcome: true, createdAt: true },
+    });
+    const answers = rows.map((r) => ({ ...r, createdAtMs: r.createdAt.getTime() }));
+    return { heard: lastHeard(answers, at), at };
+  }
+
+  return async function get(db: typeof Db): Promise<LastHeardAnswer> {
+    if (cached && now() - cached.at < LAST_HEARD_TTL_MS) return cached;
+    inflight ??= read(db)
+      .then((fresh) => (cached = fresh))
+      .finally(() => {
+        inflight = null;
+      });
+    try {
+      return await inflight;
+    } catch (error) {
+      if (!cached) throw error;
+      console.warn("signals.lastHeard: read failed, serving the last answer:", error);
+      return cached;
+    }
+  };
+}
+
+/** The one cached lastHeard answer for this server instance. */
+export const getLastHeard = lastHeardSource();
+
 export const signalsRouter = router({
   priyom: publicProcedure.query(() => getPriyomSchedule()),
+  lastHeard: publicProcedure.query(({ ctx }) => getLastHeard(ctx.db)),
 });
