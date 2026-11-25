@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 // The real module opens a Prisma client at import; this router never uses it.
 vi.mock("@/server/db", () => ({ db: {} }));
 
-const { priyomScheduleSource, lastHeardSource, LAST_HEARD_TTL_MS } = await import("./signals");
+const { priyomScheduleSource, lastHeardSource, LAST_HEARD_MAX_ROWS, LAST_HEARD_TTL_MS } = await import("./signals");
 const { appRouter } = await import("@/server/root");
 const { PRIYOM_SLICES } = await import("@/lib/priyom-schedule");
 
@@ -118,8 +118,11 @@ describe("lastHeardSource", () => {
   /** A ReceptionReport table answering findMany for the filter signals.lastHeard uses. */
   function fakeDb(rows: Row[]) {
     const findMany = vi.fn(
-      async ({ where }: { where: { txKind: string; createdAt: { gte: Date } } }) =>
-        rows.filter((r) => r.txKind === where.txKind && r.createdAt >= where.createdAt.gte),
+      async ({ where, take }: { where: { txKind: string; createdAt: { gte: Date } }; take?: number }) =>
+        rows
+          .filter((r) => r.txKind === where.txKind && r.createdAt >= where.createdAt.gte)
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+          .slice(0, take),
     );
     return { db: { receptionReport: { findMany } } as never, findMany };
   }
@@ -144,7 +147,7 @@ describe("lastHeardSource", () => {
     }
   });
 
-  // Value: protects=the answer is cached for LAST_HEARD_TTL_MS (one query a minute however many pages poll), concurrent callers share one read, and a failed read serves the last good answer; fails_when=every request hits the database, or a database blip errors the badges away; why_new=#102 server cache; seam=findMany faked, clock injected; no_claim=none
+  // Value: protects=the answer is cached for LAST_HEARD_TTL_MS (one query a minute however many pages poll), concurrent callers share one read, and a failed read serves the last good answer and waits a TTL before reading again; fails_when=every request hits the database (healthy or failing), or a database blip errors the badges away; why_new=#102 server cache, backoff from the #102 review; seam=findMany faked, clock injected; no_claim=none
   it("caches for a minute and keeps the last answer through a failed read", async () => {
     let clock = NOW;
     const get = lastHeardSource({ now: () => clock });
@@ -160,7 +163,26 @@ describe("lastHeardSource", () => {
     findMany.mockRejectedValueOnce(new Error("db down"));
     expect(await get(db)).toBe(a);
     expect(findMany).toHaveBeenCalledTimes(2);
+    // Backing off: the last answer again, without asking the database.
+    clock += LAST_HEARD_TTL_MS - 1;
+    expect(await get(db)).toBe(a);
+    expect(findMany).toHaveBeenCalledTimes(2);
+    clock += 1;
     expect((await get(db)).at).toBe(clock);
+    expect(findMany).toHaveBeenCalledTimes(3);
+  });
+
+  // Value: protects=a read loads at most LAST_HEARD_MAX_ROWS answers, newest first, so a scripted flood can't make every read load the whole week, the badge still comes from the newest answer, and the server logs that the cap was hit; fails_when=the take or the newest-first order is dropped (a capped read keeping the oldest rows would lose today's heard); why_new=#102 review (unbounded read); seam=findMany faked; no_claim=Postgres plan or timing
+  it("reads the newest answers only, up to the cap", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rows = Array.from({ length: LAST_HEARD_MAX_ROWS + 1 }, (_, i) => row("signal", "uvb-76", 4_625, "not_heard", 30 + i / 1_000));
+    rows.push(row("signal", "uvb-76", 4_625, "heard", 2 * 24 * 60));
+    rows.push(row("signal", "uvb-76", 4_625, "heard", 10));
+    const { db, findMany } = fakeDb(rows);
+    const { heard } = await lastHeardSource({ now: () => NOW })(db);
+    expect(findMany.mock.calls[0]![0]).toMatchObject({ orderBy: { createdAt: "desc" }, take: LAST_HEARD_MAX_ROWS });
+    expect(heard["uvb-76"]).toMatchObject({ heardMs: NOW - 10 * 60_000, heard24h: 1, notHeard24h: LAST_HEARD_MAX_ROWS - 1 });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`newest ${LAST_HEARD_MAX_ROWS} answers only`));
   });
 
   // Value: protects=with no answer cached yet, a failed read reaches the page as an error (it then shows no badges) rather than an empty answer that reads as "nobody heard anything"; fails_when=a database outage looks like silence; why_new=#102; seam=findMany faked; no_claim=none

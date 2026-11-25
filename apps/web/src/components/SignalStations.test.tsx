@@ -231,4 +231,34 @@ describe("SignalStations", () => {
     expect(onNow()).toEqual(["e11", "e07"]);
     expect(rowOf("E11").textContent).toContain("heard 30 min ago");
   });
+
+  // Value: protects=#102 review: while the pointer is over the tables (or focus is inside), a new heard answer doesn't re-sort the rows, so a click can't land on another station's Listen (retuning the receiver, ending the audio); the sort applies once the pointer leaves; fails_when=rows re-sort under the pointer, or stay frozen after it leaves; why_new=rows moving under the click (Red Team + Codex); seam=useServerTick mocked; no_claim=touch pointers
+  it("keeps the rows still while the pointer is over them", () => {
+    const at = "2026-11-25T12:00:00Z";
+    const heard = { "uvb-76": { heardMs: Date.parse(at) - 5 * 60_000, either: null, heard24h: 1, notHeard24h: 0 } };
+    const order = () => [...document.querySelectorAll(".signals tr[data-slug]")].map((r) => r.getAttribute("data-slug")).slice(0, 4);
+    const { rerenderAt } = renderPanel(at);
+    expect(order()).toEqual(["wwv", "wwvh", "rwm", "uvb-76"]);
+    const groups = document.querySelector(".signals-groups")!;
+    fireEvent.pointerEnter(groups);
+    rerenderAt(at, { heard });
+    expect(order()).toEqual(["wwv", "wwvh", "rwm", "uvb-76"]);
+    expect(rowOf("UVB-76").textContent).toContain("heard 5 min ago");
+    fireEvent.pointerLeave(groups);
+    expect(order()).toEqual(["uvb-76", "wwv", "wwvh", "rwm"]);
+  });
+
+  // Value: protects=a heard answer older than a week shows no badge even when the server serves an old cached answer (its read failing), per #102's 7-day rule; fails_when=badges keep aging past a week ("heard 8d 2h ago") during a database outage; why_new=#102 review (cutoff applied only on the server's read); seam=useServerTick mocked; no_claim=the server's cache
+  it("hides a heard answer older than a week", () => {
+    const at = "2026-11-25T12:00:00Z";
+    const week = 7 * 24 * 60 * 60_000;
+    renderPanel(at, {
+      heard: {
+        "uvb-76": { heardMs: Date.parse(at) - week - 60_000, either: null, heard24h: 0, notHeard24h: 0 },
+        rwm: { heardMs: Date.parse(at) - week, either: null, heard24h: 0, notHeard24h: 0 },
+      },
+    });
+    expect(rowOf("UVB-76").textContent).not.toContain("heard");
+    expect(rowOf("RWM").textContent).toContain("heard 7d 0h ago");
+  });
 });

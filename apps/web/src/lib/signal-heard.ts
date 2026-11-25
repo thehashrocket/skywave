@@ -108,3 +108,15 @@ export function confirmedFirst<T extends { station: SignalStation }>(
   };
   return [...rows].sort((a, b) => at(b) - at(a));
 }
+
+/**
+ * Rows in the order they were last shown (`slugs`), for while the listener is
+ * pointing at or tabbing through the panel (#102 review): a re-sort then could
+ * move another station's Listen under the click, retuning the receiver and
+ * ending what's playing. Rows not shown before go last, in their new order.
+ */
+export function keepOrder<T extends { station: SignalStation }>(rows: readonly T[], slugs: readonly string[]): T[] {
+  const at = new Map(slugs.map((s, i) => [s, i]));
+  const place = (r: T) => at.get(r.station.slug) ?? slugs.length;
+  return [...rows].sort((a, b) => place(a) - place(b));
+}

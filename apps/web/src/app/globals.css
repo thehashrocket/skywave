@@ -2514,6 +2514,11 @@ html:has(.tuning-bar:not([hidden])) {
   white-space: nowrap;
 }
 
+/* The panel's tables, held still while the pointer or focus is in them (#102 review). A plain block: it adds no spacing of its own. */
+.signals-groups {
+  display: block;
+}
+
 /* "heard 40 min ago" (#102): listeners' word, quiet like the place line it sits in. */
 .signals-heard {
   color: var(--muted);

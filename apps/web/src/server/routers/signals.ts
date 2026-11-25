@@ -131,6 +131,15 @@ export const getPriyomSchedule = priyomScheduleSource();
 /** How long the server keeps a lastHeard answer before reading the reports again (#102). */
 export const LAST_HEARD_TTL_MS = 60_000;
 
+/**
+ * The most rows one lastHeard read loads, newest first (#102 review). A week of
+ * real answers is far fewer; listener ids are the browser's own, so only
+ * RECEIVER_REPORTS_PER_HOUR bounds a scripted flood, and this keeps such a
+ * flood from making every read load it. The newest rows set every badge; past
+ * the cap only the day's counts can come out low, and the server says so.
+ */
+export const LAST_HEARD_MAX_ROWS = 5_000;
+
 export type LastHeardAnswer = { heard: Record<string, LastHeard>; at: number };
 
 /**
@@ -138,27 +147,44 @@ export type LastHeardAnswer = { heard: Record<string, LastHeard>; at: number };
  * HEARD_SHOWN_MS, summed per station by lib/signal-heard.ts, read at most once
  * a LAST_HEARD_TTL_MS per server instance and shared between concurrent
  * callers, so every open page polling it costs one small query a minute. When
- * a read fails, the last good answer is served; with none yet, the error goes
- * to the page, which shows no badges.
+ * a read fails, the last good answer is served, and the next read waits a
+ * LAST_HEARD_TTL_MS, so a struggling database isn't asked on every poll; with
+ * no answer yet, the error goes to the page, which shows no badges.
  */
 export function lastHeardSource({ now = () => Date.now() }: { now?: () => number } = {}) {
   let cached: LastHeardAnswer | null = null;
   let inflight: Promise<LastHeardAnswer> | null = null;
+  let lastFailureAt: number | null = null;
 
   async function read(db: typeof Db): Promise<LastHeardAnswer> {
     const at = now();
     const rows = await db.receptionReport.findMany({
       where: { txKind: "signal", createdAt: { gte: new Date(at - HEARD_SHOWN_MS) } },
       select: { txName: true, txDetail: true, outcome: true, createdAt: true },
+      orderBy: { createdAt: "desc" },
+      take: LAST_HEARD_MAX_ROWS,
     });
+    if (rows.length === LAST_HEARD_MAX_ROWS)
+      console.warn(`signals.lastHeard: read the newest ${LAST_HEARD_MAX_ROWS} answers only; the day's counts may be low`);
     const answers = rows.map((r) => ({ ...r, createdAtMs: r.createdAt.getTime() }));
     return { heard: lastHeard(answers, at), at };
   }
 
   return async function get(db: typeof Db): Promise<LastHeardAnswer> {
-    if (cached && now() - cached.at < LAST_HEARD_TTL_MS) return cached;
+    const t = now();
+    if (cached && t - cached.at < LAST_HEARD_TTL_MS) return cached;
+    if (cached && lastFailureAt !== null && t - lastFailureAt < LAST_HEARD_TTL_MS) return cached;
     inflight ??= read(db)
-      .then((fresh) => (cached = fresh))
+      .then(
+        (fresh) => {
+          lastFailureAt = null;
+          return (cached = fresh);
+        },
+        (error: unknown) => {
+          lastFailureAt = now();
+          throw error;
+        },
+      )
       .finally(() => {
         inflight = null;
       });
