@@ -1978,6 +1978,30 @@ describe("ListenPage", () => {
       expect(radio.tune).not.toHaveBeenCalled();
     });
 
+    // Value: protects=with 4+ stations on the frequency the question and the readout name the one aimed at the playing receiver's region and the answer records that region, never the region Find a station is filtered to; a listed receiver with no position keeps EiBi's first and records no region; fails_when=page.tsx hands the prompt the filter's region (audioRegion) or none, so #61's askRegion records where the listener browses; why_new=#115 review D3 (Codex: the region source was untested); seam=useRadio, useSchedule and useSubmitReport mocked, list hook mocked; no_claim=the ranking rules (eibi.test, reception.test)
+    it.each<[string, Partial<Receiver>, string, string | undefined]>([
+      ["a North American receiver", { lat: 44.3, lon: -72.6 }, "WWCR 2", "na"],
+      ["a receiver with no listed position", {}, "Asia One", undefined],
+    ])("asks a crowded frequency's station by %s's region, not the filter's", (_, place, station, region) => {
+      schedule.data!.broadcasts = [
+        { khz: 9_580, start: 0, end: 1440, days: "", station: "Asia One", lang: "M", target: "CHN" },
+        { khz: 9_580, start: 0, end: 1440, days: "", station: "Africa Three", lang: "F", target: "Af" },
+        { khz: 9_580, start: 0, end: 1440, days: "", station: "Euro Two", lang: "E", target: "Eu" },
+        { khz: 9_580, start: 0, end: 1440, days: "", station: "WWCR 2", lang: "E", target: "NAm" },
+      ];
+      receiverList.data = { receivers: [{ ...listed, ...place }, backup] };
+      // Find a station filtered to Africa: were the page to rank by it, Africa Three would lead.
+      localStorage.setItem("skywave.stationFilters", JSON.stringify({ area: "region:af", languages: [], nonVoice: true }));
+      listeningOn(9_580);
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(line().textContent).toContain(`Did you hear ${station} on the receiver`);
+      expect(screen.getAllByText(new RegExp(`^${station} ·`)).length).toBeGreaterThan(0);
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      const tx = submitReport.mock.lastCall![0].tx;
+      expect(tx).toMatchObject({ name: station, askRule: 1 });
+      expect(tx.askRegion).toBe(region);
+    });
+
     // Value: protects=a drawer Pick best run's answer carries its own source, not "beacon" or none (#61); fails_when=the drawer call site passes the wrong source or answerReception drops the context; why_new=only beacon source was tested; seam=useRadio, picker and useSubmitReport mocked; no_claim=the server's checks (reports.test)
     it("sends the drawer's Pick best context with the answer", () => {
       localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_580, mode: "am" }));

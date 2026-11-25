@@ -32,6 +32,8 @@ export function useSubmitReport() {
         txName: p.tx.name,
         txDetail: p.tx.detail,
         slotStartMs: p.tx.slotStartMs,
+        askRule: p.tx.askRule,
+        askRegion: p.tx.askRegion,
         outcome,
         comment,
         pick,

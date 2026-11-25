@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Broadcast } from "./eibi";
+import { type Broadcast, listedOn, rankBroadcasts } from "./eibi";
 import { SLOT_MS } from "./ibp";
 import {
   BEACON_MIN_HEARD_MS,
@@ -33,6 +33,7 @@ describe("eibiTransmitter", () => {
       name: "KBS World Radio",
       detail: "E/NAm",
       label: "KBS World Radio",
+      askRule: 1,
     });
   });
 
@@ -40,12 +41,31 @@ describe("eibiTransmitter", () => {
     [["A", "B"], "anything from A or B", "A / B"],
     [["A", "B", "C"], "anything from A, B or C", "A / B / C"],
   ])("asks about %j together", (stations, label, name) => {
-    expect(eibiTransmitter(stations.map((s) => b(s)))).toEqual({ kind: "eibi", name, label });
+    expect(eibiTransmitter(stations.map((s) => b(s)))).toEqual({ kind: "eibi", name, label, askRule: 1 });
   });
 
   it("names only the nearest listing when more than three share it", () => {
     const tx = eibiTransmitter(["Near", "B", "C", "D"].map((s) => b(s)));
     expect(tx).toMatchObject({ name: "Near", label: "Near" });
+  });
+
+  // Value: protects=the prompt asks first about the station aimed where the receiver is, as the use-reception-prompt hook builds it (listedOn, then rankBroadcasts), while two or three stations are always saved under one txName in EiBi's order whatever the region, and every answer records the rule and the region it ranked by; fails_when=one channel is stored as "A / B" from one receiver and "B / A" from another, splitting #61's groups, the question still leads with a station aimed elsewhere, or the rule or region isn't recorded; why_new=#115 review (D1/D2 askRule, askRegion); seam=none; no_claim=the page passing the receiver's region (page.test)
+  it("ranks the question by the receiver's region but saves the same txName", () => {
+    const ask = (stations: Broadcast[], region?: "na" | "as") => {
+      const listed = listedOn(stations, 5_935, Date.parse("2026-11-24T05:56:00Z"), region);
+      return eibiTransmitter(listed, rankBroadcasts(listed, region), region);
+    };
+    const two = [b("Xizang RTV", "M", "CHN", 5_935), b("WWCR 2", "E", "NAm", 5_935)];
+    for (const region of [undefined, "na", "as"] as const) {
+      expect(ask(two, region)?.name).toBe("Xizang RTV / WWCR 2");
+    }
+    expect(ask(two, "na")?.label).toBe("anything from WWCR 2 or Xizang RTV");
+    expect(ask(two)?.label).toBe("anything from Xizang RTV or WWCR 2");
+    const four = [...two, b("C", "E", "Eu", 5_935), b("D", "E", "Eu", 5_935)];
+    expect(ask(four, "na")).toMatchObject({ name: "WWCR 2", detail: "E/NAm", askRule: 1, askRegion: "na" });
+    expect(ask(four)).toMatchObject({ name: "Xizang RTV", askRule: 1 });
+    expect(ask(four)).not.toHaveProperty("askRegion");
+    expect(ask(two, "as")).toMatchObject({ askRule: 1, askRegion: "as" });
   });
 });
 

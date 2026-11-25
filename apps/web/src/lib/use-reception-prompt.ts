@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { scheduledOn, type Broadcast } from "./eibi";
+import { listedOn, rankBroadcasts, scheduledOn, type Broadcast } from "./eibi";
+import type { BroadRegion } from "./eibi-targets";
 import { ibpBandIndex } from "./ibp";
 import {
   beaconPromptAt,
@@ -137,6 +138,12 @@ const promptKey = (p: ReceptionPromptData) => `${p.host.toLowerCase()}:${p.port}
  * there spans six. There it asks only about `beacon`, the one picked with
  * Listen, on the band it was picked on, once enough of its slot has played
  * (beaconPromptAt). Tuned to a beacon frequency by hand: no prompt at all.
+ *
+ * `region` is where the receiver is, from its listed position only (never a
+ * filter the listener picked, since answers are saved under the station named):
+ * stations sharing the frequency that are aimed there are asked about first
+ * (#115). While a receiver plays the readout ranks by the same region, so the
+ * two agree. Undefined keeps EiBi's order.
  */
 export function useReceptionPrompt(
   status: RadioStatus,
@@ -144,6 +151,7 @@ export function useReceptionPrompt(
   schedule: readonly Broadcast[] | undefined,
   onList: boolean,
   beacon: BeaconPick | null = null,
+  region?: BroadRegion,
 ) {
   const [prompt, setPrompt] = useState<ReceptionPromptData | null>(null);
   // Loaded from sessionStorage on first use, then kept here (storage may throw).
@@ -156,8 +164,8 @@ export function useReceptionPrompt(
 
   // Read when the timer fires, so a new status object or a schedule refetch
   // for the same channel doesn't restart the wait.
-  const latest = useRef({ status, schedule });
-  latest.current = { status, schedule };
+  const latest = useRef({ status, schedule, region });
+  latest.current = { status, schedule, region };
   // The channel a prompt was already offered on: not again until it changes.
   const askedOn = useRef<string | null>(null);
 
@@ -268,10 +276,11 @@ export function useReceptionPrompt(
     }
     const wait = Math.max(DWELL_MS, notBefore - serverNow());
     const timer = setTimeout(() => {
-      const { status: s, schedule: sched } = latest.current;
+      const { status: s, schedule: sched, region: r } = latest.current;
       if (!sched || !s.host || s.freqKhz === undefined || !s.mode) return;
       // The listing may have ended during the wait.
-      const tx = eibiTransmitter(scheduledOn(sched, s.freqKhz, Date.now()));
+      const listed = listedOn(sched, s.freqKhz, Date.now(), r);
+      const tx = eibiTransmitter(listed, rankBroadcasts(listed, r), r);
       if (!tx) return;
       askedOn.current = askKey;
       update((c) => ({ ...c, lastShownMs: serverNow() }));

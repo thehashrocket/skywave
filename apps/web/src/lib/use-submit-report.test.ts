@@ -46,4 +46,13 @@ describe("useSubmitReport", () => {
     result.current(prompt, "not_heard", "");
     expect(mutate.mock.lastCall![0].pick).toBeUndefined();
   });
+
+  // Value: protects=the question's rule and region reach reports.submit as askRule and askRegion, and a question without them sends neither; fails_when=the hook drops or renames them, so #61 can't tell question rules apart; why_new=#115 review D1/D2; seam=useMutation, useTRPC, listenerId mocked; no_claim=server storage (reports.test)
+  it("sends the question's rule and region", () => {
+    const { result } = renderHook(() => useSubmitReport());
+    result.current({ ...prompt, tx: { ...prompt.tx, askRule: 1, askRegion: "na" } }, "heard", "");
+    expect(mutate).toHaveBeenLastCalledWith(expect.objectContaining({ askRule: 1, askRegion: "na" }));
+    result.current(prompt, "heard", "");
+    expect(mutate.mock.lastCall![0]).toMatchObject({ askRule: undefined, askRegion: undefined });
+  });
 });
