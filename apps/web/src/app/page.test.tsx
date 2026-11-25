@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Broadcast } from "@/lib/eibi";
 import type { Receiver } from "@/lib/kiwi-list";
 import { noteResponse, resetServerClock } from "@/lib/server-clock";
+import { activeChannelAt, findStation } from "@/lib/signal-stations";
 import { fakeIntersectionObserver } from "@/test/fake-intersection-observer";
 import type { DecodeState, RadioStatus, ScanState, Settled } from "@/lib/use-radio";
 
@@ -2134,6 +2135,32 @@ describe("ListenPage", () => {
       expect(submitReport.mock.lastCall![0].tx).toEqual({ kind: "signal", name: "uvb-76", detail: "4625", label: "UVB-76" });
       // The signal Listen's pick context goes with it (#61).
       expect(submitReport.mock.lastCall![3]).toMatchObject({ pickSource: "signal" });
+    });
+
+    // Value: protects=a station a link named, playing on its other day/night channel, is asked about once its row's Listen moves the receiver to the channel it's on now (no Pick best run, so no pick context); fails_when=that retune path keeps the link's listened:false (page.tsx) and the Listen never gets a question; why_new=the other test covers only a fresh Pick best run; seam=useRadio, the list hook and useSubmitReport mocked, fake timers; no_claim=when The Pip really switches channels
+    it("asks about a link-named station after its row's Listen moves it to the channel on now", () => {
+      receiverList.data = { receivers: [listed, backup] };
+      const pip = findStation("the-pip")!;
+      const now = activeChannelAt(pip, Date.now())!;
+      const other = pip.channels.find((c) => c.khz !== now.khz)!;
+      // A link to The Pip's other channel, with audio already playing there: no Listen, no question.
+      window.history.replaceState(null, "", `/?f=${other.khz}&m=usb&sig=the-pip`);
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: other.khz, mode: "usb" };
+      radio.heardAudio = true;
+      const view = render(<ListenPage />);
+      act(() => vi.advanceTimersByTime(3 * 60_000));
+      expect(line().textContent).toBe("");
+      // The row's Listen retunes the playing receiver to the channel on now (no Pick best).
+      act(() => fireEvent.click(screen.getByRole("button", { name: /^Listen to The Pip/ })));
+      expect(radio.tune).not.toHaveBeenCalled();
+      radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: now.khz, mode: "usb" };
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(61_499));
+      expect(line().textContent).toBe("");
+      act(() => vi.advanceTimersByTime(1));
+      expect(line().textContent).toMatch(/^Did you hear The Pip on the receiver/);
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      expect(submitReport.mock.lastCall![0].tx).toMatchObject({ kind: "signal", name: "the-pip", detail: String(now.khz) });
     });
 
     // Value: protects=with 4+ stations on the frequency the question and the readout name the one aimed at the playing receiver's region and the answer records that region, never the region Find a station is filtered to; a listed receiver with no position keeps EiBi's first and records no region; fails_when=page.tsx hands the prompt the filter's region (audioRegion) or none, so #61's askRegion records where the listener browses; why_new=#115 review D3 (Codex: the region source was untested); seam=useRadio, useSchedule and useSubmitReport mocked, list hook mocked; no_claim=the ranking rules (eibi.test, reception.test)

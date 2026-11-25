@@ -262,6 +262,12 @@ describe("signalAsk (#101)", () => {
     expect(signalAsk(s, 6_000, null, NOON)).toBeNull();
     expect(signalAsk(s, 7_000, null, NOON + 2 * 60 * 60_000)).toBeNull();
   });
+
+  // Value: protects=a station with no transmitter location is never offered a question, on any channel or schedule (the server's signalChecks relies on this too); fails_when=the tx guard is dropped and reports about a station the page can't rank by path are asked and stored; why_new=every catalog station tested so far has a transmitter or is defunct; seam=a made-up station; no_claim=none
+  it("offers nothing for a station with no transmitter", () => {
+    const s: SignalStation = { ...station("wwv"), slug: "no-tx", tx: undefined };
+    expect(signalAsk(s, 10_000, null, NOON)).toBeNull();
+  });
 });
 
 describe("signalPromptAt (#101)", () => {

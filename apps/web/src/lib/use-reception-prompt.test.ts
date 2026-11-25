@@ -563,6 +563,22 @@ describe("useReceptionPrompt for a signal station (#101)", () => {
     vi.unstubAllGlobals();
   });
 
+  // Value: protects=a numbers-station question planned before a sleep is not asked once the station's time on the air has passed (no question about dead air, no answer the server would refuse); fails_when=all three guards go (the late-timer check, the clock-move re-plan and the clock-move close; any one suffices), so the paused timer asks about a transmission long over; why_new=only a prompt already on screen through a sleep was tested; seam=fake timers (setSystemTime moves Date while timers pause), the real server clock fed a response; no_claim=how a real browser runs timers across a sleep
+  it("asks nothing about a station a sleep took off the air before the question", async () => {
+    noteResponse(new Headers({ date: new Date(Date.now()).toUTCString() }), Date.now(), Date.now());
+    const e11: SignalAsk = { slug: "e11", name: "E11", khz: 20_167, untilMs: NOW + ASK_AFTER + 60_000, slotStartMs: NOW - 60_000 };
+    const hook = setup({ status: listening(20_167), heard: true, schedule, signal: e11 });
+    wait(5_000);
+    // Ten minutes asleep: the computer's clock and the server moved on; the timer didn't.
+    vi.setSystemTime(Date.now() + 600_000);
+    await act(async () => {
+      vi.advanceTimersByTime(ASK_AFTER);
+    });
+    expect(hook.result.current.prompt).toBeNull();
+    wait(ASK_AFTER * 2);
+    expect(hook.result.current.prompt).toBeNull();
+  });
+
   // Value: protects=a retune off the picked channel ends the plan (no question about a station not being heard) and coming back starts the dwell over; fails_when=the timer survives a channel change, or a question is asked while the dial is off the station's channel; why_new=issue #101 acceptance (prompt tests for dwell and channel change); seam=fake timers; no_claim=none
   it("starts over on a channel change, and asks nothing off the station's channel", () => {
     const hook = setup(onWwv);

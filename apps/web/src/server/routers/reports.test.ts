@@ -884,4 +884,32 @@ describe("a signal-station report (#101)", () => {
     expect(signalChecks("the-pip", 4_625, undefined, null, NOON)).toBe(false);
     expect(signalChecks("wwv", 20_000, undefined, null, NOON)).toBe(true);
   });
+
+  // Value: protects=an answer about a numbers-station transmission that ended within the last LISTING_GRACE_MS is kept (the prompt may sit up to 4 minutes after asking); fails_when=the grace is dropped from the on-air bound, so the listener is thanked and the answer silently refused; why_new=only the refusal just past the grace was tested; seam=getPriyomSchedule mocked; no_claim=none
+  it("keeps a numbers-station answer given within the grace after the transmission ended", async () => {
+    const ended = NOON - PRIYOM_ON_AIR_MS - 4 * 60_000;
+    cache.priyom = [{ ...e11Tx, startMs: ended }];
+    const { result, data } = await submit({ ...e11, slotStartMs: ended });
+    expect(result).toEqual({ accepted: true });
+    expect(data).toMatchObject({ slotStartMs: BigInt(ended) });
+  });
+
+  // Value: protects=a signal Listen's pick made after the Priyom transmission began keeps its context, since only a beacon's slot bounds when the pick was made; fails_when=the Priyom slot is passed to pickChecks, PICK_IN_SLOT_MS drops every real numbers-station pick and #61 loses its signal rows; why_new=the other pick test uses WWV, which has no slot; seam=getPriyomSchedule mocked, in-memory db; no_claim=none
+  it("keeps a signal pick made after the Priyom transmission began", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    cache.priyom = [e11Tx];
+    const pick = {
+      version: 10,
+      pickedAtMs: SLOT + 60_000,
+      pickSource: "signal" as const,
+      rankPos: 0,
+      candidates: ["kiwi.example.org:8073"],
+      freqKhz: 20_167,
+      snr: 20,
+      users: 1,
+    };
+    const { result, data } = await submit({ ...e11, pick });
+    expect(result).toEqual({ accepted: true });
+    expect(data).toMatchObject({ pickSource: "signal", pickedAtMs: BigInt(SLOT + 60_000), slotStartMs: BigInt(SLOT) });
+  });
 });
