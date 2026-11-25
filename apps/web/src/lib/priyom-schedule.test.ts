@@ -11,6 +11,7 @@ import {
   PRIYOM_ON_AIR_MS,
   PRIYOM_SLICES,
   priyomSliceUrls,
+  priyomSpan,
   type PriyomTx,
 } from "./priyom-schedule";
 
@@ -62,12 +63,17 @@ describe("parsePriyomEvents", () => {
 });
 
 describe("priyomSliceUrls", () => {
-  // Value: protects=the server asks for a week as day-long slices starting on the 00:00/12:00 UTC boundary before now, as Priyom's page does (shared cache, each under the API's 250-event limit); fails_when=one week-long request is made (truncated at 250), slices leave gaps, or the start isn't aligned; why_new=new feed (#98); seam=none; no_claim=Priyom's cache behaviour
-  it("asks for seven aligned day-long slices", () => {
+  // Value: protects=the server asks for day-long slices aligned on 00:00/12:00 UTC, as Priyom's page does (shared cache, each under the API's 250-event limit), from 12 hours before the last boundary to at least a week ahead; fails_when=one week-long request is made (truncated at 250), slices leave gaps, the start isn't aligned, or the week ahead is cut short; why_new=new feed (#98), earlier start from #101's review; seam=none; no_claim=Priyom's cache behaviour
+  it("asks for eight aligned day-long slices, from 12 hours before the last boundary", () => {
     const urls = priyomSliceUrls(at("2026-11-25T13:37:00Z"));
     expect(urls).toHaveLength(PRIYOM_SLICES);
-    expect(urls[0]).toBe(`${PRIYOM_EVENTS_URL}?timeMin=2026-11-25T12:00:00.000Z&timeMax=2026-11-26T12:00:00.000Z`);
-    expect(urls[6]).toBe(`${PRIYOM_EVENTS_URL}?timeMin=2026-12-01T12:00:00.000Z&timeMax=2026-12-02T12:00:00.000Z`);
+    expect(urls[0]).toBe(`${PRIYOM_EVENTS_URL}?timeMin=2026-11-25T00:00:00.000Z&timeMax=2026-11-26T00:00:00.000Z`);
+    expect(urls[7]).toBe(`${PRIYOM_EVENTS_URL}?timeMin=2026-12-02T00:00:00.000Z&timeMax=2026-12-03T00:00:00.000Z`);
+  });
+
+  // Value: protects=a fetch just after a 00:00/12:00 boundary still covers a transmission that began just before it, so the server can vouch for an answer about it and the panel still shows it on; fails_when=the copy starts at the boundary, and a correct answer about an 11:57 transmission is refused after a 12:01 fetch; why_new=#101 review (important); seam=none; no_claim=none
+  it("covers a transmission that began just before the boundary", () => {
+    expect(priyomSpan(at("2026-11-25T12:01:00Z")).fromMs).toBeLessThanOrEqual(at("2026-11-25T11:57:00Z"));
   });
 });
 

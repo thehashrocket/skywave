@@ -33,9 +33,12 @@ type Options = {
 };
 
 /**
- * Priyom's schedule for the coming week (#98), for the catalog's numbers
- * stations: seven day-long slices fetched together at most every few hours,
- * shared between concurrent callers, like `beaconStatusSource`. It never fails:
+ * Priyom's schedule (#98), for the catalog's numbers stations: PRIYOM_SLICES
+ * day-long slices from 12 hours before the last 00:00/12:00 UTC boundary to a
+ * week ahead (priyomSpan), fetched together at most every few hours, shared
+ * between concurrent callers, like `beaconStatusSource`. The panel reads it, and
+ * reports.submit checks numbers-station answers against it (#101), so on a
+ * server with no copy yet an answer can be what starts the first fetch. It never fails:
  * a failed refresh keeps the last good copy, and until one succeeds it serves
  * null (schedule unknown: the stations stay listed without times). No copy is
  * bundled, since an old one would send Listen to last month's frequencies.

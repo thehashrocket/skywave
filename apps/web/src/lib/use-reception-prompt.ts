@@ -10,12 +10,16 @@ import {
   eibiTransmitter,
   LISTING_GRACE_MS,
   SAME_CHANNEL_MS,
+  signalPromptAt,
+  signalTransmitter,
   type BeaconPick,
+  type SignalAsk,
   type Transmitter,
 } from "./reception";
 import { DEFAULT_KIWI_PORT } from "./receiver";
 import type { Mode } from "./radio-types";
 import { onServerOffset, serverNow } from "./server-clock";
+import { onKhz } from "./signal-panel";
 import type { RadioStatus } from "./use-radio";
 
 /**
@@ -27,8 +31,8 @@ import type { RadioStatus } from "./use-radio";
 export const DWELL_MS = 60_000;
 
 /**
- * Past SAME_CHANNEL_MS before asking about a beacon this tab already answered
- * about on the same receiver and frequency: the server counts a report made
+ * Past SAME_CHANNEL_MS before asking about a beacon or signal station this tab
+ * already answered about on the same receiver and frequency: the server counts a report made
  * exactly that long ago, by its own clock and the answer's arrival, so ask a
  * little after.
  */
@@ -71,9 +75,11 @@ export type ReceptionPromptData = {
 };
 
 /**
- * `beacons`: when this tab last sent an answer about each beacon on each
- * receiver and frequency (beaconAnswerKey), by this browser's clock. The
- * server takes one per SAME_CHANNEL_MS; the prompt waits that out.
+ * `beacons`: when this tab last sent an answer about each beacon or signal
+ * station (#101) on each receiver and frequency (answerKey), by this
+ * browser's clock. The server takes one per SAME_CHANNEL_MS; the prompt waits
+ * that out. (Named for beacons, the first kind kept; callsigns are upper case
+ * and station slugs lower case, so the two never share a key.)
  */
 type Counts = { lastShownMs: number; dismissals: number; beacons?: Record<string, number> };
 
@@ -98,9 +104,9 @@ function loadCounts(): Counts {
   return { lastShownMs: 0, dismissals: 0 };
 }
 
-/** One beacon on one receiver and frequency, as the server's same-channel limit counts it. */
-function beaconAnswerKey(host: string, port: number, freqKhz: number, call: string): string {
-  return `${host.toLowerCase()}:${port}:${freqKhz}:${call}`;
+/** One beacon (by callsign) or signal station (by slug) on one receiver and frequency, as the server's same-channel limit counts it. */
+function answerKey(host: string, port: number, freqKhz: number, name: string): string {
+  return `${host.toLowerCase()}:${port}:${freqKhz}:${name}`;
 }
 
 function saveCounts(c: Counts) {
@@ -139,6 +145,13 @@ const promptKey = (p: ReceptionPromptData) => `${p.host.toLowerCase()}:${p.port}
  * Listen, on the band it was picked on, once enough of its slot has played
  * (beaconPromptAt). Tuned to a beacon frequency by hand: no prompt at all.
  *
+ * `signal`: the signal station picked with Listen (#101), while the dial is on
+ * a channel it's on the air on (signalAsk). Then it's the only thing asked
+ * about, once DWELL_MS has played after first audio plus STREAM_LATENCY_MS,
+ * all of it before the station goes off (signalPromptAt); one that goes off
+ * first isn't asked about. A station tuned by hand or named by a shared
+ * link gets no signal question (the page passes null).
+ *
  * `region` is where the receiver is, from its listed position only (never a
  * filter the listener picked, since answers are saved under the station named):
  * stations sharing the frequency that are aimed there are asked about first
@@ -152,6 +165,7 @@ export function useReceptionPrompt(
   onList: boolean,
   beacon: BeaconPick | null = null,
   region?: BroadRegion,
+  signal: SignalAsk | null = null,
 ) {
   const [prompt, setPrompt] = useState<ReceptionPromptData | null>(null);
   // Loaded from sessionStorage on first use, then kept here (storage may throw).
@@ -164,8 +178,8 @@ export function useReceptionPrompt(
 
   // Read when the timer fires, so a new status object or a schedule refetch
   // for the same channel doesn't restart the wait.
-  const latest = useRef({ status, schedule, region });
-  latest.current = { status, schedule, region };
+  const latest = useRef({ status, schedule, region, signal });
+  latest.current = { status, schedule, region, signal };
   // The channel a prompt was already offered on: not again until it changes.
   const askedOn = useRef<string | null>(null);
 
@@ -173,13 +187,21 @@ export function useReceptionPrompt(
   const band = key === null ? -1 : ibpBandIndex(status.freqKhz!);
   // The Listen pick, while the dial is on the band it was picked on.
   const pick = beacon && band >= 0 && beacon.bandIndex === band ? beacon : null;
+  // The signal-station pick, while the dial is on the channel it was offered for.
+  const sig = key !== null && signal && onKhz(status.freqKhz!, signal.khz) ? signal : null;
+  // Changes only when what would be asked about does, not with a new object.
+  const sigKey = sig && `${sig.slug}|${sig.khz}|${sig.untilMs}|${sig.slotStartMs ?? ""}`;
   const askable =
     key !== null &&
     onList &&
-    (band >= 0
-      ? pick !== null
-      : schedule !== undefined && scheduledOn(schedule, status.freqKhz!, Date.now()).length > 0);
-  const pickCall = pick?.call ?? null;
+    (sig !== null
+      ? true
+      : band >= 0
+        ? pick !== null
+        : schedule !== undefined && scheduledOn(schedule, status.freqKhz!, Date.now()).length > 0);
+  const pickCall = sig === null ? (pick?.call ?? null) : null;
+  // What the question is about beyond the channel: the beacon's callsign or the station's slug.
+  const pickId = sig !== null ? sig.slug : pickCall;
 
   // When audio started on the picked beacon's channel (server time; the key
   // appears with first audio): what the prompt's rule counts from, and what the
@@ -193,27 +215,31 @@ export function useReceptionPrompt(
   // question waits one more turn. Broadcasts run on this browser's clock and
   // aren't restarted.
   const [clockEpoch, setClockEpoch] = useState(0);
-  // On every clock move, also close a beacon prompt whose turn the server would
-  // no longer take (it sat on screen through a sleep, its timer paused).
+  // On every clock move, also close a beacon or signal-station prompt whose
+  // answer the server would no longer take (it sat on screen through a sleep,
+  // its timer paused).
   useEffect(
     () =>
       onServerOffset(() => {
         setClockEpoch((e) => e + 1);
         setPrompt((p) =>
-          p?.tx.kind === "beacon" &&
-          p.tx.slotStartMs !== undefined &&
-          serverNow() > p.tx.slotStartMs + LISTING_GRACE_MS - LATE_ANSWER_SLACK_MS
+          (p?.tx.kind === "beacon" &&
+            p.tx.slotStartMs !== undefined &&
+            serverNow() > p.tx.slotStartMs + LISTING_GRACE_MS - LATE_ANSWER_SLACK_MS) ||
+          (p?.tx.kind === "signal" &&
+            p.tx.answerByMs !== undefined &&
+            serverNow() > p.tx.answerByMs - LATE_ANSWER_SLACK_MS)
             ? null
             : p,
         );
       }),
     [],
   );
-  const beaconClock = pickCall !== null ? clockEpoch : 0;
+  const pickClock = pickId !== null ? clockEpoch : 0;
   useEffect(() => {
-    audioStart.current = key !== null && pickCall !== null ? serverNow() : null;
-    setBeaconAudioStartMs(audioStart.current);
-  }, [key, pickCall, band, beaconClock]);
+    audioStart.current = key !== null && pickId !== null ? serverNow() : null;
+    setBeaconAudioStartMs(pickCall !== null ? audioStart.current : null);
+  }, [key, pickId, pickCall, band, pickClock]);
 
   // The beacon turn this plans to ask about (server time), null for none; and
   // whether the listener has turned questions off in this tab. The band strip
@@ -224,8 +250,9 @@ export function useReceptionPrompt(
   useEffect(() => {
     if (key !== null) setPrompt((p) => (p && promptKey(p) !== key ? null : p));
     // One question per channel until it changes; on a beacon frequency, per
-    // callsign too, as the server counts (another beacon picked is a new question).
-    const askKey = key !== null && pickCall !== null ? `${key}:${pickCall}` : key;
+    // callsign too, as the server counts (another beacon picked is a new question);
+    // likewise per signal station.
+    const askKey = key !== null && pickId !== null ? `${key}:${pickId}` : key;
     if (askedOn.current !== askKey) askedOn.current = null;
     setBeaconAskSlotMs(null);
     if (askKey === null || !askable || askedOn.current === askKey) return;
@@ -238,15 +265,41 @@ export function useReceptionPrompt(
     // far ahead of the server's: none can be later than now.
     const asOfNow = (ms: number) => Math.min(ms, serverNow());
     let notBefore = asOfNow(c.lastShownMs) + PROMPT_GAP_MS;
-    if (pickCall !== null && audioStart.current !== null) {
+    if (pickId !== null && audioStart.current !== null) {
       const s = latest.current.status;
-      // An answer this tab sent about this beacon here: the server takes the next
-      // one only after SAME_CHANNEL_MS, so don't ask (and thank) before then.
+      // An answer this tab sent about this beacon or station here: the server takes
+      // the next one only after SAME_CHANNEL_MS, so don't ask (and thank) before then.
       const sentAt =
         s.host && s.freqKhz !== undefined
-          ? c.beacons?.[beaconAnswerKey(s.host, s.port ?? DEFAULT_KIWI_PORT, s.freqKhz, pickCall)]
+          ? c.beacons?.[answerKey(s.host, s.port ?? DEFAULT_KIWI_PORT, s.freqKhz, pickId)]
           : undefined;
       if (sentAt !== undefined) notBefore = Math.max(notBefore, asOfNow(sentAt) + SAME_CHANNEL_MS + SAME_CHANNEL_SLACK_MS);
+    }
+    const ask = latest.current.signal;
+    if (sigKey !== null && ask && audioStart.current !== null) {
+      // On the server's clock, as Priyom's times and the gaps are.
+      const server = serverNow();
+      const askAt = signalPromptAt(ask, audioStart.current, notBefore, DWELL_MS);
+      if (askAt === null) return;
+      const timer = setTimeout(() => {
+        const s = latest.current.status;
+        if (!s.host || s.freqKhz === undefined || !s.mode) return;
+        // A timer that fired late (a sleep, or a frozen tab) after the station went
+        // off: an answer could reach the server after it stops taking it.
+        if (serverNow() > ask.untilMs + LATE_ANSWER_SLACK_MS) return;
+        askedOn.current = askKey;
+        update((c) => ({ ...c, lastShownMs: serverNow() }));
+        setPrompt({
+          host: s.host,
+          port: s.port ?? DEFAULT_KIWI_PORT,
+          freqKhz: s.freqKhz,
+          mode: s.mode,
+          tx: signalTransmitter(ask),
+        });
+      }, askAt - server);
+      return () => clearTimeout(timer);
+    }
+    if (pickCall !== null && audioStart.current !== null) {
       // The schedule and the gaps all run on the server's clock.
       const server = serverNow();
       const at = beaconPromptAt({ call: pickCall, bandIndex: band }, audioStart.current, notBefore);
@@ -287,7 +340,7 @@ export function useReceptionPrompt(
       setPrompt({ host: s.host, port: s.port ?? DEFAULT_KIWI_PORT, freqKhz: s.freqKhz, mode: s.mode, tx });
     }, wait);
     return () => clearTimeout(timer);
-  }, [key, askable, pickCall, band, update, beaconClock]);
+  }, [key, askable, pickCall, sigKey, band, update, pickClock]);
 
   // Unanswered for PROMPT_TTL_MS: the answer would no longer be taken.
   useEffect(() => {
@@ -308,15 +361,15 @@ export function useReceptionPrompt(
   promptRef.current = prompt;
   const answered = useCallback(() => {
     const p = promptRef.current;
-    // An answer about a beacon is sent: remember it, so this tab doesn't ask about
-    // that beacon here again before the server would take another (SAME_CHANNEL_MS).
-    if (p?.tx.kind === "beacon") {
+    // An answer about a beacon or signal station is sent: remember it, so this tab
+    // doesn't ask about it here again before the server would take another (SAME_CHANNEL_MS).
+    if (p?.tx.kind === "beacon" || p?.tx.kind === "signal") {
       const now = serverNow();
       update((c) => ({
         ...c,
         beacons: {
           ...Object.fromEntries(Object.entries(c.beacons ?? {}).filter(([, ms]) => now - ms < SAME_CHANNEL_MS)),
-          [beaconAnswerKey(p.host, p.port, p.freqKhz, p.tx.name)]: now,
+          [answerKey(p.host, p.port, p.freqKhz, p.tx.name)]: now,
         },
       }));
     }

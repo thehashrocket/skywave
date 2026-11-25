@@ -78,6 +78,12 @@ export type SignalStation = {
   tx?: Transmitter;
   /** Priyom's designator, when the station's transmissions come from Priyom's schedule (priyom-schedule.ts). */
   priyom?: string;
+  /**
+   * How to tell it from another station on the same frequencies, added to the
+   * reception question (#101): "Did you hear WWV (a man's voice) …?". Without
+   * it, an answer about WWV could be about WWVH, heard on 2.5–15 MHz alike.
+   */
+  askHint?: string;
   blurb: string;
   sources: readonly string[];
 };
@@ -107,6 +113,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     channels: [am(10_000), am(5_000), am(15_000), am(2_500), am(20_000)],
     schedule: { kind: "always" },
     tx: { lat: 40.6797, lon: -105.0425, label: "Fort Collins, Colorado", confidence: "known" },
+    askHint: "a man's voice",
     blurb:
       "The US time standard on shortwave: a tick every second and a voice announcing the time each minute, around the clock.",
     sources: [
@@ -122,6 +129,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     channels: [am(10_000), am(5_000), am(15_000), am(2_500)],
     schedule: { kind: "always" },
     tx: { lat: 21.9878, lon: -159.7631, label: "Kekaha, Kauai, Hawaii", confidence: "known" },
+    askHint: "a woman's voice",
     blurb:
       "WWV's sister station in Hawaii, on the same frequencies with a woman's voice, so where both are heard you can tell them apart.",
     sources: [
