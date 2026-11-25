@@ -2,6 +2,12 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.50.0.0] - 2026-11-24
+
+### Added
+- **Google Tag Manager, with consent.** Where `NEXT_PUBLIC_GTM_ID` is set (Production only), a slim bar at the bottom asks whether skywave may use Google Analytics cookies to count visits. Tag Manager loads only after Accept; Decline loads nothing, and the answer is remembered. The bar never takes focus, so the dial and controls stay usable while it's up.
+- "Cookie settings" in the footer reopens the bar. Withdrawing consent turns off Google's storage and deletes its `_ga` cookies without reloading the page, so whatever's playing keeps playing; accepting again on the same page turns it back on.
+
 ## [0.49.0.0] - 2026-11-25 ([#92](https://github.com/thehashrocket/skywave/issues/92))
 
 ### Added
