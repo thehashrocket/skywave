@@ -22,6 +22,7 @@ import { rankForSignal } from "@/lib/signal-rank";
 import { activeChannelAt, findStation, onAirAt, type SignalChannel, type SignalStation } from "@/lib/signal-stations";
 import { onAirTx, type PriyomTx } from "@/lib/priyom-schedule";
 import { usePriyomSchedule } from "@/lib/use-priyom-schedule";
+import { type Fold, loadFolded, saveFolded, type SectionId } from "@/lib/section-folds";
 import { eventEnd, eventStart, EVENTS, isTuned, onSlotFrequency, rankForRegion, WEEK_MS, type Occurrence, type Slot } from "@/lib/ghostnet";
 import { rankForBeacon } from "@/lib/beacon-rank";
 import { beaconOnBand, IBP_BANDS_KHZ, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
@@ -350,6 +351,20 @@ export default function ListenPage() {
   const [tuningRestored, setTuningRestored] = useState(false);
   const [volume, setVolume] = useState(0.8);
   const [letterKeys, setLetterKeys] = useState(true);
+  // The main page's folded sections (collapsible sections): all open until the
+  // mount effect reads this browser's saved folds, so the server's render matches.
+  const [folded, setFolded] = useState<ReadonlySet<SectionId>>(() => new Set());
+  const foldOf = (id: SectionId): Fold => ({
+    folded: folded.has(id),
+    onToggle: () =>
+      setFolded((prev) => {
+        const next = new Set(prev);
+        if (!next.delete(id)) next.add(id);
+        // Saved on the listener's own toggle only: a share link opening a section doesn't change what's remembered.
+        saveFolded(next);
+        return next;
+      }),
+  });
   const [browseOpen, setBrowseOpen] = useState(false);
   // The receiver drawer under the header strip: the Receiver field, Pick best, the map and the table.
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -417,6 +432,7 @@ export default function ListenPage() {
     const firstVisit = !p && !last.host && !shared;
     setBrowseOpen(firstVisit);
     setLetterKeys(loadLetterKeys());
+    const savedFolds = loadFolded();
     const t = loadTuning();
     // A link naming a signal station (#100) tunes it (its frequency now, when the link
     // gives none) and marks it in the Signal stations panel, so Listen ranks by its path.
@@ -429,6 +445,8 @@ export default function ListenPage() {
     setFreqKhz(startKhz);
     setMode(shared?.mode ?? linkCh?.mode ?? stationCh?.mode ?? t.mode);
     if (station) setScrollToSignals(true);
+    // A link naming a signal station opens that section for this visit, folded or not.
+    setFolded(station ? new Set([...savedFolds].filter((id) => id !== "signal-stations")) : savedFolds);
     // Header Listen ranks by the station's path only when the dial is on a frequency of
     // it: a catalog channel, its channel now, or (for a numbers station, whose
     // frequencies come from Priyom's schedule) the one the link gives. A station off the
@@ -1855,9 +1873,10 @@ export default function ListenPage() {
 
       {/* Above Find a station and Strong signals now (#89): a listener working from saved
           frequencies reaches them without scrolling past both. */}
-      <Presets freqKhz={freqKhz} mode={mode} onSelect={(p) => changeFreq(clampKhz(p.freqKhz), p.mode)} />
+      <Presets fold={foldOf("presets")} freqKhz={freqKhz} mode={mode} onSelect={(p) => changeFreq(clampKhz(p.freqKhz), p.mode)} />
 
       <StationSearch
+        fold={foldOf("station-search")}
         schedule={scheduleQuery.data}
         loadFailed={scheduleQuery.isError}
         onRetry={() => void scheduleQuery.refetch()}
@@ -1884,6 +1903,7 @@ export default function ListenPage() {
       />
 
       <SignalStations
+        fold={foldOf("signal-stations")}
         freqKhz={freqKhz}
         mode={mode}
         priyom={priyom}
@@ -1894,6 +1914,7 @@ export default function ListenPage() {
       />
 
       <SignalList
+        fold={foldOf("signals")}
         scan={scan}
         canScan={canScan}
         listening={status.state === "listening"}

@@ -1,5 +1,7 @@
 "use client";
 
+import { SectionHeading } from "@/components/SectionHeading";
+import type { Fold } from "@/lib/section-folds";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent } from "react";
 import { isMode, MODE_LABELS, type Mode } from "@/lib/radio-types";
@@ -10,6 +12,8 @@ import { useServerTick } from "@/lib/use-server-tick";
 import { savedLabel, savedTitle } from "@/lib/utc-time";
 
 type Props = {
+  /** Folding this section (collapsible sections); without it the heading is a plain h2. */
+  fold?: Fold;
   freqKhz: number;
   mode: Mode;
   onSelect: (p: { freqKhz: number; mode: Mode }) => void;
@@ -61,7 +65,7 @@ function saveLocal(list: Local[]) {
   }
 }
 
-export function Presets({ freqKhz, mode, onSelect }: Props) {
+export function Presets({ fold, freqKhz, mode, onSelect }: Props) {
   const isPublic = sitePublic();
   const trpc = useTRPC();
   const queryClient = useQueryClient();
@@ -160,53 +164,61 @@ export function Presets({ freqKhz, mode, onSelect }: Props) {
     </ul>
   );
 
+  // While folded: how many frequencies the list holds (collapsible sections).
+  const savedCount = mine.length + (isPublic ? 0 : shared.length);
+  const foldTail = savedCount > 0 ? `${savedCount} saved` : "none saved yet";
+
   return (
     <section className="presets" aria-labelledby="presets-heading">
-      <h2 id="presets-heading">Saved frequencies</h2>
+      <SectionHeading id="presets-heading" bodyId="presets-body" fold={fold} tail={foldTail}>
+        Saved frequencies
+      </SectionHeading>
+      <div id="presets-body" hidden={fold?.folded || undefined}>
 
-      {isPublic && mine.length > 0 && renderList(mine, "Yours")}
-      {isPublic && mine.length === 0 && (
-        <p className="presets-note">Tune somewhere good and save it below. It stays in this browser.</p>
-      )}
+        {isPublic && mine.length > 0 && renderList(mine, "Yours")}
+        {isPublic && mine.length === 0 && (
+          <p className="presets-note">Tune somewhere good and save it below. It stays in this browser.</p>
+        )}
 
-      {isPublic && shared.length > 0 && <h3 className="presets-subhead">Worth a listen</h3>}
-      {list.isPending && <p className="presets-note">Loading…</p>}
-      {list.isError && (
-        <p className="presets-note">
-          {isPublic
-            ? "Couldn't load the suggestions."
-            : "Couldn't load saved frequencies. Check DATABASE_URL and that the migration has run."}
-        </p>
-      )}
-      {!isPublic && list.data?.length === 0 && (
-        <p className="presets-note">Nothing saved yet. Tune somewhere good and save it below.</p>
-      )}
-      {shared.length > 0 && renderList(shared, isPublic ? "Worth a listen" : "Saved")}
-      {remove.isError && <p className="presets-note">Couldn't delete that. Is the database running?</p>}
-
-      <form className="presets-save" onSubmit={save}>
-        <label htmlFor="preset-name">
-          Save {freqKhz.toLocaleString("en-US", { maximumFractionDigits: 2 })} kHz {MODE_LABELS[mode]} as
-        </label>
-        <div className="presets-save-row">
-          <input
-            id="preset-name"
-            value={name}
-            maxLength={80}
-            placeholder="e.g. Radio New Zealand, evenings"
-            onChange={(e) => setName(e.target.value)}
-          />
-          <button type="submit" disabled={!trimmedName || create.isPending}>
-            Save
-          </button>
-        </div>
-        {create.isError && <p className="presets-note">Couldn't save that. Is the database running?</p>}
-        {refusedFull && full && (
-          <p className="presets-note" role="status">
-            You have {LOCAL_MAX} saved frequencies. Delete one to save another.
+        {isPublic && shared.length > 0 && <h3 className="presets-subhead">Worth a listen</h3>}
+        {list.isPending && <p className="presets-note">Loading…</p>}
+        {list.isError && (
+          <p className="presets-note">
+            {isPublic
+              ? "Couldn't load the suggestions."
+              : "Couldn't load saved frequencies. Check DATABASE_URL and that the migration has run."}
           </p>
         )}
-      </form>
+        {!isPublic && list.data?.length === 0 && (
+          <p className="presets-note">Nothing saved yet. Tune somewhere good and save it below.</p>
+        )}
+        {shared.length > 0 && renderList(shared, isPublic ? "Worth a listen" : "Saved")}
+        {remove.isError && <p className="presets-note">Couldn't delete that. Is the database running?</p>}
+
+        <form className="presets-save" onSubmit={save}>
+          <label htmlFor="preset-name">
+            Save {freqKhz.toLocaleString("en-US", { maximumFractionDigits: 2 })} kHz {MODE_LABELS[mode]} as
+          </label>
+          <div className="presets-save-row">
+            <input
+              id="preset-name"
+              value={name}
+              maxLength={80}
+              placeholder="e.g. Radio New Zealand, evenings"
+              onChange={(e) => setName(e.target.value)}
+            />
+            <button type="submit" disabled={!trimmedName || create.isPending}>
+              Save
+            </button>
+          </div>
+          {create.isError && <p className="presets-note">Couldn't save that. Is the database running?</p>}
+          {refusedFull && full && (
+            <p className="presets-note" role="status">
+              You have {LOCAL_MAX} saved frequencies. Delete one to save another.
+            </p>
+          )}
+        </form>
+      </div>
     </section>
   );
 }

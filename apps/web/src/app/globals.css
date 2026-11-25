@@ -1626,6 +1626,45 @@ html:has(.tuning-bar:not([hidden])) {
   color: var(--glass);
 }
 
+/* Collapsible sections (SectionHeading): the h2 holds a button that folds the section's
+   body. Same glass heading as before; the chevron is glass too, never lamp. */
+.section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.section-toggle:hover {
+  color: var(--text);
+}
+
+/* A right-pointing triangle that turns down while the section is open. */
+.section-chevron {
+  width: 0;
+  height: 0;
+  border-block: 0.3em solid transparent;
+  border-inline-start: 0.45em solid currentColor;
+  transition: transform 150ms ease;
+}
+
+.section-toggle[aria-expanded="true"] .section-chevron {
+  transform: rotate(90deg);
+}
+
+/* While folded: what's inside, muted, like the GhostNet strip's summary tail. */
+.section-tail {
+  font-family: var(--font-ui);
+  font-weight: 400;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
 .presets-subhead {
   margin: 14px 0 6px;
   font-family: var(--font-instrument);
@@ -2737,6 +2776,7 @@ html:has(.tuning-bar:not([hidden])) {
 
 /* Fingers, at any width (a tablet, a touch laptop): map controls at 44px. */
 @media (max-width: 520px), (pointer: coarse) {
+  .section-toggle,
   .power,
   .receiver-switch,
   .tuned-to-change,
@@ -2901,6 +2941,9 @@ body:has(> .analytics-consent) {
 
 @media (prefers-reduced-motion: reduce) {
   .smeter-fill {
+    transition: none;
+  }
+  .section-chevron {
     transition: none;
   }
   .tuning-bar {

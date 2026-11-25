@@ -1,5 +1,7 @@
 "use client";
 
+import { SectionHeading } from "@/components/SectionHeading";
+import type { Fold } from "@/lib/section-folds";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { type Broadcast, languageChoices, languageNames, type LanguageChoice, MATCH_KHZ, pickedNames } from "@/lib/eibi";
 import {
@@ -34,6 +36,8 @@ import { PHONE_ROWS } from "./SignalList";
 export type SearchSchedule = { broadcasts: readonly Broadcast[]; season: string; targetNames: Record<string, string> };
 
 type Props = {
+  /** Folding this section (collapsible sections); without it the heading is a plain h2. */
+  fold?: Fold;
   /** Undefined until it loads. */
   schedule?: SearchSchedule;
   /** The schedule couldn't be loaded (and none is held). */
@@ -210,6 +214,7 @@ function areaOf(value: string): AreaFilter {
  * are aimed and their language, remembered between visits.
  */
 export function StationSearch({
+  fold,
   schedule,
   loadFailed,
   onRetry,
@@ -257,6 +262,13 @@ export function StationSearch({
   const areaName = !area ? undefined : "region" in area ? regionName(area.region) : codes.find((c) => c.code === area.code)?.name;
   const described = describeFilters(filters, choices, areaName);
   const status = statusText(ready, loadFailed, query, result, described);
+  // While folded: what the list holds (collapsible sections), its filters included.
+  const onNowCount = found.filter((f) => f.onNow).length;
+  const foldTail = !ready
+    ? null
+    : typed
+      ? `“${query.trim()}”`
+      : `${onNowCount.toLocaleString("en-US")} on now${described ? ` ${described}` : ""}`;
   const suggested = receiverPlace && area === null ? broadRegionAt(receiverPlace.lat, receiverPlace.lon) : undefined;
   const areaRegion = area && "region" in area ? area.region : undefined;
   useEffect(() => {
@@ -406,154 +418,158 @@ export function StationSearch({
       data-phone-open={phoneOpen || undefined}
       data-browse={(ready && !typed) || undefined}
     >
-      <h2 id="station-search-heading">Find a station</h2>
-      <div className="station-filters">
-        <div className="field station-search-field">
-          <label htmlFor="station-search-input">Station name</label>
-          <input
-            id="station-search-input"
-            type="search"
-            value={query}
+      <SectionHeading id="station-search-heading" bodyId="station-search-body" fold={fold} tail={foldTail}>
+        Find a station
+      </SectionHeading>
+      <div id="station-search-body" hidden={fold?.folded || undefined}>
+        <div className="station-filters">
+          <div className="field station-search-field">
+            <label htmlFor="station-search-input">Station name</label>
+            <input
+              id="station-search-input"
+              type="search"
+              value={query}
+              disabled={!ready}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) => edit(e.target.value)}
+              onKeyDown={(e) => {
+                // Browsers that don't clear a search field on Escape.
+                if (e.key === "Escape" && query) edit("");
+              }}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="station-area-select">Aimed at</label>
+            <select
+              id="station-area-select"
+              value={areaValue(filters.area)}
+              disabled={!ready}
+              onChange={(e) => refilter({ ...filters, area: areaOf(e.target.value) })}
+            >
+              <option value="">Any area</option>
+              <optgroup label="Regions">
+                {BROAD_REGIONS.map((r) => (
+                  <option key={r.id} value={`region:${r.id}`}>
+                    {r.name}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="Areas and countries">
+                {codes.map((c) => (
+                  <option key={c.code} value={`code:${c.code}`}>
+                    {c.stale ? `${areaLabel(c)} (none in this schedule)` : areaLabel(c)}
+                  </option>
+                ))}
+              </optgroup>
+            </select>
+          </div>
+          <LanguagePicker
+            choices={choices}
+            picked={filters.language.codes}
             disabled={!ready}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(e) => edit(e.target.value)}
-            onKeyDown={(e) => {
-              // Browsers that don't clear a search field on Escape.
-              if (e.key === "Escape" && query) edit("");
+            onChange={(codes) => refilter({ ...filters, language: { ...filters.language, codes } })}
+          />
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={filters.language.nonVoice}
+              disabled={!ready}
+              onChange={(e) => refilter({ ...filters, language: { ...filters.language, nonVoice: e.target.checked } })}
+            />
+            Include non-voice (time signals, Morse, data)
+          </label>
+        </div>
+        {/* Held, so the suggestion arriving with a receiver doesn't push the list down (design 7A). */}
+        <p className="station-search-note station-suggest">
+          {ready && suggested && (
+            <>
+              <button
+                type="button"
+                className="link-button inline"
+                onClick={() => refilter({ ...filters, area: { region: suggested } })}
+              >
+                Aimed at {regionName(suggested)}
+              </button>{" "}
+              (where this receiver is)?
+            </>
+          )}
+        </p>
+        <p className="presets-note station-search-status">{status}</p>
+        {!ready && loadFailed && (
+          <button type="button" className="link-button station-search-retry" onClick={onRetry}>
+            Try again
+          </button>
+        )}
+        {ready && found.length === 0 && filtering(filters) && (
+          <button
+            type="button"
+            className="link-button station-search-clear"
+            onClick={() => {
+              refilter(NO_FILTERS);
+              document.getElementById("station-search-input")?.focus();
             }}
-          />
-        </div>
-        <div className="field">
-          <label htmlFor="station-area-select">Aimed at</label>
-          <select
-            id="station-area-select"
-            value={areaValue(filters.area)}
-            disabled={!ready}
-            onChange={(e) => refilter({ ...filters, area: areaOf(e.target.value) })}
           >
-            <option value="">Any area</option>
-            <optgroup label="Regions">
-              {BROAD_REGIONS.map((r) => (
-                <option key={r.id} value={`region:${r.id}`}>
-                  {r.name}
-                </option>
-              ))}
-            </optgroup>
-            <optgroup label="Areas and countries">
-              {codes.map((c) => (
-                <option key={c.code} value={`code:${c.code}`}>
-                  {c.stale ? `${areaLabel(c)} (none in this schedule)` : areaLabel(c)}
-                </option>
-              ))}
-            </optgroup>
-          </select>
+            Clear filters
+          </button>
+        )}
+        {/* Read out after a pause in typing; the line above updates at once but isn't live. */}
+        <div role="status" className="visually-hidden">
+          {announced.text}
+          {announced.n % 2 ? "\u00a0" : ""}
         </div>
-        <LanguagePicker
-          choices={choices}
-          picked={filters.language.codes}
-          disabled={!ready}
-          onChange={(codes) => refilter({ ...filters, language: { ...filters.language, codes } })}
-        />
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={filters.language.nonVoice}
-            disabled={!ready}
-            onChange={(e) => refilter({ ...filters, language: { ...filters.language, nonVoice: e.target.checked } })}
-          />
-          Include non-voice (time signals, Morse, data)
-        </label>
-      </div>
-      {/* Held, so the suggestion arriving with a receiver doesn't push the list down (design 7A). */}
-      <p className="station-search-note station-suggest">
-        {ready && suggested && (
-          <>
+        <div className="station-search-note">
+          <span role="status">{noteText}</span>
+          {offerPick && (
             <button
               type="button"
               className="link-button inline"
-              onClick={() => refilter({ ...filters, area: { region: suggested } })}
+              onClick={() => onPickBest(note.khz, note.mode, note.browse ? "browse" : "search")}
             >
-              Aimed at {regionName(suggested)}
-            </button>{" "}
-            (where this receiver is)?
-          </>
-        )}
-      </p>
-      <p className="presets-note station-search-status">{status}</p>
-      {!ready && loadFailed && (
-        <button type="button" className="link-button station-search-retry" onClick={onRetry}>
-          Try again
-        </button>
-      )}
-      {ready && found.length === 0 && filtering(filters) && (
-        <button
-          type="button"
-          className="link-button station-search-clear"
-          onClick={() => {
-            refilter(NO_FILTERS);
-            document.getElementById("station-search-input")?.focus();
-          }}
-        >
-          Clear filters
-        </button>
-      )}
-      {/* Read out after a pause in typing; the line above updates at once but isn't live. */}
-      <div role="status" className="visually-hidden">
-        {announced.text}
-        {announced.n % 2 ? "\u00a0" : ""}
-      </div>
-      <div className="station-search-note">
-        <span role="status">{noteText}</span>
-        {offerPick && (
+              Pick best for {khz(note.khz)} kHz
+            </button>
+          )}
+        </div>
+
+        <div ref={listRef}>
+          {inBands.length > 0 && <ul className="presets-list station-results">{inBands.map((f, i) => row(f, i))}</ul>}
+          {outside.length > 0 && (
+            <>
+              <h3 className="station-outside" data-beyond={split >= PHONE_ROWS || undefined}>
+                Outside the broadcast bands
+              </h3>
+              <ul className="presets-list station-results">{outside.map((f, i) => row(f, split + i))}</ul>
+            </>
+          )}
+        </div>
+        {visible.length > PHONE_ROWS && !phoneOpen && (
+          // Phones only (the 520px block): the rest of this page of rows.
           <button
             type="button"
-            className="link-button inline"
-            onClick={() => onPickBest(note.khz, note.mode, note.browse ? "browse" : "search")}
+            className="link-button station-phone-more"
+            onClick={() => {
+              focusRow.current = PHONE_ROWS;
+              setPhoneOpen(true);
+            }}
           >
-            Pick best for {khz(note.khz)} kHz
+            Show {visible.length - PHONE_ROWS} more
+          </button>
+        )}
+        {remaining > 0 && (
+          <button
+            type="button"
+            className="link-button station-more"
+            onClick={() => {
+              focusRow.current = visible.length;
+              setShown(shown + PAGE_ROWS);
+              setPhoneOpen(true);
+              announceNow(`Showing ${Math.min(shown + PAGE_ROWS, found.length)} of ${found.length}.`);
+            }}
+          >
+            {remaining > PAGE_ROWS ? `Show ${PAGE_ROWS} more of ${remaining}` : `Show the last ${remaining}`}
           </button>
         )}
       </div>
-
-      <div ref={listRef}>
-        {inBands.length > 0 && <ul className="presets-list station-results">{inBands.map((f, i) => row(f, i))}</ul>}
-        {outside.length > 0 && (
-          <>
-            <h3 className="station-outside" data-beyond={split >= PHONE_ROWS || undefined}>
-              Outside the broadcast bands
-            </h3>
-            <ul className="presets-list station-results">{outside.map((f, i) => row(f, split + i))}</ul>
-          </>
-        )}
-      </div>
-      {visible.length > PHONE_ROWS && !phoneOpen && (
-        // Phones only (the 520px block): the rest of this page of rows.
-        <button
-          type="button"
-          className="link-button station-phone-more"
-          onClick={() => {
-            focusRow.current = PHONE_ROWS;
-            setPhoneOpen(true);
-          }}
-        >
-          Show {visible.length - PHONE_ROWS} more
-        </button>
-      )}
-      {remaining > 0 && (
-        <button
-          type="button"
-          className="link-button station-more"
-          onClick={() => {
-            focusRow.current = visible.length;
-            setShown(shown + PAGE_ROWS);
-            setPhoneOpen(true);
-            announceNow(`Showing ${Math.min(shown + PAGE_ROWS, found.length)} of ${found.length}.`);
-          }}
-        >
-          {remaining > PAGE_ROWS ? `Show ${PAGE_ROWS} more of ${remaining}` : `Show the last ${remaining}`}
-        </button>
-      )}
     </section>
   );
 }

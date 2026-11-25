@@ -1,10 +1,14 @@
 "use client";
 
+import { SectionHeading } from "@/components/SectionHeading";
+import type { Fold } from "@/lib/section-folds";
 import { useEffect, useRef, useState } from "react";
 import type { StationLine } from "@/lib/eibi";
 import type { ScanState } from "@/lib/use-radio";
 
 type Props = {
+  /** Folding this section (collapsible sections); without it the heading is a plain h2. */
+  fold?: Fold;
   scan: ScanState | null;
   /** The radio service can scan (an older one can't, and the list stays hidden). */
   canScan: boolean;
@@ -32,6 +36,7 @@ export const PHONE_ROWS = 8;
  * says nothing about what's on: talk, music or a carrier with dead air.
  */
 export function SignalList({
+  fold,
   scan,
   canScan,
   listening,
@@ -57,96 +62,105 @@ export function SignalList({
   // this one is pressed, then waits while its own scan runs.
   const busy = scan?.state === "scanning" || !listening;
 
+  // While folded: where the scan stands (collapsible sections).
+  let foldTail: string | null = null;
+  if (scan?.state === "scanning") foldTail = "scanning…";
+  else if (scan?.state === "done") foldTail = `${scan.signals.length} found`;
+
   return (
     <section className="presets signals" aria-labelledby="signals-heading">
-      <h2 id="signals-heading">Strong signals now</h2>
-      {/* Only the text is announced; the button sits outside the live region. */}
-      <div role="status">
-        {!scan && (
-          <p className="presets-note">
-            {checking
-              ? // Pick best's watch for a late refusal comes first, then the usual wait.
-                `The broadcast bands get scanned once Pick best has finished checking this receiver, about ${Math.round(scanDelayMs / 1000)} seconds in.`
-              : `The broadcast bands get scanned about ${Math.round(scanDelayMs / 1000)} seconds after a receiver starts playing.`}
-          </p>
+      <SectionHeading id="signals-heading" bodyId="signals-body" fold={fold} tail={foldTail}>
+        Strong signals now
+      </SectionHeading>
+      <div id="signals-body" hidden={fold?.folded || undefined}>
+        {/* Only the text is announced; the button sits outside the live region. */}
+        <div role="status">
+          {!scan && (
+            <p className="presets-note">
+              {checking
+                ? // Pick best's watch for a late refusal comes first, then the usual wait.
+                  `The broadcast bands get scanned once Pick best has finished checking this receiver, about ${Math.round(scanDelayMs / 1000)} seconds in.`
+                : `The broadcast bands get scanned about ${Math.round(scanDelayMs / 1000)} seconds after a receiver starts playing.`}
+            </p>
+          )}
+          {scan?.state === "scanning" && <p className="presets-note">Scanning this receiver's broadcast bands…</p>}
+          {scan?.state === "error" && <p className="presets-note">{scan.message}</p>}
+          {scan?.state === "done" && (
+            <p className="presets-note">
+              {scan.bandsTotal === 0
+                ? // A receiver behind a converter can sit outside every broadcast band.
+                  "This receiver doesn't cover the broadcast bands."
+                : scan.signals.length === 0
+                  ? "No strong broadcast signals right now."
+                  : "Strongest first, in AM."}
+              {scan.partial && ` Scanned ${scan.bandsDone} of ${scan.bandsTotal} bands.`}
+              {scan.hidden > 0 &&
+                ` ${scan.hidden} digital or noise ${scan.hidden === 1 ? "signal isn't" : "signals aren't"} listed.`}
+            </p>
+          )}
+        </div>
+        {scan && (
+          <button
+            type="button"
+            className="link-button signals-again"
+            aria-disabled={busy || undefined}
+            onClick={() => {
+              if (!busy) onScanAgain();
+            }}
+          >
+            Scan again
+          </button>
         )}
-        {scan?.state === "scanning" && <p className="presets-note">Scanning this receiver's broadcast bands…</p>}
-        {scan?.state === "error" && <p className="presets-note">{scan.message}</p>}
-        {scan?.state === "done" && (
-          <p className="presets-note">
-            {scan.bandsTotal === 0
-              ? // A receiver behind a converter can sit outside every broadcast band.
-                "This receiver doesn't cover the broadcast bands."
-              : scan.signals.length === 0
-                ? "No strong broadcast signals right now."
-                : "Strongest first, in AM."}
-            {scan.partial && ` Scanned ${scan.bandsDone} of ${scan.bandsTotal} bands.`}
-            {scan.hidden > 0 &&
-              ` ${scan.hidden} digital or noise ${scan.hidden === 1 ? "signal isn't" : "signals aren't"} listed.`}
-          </p>
+
+        {scan?.state === "done" && scan.signals.length > 0 && (
+          <ul
+            ref={listRef}
+            className={allFor === scan ? "presets-list signals-list signals-list-all" : "presets-list signals-list"}
+          >
+            {scan.signals.map((s, i) => {
+              const station = stationAt?.(s.freqKhz);
+              const others = station?.all.split("\n");
+              const current = Math.abs(s.freqKhz - freqKhz) < 0.005;
+              return (
+                <li key={s.freqKhz} data-current={current || undefined} data-beyond={i >= PHONE_ROWS || undefined}>
+                  <button
+                    type="button"
+                    className="preset-tune"
+                    aria-current={current || undefined}
+                    onClick={() => onTune(s.freqKhz)}
+                  >
+                    <span className="preset-freq">{khz(s.freqKhz)}</span>
+                    <span className="preset-mode">{s.band}</span>
+                    <span className="signal-what">
+                      {others && (
+                        // The name is cut short; how many share the frequency always shows.
+                        <span className="signal-station" title={station!.all}>
+                          <span className="signal-station-name">{others[0]}</span>
+                          {others.length > 1 && <span className="signal-station-more"> +{others.length - 1} more</span>}
+                        </span>
+                      )}
+                      <span className="signal-strength">{s.snrDb} dB above noise</span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {scan?.state === "done" && scan.signals.length > PHONE_ROWS && allFor !== scan && (
+          // Shown on phones only, where the list is one long column.
+          <button
+            type="button"
+            className="link-button signals-more"
+            onClick={() => {
+              revealing.current = true;
+              setAllFor(scan);
+            }}
+          >
+            Show all {scan.signals.length}
+          </button>
         )}
       </div>
-      {scan && (
-        <button
-          type="button"
-          className="link-button signals-again"
-          aria-disabled={busy || undefined}
-          onClick={() => {
-            if (!busy) onScanAgain();
-          }}
-        >
-          Scan again
-        </button>
-      )}
-
-      {scan?.state === "done" && scan.signals.length > 0 && (
-        <ul
-          ref={listRef}
-          className={allFor === scan ? "presets-list signals-list signals-list-all" : "presets-list signals-list"}
-        >
-          {scan.signals.map((s, i) => {
-            const station = stationAt?.(s.freqKhz);
-            const others = station?.all.split("\n");
-            const current = Math.abs(s.freqKhz - freqKhz) < 0.005;
-            return (
-              <li key={s.freqKhz} data-current={current || undefined} data-beyond={i >= PHONE_ROWS || undefined}>
-                <button
-                  type="button"
-                  className="preset-tune"
-                  aria-current={current || undefined}
-                  onClick={() => onTune(s.freqKhz)}
-                >
-                  <span className="preset-freq">{khz(s.freqKhz)}</span>
-                  <span className="preset-mode">{s.band}</span>
-                  <span className="signal-what">
-                    {others && (
-                      // The name is cut short; how many share the frequency always shows.
-                      <span className="signal-station" title={station!.all}>
-                        <span className="signal-station-name">{others[0]}</span>
-                        {others.length > 1 && <span className="signal-station-more"> +{others.length - 1} more</span>}
-                      </span>
-                    )}
-                    <span className="signal-strength">{s.snrDb} dB above noise</span>
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      {scan?.state === "done" && scan.signals.length > PHONE_ROWS && allFor !== scan && (
-        // Shown on phones only, where the list is one long column.
-        <button
-          type="button"
-          className="link-button signals-more"
-          onClick={() => {
-            revealing.current = true;
-            setAllFor(scan);
-          }}
-        >
-          Show all {scan.signals.length}
-        </button>
-      )}
     </section>
   );
 }

@@ -464,6 +464,32 @@ describe("ListenPage", () => {
   });
 
   // Value: protects=a share link naming a signal station (&sig, #100) with no frequency tunes the station's frequency, and header Listen ranks receivers by the path from its transmitter: a European receiver (low SNR, in range of UVB-76) before a stronger one in Australia (out of range), where the list's own order would pick Australia; Copy link keeps sig beside the receiver Pick best tuned; fails_when=sig is ignored, Listen falls back to the list's order, or Copy link drops the station; why_new=#100 share links and #99 ranking; seam=useRadio and the list hook mocked; no_claim=the ranking rules (signal-rank tests)
+  // Value: protects=folding Find a station hides its body (out of the tab order and screen-reader tree), keeps the heading, is saved, and comes back folded on the next visit, while every other section stays open; fails_when=the fold isn't remembered, hides the heading, or folds the wrong section; why_new=collapsible sections (owner 2026-11-25: open by default, remember folds); seam=localStorage; no_claim=layout
+  it("folds a section, keeps its heading, and remembers it on the next visit", () => {
+    const view = render(<ListenPage />);
+    const toggle = screen.getByRole("button", { name: "Find a station" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    act(() => fireEvent.click(toggle));
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(document.getElementById("station-search-body")!.hidden).toBe(true);
+    expect(screen.getByRole("heading", { level: 2, name: /Find a station/ })).toBeTruthy();
+    expect(JSON.parse(localStorage.getItem("skywave.folded")!)).toEqual(["station-search"]);
+    view.unmount();
+    render(<ListenPage />);
+    expect(screen.getByRole("button", { name: "Find a station" }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("button", { name: "Signal stations" }).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  // Value: protects=a share link naming a signal station opens Signal stations even when the listener folded it, so the link lands on what it names, without changing the saved folds; fails_when=the link scrolls to a folded section, or opening it overwrites the listener's remembered folds; why_new=collapsible sections; seam=localStorage; no_claim=scroll position
+  it("opens a folded Signal stations for a station link without changing the saved folds", () => {
+    localStorage.setItem("skywave.folded", JSON.stringify(["signal-stations"]));
+    window.history.replaceState(null, "", "/?sig=uvb-76");
+    render(<ListenPage />);
+    expect(screen.getByRole("button", { name: "Signal stations" }).getAttribute("aria-expanded")).toBe("true");
+    expect(document.getElementById("signal-stations-body")!.hidden).toBe(false);
+    expect(JSON.parse(localStorage.getItem("skywave.folded")!)).toEqual(["signal-stations"]);
+  });
+
   it("opens a station from a shared link and ranks Listen by its path", async () => {
     const sydney = { ...listed, snr: 50, lat: -33.9, lon: 151.2 };
     const berlin = { ...backup, snr: 5, lat: 52.5, lon: 13.4 };
