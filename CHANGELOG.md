@@ -2,6 +2,11 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.58.1.0] - 2026-11-25 ([#133](https://github.com/thehashrocket/skywave/issues/133))
+
+### Fixed
+- **Leaving the listening page mid-Listen no longer keeps a receiver busy.** If skywave moved off the listening page while a Listen was still starting its audio, the Listen could finish anyway: it connected to the receiver and held one of its volunteer's listener slots, with nothing on screen to stop it until the tab closed. Now a Listen that hasn't connected yet is dropped when the page goes away, and the audio it was setting up is shut. Today every link on the listening page opens a new tab, so this guards against future same-tab links.
+
 ## [0.58.0.0] - 2026-11-25 ([#103](https://github.com/thehashrocket/skywave/issues/103))
 
 ### Added
