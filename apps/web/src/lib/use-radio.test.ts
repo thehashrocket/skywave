@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
+import { Activity, createElement, StrictMode, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DECODED_MAX_CHARS, IDLE_CLOSE_CODE, TOO_MANY_SOCKETS_CODE, useRadio, type Tuning } from "./use-radio";
 
@@ -58,8 +59,15 @@ const workletMessages = vi.fn();
 
 // Tests that need audio setup to stall replace this with a promise they resolve.
 let workletReady: Promise<void> = Promise.resolve();
+// Likewise for the context's resume, the last step before the socket.
+let resumeReady: Promise<void> = Promise.resolve();
 
 class FakeAudioContext {
+  static instances: FakeAudioContext[] = [];
+  closed = false;
+  constructor() {
+    FakeAudioContext.instances.push(this);
+  }
   audioWorklet = { addModule: () => workletReady };
   destination = {};
   currentTime = 0;
@@ -69,8 +77,12 @@ class FakeAudioContext {
   createAnalyser() {
     return { kind: "analyser", fftSize: 2048, smoothingTimeConstant: 0.8 };
   }
-  async resume() {}
-  async close() {}
+  async resume() {
+    await resumeReady;
+  }
+  async close() {
+    this.closed = true;
+  }
 }
 
 class FakeWorkletNode {
@@ -92,8 +104,10 @@ const resets = () => workletMessages.mock.calls.filter(([msg]) => msg?.type === 
 
 beforeEach(() => {
   FakeSocket.instances = [];
+  FakeAudioContext.instances = [];
   workletMessages.mockClear();
   workletReady = Promise.resolve();
+  resumeReady = Promise.resolve();
   vi.stubGlobal("WebSocket", FakeSocket);
   vi.stubGlobal("AudioContext", FakeAudioContext);
   vi.stubGlobal("AudioWorkletNode", FakeWorkletNode);
@@ -427,6 +441,112 @@ describe("useRadio", () => {
     unmount();
     await act(async () => ws!.finishClose(IDLE_CLOSE_CODE));
     expect(FakeSocket.instances).toHaveLength(1);
+  });
+
+  // Value: protects=a listening page left mid-Listen (in-app navigation while audio starts) opens no socket afterwards and closes the AudioContext it was building, so no volunteer Kiwi channel is held with no UI to stop it (#133); fails_when=the unmount cleanup doesn't supersede the tune in flight, or a context finished after unmount is left open; why_new=#133 (no test unmounted mid-tune); seam=Web Audio and WebSocket faked; no_claim=real browser teardown on navigation
+  it("opens no socket and closes the audio when the page unmounts mid-tune", async () => {
+    let finishAudio!: () => void;
+    workletReady = new Promise((resolve) => (finishAudio = resolve));
+    const { result, unmount } = renderHook(() => useRadio());
+
+    let pending!: Promise<void>;
+    act(() => {
+      pending = result.current.tune(tuning);
+    });
+    unmount();
+    await act(async () => {
+      finishAudio();
+      await pending;
+    });
+
+    expect(FakeSocket.instances).toHaveLength(0);
+    expect(FakeAudioContext.instances).toHaveLength(1);
+    expect(FakeAudioContext.instances[0]!.closed).toBe(true);
+  });
+
+  // Value: protects=a tune made after the page unmounted (a Pick best retry firing late) opens no socket or audio (#133); fails_when=tune() doesn't check for unmount before starting; why_new=#133; seam=none; no_claim=Pick best's own timer cleanup
+  it("opens nothing for a tune made after unmount", async () => {
+    const { result, unmount } = renderHook(() => useRadio());
+    const { tune } = result.current;
+    unmount();
+    await act(() => tune({ ...tuning, host: "other.example" }));
+
+    expect(FakeSocket.instances).toHaveLength(0);
+    expect(FakeAudioContext.instances).toHaveLength(0);
+  });
+
+  // Value: protects=leaving the page while a Listen waits on the audio context's resume (the window after the context is kept) opens no socket, so no Kiwi channel is held with no UI to stop it (#133); fails_when=the unmount cleanup neither supersedes the tune nor makes the socket refuse to open; why_new=coverage audit: the mid-tune test stalls only on the worklet load, before the context is kept, which a different branch handles; seam=Web Audio faked; no_claim=real resume timing
+  it("opens no socket when the page unmounts while the first Listen resumes audio", async () => {
+    let finishResume!: () => void;
+    resumeReady = new Promise((resolve) => (finishResume = resolve));
+    const { result, unmount } = renderHook(() => useRadio());
+
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = result.current.tune(tuning);
+    });
+    unmount();
+    await act(async () => {
+      finishResume();
+      await pending;
+    });
+
+    expect(FakeSocket.instances).toHaveLength(0);
+    expect(FakeAudioContext.instances[0]!.closed).toBe(true);
+  });
+
+  // Value: protects=leaving the page right after switching receivers, while the switch waits on the existing audio context's resume, opens no new socket for the new receiver (#133); fails_when=the unmount cleanup neither supersedes the tune nor makes the socket refuse to open; why_new=coverage audit: no test unmounted during a tune that reuses audio already running; seam=Web Audio faked; no_claim=real resume timing
+  it("opens no socket when the page unmounts while a switch resumes audio", async () => {
+    const { result, unmount } = renderHook(() => useRadio());
+    await act(() => result.current.tune(tuning));
+    const [ws] = FakeSocket.instances;
+    act(() => ws!.status("listening", { host: tuning.host, port: tuning.port }));
+
+    let finishResume!: () => void;
+    resumeReady = new Promise((resolve) => (finishResume = resolve));
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = result.current.tune({ ...tuning, host: "other.example" });
+    });
+    unmount();
+    await act(async () => {
+      finishResume();
+      await pending;
+    });
+
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(ws!.sent.filter((m) => m.type === "tune")).toHaveLength(1);
+  });
+
+  // Value: protects=Listen still works under React's dev double mount (next.config reactStrictMode), which runs the unmount cleanup once before the real mount; fails_when=the effect doesn't mark the hook mounted again on setup, so every tune is a silent no-op in dev; why_new=coverage audit: #133's mounted flag; no test ran the hook under StrictMode; seam=none; no_claim=production builds, which don't double mount
+  it("still tunes after React's dev double mount", async () => {
+    const { result } = renderHook(() => useRadio(), { wrapper: StrictMode });
+    await act(() => result.current.tune(tuning));
+
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(FakeSocket.instances[0]!.sent).toContainEqual(expect.objectContaining({ type: "tune", host: tuning.host }));
+  });
+
+  // Value: protects=after the hook's effects are torn down and set up again with its refs kept (Fast Refresh in dev, or a hidden Activity), the next Listen builds a fresh AudioContext and opens a socket rather than reusing the context the cleanup closed; fails_when=the cleanup closes the context but leaves ctxRef (or the nodes) pointing at it; why_new=coverage audit: #133 nulls the audio refs on cleanup; no test remounted with refs kept; seam=Web Audio faked; no_claim=what a real closed context does on resume
+  it("builds new audio when effects remount with refs kept", async () => {
+    let mode: "visible" | "hidden" = "visible";
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(Activity, { mode, children });
+    const { result, rerender } = renderHook(() => useRadio(), { wrapper });
+    await act(() => result.current.tune(tuning));
+    act(() => FakeSocket.instances[0]!.status("listening", { host: tuning.host, port: tuning.port }));
+
+    mode = "hidden";
+    rerender();
+    mode = "visible";
+    rerender();
+    expect(FakeAudioContext.instances[0]!.closed).toBe(true);
+
+    await act(() => result.current.tune(tuning));
+
+    expect(FakeAudioContext.instances).toHaveLength(2);
+    expect(FakeSocket.instances).toHaveLength(2);
+    expect(FakeSocket.instances[1]!.sent).toContainEqual(expect.objectContaining({ type: "tune" }));
+    expect(result.current.status.state).not.toBe("error");
   });
 
   // Value: protects=a close of any kind after unmount, with nothing pending, opens no new socket and doesn't throw; a guard for a future reconnect-on-drop path, since none of these branches reconnects today; fails_when=a branch learns to reconnect without checking for unmount; why_new=state matrix close codes x after_unmount; seam=none; no_claim=React's handling of state set after unmount

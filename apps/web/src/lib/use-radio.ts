@@ -214,6 +214,10 @@ export function useRadio() {
   const volumeRef = useRef(0.8);
   const listenersRef = useRef(new Set<SpectrumListener>());
   const stoppingRef = useRef(false);
+  // False once the page using the radio has unmounted. A tune still waiting
+  // on audio, or one a caller makes late (a Pick best retry), must then open
+  // nothing: no UI is left to stop it, and it would hold a Kiwi channel (#133).
+  const mountedRef = useRef(true);
   // Whether this socket already warned about a frame we can't read.
   const warnedFrameRef = useRef(false);
   // Bumped by every tune and stop, so a tune still waiting on audio or the
@@ -333,6 +337,12 @@ export function useRadio() {
       ctx = new AudioContext({ latencyHint: "playback" });
     }
     await ctx.audioWorklet.addModule("/worklets/radio-player.js");
+    // The page unmounted while the worklet loaded: its cleanup found no
+    // context to close, so close this one here.
+    if (!mountedRef.current) {
+      void ctx.close();
+      throw new Error("unmounted");
+    }
     const node = new AudioWorkletNode(ctx, "radio-player", { numberOfInputs: 0, outputChannelCount: [1] });
     const gain = ctx.createGain();
     gain.gain.value = volumeRef.current;
@@ -554,6 +564,7 @@ export function useRadio() {
 
   const ensureSocket = useCallback((): Promise<WebSocket> => {
     const existing = wsRef.current;
+    if (!mountedRef.current) return Promise.reject(new Error("unmounted"));
     if (existing && existing.readyState === WebSocket.OPEN) return Promise.resolve(existing);
     if (existing && existing.readyState === WebSocket.CONNECTING) {
       return new Promise((resolve, reject) => {
@@ -656,6 +667,7 @@ export function useRadio() {
   /** Start listening, or retune if already connected. Call from a click so audio can start. */
   const tune = useCallback(
     async (t: Tuning) => {
+      if (!mountedRef.current) return;
       const generation = ++generationRef.current;
       pendingRef.current = t;
       latestRef.current = t;
@@ -825,14 +837,26 @@ export function useRadio() {
     };
   }, []);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Set here too: React's dev double mount runs this cleanup once before the
+    // real mount.
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      // A tune still waiting on audio or the socket sees it was superseded.
+      generationRef.current++;
       stoppingRef.current = true;
+      latestRef.current = null;
       wsRef.current?.close();
+      wsRef.current = null;
       void ctxRef.current?.close();
-    },
-    [],
-  );
+      // A closed context can't resume; a remount (dev double mount) builds a new one.
+      ctxRef.current = null;
+      nodeRef.current = null;
+      gainRef.current = null;
+      analyserRef.current = null;
+    };
+  }, []);
 
   return {
     status,
