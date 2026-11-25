@@ -124,4 +124,11 @@ describe("rankForSignal", () => {
     expect(signalFit(newYork, NARO_FOMINSK, 4_625, sun)).toMatchObject({ inRange: true, lightOk: true });
     expect(hosts(rankForSignal([newYork, moscow], NARO_FOMINSK, 4_625, sun))).toEqual(["moscow", "newyork"]);
   });
+
+  // Value: protects=a country-level position still orders out-of-range receivers by distance in steps of its 1,500 km slack, so one about 12,600 km away beats one about 16,600 km away even with a lower SNR; fails_when=distance is ignored for country positions altogether and SNR picks the far side of the planet; why_new=/ship review of #99; seam=none; no_claim=where the station really is
+  it("still prefers a nearer receiver out of range for a country-level position", () => {
+    const lima = rx("lima", -12.05, -77.04, { snr: 5 });
+    const auckland = rx("auckland", -36.85, 174.76, { snr: 40 });
+    expect(hosts(rankForSignal([auckland, lima], MOSCOW_COUNTRY, 9_000, NOON_JAPAN))).toEqual(["lima", "auckland"]);
+  });
 });

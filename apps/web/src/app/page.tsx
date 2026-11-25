@@ -19,11 +19,9 @@ import { focusGhostNetStrip, GhostNetStrip, type GhostPick } from "@/components/
 import { focusSignalStations, SignalStations } from "@/components/SignalStations";
 import { onKhz } from "@/lib/signal-panel";
 import { rankForSignal } from "@/lib/signal-rank";
-import { activeChannelAt, findStation, type SignalChannel, type SignalStation } from "@/lib/signal-stations";
+import { activeChannelAt, findStation, onAirAt, type SignalChannel, type SignalStation } from "@/lib/signal-stations";
+import { onAirTx, type PriyomTx } from "@/lib/priyom-schedule";
 import { usePriyomSchedule } from "@/lib/use-priyom-schedule";
-
-/** The frequencies that count as on a signal station: `khz` (what's tuned) and its catalog channels. */
-const stationKhzs = (station: SignalStation, khz: number) => [...new Set([khz, ...station.channels.map((c) => c.khz)])];
 import { eventEnd, eventStart, EVENTS, isTuned, onSlotFrequency, rankForRegion, WEEK_MS, type Occurrence, type Slot } from "@/lib/ghostnet";
 import { rankForBeacon } from "@/lib/beacon-rank";
 import { beaconOnBand, IBP_BANDS_KHZ, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
@@ -73,6 +71,18 @@ import { useSubmitReport } from "@/lib/use-submit-report";
 import { useSchedule } from "@/lib/use-schedule";
 import { useSolarClock } from "@/lib/use-solar-clock";
 import { bandAt, DEFAULT_SPAN, nextView, spanKhz, type SpanStep, type WideView } from "@/lib/wide-view";
+
+/** The frequencies that count as on a signal station: `khz` (what's tuned) and its catalog channels. */
+const stationKhzs = (station: SignalStation, khz: number) => [...new Set([khz, ...station.channels.map((c) => c.khz)])];
+
+/**
+ * Whether `station` has something on the air at `ms` (Priyom's slots for a numbers
+ * station), so header Listen on a picked station never ranks a run into silence.
+ */
+function stationOnAir(station: SignalStation, ms: number, priyom: readonly PriyomTx[] | null): boolean {
+  if (station.priyom) return priyom !== null && onAirTx(priyom, station.priyom, ms) !== null;
+  return onAirAt(station, ms);
+}
 
 // The last receiver that played, however it was reached. It seeds Back on the
 // next visit; it no longer picks the receiver (Auto does, unless one is pinned).
@@ -411,15 +421,21 @@ export default function ListenPage() {
     // A link naming a signal station (#100) tunes it (its frequency now, when the link
     // gives none) and marks it in the Signal stations panel, so Listen ranks by its path.
     const station = shared?.signal ? findStation(shared.signal) : undefined;
-    const stationCh = station && shared?.freqKhz === undefined ? activeChannelAt(station, serverNow()) : null;
-    const startKhz = shared?.freqKhz ?? stationCh?.khz ?? t.freqKhz;
+    const linkKhz = shared?.freqKhz;
+    // The link's frequency, if it's one of the station's catalog channels; else its channel now.
+    const linkCh = linkKhz === undefined ? undefined : station?.channels.find((c) => onKhz(linkKhz, c.khz));
+    const stationCh = station && linkKhz === undefined ? activeChannelAt(station, serverNow()) : null;
+    const startKhz = linkKhz ?? stationCh?.khz ?? t.freqKhz;
     setFreqKhz(startKhz);
-    setMode(shared?.mode ?? stationCh?.mode ?? t.mode);
+    setMode(shared?.mode ?? linkCh?.mode ?? stationCh?.mode ?? t.mode);
     if (station) setScrollToSignals(true);
-    // Header Listen ranks by the station's path only when there's a frequency of it to
-    // tune: a station off the air for good, or a numbers station named without its
-    // frequency, just brings the panel into view (its rows say when to listen).
-    if (station?.tx && station.schedule.kind !== "defunct" && (shared?.freqKhz !== undefined || stationCh))
+    // Header Listen ranks by the station's path only when the dial is on a frequency of
+    // it: a catalog channel, its channel now, or (for a numbers station, whose
+    // frequencies come from Priyom's schedule) the one the link gives. A station off the
+    // air for good, a numbers station named without its frequency, or a frequency that
+    // isn't the station's just brings the panel into view.
+    const onStation = linkKhz === undefined ? stationCh !== null : linkCh !== undefined || station?.priyom !== undefined;
+    if (station?.tx && station.schedule.kind !== "defunct" && onStation)
       setSignalPick({ slug: station.slug, khzs: stationKhzs(station, startKhz) });
     setTuningRestored(true);
     if (shared) {
@@ -839,11 +855,14 @@ export default function ListenPage() {
         (list) => rankForSignal(list, tx, ch.khz, sunPosition(serverNow()), noiseRef.current),
         "signal",
       );
+      // With no list, the page message points at the Receiver field and Try again,
+      // which are in the drawer (the panel and header Listen are outside it), as startPickBest does.
+      if (receivers === undefined) setDrawerOpen(true);
       // After the run starts, which ends any earlier pick.
       setSignalPick({ slug: station.slug, khzs });
       return started;
     },
-    [listenAt, signalPick, status.state, sendRetune],
+    [listenAt, signalPick, status.state, sendRetune, receivers],
   );
   // What the map draws, once per slot while beacon mode is on.
   const beaconSlot = useServerTick(SLOT_MS, beaconMode);
@@ -1466,7 +1485,8 @@ export default function ListenPage() {
             else if (!draft.host.trim()) {
               // A station a shared link named (#100), with the dial still on it: rank by its path.
               const linked = signalPick && findStation(signalPick.slug);
-              const started = linked?.tx
+              const started =
+                linked?.tx && stationOnAir(linked, serverNow(), priyom)
                 ? listenToSignal(linked, { khz: latest.current.freqKhz, mode: latest.current.mode })
                 : startPickBest("listen");
               if (started) barListen.current = fromBar ? acted.current : null;

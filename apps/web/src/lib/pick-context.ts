@@ -46,7 +46,9 @@ export type PickSource = (typeof PICK_SOURCES)[number];
  * #61 can tell browsing from searching. Pick rules are again those of 6:
  * group 6 to 9. 10: a run can start from a signal station's Listen (source
  * "signal", issues #99/#100), ranked by the path from the station's
- * transmitter (lib/signal-rank.ts); the pick rules are again those of 6, so
+ * transmitter (lib/signal-rank.ts): a panel row's Listen, or header Listen
+ * while the dial is on a station the panel or a shared link picked and it's
+ * on the air (the two aren't told apart); the pick rules are again those of 6, so
  * group 6 to 10. The server still accepts 2 to 9 from tabs opened before
  * those deploys.
  * Raise it whenever what the page records, or when it records it, changes.

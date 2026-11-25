@@ -72,8 +72,8 @@ export function signalFit(r: Receiver, tx: Transmitter, khz: number, sun: SunPos
  * 2. With a position.
  * 3. Meeting more of the two path tests: in the distance range, and the
  *    midpoint's light suiting the frequency. Both beat either; either beats neither.
- * 4. Closer to the distance range, except for a country-level position, whose
- *    distance is too rough to order by.
+ * 4. Closer to the distance range; for a country-level position, whose
+ *    distance is rough, only in steps of its 1,500 km slack.
  * 5. Quieter for this band and hour relative to its own baseline (noise-rank's
  *    steps), when measured; an unmeasured receiver counts as at its baseline.
  *    Noise only breaks ties here, so it never lifts a receiver past a better path.
@@ -94,7 +94,10 @@ export function rankForSignal(
   const levels = noise && noise.band === noiseBand(khz)?.id ? noise : null;
   // An unmeasured receiver counts as at its own baseline (step 0).
   const quietness = (r: Receiver) => (levels && noiseStep(levels, r)) ?? 0;
-  const byDistance = tx.confidence !== "country";
+  // A country-level position is too rough to order by the kilometre, so its
+  // distances count in steps of its slack: far beats very far, near ties with nearer.
+  const distanceOrder = (km: number) =>
+    tx.confidence === "country" ? Math.floor(km / SLACK_KM.country) : km;
   return [...fits.keys()].sort((a, b) => {
     const fa = fits.get(a)!;
     const fb = fits.get(b)!;
@@ -103,7 +106,7 @@ export function rankForSignal(
       Number(fa.distanceKm === null) - Number(fb.distanceKm === null) ||
       met(fb) - met(fa) ||
       // Both Infinity (no position) would give NaN; they're equal here.
-      (byDistance && fa.kmOutside !== fb.kmOutside ? fa.kmOutside - fb.kmOutside : 0) ||
+      (fa.kmOutside !== fb.kmOutside ? distanceOrder(fa.kmOutside) - distanceOrder(fb.kmOutside) : 0) ||
       quietness(a) - quietness(b) ||
       byRank(a, b)
     );
