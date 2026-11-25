@@ -248,10 +248,30 @@ describe("EiBi target names", () => {
     const names = { WEu: "West Europe", CHN: "China" };
     expect(areaCodes(rows, names)).toEqual([
       { code: "CHN", name: "China", stale: false },
-      { code: "Tas", name: "Tas", stale: false },
+      { code: "Tas", name: "Tas (unnamed in EiBi)", stale: false },
       { code: "WEu", name: "West Europe", stale: false },
     ]);
     expect(areaCodes(rows, names, "SAs").at(-1)).toEqual({ code: "SAs", name: "SAs", stale: true });
     expect(areaCodes(rows, names, "CHN")).toHaveLength(3);
+  });
+
+  // Value: protects=the area filter and rows show tidy labels for EiBi's raw names: no trailing " *" footnote marker, "Bangladesh" not "Bangla Desh", "Tas" marked as unnamed in EiBi, and a compass code marked as a beam heading, while every code stays the same so filtering is unchanged; fails_when=a scraped-looking label is back in the select or a row's "to …" line, a label change alters a code, or an older server's unnamed codes all read "(unnamed in EiBi)"; why_new=#117 (design critique 2026-11-23); seam=none; no_claim=what EiBi means by "Tas"
+  it("tidies EiBi's names for display without changing codes", () => {
+    const table = snapshot.targets as TargetTable;
+    expect(targetName(table, "TWN")).toBe("Taiwan");
+    expect(targetName(table, "BGD")).toBe("Bangladesh");
+    expect(targetName(table, "WNW")).toBe("West-northwest");
+    const rows = [{ target: "TWN" }, { target: "BGD" }, { target: "Tas" }, { target: "WNW" }, { target: "Xyz" }];
+    // Names as an older server, before targetName tidied them, would send.
+    const raw = { TWN: "Taiwan *", BGD: "Bangla Desh", WNW: "West-northwest" };
+    expect(areaCodes(rows, raw)).toEqual([
+      { code: "BGD", name: "Bangladesh", stale: false },
+      { code: "TWN", name: "Taiwan", stale: false },
+      { code: "Tas", name: "Tas (unnamed in EiBi)", stale: false },
+      { code: "WNW", name: "West-northwest (beam heading)", stale: false },
+      { code: "Xyz", name: "Xyz", stale: false },
+    ]);
+    // A saved code the schedule dropped keeps its tidied label.
+    expect(areaCodes([], raw, "TWN")).toEqual([{ code: "TWN", name: "Taiwan", stale: true }]);
   });
 });

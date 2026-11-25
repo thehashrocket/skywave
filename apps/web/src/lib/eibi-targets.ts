@@ -55,6 +55,20 @@ function cleanName(name: string): string {
 
 const size = (t: TargetTable) => Object.keys(t.countries).length + Object.keys(t.areas).length;
 
+/** EiBi's spellings we show differently (#117). */
+const RESPELLED: Readonly<Record<string, string>> = { "Bangla Desh": "Bangladesh" };
+
+/**
+ * A README name as a row or the area filter shows it: without EiBi's trailing
+ * " *" footnote marker ("Taiwan *" is "Taiwan") and in the usual spelling
+ * ("Bangla Desh" is "Bangladesh"). Applied when names are read, so the
+ * bundled table stays as EiBi wrote it (#117).
+ */
+export function displayName(name: string): string {
+  const bare = name.replace(/\s*\*$/, "");
+  return Object.hasOwn(RESPELLED, bare) ? RESPELLED[bare]! : bare;
+}
+
 /**
  * The target names from the README's text. Throws if either section is
  * missing or short: under MIN_COUNTRIES or MIN_AREAS, or under
@@ -108,10 +122,10 @@ export function targetName(table: TargetTable, code: string): string | undefined
   // Own keys only: a code like "constructor" mustn't name itself after Object's.
   const own = (names: Record<string, string>, key: string) => (Object.hasOwn(names, key) ? names[key] : undefined);
   const direct = own(table.areas, c) ?? own(table.countries, c);
-  if (direct) return direct;
+  if (direct) return displayName(direct);
   const prefix = own(table.prefixes, c[0]!);
   const rest = own(table.areas, c.slice(1));
-  return prefix && rest ? `${prefix} ${rest}` : undefined;
+  return prefix && rest ? displayName(`${prefix} ${rest}`) : undefined;
 }
 
 /** Codes in `codes` that have no name and aren't known to be unnamed: what the snapshot PR lists. */
@@ -286,14 +300,20 @@ export type AreaCode = { code: string; name: string; stale: boolean };
  * use, named from `targetNames` where it has a name (the server leaves
  * unnamed ones out, so the codes come from the rows: eng outside voice O2),
  * sorted by name; then a saved code the schedule no longer uses, kept and
- * marked stale so it can be cleared (eng D8).
+ * marked stale so it can be cleared (eng D8). Labels only (#117): a code on
+ * UNNAMED_TARGETS says EiBi doesn't name it, and a compass code says it's a
+ * beam heading, not a place.
  */
 export function areaCodes(
   broadcasts: readonly { target: string }[],
   targetNames: Readonly<Record<string, string>>,
   saved?: string,
 ): AreaCode[] {
-  const name = (code: string) => (Object.hasOwn(targetNames, code) ? targetNames[code]! : code);
+  const name = (code: string) => {
+    if (!Object.hasOwn(targetNames, code)) return UNNAMED_TARGETS.has(code) ? `${code} (unnamed in EiBi)` : code;
+    const named = displayName(targetNames[code]!);
+    return COMPASS.includes(code) ? `${named} (beam heading)` : named;
+  };
   const codes = new Set<string>();
   for (const { target } of broadcasts) if (target.trim()) codes.add(target.trim());
   const out = [...codes].map((code) => ({ code, name: name(code), stale: false }));

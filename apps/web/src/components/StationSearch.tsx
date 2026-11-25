@@ -103,11 +103,15 @@ function orList(names: string[]): string {
   return names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names.at(-1)}` : (names[0] ?? "");
 }
 
-/** The active filters in words, for the status line (eng D6): "in English to Africa", "" for none. */
+/**
+ * The active filters in words, for the status line (eng D6): "in English to
+ * Africa", "" for none. With a language picked, included non-voice rows are
+ * named too, since they match no language (#116).
+ */
 function describeFilters(f: Filters, choices: readonly LanguageChoice[], areaName: string | undefined): string {
   const langs = pickedNames(choices, f.language.codes);
   return [
-    langs.length ? `in ${orList(langs)}` : "",
+    langs.length ? `in ${orList(langs)}${f.language.nonVoice ? " (plus non-voice)" : ""}` : "",
     areaName ? `to ${areaName}` : "",
     f.language.nonVoice ? "" : "with non-voice hidden",
   ]
@@ -351,8 +355,14 @@ export function StationSearch({
           <span className="preset-freq">{khz(f.khz)}</span>
           <span className="station-when">
             <span>
-              {when ? when.time : "on now"}
-              {mode !== "am" && <span className="preset-mode"> {mode.toUpperCase()}</span>}
+              {/* Browse rows are all on now, as the status line says, so they don't repeat it (#116). */}
+              {when ? when.time : typed ? "on now" : ""}
+              {mode !== "am" && (
+                <span className="preset-mode">
+                  {when || typed ? " " : ""}
+                  {mode.toUpperCase()}
+                </span>
+              )}
             </span>
             {when && <span className="station-when-until">{when.until}</span>}
           </span>
@@ -385,6 +395,7 @@ export function StationSearch({
       className="presets station-search"
       aria-labelledby="station-search-heading"
       data-phone-open={phoneOpen || undefined}
+      data-browse={(ready && !typed) || undefined}
     >
       <h2 id="station-search-heading">Find a station</h2>
       <div className="station-filters">
