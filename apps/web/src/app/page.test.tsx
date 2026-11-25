@@ -151,6 +151,9 @@ vi.mock("@/lib/use-beacon-status", () => ({
   useRbnQuiet: () => rbnQuiet.current,
 }));
 const submitReport = vi.fn();
+// Priyom's numbers-station schedule (#100): none from the server unless a test sets it.
+const priyomSchedule: { current: import("@/lib/priyom-schedule").PriyomTx[] | null } = { current: null };
+vi.mock("@/lib/use-priyom-schedule", () => ({ usePriyomSchedule: () => priyomSchedule.current }));
 vi.mock("@/lib/use-submit-report", () => ({ useSubmitReport: () => submitReport }));
 // The radio service's measured noise floors (issue #67), as useNoise hands them to the page.
 const noise: { current: import("@/lib/noise-rank").NoiseLevels | null } = { current: null };
@@ -458,6 +461,24 @@ describe("ListenPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
     expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/?f=10000&m=am&rx=kiwi.example%3A8073`);
     expect(await screen.findByRole("button", { name: "Link copied" })).toBeTruthy();
+  });
+
+  // Value: protects=a share link naming a signal station (&sig, #100) with no frequency tunes the station's frequency, and header Listen ranks receivers by the path from its transmitter: a European receiver (low SNR, in range of UVB-76) before a stronger one in Australia (out of range), where the list's own order would pick Australia; Copy link keeps sig beside the receiver Pick best tuned; fails_when=sig is ignored, Listen falls back to the list's order, or Copy link drops the station; why_new=#100 share links and #99 ranking; seam=useRadio and the list hook mocked; no_claim=the ranking rules (signal-rank tests)
+  it("opens a station from a shared link and ranks Listen by its path", async () => {
+    const sydney = { ...listed, snr: 50, lat: -33.9, lon: 151.2 };
+    const berlin = { ...backup, snr: 5, lat: 52.5, lon: 13.4 };
+    receiverList.data = { receivers: [sydney, berlin] };
+    window.history.replaceState(null, "", "/?sig=uvb-76");
+    render(<ListenPage />);
+    expect(window.location.search).toBe("");
+    act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+    expect(radio.tune).toHaveBeenLastCalledWith(
+      expect.objectContaining({ host: berlin.host, freqKhz: 4_625, mode: "usb" }),
+    );
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
+    expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/?f=4625&m=usb&rx=backup.example%3A8073&sig=uvb-76`);
   });
 
   it("tunes Pick best's choice", () => {

@@ -105,11 +105,14 @@ apps/radio/skywave_radio/
   server.py      FastAPI app: /ws and /healthz
 apps/web/
   src/lib/use-radio.ts               WebSocket + Web Audio graph
-  src/components/                    Dial, Waterfall, SMeter, Presets, FrequencyReadout, ReceiverPicker, SignalList, StationSearch
+  src/components/                    Dial, Waterfall, SMeter, Presets, FrequencyReadout, ReceiverPicker, SignalList, StationSearch, SignalStations
   src/lib/station-search.ts          Find a station: name matching, on now and next 24 h, area/language filters, the mode a row tunes in
   src/lib/utc-time.ts                the UTC clock's labels and the saved-frequency stamps (#106, #107)
   src/lib/ghostnet.ts                GhostNet's weekly UTC schedule, region boxes, and the receiver ranking its Listen uses (#91)
   src/lib/signal-stations.ts         signal stations (time signals, markers, numbers stations): the catalog and what's on the air when (#98)
+  src/lib/signal-rank.ts             receivers for a signal station, ranked by the path from its transmitter (#99)
+  src/lib/signal-panel.ts            the Signal stations panel's groups: on now, up next, always on, later, history (#100)
+  src/lib/priyom-schedule.ts         Priyom's numbers-station schedule: parsing, on now and next, changes between fetches
   src/lib/kiwi-list.ts               parses and ranks the public receiver list (with positions)
   src/lib/solar.ts                   where the sun is; which receivers are in darkness
   src/lib/use-solar-clock.ts         one minute clock for the page's Night column and map
@@ -123,7 +126,7 @@ apps/web/
   src/lib/pick-context.ts            how Pick best chose a receiver, sent with a reception report (#61)
   src/lib/use-receiver-list.ts       the receiver list query the page and the Receivers section share
   src/app/api/cron/rbn-skimmers/     Vercel cron route (schedule in vercel.json) that saves RBN's skimmer list
-  src/server/                        tRPC routers (presets, receivers, reports, stations, beacons) + Prisma client; eibi-snapshot.json, the bundled station schedule and transmitter-site table
+  src/server/                        tRPC routers (presets, receivers, reports, stations, beacons, signals) + Prisma client; eibi-snapshot.json, the bundled station schedule and transmitter-site table
   public/worklets/radio-player.js    jitter buffer + resampler
 ```
 

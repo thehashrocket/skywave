@@ -16,6 +16,11 @@ import { IdentField } from "@/components/IdentField";
 import { AudioSpectrum } from "@/components/AudioSpectrum";
 import { BeaconStrip, focusBeaconStrip } from "@/components/BeaconStrip";
 import { focusGhostNetStrip, GhostNetStrip, type GhostPick } from "@/components/GhostNetStrip";
+import { focusSignalStations, SignalStations } from "@/components/SignalStations";
+import { onKhz } from "@/lib/signal-panel";
+import { rankForSignal } from "@/lib/signal-rank";
+import { activeChannelAt, findStation, type SignalChannel, type SignalStation } from "@/lib/signal-stations";
+import { usePriyomSchedule } from "@/lib/use-priyom-schedule";
 import { eventEnd, eventStart, EVENTS, isTuned, onSlotFrequency, rankForRegion, WEEK_MS, type Occurrence, type Slot } from "@/lib/ghostnet";
 import { rankForBeacon } from "@/lib/beacon-rank";
 import { beaconOnBand, IBP_BANDS_KHZ, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
@@ -400,8 +405,17 @@ export default function ListenPage() {
     setBrowseOpen(firstVisit);
     setLetterKeys(loadLetterKeys());
     const t = loadTuning();
-    setFreqKhz(shared?.freqKhz ?? t.freqKhz);
-    setMode(shared?.mode ?? t.mode);
+    // A link naming a signal station (#100) tunes it (its frequency now, when the link
+    // gives none) and marks it in the Signal stations panel, so Listen ranks by its path.
+    const station = shared?.signal ? findStation(shared.signal) : undefined;
+    const stationCh = station && shared?.freqKhz === undefined ? activeChannelAt(station, Date.now()) : null;
+    const startKhz = shared?.freqKhz ?? stationCh?.khz ?? t.freqKhz;
+    setFreqKhz(startKhz);
+    setMode(shared?.mode ?? stationCh?.mode ?? t.mode);
+    if (station) {
+      setSignalPick({ slug: station.slug, khzs: [startKhz, ...station.channels.map((c) => c.khz)] });
+      setScrollToSignals(true);
+    }
     setTuningRestored(true);
     if (shared) {
       // Applied once: a reload then keeps whatever the listener tunes to next.
@@ -486,7 +500,12 @@ export default function ListenPage() {
   }, [copied]);
   const copyLink = () => {
     const rx = host.trim() ? { host: host.trim(), port: Number(port) || DEFAULT_KIWI_PORT, secure } : null;
-    const url = buildShareLink(`${window.location.origin}${window.location.pathname}`, { freqKhz, mode, receiver: rx });
+    const url = buildShareLink(`${window.location.origin}${window.location.pathname}`, {
+      freqKhz,
+      mode,
+      receiver: rx,
+      signal: signalPick?.slug,
+    });
     navigator.clipboard?.writeText(url).then(
       () => setCopied(true),
       () => window.prompt("Copy this link:", url),
@@ -613,6 +632,20 @@ export default function ListenPage() {
   );
   // Frequency only: moving to the next slot changes the dial and the mode in two steps.
   if (ghostPick && !ghostPick.slots.some((s) => onSlotFrequency(s, freqKhz))) setGhostPick(null);
+  // The signal station picked with Listen or named by a shared link (#100), and the
+  // frequencies that count as on it: it lasts while the dial stays on one, and ends
+  // like the other picks on a change of receiver. Header Listen ranks by its path.
+  const [signalPick, setSignalPick] = useState<{ slug: string; khzs: readonly number[] } | null>(null);
+  if (signalPick && !signalPick.khzs.some((k) => onKhz(freqKhz, k))) setSignalPick(null);
+  // A shared link naming a station brings the page to the panel once, after the first render.
+  const [scrollToSignals, setScrollToSignals] = useState(false);
+  useEffect(() => {
+    if (!scrollToSignals) return;
+    setScrollToSignals(false);
+    focusSignalStations();
+  }, [scrollToSignals]);
+  // Priyom's numbers-station schedule for the panel; null while the server has none.
+  const priyom = usePriyomSchedule();
   // Asking skywave to choose (Pick best, blank Listen, the error link, the
   // better-receiver offer) is Auto, so a run that starts ends any pin. It's a
   // change of receiver too, which ends a beacon pick (beacon Listen sets its own after).
@@ -622,6 +655,7 @@ export default function ListenPage() {
       setPageMessage(null);
       setBeaconPick(null);
       setGhostPick(null);
+      setSignalPick(null);
       // The dial is set before every run starts (beacon Listen sets it first), so this is what `ranked` is for.
       const started = startPicking(ranked, known, { source, freqKhz: latest.current.freqKhz });
       if (started) clearPin();
@@ -683,7 +717,7 @@ export default function ListenPage() {
       // whatever plays moves to the new frequency instead. A GhostNet Listen
       // that starts nothing leaves no earlier pick's context on that receiver,
       // so a #61 answer isn't credited to a run for another frequency (review D2).
-      if (!started && source === "ghostnet") forgetPick();
+      if (!started && (source === "ghostnet" || source === "signal")) forgetPick();
       if (!started) sendRetune({ freqKhz: khz, mode: m });
       return started;
     },
@@ -769,6 +803,41 @@ export default function ListenPage() {
     },
     [listenAt, ghostPick, status.state, sendRetune, decodeState, setDecode],
   );
+  /**
+   * Listen on a Signal stations row (#100), or header Listen on a station a
+   * shared link named: its frequency and mode, through Pick best with receivers
+   * ranked by the path from its transmitter at this moment (signal-rank, #99).
+   * Returns whether a run started.
+   */
+  const listenToSignal = useCallback(
+    (station: SignalStation, ch: SignalChannel): boolean => {
+      const tx = station.tx;
+      if (!tx) return false;
+      const khzs = [ch.khz, ...station.channels.map((c) => c.khz)];
+      if (signalPick?.slug === station.slug && status.state === "listening") {
+        // The picked station on another of its frequencies (The Pip's day and night
+        // channels): the receiver playing it moves; no Pick best, which could cut the audio.
+        acted.current++;
+        beaconWait.current++;
+        latest.current = { freqKhz: ch.khz, mode: ch.mode };
+        setFreqKhz(ch.khz);
+        setMode(ch.mode);
+        setSignalPick({ slug: station.slug, khzs: [...signalPick.khzs, ...khzs] });
+        sendRetune({ freqKhz: ch.khz, mode: ch.mode });
+        return false;
+      }
+      const started = listenAt(
+        ch.khz,
+        ch.mode,
+        (list) => rankForSignal(list, tx, ch.khz, sunPosition(serverNow()), noiseRef.current),
+        "signal",
+      );
+      // After the run starts, which ends any earlier pick.
+      setSignalPick({ slug: station.slug, khzs });
+      return started;
+    },
+    [listenAt, signalPick, status.state, sendRetune],
+  );
   // What the map draws, once per slot while beacon mode is on.
   const beaconSlot = useServerTick(SLOT_MS, beaconMode);
   const beaconLayer = useMemo(
@@ -798,6 +867,7 @@ export default function ListenPage() {
       cancelPickBest();
       setBeaconPick(null);
       setGhostPick(null);
+      setSignalPick(null);
       tuneReceiver(r, fromList);
     },
     [cancelPickBest, tuneReceiver],
@@ -1387,7 +1457,12 @@ export default function ListenPage() {
             // reason is in the status row; from the tuning bar, far down the page,
             // bring that row into view (D16), now or when the receiver refuses.
             else if (!draft.host.trim()) {
-              if (startPickBest("listen")) barListen.current = fromBar ? acted.current : null;
+              // A station a shared link named (#100), with the dial still on it: rank by its path.
+              const linked = signalPick && findStation(signalPick.slug);
+              const started = linked
+                ? listenToSignal(linked, { khz: latest.current.freqKhz, mode: latest.current.mode })
+                : startPickBest("listen");
+              if (started) barListen.current = fromBar ? acted.current : null;
               else if (fromBar) statusRef.current?.focus();
             } else {
               commitDraft();
@@ -1779,6 +1854,16 @@ export default function ListenPage() {
         }}
         receiverPlace={receiverPlace}
         onAreaRegion={setFinderRegion}
+      />
+
+      <SignalStations
+        freqKhz={freqKhz}
+        mode={mode}
+        priyom={priyom}
+        picked={signalPick?.slug ?? null}
+        connecting={busy && !(status.state === "listening" && radio.heardAudio)}
+        playing={status.state === "listening" && radio.heardAudio}
+        onListen={listenToSignal}
       />
 
       <SignalList
