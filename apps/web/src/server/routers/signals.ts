@@ -132,6 +132,14 @@ export const getPriyomSchedule = priyomScheduleSource();
 /** How long the server keeps a lastHeard answer before reading the reports again (#102). */
 export const LAST_HEARD_TTL_MS = 60_000;
 
+/**
+ * How long a lastHeard read may take (#102 review). A hung read (a database
+ * resuming, a half-open socket) would otherwise pin the shared in-flight read
+ * for the instance's life; past this it counts as a failed read, so the last
+ * answer is served and the backoff applies.
+ */
+export const LAST_HEARD_READ_TIMEOUT_MS = 8_000;
+
 /** The channels signal stations share (WWV and WWVH), from the catalog: fixed, so worked out once. */
 const SHARED_CHANNELS = sharedChannels();
 
@@ -187,7 +195,7 @@ export function lastHeardSource({ now = () => Date.now() }: { now?: () => number
     const t = now();
     if (cached && t - cached.at < LAST_HEARD_TTL_MS) return cached;
     if (cached && lastFailureAt !== null && t - lastFailureAt < LAST_HEARD_TTL_MS) return cached;
-    inflight ??= read(db)
+    inflight ??= withTimeout(read(db), LAST_HEARD_READ_TIMEOUT_MS)
       .then(
         (fresh) => {
           lastFailureAt = null;
@@ -209,6 +217,15 @@ export function lastHeardSource({ now = () => Date.now() }: { now?: () => number
       return cached;
     }
   };
+}
+
+/** `p`, or a rejection once `ms` pass without it settling. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`signals.lastHeard: read took over ${ms} ms`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
 /** The one cached lastHeard answer for this server instance. */

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 // The real module opens a Prisma client at import; this router never uses it.
 vi.mock("@/server/db", () => ({ db: {} }));
 
-const { priyomScheduleSource, lastHeardSource, LAST_HEARD_TTL_MS } = await import("./signals");
+const { priyomScheduleSource, lastHeardSource, LAST_HEARD_READ_TIMEOUT_MS, LAST_HEARD_TTL_MS } = await import("./signals");
 const { appRouter } = await import("@/server/root");
 const { PRIYOM_SLICES } = await import("@/lib/priyom-schedule");
 
@@ -201,6 +201,30 @@ describe("lastHeardSource", () => {
     clock += 1;
     expect((await get(db)).at).toBe(clock);
     expect(groupBy.mock.calls.length).toBeGreaterThan(callsAfterFailure);
+  });
+
+  // Value: protects=#102 review: a read that never settles (a database resuming, a half-open socket) fails after LAST_HEARD_READ_TIMEOUT_MS, so the instance serves its last answer and later reads aren't pinned to the hung one; fails_when=the timeout is dropped and every later request awaits the hung read forever; why_new=Red Team (shared in-flight read with no timeout); seam=groupBy faked, fake timers; no_claim=the hung query's connection is still held until the driver gives up
+  it("gives up on a read that hangs and serves the last answer", async () => {
+    vi.useFakeTimers({ now: NOW });
+    try {
+      let clock = NOW;
+      const get = lastHeardSource({ now: () => clock });
+      const { db, groupBy } = fakeDb([row("signal", "rwm", 9_996, "heard", 5)]);
+      const first = await get(db);
+      clock += LAST_HEARD_TTL_MS;
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      groupBy.mockImplementation(() => new Promise(() => {}));
+      const hung = get(db);
+      await vi.advanceTimersByTimeAsync(LAST_HEARD_READ_TIMEOUT_MS);
+      expect(await hung).toBe(first);
+      const fresh = lastHeardSource({ now: () => clock });
+      const cold = fresh(db);
+      const rejected = expect(cold).rejects.toThrow(`read took over ${LAST_HEARD_READ_TIMEOUT_MS} ms`);
+      await vi.advanceTimersByTimeAsync(LAST_HEARD_READ_TIMEOUT_MS);
+      await rejected;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Value: protects=with no answer cached yet, a failed read reaches the page as an error (it then shows no badges) rather than an empty answer that reads as "nobody heard anything"; fails_when=a database outage looks like silence; why_new=#102; seam=groupBy faked; no_claim=none

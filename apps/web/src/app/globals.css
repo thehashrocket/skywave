@@ -2720,6 +2720,11 @@ html:has(.tuning-bar:not([hidden])) {
   .signals .sched-strip tr > th {
     grid-row: span 2;
   }
+  /* Lets the one-line "heard" line end in an ellipsis instead of widening the row past
+     the panel (#102 review). */
+  .signals .sched-strip tr > td {
+    min-width: 0;
+  }
   .ghostnet .sched-strip tr > td:last-child,
   .signals .sched-strip tr > td:last-child {
     grid-column: 2;
