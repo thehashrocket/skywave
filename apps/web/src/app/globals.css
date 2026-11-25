@@ -2789,6 +2789,16 @@ html:has(.tuning-bar:not([hidden])) {
   gap: 16px;
 }
 
+/* Room under the page while the bar is up (up to three lines on a phone), so
+   the footer and last controls can scroll clear of it. */
+html:has(.analytics-consent) {
+  scroll-padding-bottom: 8rem;
+}
+
+body:has(> .analytics-consent) {
+  padding-bottom: 8rem;
+}
+
 /* The /owners page: running text for KiwiSDR owners, in the console's frame. */
 
 .owners-wordmark {

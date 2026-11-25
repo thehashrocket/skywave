@@ -7,7 +7,7 @@ import {
   revokeTagManager,
   writeConsent,
 } from "./analytics-consent";
-import { dataLayer, gtmScripts, resetGtmPage } from "@/test/gtm-page";
+import { commands, dataLayer, gtmScripts, resetGtmPage } from "@/test/gtm-page";
 
 beforeEach(resetGtmPage);
 afterEach(() => vi.restoreAllMocks());
@@ -34,49 +34,58 @@ describe("analytics consent", () => {
     expect(readConsent()).toBe("granted");
   });
 
-  // Value: protects=Google's snippet runs as given (dataLayer 'js' push, async gtm.js with the container ID) and only once per page; fails_when=the script URL or ID changes, or a second Accept adds a second container; why_new=GTM consent banner; seam=document.head; no_claim=the script actually loading from Google
-  it("loads Google's Tag Manager snippet once", () => {
+  // Value: protects=Google's snippet runs as given (async gtm.js with the container ID, the gtm.js start event that fires page-view triggers, gtag 'js'), once per page, with ad storage defaulting to denied because the bar asks about analytics only; fails_when=the gtm.js event or consent default is dropped, ads are granted, the script URL changes, or a second Accept adds a second container; why_new=GTM consent banner, and its review; seam=document.head and dataLayer; no_claim=the script loading from Google or GTM honouring consent
+  it("loads Google's Tag Manager snippet once, with ad storage denied", () => {
     loadTagManager("GTM-TEST123");
     loadTagManager("GTM-TEST123");
     const scripts = gtmScripts();
     expect(scripts).toHaveLength(1);
     expect(scripts[0]!.src).toBe("https://www.googletagmanager.com/gtm.js?id=GTM-TEST123");
     expect(scripts[0]!.async).toBe(true);
-    expect(dataLayer()).toHaveLength(1);
-    expect(dataLayer()[0]![0]).toBe("js");
+    const layer = dataLayer();
+    expect(layer).toHaveLength(3);
+    expect(layer[0]).toEqual([
+      "consent",
+      "default",
+      { ad_storage: "denied", ad_user_data: "denied", ad_personalization: "denied", analytics_storage: "granted" },
+    ]);
+    expect((layer[1] as unknown[])[0]).toBe("js");
+    expect(layer[2]).toMatchObject({ event: "gtm.js", "gtm.start": expect.any(Number) });
   });
 
-  // Value: protects=withdrawing consent on a page where GTM runs denies its storage and deletes GA's cookies, without touching anything when GTM never loaded; fails_when=the consent update or cookie clearing is dropped, or revoke pushes to a dataLayer GTM never read; why_new=GTM consent banner; seam=dataLayer and document.cookie; no_claim=GTM honouring the update, cookies GA set on a domain jsdom can't model
-  it("denies storage and deletes GA cookies when consent is withdrawn", () => {
+  // Value: protects=withdrawing consent on a page where GTM runs denies all storage, switches off each GA property GTM loaded so no more hits go out, and deletes Google's analytics and ads cookies, without touching anything when GTM never loaded; fails_when=the consent update, ga-disable flag or cookie clearing is dropped, a Google cookie kind is missed, or revoke pushes to a dataLayer GTM never read; why_new=GTM consent banner, and its review; seam=dataLayer, window.google_tag_manager and document.cookie; no_claim=GA honouring ga-disable, cookies on a domain jsdom can't model, non-Google tags in the container
+  it("turns off Google Analytics and deletes Google's cookies when consent is withdrawn", () => {
     revokeTagManager();
     expect(dataLayer()).toEqual([]);
 
     loadTagManager("GTM-TEST123");
-    document.cookie = "_ga=GA1.1.123; path=/";
-    document.cookie = "_ga_ABC=GS1.1.456; path=/";
-    document.cookie = "keep=1; path=/";
+    const w = window as unknown as Record<string, unknown>;
+    w.google_tag_manager = { "GTM-TEST123": {}, "G-ABC123": {} };
+    for (const c of ["_ga=1", "_ga_ABC=2", "_gid=3", "_gat_UA=4", "_gcl_au=5", "keep=1"])
+      document.cookie = `${c}; path=/`;
     revokeTagManager();
-    expect(dataLayer().at(-1)).toEqual([
+    expect(commands("consent").at(-1)).toEqual([
       "consent",
       "update",
       { ad_storage: "denied", analytics_storage: "denied", ad_user_data: "denied", ad_personalization: "denied" },
     ]);
+    expect(w["ga-disable-G-ABC123"]).toBe(true);
+    expect(w["ga-disable-GTM-TEST123"]).toBeUndefined();
     expect(document.cookie).toBe("keep=1");
     document.cookie = "keep=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
   });
 
-  // Value: protects=declining then accepting again on the same page turns Google's storage back on instead of leaving GTM denied until the next load, and a first Accept sends no stray consent update; fails_when=loadTagManager returns early without a grant after a revoke, or loads a second container; why_new=review of the GTM consent banner; seam=dataLayer; no_claim=GTM honouring the update
-  it("grants storage back when consent is given again on the same page", () => {
+  // Value: protects=declining then accepting again on the same page turns analytics (only) back on instead of leaving GTM off until the next load; fails_when=loadTagManager returns early without a grant after a revoke, the re-grant grants ad storage, ga-disable stays set, or a second container loads; why_new=review of the GTM consent banner; seam=dataLayer and window flags; no_claim=GTM honouring the update
+  it("turns analytics back on when consent is given again on the same page", () => {
     loadTagManager("GTM-TEST123");
     loadTagManager("GTM-TEST123");
-    expect(dataLayer().filter((push) => push[0] === "consent")).toEqual([]);
+    expect(commands("consent")).toHaveLength(1);
+    const w = window as unknown as Record<string, unknown>;
+    w.google_tag_manager = { "G-ABC123": {} };
     revokeTagManager();
     loadTagManager("GTM-TEST123");
-    expect(dataLayer().at(-1)).toEqual([
-      "consent",
-      "update",
-      { ad_storage: "granted", analytics_storage: "granted", ad_user_data: "granted", ad_personalization: "granted" },
-    ]);
+    expect(commands("consent").at(-1)).toEqual(["consent", "update", { analytics_storage: "granted" }]);
+    expect(w["ga-disable-G-ABC123"]).toBe(false);
     expect(gtmScripts()).toHaveLength(1);
   });
 });

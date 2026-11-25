@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetAnalyticsConsentForTests } from "@/lib/analytics-consent";
-import { dataLayer, gtmScripts, resetGtmPage } from "@/test/gtm-page";
+import { commands, gtmScripts, resetGtmPage } from "@/test/gtm-page";
 import { AnalyticsConsent } from "./AnalyticsConsent";
 import { SiteFooter } from "./SiteFooter";
 
@@ -74,6 +74,39 @@ describe("AnalyticsConsent", () => {
     fireEvent.click(screen.getByRole("button", { name: "Decline" }));
     expect(banner()).toBeNull();
     expect(localStorage.getItem("skywave.analyticsConsent")).toBe("denied");
-    expect(dataLayer().at(-1)!.slice(0, 2)).toEqual(["consent", "update"]);
+    expect(commands("consent").at(-1)!.slice(0, 2)).toEqual(["consent", "update"]);
+  });
+
+  // Value: protects=a screen-reader user who opens Cookie settings lands on the bar (focus moves to it), while a first visit's bar still never takes focus; fails_when=focus stays on the footer button, or the first-visit bar starts grabbing focus; why_new=review of the GTM consent banner; seam=document.activeElement; no_claim=what a given screen reader announces
+  it("moves focus to the bar only when Cookie settings opens it", () => {
+    render(
+      <>
+        <AnalyticsConsent />
+        <SiteFooter />
+      </>,
+    );
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cookie settings" }));
+    expect(document.activeElement).toBe(banner());
+  });
+
+  // Value: protects=an answer given in another tab applies here: Decline there stops GTM in this tab, Accept there loads it and closes this tab's bar; fails_when=the storage listener is dropped, checks the wrong key, or ignores one answer; why_new=review of the GTM consent banner; seam=a dispatched StorageEvent; no_claim=real cross-tab delivery by the browser
+  it("follows an answer given in another tab", () => {
+    render(<AnalyticsConsent />);
+    expect(banner()).not.toBeNull();
+    const fromOtherTab = (newValue: string) =>
+      act(() => {
+        window.dispatchEvent(new StorageEvent("storage", { key: "skywave.analyticsConsent", newValue }));
+      });
+    fromOtherTab("granted");
+    expect(banner()).toBeNull();
+    expect(gtmScripts()).toHaveLength(1);
+    fromOtherTab("denied");
+    expect(commands("consent").at(-1)).toEqual([
+      "consent",
+      "update",
+      { ad_storage: "denied", analytics_storage: "denied", ad_user_data: "denied", ad_personalization: "denied" },
+    ]);
   });
 });

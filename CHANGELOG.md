@@ -5,8 +5,8 @@ Notable changes to skywave, newest first. Versions come from `VERSION` (four par
 ## [0.50.0.0] - 2026-11-25
 
 ### Added
-- **Google Tag Manager, with consent.** Where `NEXT_PUBLIC_GTM_ID` is set (Production only), a slim bar at the bottom asks whether skywave may use Google Analytics cookies to count visits. Tag Manager loads only after Accept; Decline loads nothing, and the answer is remembered. The bar never takes focus, so the dial and controls stay usable while it's up.
-- "Cookie settings" in the footer reopens the bar. Withdrawing consent turns off Google's storage and deletes its `_ga` cookies without reloading the page, so whatever's playing keeps playing; accepting again on the same page turns it back on.
+- **Google Tag Manager, with consent.** Where `NEXT_PUBLIC_GTM_ID` is set (Production only), a slim bar at the bottom asks whether skywave may use Google Analytics cookies to count visits. Tag Manager loads only after Accept, with Google's ad storage left off (the bar asks about analytics only); Decline loads nothing, and the answer is remembered and applies in every open tab. On a first visit the bar never takes focus, and the page leaves room under it, so the dial, controls and footer stay usable while it's up.
+- "Cookie settings" in the footer reopens the bar. It takes focus, so screen readers land on it. Withdrawing consent switches off Google Analytics on the page and deletes Google's analytics and ads cookies without reloading it, so whatever's playing keeps playing; accepting again on the same page turns analytics back on.
 
 ## [0.49.0.0] - 2026-11-25 ([#92](https://github.com/thehashrocket/skywave/issues/92))
 

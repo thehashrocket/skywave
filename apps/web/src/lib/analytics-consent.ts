@@ -1,4 +1,4 @@
-const STORAGE_KEY = "skywave.analyticsConsent";
+export const CONSENT_STORAGE_KEY = "skywave.analyticsConsent";
 
 /** Sent by the footer's "Cookie settings" to ask the banner to show again. */
 export const OPEN_CONSENT_EVENT = "skywave:open-analytics-consent";
@@ -25,24 +25,34 @@ export function gtmId(): string | null {
 export function readConsent(): ConsentChoice | null {
   if (current) return current;
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "granted" || stored === "denied") return (current = stored);
+    return parseConsent(localStorage.getItem(CONSENT_STORAGE_KEY));
   } catch {
-    /* storage unavailable: ask again */
+    return null; /* storage unavailable: ask again */
   }
-  return null;
+}
+
+/** A stored value as an answer (remembered for the page), or null if it isn't one. */
+export function parseConsent(stored: string | null): ConsentChoice | null {
+  return stored === "granted" || stored === "denied" ? (current = stored) : null;
 }
 
 export function writeConsent(value: ConsentChoice): void {
   current = value;
   try {
-    localStorage.setItem(STORAGE_KEY, value);
+    localStorage.setItem(CONSENT_STORAGE_KEY, value);
   } catch {
     /* kept in memory only */
   }
 }
 
-type GtmWindow = Window & { dataLayer?: unknown[] };
+/** The globals Google's scripts read and write: dataLayer, google_tag_manager, ga-disable-G-…. */
+type GtmWindow = {
+  dataLayer?: unknown[];
+  google_tag_manager?: Record<string, unknown>;
+  [gaDisable: `ga-disable-${string}`]: boolean;
+};
+
+const gtmWindow = () => window as unknown as GtmWindow;
 
 /**
  * Pushes to the dataLayer the way Google's gtag() does. Tag Manager reads
@@ -50,23 +60,32 @@ type GtmWindow = Window & { dataLayer?: unknown[] };
  * `arguments` and leaves the rest parameter unused.
  */
 function gtag(..._args: unknown[]): void {
-  const w = window as GtmWindow;
+  const w = gtmWindow();
   w.dataLayer = w.dataLayer || [];
   w.dataLayer.push(arguments);
 }
 
 /**
- * Google's Tag Manager snippet, run once per page and only after consent. On
- * a page where consent was withdrawn and then given again, grants storage
- * back instead of loading a second container.
+ * Google's Tag Manager snippet, run once per page and only after consent. The
+ * visitor agreed to analytics only, so ad storage defaults to denied. The
+ * `gtm.js` event is what fires the container's page-view triggers. On a page
+ * where consent was withdrawn and then given again, turns analytics back on
+ * instead of loading a second container.
  */
 export function loadTagManager(id: string): void {
   if (loaded) {
-    if (revoked) setStorage("granted");
+    if (revoked) setAnalytics(true);
     return;
   }
   loaded = true;
+  gtag("consent", "default", {
+    ad_storage: "denied",
+    ad_user_data: "denied",
+    ad_personalization: "denied",
+    analytics_storage: "granted",
+  });
   gtag("js", new Date());
+  gtmWindow().dataLayer!.push({ "gtm.start": new Date().getTime(), event: "gtm.js" });
   const script = document.createElement("script");
   script.async = true;
   script.src = `https://www.googletagmanager.com/gtm.js?id=${encodeURIComponent(id)}`;
@@ -74,32 +93,42 @@ export function loadTagManager(id: string): void {
 }
 
 /**
- * Withdrawn consent on a page where Tag Manager already runs: tell its tags to
- * stop using cookies and delete Google Analytics' own. The page isn't
- * reloaded, which would cut the audio; the next visit loads nothing.
+ * Withdrawn consent on a page where Tag Manager already runs: deny storage,
+ * switch off each Google Analytics property it loaded, and delete Google's
+ * cookies. The page isn't reloaded, which would cut the audio; Tag Manager
+ * itself stays until the page closes, and the next visit loads nothing.
  */
 export function revokeTagManager(): void {
   if (!loaded) return;
-  setStorage("denied");
-  clearGoogleAnalyticsCookies();
+  setAnalytics(false);
+  clearGoogleCookies();
 }
 
-function setStorage(value: ConsentChoice): void {
-  revoked = value === "denied";
-  gtag("consent", "update", {
-    ad_storage: value,
-    analytics_storage: value,
-    ad_user_data: value,
-    ad_personalization: value,
-  });
+const ALL_DENIED = {
+  ad_storage: "denied",
+  analytics_storage: "denied",
+  ad_user_data: "denied",
+  ad_personalization: "denied",
+} as const;
+
+function setAnalytics(on: boolean): void {
+  revoked = !on;
+  const w = gtmWindow();
+  // Tag Manager lists each Google tag it loaded (G-…) as a key, and GA checks
+  // window['ga-disable-G-…'] before it sends anything.
+  for (const key of Object.keys(w.google_tag_manager ?? {})) if (key.startsWith("G-")) w[`ga-disable-${key}`] = !on;
+  gtag("consent", "update", on ? { analytics_storage: "granted" } : ALL_DENIED);
 }
 
-/** Expires _ga and _ga_* on this host and each parent domain GA may have used. */
-function clearGoogleAnalyticsCookies(): void {
+/** Google's analytics and ads cookies: _ga, _ga_*, _gid, _gat*, _gcl_*. */
+const GOOGLE_COOKIE = /^(_ga|_ga_.+|_gid|_gat.*|_gcl_.+)$/;
+
+/** Expires Google's cookies on this host and each parent domain they may use. */
+function clearGoogleCookies(): void {
   const names = document.cookie
     .split(";")
     .map((c) => c.split("=")[0]!.trim())
-    .filter((n) => n === "_ga" || n.startsWith("_ga_"));
+    .filter((n) => GOOGLE_COOKIE.test(n));
   const parts = location.hostname.split(".");
   const domains = [""];
   for (let i = 0; i < parts.length - 1; i++) domains.push(`; domain=.${parts.slice(i).join(".")}`);
