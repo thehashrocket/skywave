@@ -6,7 +6,7 @@ Notable changes to skywave, newest first. Versions come from `VERSION` (four par
 
 ### Added
 - **RTTY decoding.** Turn on "Decode RTTY" under the mode buttons and text from 45.45-baud, 170 Hz-shift RTTY shows in a panel under the waterfall. It finds the two tones itself, has a Reverse switch for stations sending the other way round, and decodes on the receiver channel you're already using, so it takes no extra slot on the volunteer's Kiwi. Listen on the GhostNet strip's RTTY row turns it on.
-- The decoder prints only while a real RTTY signal is there: noise, a lone carrier, two unrelated carriers and other data modes (PSK31, MFSK16) stay quiet or nearly so. If it ever fails, it turns itself off and the audio keeps playing.
+- The decoder prints only while a real RTTY signal is there: noise, a lone carrier, two unrelated carriers and other data modes (PSK31, MFSK16) stay quiet or nearly so. When stations take turns on the same tones, each one's text shows from its first word. If the decoder ever fails, even while starting up, it turns itself off and the audio keeps playing; Turn off closes the panel and it stays closed.
 - Two tools for the radio service: `scripts/record_window.py` records I/Q from up to three receivers at a set UTC time (reconnecting after a drop, giving up on a receiver that refuses apps), and `scripts/decode_rtty_wav.py` decodes RTTY from a recording.
 
 ## [0.48.2.0] - 2026-11-24 ([#116](https://github.com/thehashrocket/skywave/issues/116), [#117](https://github.com/thehashrocket/skywave/issues/117))

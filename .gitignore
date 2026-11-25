@@ -5,3 +5,8 @@ node_modules/
 # Editor swap files (vim keeps one beside any open file, .env included, and moves on
 # to .swo, .swn and so on when an older one is still there)
 *.sw[a-p]
+
+# gstack's local working files (browse logs, QA and deploy reports, screenshots);
+# pregate.json is the one checked in.
+.gstack/*
+!.gstack/pregate.json
