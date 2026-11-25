@@ -2,6 +2,14 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.57.0.0] - 2026-11-25 ([#102](https://github.com/thehashrocket/skywave/issues/102))
+
+### Added
+- **See when a signal station was last heard.** Each station in Signal stations now says when a listener last answered "Heard" about it, such as "heard 40 min ago", from the "Did you hear it?" answers. A station nobody has heard in the last week shows nothing, and stations off the air for good never do.
+- **WWV or WWVH heard.** The two share 2.5, 5, 10 and 15 MHz, so a "Heard" on one of those frequencies shows on both rows as "WWV or WWVH heard …". WWV's own 20 MHz answers stay WWV's.
+- **Rows stay put.** The "heard" line has its own space in every row from the start, and reports never reorder the stations, so a badge arriving can't move another station's Listen under your finger.
+- **Updated every 10 minutes**, so the database can sleep between reads; a new "heard" can take up to about 20 minutes to appear.
+
 ## [0.56.0.0] - 2026-11-25 ([#101](https://github.com/thehashrocket/skywave/issues/101))
 
 ### Added
