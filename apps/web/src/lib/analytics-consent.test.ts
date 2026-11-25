@@ -36,11 +36,11 @@ describe("analytics consent", () => {
 
   // Value: protects=Google's snippet runs as given (dataLayer 'js' push, async gtm.js with the container ID) and only once per page; fails_when=the script URL or ID changes, or a second Accept adds a second container; why_new=GTM consent banner; seam=document.head; no_claim=the script actually loading from Google
   it("loads Google's Tag Manager snippet once", () => {
-    loadTagManager("GTM-T85M8RFM");
-    loadTagManager("GTM-T85M8RFM");
+    loadTagManager("GTM-TEST123");
+    loadTagManager("GTM-TEST123");
     const scripts = gtmScripts();
     expect(scripts).toHaveLength(1);
-    expect(scripts[0]!.src).toBe("https://www.googletagmanager.com/gtm.js?id=GTM-T85M8RFM");
+    expect(scripts[0]!.src).toBe("https://www.googletagmanager.com/gtm.js?id=GTM-TEST123");
     expect(scripts[0]!.async).toBe(true);
     expect(dataLayer()).toHaveLength(1);
     expect(dataLayer()[0]![0]).toBe("js");
@@ -51,7 +51,7 @@ describe("analytics consent", () => {
     revokeTagManager();
     expect(dataLayer()).toEqual([]);
 
-    loadTagManager("GTM-T85M8RFM");
+    loadTagManager("GTM-TEST123");
     document.cookie = "_ga=GA1.1.123; path=/";
     document.cookie = "_ga_ABC=GS1.1.456; path=/";
     document.cookie = "keep=1; path=/";
@@ -67,11 +67,11 @@ describe("analytics consent", () => {
 
   // Value: protects=declining then accepting again on the same page turns Google's storage back on instead of leaving GTM denied until the next load, and a first Accept sends no stray consent update; fails_when=loadTagManager returns early without a grant after a revoke, or loads a second container; why_new=review of the GTM consent banner; seam=dataLayer; no_claim=GTM honouring the update
   it("grants storage back when consent is given again on the same page", () => {
-    loadTagManager("GTM-T85M8RFM");
-    loadTagManager("GTM-T85M8RFM");
+    loadTagManager("GTM-TEST123");
+    loadTagManager("GTM-TEST123");
     expect(dataLayer().filter((push) => push[0] === "consent")).toEqual([]);
     revokeTagManager();
-    loadTagManager("GTM-T85M8RFM");
+    loadTagManager("GTM-TEST123");
     expect(dataLayer().at(-1)).toEqual([
       "consent",
       "update",

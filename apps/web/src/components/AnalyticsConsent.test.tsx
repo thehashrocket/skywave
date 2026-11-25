@@ -10,7 +10,7 @@ const banner = () => screen.queryByRole("region", { name: /Google Analytics/ });
 
 beforeEach(() => {
   resetGtmPage();
-  vi.stubEnv("NEXT_PUBLIC_GTM_ID", "GTM-T85M8RFM");
+  vi.stubEnv("NEXT_PUBLIC_GTM_ID", "GTM-TEST123");
 });
 afterEach(() => {
   cleanup();
