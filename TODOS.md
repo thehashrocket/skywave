@@ -403,6 +403,18 @@ RBN live goes through #69's single connection in the radio service once its logi
 **Depends on:** None
 **Completed:** v0.47.1.0 (2026-11-23), no code change (owner D1 on fix/station-filters-polish): checked against DESIGN.md, all seven follow the design system. Disabled controls dim to opacity 0.45 with `cursor: default` (DESIGN.md's Do list), the uppercase heading is design 5A/9A, 6, 10 and 12px are on DESIGN.md's spacing scale (30px is the chevron's room), the panel inherits `--text`, and no control on the page has an `:active` style.
 
+### After the #99/#100 deploy: count pick version 10 in #61 (#61)
+
+**What:** Once the Signal stations panel deploys, record the deploy time on #61, add 10 to both `"pickVersion" IN (...)` filters in `.local-data/61-step0.sql`, add the version 10 deploy cutoff to its `server_rules` CASE, and update the #61 query notes to group versions 6 to 10, with `signal` (a Pick best started from a signal station's Listen, ranked by the path from its transmitter) new in 10.
+
+**Why:** Every Pick best answer from a current tab carries version 10 after the deploy; the Step 0 query would drop them all without an error.
+
+**Context:** `apps/web/src/lib/pick-context.ts` (`PICK_CONTEXT_VERSION` docblock), README's pickVersion paragraph. The SQL file is local analysis data, not in the repo. Do the version 9 item below first if it's still open.
+
+**Effort:** XS
+**Priority:** P1
+**Depends on:** The #99/#100 deploy
+
 ### After the #109/#110 deploy: count pick version 9 in #61 (#61)
 
 **What:** Once the Find a station filters deploy, record the deploy time on #61, change both `"pickVersion" IN (5, 6, 7, 8)` filters in `.local-data/61-step0.sql` (lines 113 and 128) to include 9, add the version 8 (#91) and version 9 deploy cutoffs to its `server_rules` CASE, and update the #61 query notes to group versions 6 to 9, with `browse` (a Pick best started from Find a station's on-now list) new in 9.

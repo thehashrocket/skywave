@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { formatWait, mhz } from "@/lib/ghostnet";
 import { PRIYOM_ON_AIR_MS, PRIYOM_SCHEDULE_PAGE, type PriyomTx } from "@/lib/priyom-schedule";
 import { MODE_LABELS, type Mode } from "@/lib/radio-types";
-import { onKhz, panelGroups, type PanelRow } from "@/lib/signal-panel";
+import { onKhz, panelGroups, type PanelGroups, type PanelRow } from "@/lib/signal-panel";
 import type { SignalCategory, SignalChannel, SignalStation } from "@/lib/signal-stations";
 import { localLabel, utcLabel } from "@/lib/utc-time";
 import { useServerTick } from "@/lib/use-server-tick";
@@ -46,7 +46,7 @@ function channelText(ch: SignalChannel): string {
 }
 
 /** Listen's accessible name: station and what it tunes. */
-export function listenLabel(station: SignalStation, ch: SignalChannel): string {
+function listenLabel(station: SignalStation, ch: SignalChannel): string {
   return `Listen to ${station.name} on ${channelText(ch)}`;
 }
 
@@ -60,15 +60,17 @@ export function listenLabel(station: SignalStation, ch: SignalChannel): string {
  */
 export function SignalStations({ freqKhz, mode, priyom, picked, connecting = false, playing = false, onListen }: Props) {
   const now = useServerTick(MINUTE);
-  const announce = useAnnouncements(now, priyom, picked, connecting, playing);
+  const groups = now === null ? null : panelGroups(now, priyom);
+  const announce = useAnnouncements(groups?.onNow ?? null, picked, connecting, playing);
   return (
     <section className="presets signals" aria-labelledby="signal-stations-heading">
       <h2 id="signal-stations-heading">Signal stations</h2>
       <p className="signals-about">
         Time signals, markers and numbers stations: the oddities people tune shortwave to find.
       </p>
-      {now !== null && (
+      {now !== null && groups && (
         <Groups
+          groups={groups}
           now={now}
           freqKhz={freqKhz}
           mode={mode}
@@ -93,7 +95,7 @@ export function SignalStations({ freqKhz, mode, priyom, picked, connecting = fal
   );
 }
 
-type GroupsProps = {
+type RowProps = {
   now: number;
   freqKhz: number;
   mode: Mode;
@@ -103,8 +105,7 @@ type GroupsProps = {
   onListen: Props["onListen"];
 };
 
-function Groups({ now, freqKhz, mode, priyom, picked, busy, onListen }: GroupsProps) {
-  const g = panelGroups(now, priyom);
+function Groups({ groups: g, now, freqKhz, mode, priyom, picked, busy, onListen }: { groups: PanelGroups } & RowProps) {
   const rowProps = { now, freqKhz, mode, priyom, picked, busy, onListen };
   return (
     <>
@@ -125,7 +126,7 @@ function Group({
   caption,
   rows,
   ...row
-}: { title: string | null; caption: string; rows: PanelRow[] } & GroupsProps) {
+}: { title: string | null; caption: string; rows: PanelRow[] } & RowProps) {
   return (
     <>
       {title && <p className="sched-head">{title}</p>}
@@ -163,11 +164,13 @@ function Row({
   picked,
   busy,
   onListen,
-}: { r: PanelRow } & GroupsProps) {
+}: { r: PanelRow } & RowProps) {
   const { station, listen, shown } = r;
   const ch = listen ?? shown;
   const tuned = ch !== null && ch.mode === mode && onKhz(freqKhz, ch.khz);
-  const isPicked = picked === station.slug && tuned;
+  // The picked station by frequency alone: after a mode change its row still counts as
+  // picked, so a second press while it connects or plays can't restart Pick best.
+  const isPicked = picked === station.slug && ch !== null && onKhz(freqKhz, ch.khz);
   const { text, checkPriyom } = timeText(r, now, priyom);
   const aka = station.aka.length ? ` · ${station.aka.join(", ")}` : "";
   return (
@@ -229,22 +232,26 @@ function Row({
  * or playing.
  */
 function useAnnouncements(
-  now: number | null,
-  priyom: readonly PriyomTx[] | null,
+  onNow: readonly PanelRow[] | null,
   picked: string | null,
   connecting: boolean,
   playing: boolean,
 ): string {
   const [text, setText] = useState("");
   const last = useRef<{ names: Map<string, string>; state: string } | null>(null);
-  const state = picked ? `${picked}:${connecting ? "connecting" : playing ? "playing" : ""}` : "";
+  let phase = "";
+  if (connecting) phase = "connecting";
+  else if (playing) phase = "playing";
+  const state = picked ? `${picked}:${phase}` : "";
+  // The on-air names as one string, so a new groups object each tick doesn't re-run the effect.
+  const onAir = onNow ? JSON.stringify(onNow.map((r) => [r.station.slug, r.station.name])) : null;
 
   useEffect(() => {
-    if (now === null) {
+    if (onAir === null) {
       last.current = null;
       return;
     }
-    const names = new Map(panelGroups(now, priyom).onNow.map((r) => [r.station.slug, r.station.name]));
+    const names = new Map(JSON.parse(onAir) as [string, string][]);
     const prev = last.current;
     last.current = { names, state };
     if (!prev) return;
@@ -256,7 +263,7 @@ function useAnnouncements(
       else if (playing) lines.push("Playing.");
     }
     if (lines.length) setText(lines.join(" "));
-  }, [now, priyom, picked, state, connecting, playing]);
+  }, [onAir, picked, state, connecting, playing]);
 
   return text;
 }

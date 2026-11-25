@@ -96,4 +96,32 @@ describe("rankForSignal", () => {
     // Without noise, SNR decides between the two dark paths.
     expect(hosts(rankForSignal([london, paris], NARO_FOMINSK, 3_756, NOON_JAPAN))).toEqual(["paris", "london"]);
   });
+
+  // Value: protects=an "approx" transmitter position gets 300 km of slack: a receiver about 150 km past 8,000 km counts as in range for an approximate site but not for a known one; fails_when=SLACK_KM.approx drops to 0 or the slack isn't applied; why_new=#99 review (slack untested); seam=none; no_claim=how far off an approximate site is
+  it("stretches the range a little for an approximate position", () => {
+    const tx: Transmitter = { lat: 0, lon: 0, label: "test", confidence: "approx" };
+    // 8,150 km due east along the equator.
+    const far = rx("far", 0, 8_150 / 111.195);
+    expect(signalFit(far, tx, 9_000, NOON_JAPAN).inRange).toBe(true);
+    expect(signalFit(far, { ...tx, confidence: "known" }, 9_000, NOON_JAPAN).inRange).toBe(false);
+  });
+
+  // Value: protects=noise levels measured for another band than the station's frequency are ignored, so SNR decides; fails_when=the band check is dropped and a stale band's noise reorders the list; why_new=#99 review (band guard untested); seam=NoiseLevels shape; no_claim=none
+  it("ignores noise levels for another band", () => {
+    const paris = rx("paris", 48.85, 2.35, { snr: 40 });
+    const stat = { medianDb: -9, count: 10, baselineDb: 0, baselineCount: 100 };
+    const levels: NoiseLevels = { band: noiseBand(14_100)!.id, receivers: { [noiseKey(london)]: stat } };
+    expect(hosts(rankForSignal([london, paris], NARO_FOMINSK, 3_756, NOON_JAPAN, levels))).toEqual(["paris", "london"]);
+  });
+
+  // Value: protects=by day below 8 MHz a receiver within 800 km of the transmitter passes the light test (NVIS), so a nearby receiver isn't beaten by a distant one just because the distant path's midpoint is dark (owner, #99 review: near counts as fine); fails_when=the dark-midpoint rule applies close in, and a daytime UVB-76 Listen goes to North America; why_new=#99 review (daytime UVB-76); seam=hand-made sun position; no_claim=real ionospheric conditions
+  it("counts a nearby receiver as fine by day below 8 MHz", () => {
+    // Noon over Southeast Asia: Moscow is sunlit, the path to New York is dark at its midpoint.
+    const sun = sunOver(100);
+    const moscow = rx("moscow", 55.75, 37.62, { snr: 30 });
+    const newYork = rx("newyork", 40.7, -74, { snr: 10 });
+    expect(signalFit(moscow, NARO_FOMINSK, 4_625, sun)).toMatchObject({ inRange: true, lightOk: true });
+    expect(signalFit(newYork, NARO_FOMINSK, 4_625, sun)).toMatchObject({ inRange: true, lightOk: true });
+    expect(hosts(rankForSignal([newYork, moscow], NARO_FOMINSK, 4_625, sun))).toEqual(["moscow", "newyork"]);
+  });
 });

@@ -21,6 +21,9 @@ import { onKhz } from "@/lib/signal-panel";
 import { rankForSignal } from "@/lib/signal-rank";
 import { activeChannelAt, findStation, type SignalChannel, type SignalStation } from "@/lib/signal-stations";
 import { usePriyomSchedule } from "@/lib/use-priyom-schedule";
+
+/** The frequencies that count as on a signal station: `khz` (what's tuned) and its catalog channels. */
+const stationKhzs = (station: SignalStation, khz: number) => [...new Set([khz, ...station.channels.map((c) => c.khz)])];
 import { eventEnd, eventStart, EVENTS, isTuned, onSlotFrequency, rankForRegion, WEEK_MS, type Occurrence, type Slot } from "@/lib/ghostnet";
 import { rankForBeacon } from "@/lib/beacon-rank";
 import { beaconOnBand, IBP_BANDS_KHZ, ibpBandIndex, SLOT_MS } from "@/lib/ibp";
@@ -408,14 +411,16 @@ export default function ListenPage() {
     // A link naming a signal station (#100) tunes it (its frequency now, when the link
     // gives none) and marks it in the Signal stations panel, so Listen ranks by its path.
     const station = shared?.signal ? findStation(shared.signal) : undefined;
-    const stationCh = station && shared?.freqKhz === undefined ? activeChannelAt(station, Date.now()) : null;
+    const stationCh = station && shared?.freqKhz === undefined ? activeChannelAt(station, serverNow()) : null;
     const startKhz = shared?.freqKhz ?? stationCh?.khz ?? t.freqKhz;
     setFreqKhz(startKhz);
     setMode(shared?.mode ?? stationCh?.mode ?? t.mode);
-    if (station) {
-      setSignalPick({ slug: station.slug, khzs: [startKhz, ...station.channels.map((c) => c.khz)] });
-      setScrollToSignals(true);
-    }
+    if (station) setScrollToSignals(true);
+    // Header Listen ranks by the station's path only when there's a frequency of it to
+    // tune: a station off the air for good, or a numbers station named without its
+    // frequency, just brings the panel into view (its rows say when to listen).
+    if (station?.tx && station.schedule.kind !== "defunct" && (shared?.freqKhz !== undefined || stationCh))
+      setSignalPick({ slug: station.slug, khzs: stationKhzs(station, startKhz) });
     setTuningRestored(true);
     if (shared) {
       // Applied once: a reload then keeps whatever the listener tunes to next.
@@ -439,6 +444,8 @@ export default function ListenPage() {
   // the form treats it as connecting.
   const starting = radio.tuning && !live;
   const busy = live || starting;
+  // Audio from the receiver playing is reaching the speakers (not just a connection).
+  const playingAudio = status.state === "listening" && radio.heardAudio;
   const shownState = starting ? "connecting" : status.state;
   const busyRef = useRef(busy);
   busyRef.current = busy;
@@ -813,7 +820,7 @@ export default function ListenPage() {
     (station: SignalStation, ch: SignalChannel): boolean => {
       const tx = station.tx;
       if (!tx) return false;
-      const khzs = [ch.khz, ...station.channels.map((c) => c.khz)];
+      const khzs = stationKhzs(station, ch.khz);
       if (signalPick?.slug === station.slug && status.state === "listening") {
         // The picked station on another of its frequencies (The Pip's day and night
         // channels): the receiver playing it moves; no Pick best, which could cut the audio.
@@ -822,7 +829,7 @@ export default function ListenPage() {
         latest.current = { freqKhz: ch.khz, mode: ch.mode };
         setFreqKhz(ch.khz);
         setMode(ch.mode);
-        setSignalPick({ slug: station.slug, khzs: [...signalPick.khzs, ...khzs] });
+        setSignalPick({ slug: station.slug, khzs: [...new Set([...signalPick.khzs, ...khzs])] });
         sendRetune({ freqKhz: ch.khz, mode: ch.mode });
         return false;
       }
@@ -1459,7 +1466,7 @@ export default function ListenPage() {
             else if (!draft.host.trim()) {
               // A station a shared link named (#100), with the dial still on it: rank by its path.
               const linked = signalPick && findStation(signalPick.slug);
-              const started = linked
+              const started = linked?.tx
                 ? listenToSignal(linked, { khz: latest.current.freqKhz, mode: latest.current.mode })
                 : startPickBest("listen");
               if (started) barListen.current = fromBar ? acted.current : null;
@@ -1572,8 +1579,8 @@ export default function ListenPage() {
                 mode={mode}
                 pick={ghostPick}
                 // Busy with no audio heard yet (owner D8).
-                connecting={busy && !(status.state === "listening" && radio.heardAudio)}
-                playing={status.state === "listening" && radio.heardAudio}
+                connecting={busy && !playingAudio}
+                playing={playingAudio}
                 onListen={listenToGhostNet}
               />
             </MapPanel>
@@ -1676,7 +1683,7 @@ export default function ListenPage() {
         {waterfallOpen && (
           <AudioSpectrum
             getAnalyser={radio.getAnalyser}
-            active={status.state === "listening" && radio.heardAudio}
+            active={playingAudio}
             sampleRate={status.sampleRate ?? 12000}
           />
         )}
@@ -1861,8 +1868,8 @@ export default function ListenPage() {
         mode={mode}
         priyom={priyom}
         picked={signalPick?.slug ?? null}
-        connecting={busy && !(status.state === "listening" && radio.heardAudio)}
-        playing={status.state === "listening" && radio.heardAudio}
+        connecting={busy && !playingAudio}
+        playing={playingAudio}
         onListen={listenToSignal}
       />
 

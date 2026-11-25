@@ -46,6 +46,12 @@ export type PanelGroups = {
   history: PanelRow[];
 };
 
+/** A station not on yet: up next when it starts within UP_NEXT_MS, else later (time unknown included). */
+function upcoming(station: SignalStation, ms: number, atMs: number | null, shown: SignalChannel | null): PanelRow {
+  const soon = atMs !== null && atMs - ms <= UP_NEXT_MS;
+  return { station, group: soon ? "upNext" : "later", listen: null, shown, atMs };
+}
+
 /** A Priyom slot's frequency as a channel, when it has one Skywave can tune. */
 function txChannel(tx: PriyomTx | null): SignalChannel | null {
   return tx && tx.khz !== null && tx.mode !== null ? { khz: tx.khz, mode: tx.mode } : null;
@@ -77,14 +83,8 @@ export function panelGroups(ms: number, priyom: readonly PriyomTx[] | null, stat
         continue;
       }
       const next = nextTx(priyom, station.priyom, ms);
-      const soon = next !== null && next.startMs - ms <= UP_NEXT_MS;
-      (soon ? g.upNext : g.later).push({
-        station,
-        group: soon ? "upNext" : "later",
-        listen: null,
-        shown: txChannel(next),
-        atMs: next?.startMs ?? null,
-      });
+      const row = upcoming(station, ms, next?.startMs ?? null, txChannel(next));
+      g[row.group].push(row);
       continue;
     }
     const span = windowSpanAt(station, ms);
@@ -93,9 +93,8 @@ export function panelGroups(ms: number, priyom: readonly PriyomTx[] | null, stat
       g.onNow.push({ station, group: "onNow", listen: ch, shown: ch, atMs: span.endMs });
       continue;
     }
-    const start = nextStartAfter(station, ms);
-    const soon = start !== null && start - ms <= UP_NEXT_MS;
-    (soon ? g.upNext : g.later).push({ station, group: soon ? "upNext" : "later", listen: null, shown: null, atMs: start });
+    const row = upcoming(station, ms, nextStartAfter(station, ms), null);
+    g[row.group].push(row);
   }
   const byAt = (a: PanelRow, b: PanelRow) => (a.atMs ?? Infinity) - (b.atMs ?? Infinity);
   g.onNow.sort(byAt);
@@ -104,15 +103,10 @@ export function panelGroups(ms: number, priyom: readonly PriyomTx[] | null, stat
   return g;
 }
 
-/** The row for `slug` among the groups, if any. */
-export function findRow(groups: PanelGroups, slug: string): PanelRow | undefined {
-  return Object.values(groups)
-    .flat()
-    .find((r: PanelRow) => r.station.slug === slug);
-}
-
 /** How close the dial must be to a station's frequency to count as on it (SSB tuning steps are 0.1 kHz). */
 const ON_KHZ = 0.05;
 
 /** Whether the dial is on `khz`. */
-export const onKhz = (freqKhz: number, khz: number) => Math.abs(freqKhz - khz) <= ON_KHZ;
+export function onKhz(freqKhz: number, khz: number): boolean {
+  return Math.abs(freqKhz - khz) <= ON_KHZ;
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PriyomTx } from "./priyom-schedule";
-import { findRow, panelGroups, UP_NEXT_MS } from "./signal-panel";
+import { panelGroups, UP_NEXT_MS, type PanelGroups } from "./signal-panel";
 import type { SignalStation } from "./signal-stations";
 
 const at = (iso: string) => Date.parse(iso);
@@ -12,6 +12,10 @@ const tx = (station: string, iso: string, khz: number | null = 20_167): PriyomTx
   mode: khz === null ? null : "usb",
   summary: `${station} ${khz ?? "Search"}`,
 });
+const findRow = (g: PanelGroups, slug: string) =>
+  Object.values(g)
+    .flat()
+    .find((r) => r.station.slug === slug);
 const slugs = (rows: { station: SignalStation }[]) => rows.map((r) => r.station.slug);
 
 describe("panelGroups", () => {

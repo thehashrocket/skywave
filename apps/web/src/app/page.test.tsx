@@ -481,6 +481,17 @@ describe("ListenPage", () => {
     expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/?f=4625&m=usb&rx=backup.example%3A8073&sig=uvb-76`);
   });
 
+  // Value: protects=a shared link naming a station with nothing to tune (off the air for good, or a numbers station without its frequency) leaves header Listen as plain Pick best on the dial (the list's order: Sydney's higher SNR), never a dead button or a path-ranked "signal" run on an unrelated frequency; fails_when=sig sets a station pick it can't tune (Listen does nothing, or #61 gets a false signal row); why_new=#100 review findings 1 and 2; seam=useRadio and the list hook mocked; no_claim=none
+  it.each(["chu", "e07"])("keeps plain Listen for ?sig=%s, which has nothing to tune", (slug) => {
+    const sydney = { ...listed, snr: 50, lat: -33.9, lon: 151.2 };
+    const berlin = { ...backup, snr: 5, lat: 52.5, lon: 13.4 };
+    receiverList.data = { receivers: [sydney, berlin] };
+    window.history.replaceState(null, "", `/?sig=${slug}`);
+    render(<ListenPage />);
+    act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+    expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: sydney.host, freqKhz: 10_000, mode: "am" }));
+  });
+
   it("tunes Pick best's choice", () => {
     render(<ListenPage />);
     act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));

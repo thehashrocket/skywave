@@ -27,7 +27,14 @@ const tx = (station: string, iso: string, khz: number): PriyomTx => ({
 
 function renderPanel(
   iso: string,
-  props: { priyom?: readonly PriyomTx[] | null; freqKhz?: number; mode?: Mode; picked?: string | null; playing?: boolean } = {},
+  props: {
+    priyom?: readonly PriyomTx[] | null;
+    freqKhz?: number;
+    mode?: Mode;
+    picked?: string | null;
+    connecting?: boolean;
+    playing?: boolean;
+  } = {},
 ) {
   nowMs = Date.parse(iso);
   const onListen = vi.fn();
@@ -37,6 +44,7 @@ function renderPanel(
       mode={props.mode ?? "am"}
       priyom={props.priyom ?? null}
       picked={props.picked ?? null}
+      connecting={props.connecting ?? false}
       playing={props.playing ?? false}
       onListen={onListen}
     />,
@@ -98,5 +106,14 @@ describe("SignalStations", () => {
     renderPanel("2026-11-25T07:00:00Z");
     expect(screen.getByRole("heading", { name: "Signal stations" })).toBeTruthy();
     expect(screen.queryAllByRole("table")).toEqual([]);
+  });
+
+  // Value: protects=after the listener changes mode on the picked station's frequency, its row still counts as picked, so a second Listen while it connects can't restart Pick best and cut the connection (owner: anything that could end audio is fixed); fails_when=the picked test requires the mode to match; why_new=#100 review finding 5; seam=onListen; no_claim=none
+  it("keeps the picked station's guard after a mode change", () => {
+    const { onListen } = renderPanel("2026-11-25T07:00:00Z", { freqKhz: 4625, mode: "am", picked: "uvb-76", connecting: true });
+    const button = within(rowOf("UVB-76")).getByRole("button", { name: /^Listen to UVB-76/ });
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(button, { detail: 1 });
+    expect(onListen).not.toHaveBeenCalled();
   });
 });

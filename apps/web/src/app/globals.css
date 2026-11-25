@@ -2250,7 +2250,8 @@ html:has(.tuning-bar:not([hidden])) {
 }
 
 .beacons summary:hover,
-.ghostnet summary:hover {
+.ghostnet summary:hover,
+.signals-history > summary:hover {
   color: var(--text);
 }
 
@@ -2484,6 +2485,7 @@ html:has(.tuning-bar:not([hidden])) {
 }
 
 .signals-history > summary {
+  width: fit-content;
   cursor: pointer;
   font-family: var(--font-instrument);
   font-size: 1.05rem;
