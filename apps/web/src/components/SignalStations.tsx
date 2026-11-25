@@ -212,7 +212,8 @@ function Row({
   // picked, so a second press while it connects or plays can't restart Pick best.
   const isPicked = picked === station.slug && ch !== null && onKhz(freqKhz, ch.khz);
   const { text, checkPriyom } = timeText(r, now, priyom);
-  const heardLine = r.group === "history" ? null : heardText(heard?.[station.slug], now);
+  const live = r.group !== "history";
+  const heardLine = live ? heardText(heard?.[station.slug], now) : null;
   const aka = station.aka.length ? ` · ${station.aka.join(", ")}` : "";
   return (
     // Explicit roles: on phones the rows are laid out as a grid, as in the GhostNet strip.
@@ -233,13 +234,11 @@ function Row({
               {utcLabel(r.atMs)} ({localLabel(r.atMs)})
             </>
           )}
-          {heardLine && (
-            <>
-              {" · "}
-              <span className="signals-heard">{heardLine}</span>
-            </>
-          )}
         </span>
+        {/* Its own line, there (empty) before any answer arrives (owner decision D5 on #102): a
+            badge arriving or changing never changes the row's height, so it can't move another
+            station's Listen under a press. */}
+        {live && <span className="signals-heard">{heardLine}</span>}
       </td>
       <td role="cell">
         <span className="sched-next signals-wait">

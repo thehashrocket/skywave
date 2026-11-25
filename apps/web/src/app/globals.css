@@ -2514,10 +2514,18 @@ html:has(.tuning-bar:not([hidden])) {
   white-space: nowrap;
 }
 
-/* "heard 40 min ago" (#102): listeners' word, quiet like the place line it sits in. */
+/* "heard 40 min ago" (#102): listeners' word, quiet like the place line above it. Its line is
+   held from the first render and never wraps (owner decision D5), so a badge arriving can't
+   push the rows below down under a press. */
 .signals-heard {
+  display: block;
+  min-height: 1lh;
+  overflow: hidden;
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
   color: var(--muted);
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .signals-wait {

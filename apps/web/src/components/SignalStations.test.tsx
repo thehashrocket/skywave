@@ -247,4 +247,18 @@ describe("SignalStations", () => {
     expect(rowOf("UVB-76").textContent).not.toContain("heard");
     expect(rowOf("RWM").textContent).toContain("heard 7d 0h ago");
   });
+
+  // Value: protects=owner decision D5 on #102: every live row holds its "heard" line from the first render, empty until an answer arrives, so a badge arriving (on load or a refresh) never changes a row's height and can't push another station's Listen under a press; history rows get none; fails_when=the badge goes back inline (wrapping the place line on phones) or the line only renders once there's an answer; why_new=#102 review (row height shifting when a badge appears); seam=useServerTick mocked; no_claim=rendered pixel heights (jsdom has no layout)
+  it("holds a line for the heard badge before any answer arrives", () => {
+    const at = "2026-11-25T12:00:00Z";
+    const { rerenderAt } = renderPanel(at);
+    const lineOf = (name: string) => rowOf(name).querySelector(".signals-heard");
+    expect(lineOf("UVB-76")?.textContent).toBe("");
+    rerenderAt(at, { heard: { "uvb-76": { heardMs: Date.parse(at) - 40 * 60_000, either: null, heard24h: 1, notHeard24h: 0 } } });
+    expect(lineOf("UVB-76")?.textContent).toBe("heard 40 min ago");
+    expect(rowOf("UVB-76").querySelector(".sched-place")?.textContent).not.toContain("heard");
+    const history = [...document.querySelectorAll('.signals-history tr[data-slug]')];
+    expect(history.length).toBeGreaterThan(0);
+    expect(history.every((r) => r.querySelector(".signals-heard") === null)).toBe(true);
+  });
 });
