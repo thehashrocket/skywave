@@ -170,6 +170,14 @@ describe("lastHeardSource", () => {
     expect(heard["uvb-76"]).toMatchObject({ heard24h: 3_000, notHeard24h: 3_000 });
   });
 
+  // Value: protects=owner rule on #102 end to end: WWV's own newer heard on 20 MHz (a frequency WWVH doesn't use) stays WWV's alone, while a WWVH heard a dial step off 10 MHz (within ON_KHZ) still reads "WWV or WWVH" on both rows; fails_when=the shared-channel query loses its freqKhz range (every heard becomes "shared", so WWVH's row shows WWV's 20 MHz answer) or the range shrinks below ON_KHZ (an off-by-a-step 10 MHz answer goes to WWVH alone); why_new=the router tests only had an exact 5 MHz answer, which passes with the range dropped or exact; seam=groupBy faked; no_claim=Postgres float comparison on freqKhz
+  it("keeps WWV's 20 MHz heard its own and shares a 10 MHz one within the dial step", async () => {
+    const { db } = fakeDb([row("signal", "wwv", 20_000, "heard", 10), row("signal", "wwvh", 9_999.97, "heard", 60)]);
+    const { heard } = await lastHeardSource({ now: () => NOW })(db);
+    expect(heard["wwv"]).toMatchObject({ heardMs: NOW - 10 * 60_000, either: null });
+    expect(heard["wwvh"]).toMatchObject({ heardMs: NOW - 60 * 60_000, either: ["WWV", "WWVH"] });
+  });
+
   // Value: protects=the answer is cached for LAST_HEARD_TTL_MS (one read a minute however many pages poll), concurrent callers share one read, and a failed read serves the last good answer and waits a TTL before reading again; fails_when=every request hits the database (healthy or failing), or a database blip errors the badges away; why_new=#102 server cache, backoff from the #102 review; seam=groupBy faked, clock injected; no_claim=none
   it("caches for a minute and keeps the last answer through a failed read", async () => {
     let clock = NOW;

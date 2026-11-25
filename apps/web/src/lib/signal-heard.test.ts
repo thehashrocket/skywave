@@ -77,6 +77,28 @@ describe("lastHeard", () => {
     expect(own["wwvh"]).toMatchObject({ heardMs: t, either: ["WWV", "WWVH"] });
   });
 
+  // Value: protects=with several "heard" answers on WWV and WWVH's shared channels, both rows show the newest of them (across stations and across channels), not the first one read; fails_when=the shared-channel pick keeps the first or oldest row, so a WWV/WWVH badge reads hours staler than the latest answer; why_new=existing fixtures give each channel one shared row, so a first-row pick passes them; seam=none (pure); no_claim=the database's per-channel sums
+  it("shows the newest of several shared-channel answers on both rows", () => {
+    const older = NOW - 90 * MIN;
+    const newer = NOW - 15 * MIN;
+    const out = lastHeard(
+      sums({
+        latest: [
+          { txName: "wwv", ms: older },
+          { txName: "wwvh", ms: newer },
+        ],
+        shared: [
+          { khz: 15_000, txName: "wwv", ms: older },
+          { khz: 15_000, txName: "wwvh", ms: newer },
+          { khz: 10_000, txName: "wwv", ms: older - MIN },
+        ],
+      }),
+      NOW,
+    );
+    expect(out["wwv"]).toMatchObject({ heardMs: newer, either: ["WWV", "WWVH"] });
+    expect(out["wwvh"]).toMatchObject({ heardMs: newer, either: ["WWV", "WWVH"] });
+  });
+
   // Value: protects=names the catalog doesn't know (a renamed slug) or has as defunct are ignored rather than crashing or badging history; fails_when=an old slug throws or a defunct station looks alive; why_new=#102; seam=signal-stations catalog; no_claim=none
   it("ignores unknown and defunct stations", () => {
     const out = lastHeard(
