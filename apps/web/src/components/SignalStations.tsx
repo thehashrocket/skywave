@@ -2,11 +2,13 @@
 
 import { SectionBody, SectionHeading } from "@/components/SectionHeading";
 import type { Fold } from "@/lib/section-folds";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { formatWait, mhz } from "@/lib/ghostnet";
+import { formatWait } from "@/lib/ghostnet";
 import { PRIYOM_ON_AIR_MS, PRIYOM_SCHEDULE_PAGE, type PriyomTx } from "@/lib/priyom-schedule";
-import { MODE_LABELS, type Mode } from "@/lib/radio-types";
+import type { Mode } from "@/lib/radio-types";
 import { HEARD_SHOWN_MS, type LastHeard } from "@/lib/signal-heard";
+import { channelText } from "@/lib/signal-page";
 import { onKhz, panelGroups, type PanelGroups, type PanelRow } from "@/lib/signal-panel";
 import type { SignalCategory, SignalChannel, SignalStation } from "@/lib/signal-stations";
 import { localLabel, utcLabel } from "@/lib/utc-time";
@@ -46,11 +48,6 @@ export function focusSignalStations() {
   document.getElementById("signal-stations-heading")?.scrollIntoView?.({ block: "start" });
 }
 
-/** "4.625 USB" for a channel; more digits for a frequency like 3363.5 kHz. */
-function channelText(ch: SignalChannel): string {
-  const digits = Number.isInteger(ch.khz) ? 3 : 4;
-  return `${mhz(ch.khz, digits)} ${MODE_LABELS[ch.mode]}`;
-}
 
 /** Listen's accessible name: station and what it tunes. */
 function listenLabel(station: SignalStation, ch: SignalChannel): string {
@@ -223,7 +220,10 @@ function Row({
       </th>
       <td role="cell">
         <span className="signals-name">
-          {station.name}
+          {/* The station's own page (#103): what it is, its schedule and its sources. */}
+          <Link href={`/signals/${station.slug}`} className="signals-page-link">
+            {station.name}
+          </Link>
           <span className="signals-aka">{aka}</span> <span className="signals-kind">{CATEGORY_LABELS[station.category]}</span>
         </span>
         <span className="sched-place">

@@ -261,4 +261,11 @@ describe("SignalStations", () => {
     expect(history.length).toBeGreaterThan(0);
     expect(history.every((r) => r.querySelector(".signals-heard") === null)).toBe(true);
   });
+
+  // Value: protects=#103 each station's name in the panel links to its own page (/signals/<slug>), so the panel leads to what the station is and when to tune; fails_when=the link is dropped or points at another slug; why_new=#103 pages; seam=useServerTick mocked; no_claim=none
+  it("links each station's name to its page", () => {
+    renderPanel("2026-11-25T12:00:00Z");
+    expect(within(rowOf("UVB-76")).getByRole("link", { name: "UVB-76" }).getAttribute("href")).toBe("/signals/uvb-76");
+    expect(within(rowOf("Cherry Ripe")).getByRole("link", { name: "Cherry Ripe" }).getAttribute("href")).toBe("/signals/cherry-ripe");
+  });
 });
