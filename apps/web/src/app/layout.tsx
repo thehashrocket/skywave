@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { Analytics } from "@vercel/analytics/next";
+import { AnalyticsConsent } from "@/components/AnalyticsConsent";
 import { Providers } from "@/lib/trpc";
 import "./globals.css";
 
@@ -32,6 +33,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body>
         <Providers>{children}</Providers>
         <Analytics />
+        <AnalyticsConsent />
       </body>
     </html>
   );

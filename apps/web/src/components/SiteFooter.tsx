@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { CookieSettingsButton } from "./AnalyticsConsent";
 
 const SITE_AUTHOR = "https://jasonshultz.com";
 const SOURCE = "https://github.com/thehashrocket/skywave";
@@ -28,6 +29,7 @@ export function SiteFooter({ onPlayer = false }: { onPlayer?: boolean }) {
       ) : (
         <Link href="/owners">For Kiwi owners</Link>
       )}
+      <CookieSettingsButton />
     </footer>
   );
 }
