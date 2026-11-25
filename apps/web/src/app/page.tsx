@@ -22,6 +22,7 @@ import { rankForSignal } from "@/lib/signal-rank";
 import { activeChannelAt, findStation, onAirAt, type SignalChannel, type SignalStation } from "@/lib/signal-stations";
 import { onAirTx, type PriyomTx } from "@/lib/priyom-schedule";
 import { usePriyomSchedule } from "@/lib/use-priyom-schedule";
+import { useSignalLastHeard } from "@/lib/use-signal-last-heard";
 import { type Fold, loadFolded, saveFolded, type SectionId } from "@/lib/section-folds";
 import { eventEnd, eventStart, EVENTS, isTuned, onSlotFrequency, rankForRegion, WEEK_MS, type Occurrence, type Slot } from "@/lib/ghostnet";
 import { rankForBeacon } from "@/lib/beacon-rank";
@@ -702,6 +703,7 @@ export default function ListenPage() {
   }, [scrollToSignals]);
   // Priyom's numbers-station schedule for the panel; null while the server has none.
   const priyom = usePriyomSchedule();
+  const signalHeard = useSignalLastHeard();
   // Asking skywave to choose (Pick best, blank Listen, the error link, the
   // better-receiver offer) is Auto, so a run that starts ends any pin. It's a
   // change of receiver too, which ends a beacon pick (beacon Listen sets its own after).
@@ -1931,6 +1933,7 @@ export default function ListenPage() {
         freqKhz={freqKhz}
         mode={mode}
         priyom={priyom}
+        heard={signalHeard}
         picked={signalPick?.slug ?? null}
         connecting={busy && !playingAudio}
         playing={playingAudio}

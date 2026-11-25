@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PriyomTx } from "@/lib/priyom-schedule";
 import type { Mode } from "@/lib/radio-types";
+import type { LastHeard } from "@/lib/signal-heard";
 import { SignalStations } from "./SignalStations";
 
 // The server's time the panel sees: useServerTick rounds down to its step; null before the page knows it.
@@ -29,6 +30,7 @@ function renderPanel(
   iso: string,
   props: {
     priyom?: readonly PriyomTx[] | null;
+    heard?: Record<string, LastHeard> | null;
     freqKhz?: number;
     mode?: Mode;
     picked?: string | null;
@@ -43,6 +45,7 @@ function renderPanel(
       freqKhz={p.freqKhz ?? 9420}
       mode={p.mode ?? "am"}
       priyom={p.priyom ?? null}
+      heard={p.heard ?? null}
       picked={p.picked ?? null}
       connecting={p.connecting ?? false}
       playing={p.playing ?? false}
@@ -192,5 +195,70 @@ describe("SignalStations", () => {
     nowMs = Date.parse("2026-11-25T07:11:00Z");
     view.rerender(<SignalStations {...props} picked="uvb-76" connecting />);
     expect(status()).toBe("Connecting…");
+  });
+
+  // Value: protects=#102 badge: a station heard this week shows "heard N ago" in its row, a shared WWV/WWVH frequency reads "WWV or WWVH heard", and a station with no heard time shows no badge; fails_when=the badge is missing or on the wrong row, or the shared wording is lost; why_new=#102 panel badge; seam=useServerTick mocked, heard passed as the query would return it; no_claim=layout
+  it("shows when listeners last heard a station", () => {
+    const now = Date.parse("2026-11-25T12:00:00Z");
+    const ago = (min: number) => now - min * 60_000;
+    renderPanel("2026-11-25T12:00:00Z", {
+      heard: {
+        "uvb-76": { heardMs: ago(40), either: null, heard24h: 1, notHeard24h: 0 },
+        wwv: { heardMs: ago(125), either: ["WWV", "WWVH"], heard24h: 0, notHeard24h: 0 },
+        wwvh: { heardMs: ago(125), either: ["WWV", "WWVH"], heard24h: 1, notHeard24h: 0 },
+        rwm: { heardMs: null, either: null, heard24h: 0, notHeard24h: 2 },
+      },
+    });
+    expect(rowOf("UVB-76").textContent).toContain("heard 40 min ago");
+    expect(rowOf("WWV").textContent).toContain("WWV or WWVH heard 2h 5m ago");
+    expect(rowOf("WWVH").textContent).toContain("WWV or WWVH heard 2h 5m ago");
+    expect(rowOf("RWM").textContent).not.toContain("heard");
+  });
+
+  // Value: protects=owner decision D4 on #102: listener reports never reorder the rows (On now stays ending-soonest first, Always on in catalog order), so a report arriving can't move another station's Listen under a press, retuning the receiver and ending the audio, for any input (mouse, touch, keyboard, screen reader); fails_when=a heard-first sort comes back; why_new=the #102 review found the re-sort's mis-click path; seam=useServerTick mocked; no_claim=row height when a badge first appears
+  it("never reorders rows when a report arrives", () => {
+    const priyom = [tx("E07", "2026-11-25T07:12:00Z", 9_150), tx("E11", "2026-11-25T07:15:00Z", 20_167)];
+    const at = "2026-11-25T07:17:00Z";
+    const order = () => [...document.querySelectorAll(".signals tr[data-slug]")].map((r) => r.getAttribute("data-slug")).slice(0, 6);
+    const { rerenderAt } = renderPanel(at, { priyom });
+    const before = order();
+    expect(before).toEqual(["e07", "e11", "wwv", "wwvh", "rwm", "uvb-76"]);
+    const heardMs = Date.parse(at) - 30 * 60_000;
+    rerenderAt(at, {
+      heard: {
+        e11: { heardMs, either: null, heard24h: 1, notHeard24h: 0 },
+        "uvb-76": { heardMs, either: null, heard24h: 1, notHeard24h: 0 },
+      },
+    });
+    expect(order()).toEqual(before);
+    expect(rowOf("E11").textContent).toContain("heard 30 min ago");
+  });
+
+  // Value: protects=a heard answer older than a week shows no badge even when the server serves an old cached answer (its read failing), per #102's 7-day rule; fails_when=badges keep aging past a week ("heard 8d 2h ago") during a database outage; why_new=#102 review (cutoff applied only on the server's read); seam=useServerTick mocked; no_claim=the server's cache
+  it("hides a heard answer older than a week", () => {
+    const at = "2026-11-25T12:00:00Z";
+    const week = 7 * 24 * 60 * 60_000;
+    renderPanel(at, {
+      heard: {
+        "uvb-76": { heardMs: Date.parse(at) - week - 60_000, either: null, heard24h: 0, notHeard24h: 0 },
+        rwm: { heardMs: Date.parse(at) - week, either: null, heard24h: 0, notHeard24h: 0 },
+      },
+    });
+    expect(rowOf("UVB-76").textContent).not.toContain("heard");
+    expect(rowOf("RWM").textContent).toContain("heard 7d 0h ago");
+  });
+
+  // Value: protects=owner decision D5 on #102: every live row holds its "heard" line from the first render, empty until an answer arrives, so a badge arriving (on load or a refresh) never changes a row's height and can't push another station's Listen under a press; history rows get none; fails_when=the badge goes back inline (wrapping the place line on phones) or the line only renders once there's an answer; why_new=#102 review (row height shifting when a badge appears); seam=useServerTick mocked; no_claim=rendered pixel heights (jsdom has no layout)
+  it("holds a line for the heard badge before any answer arrives", () => {
+    const at = "2026-11-25T12:00:00Z";
+    const { rerenderAt } = renderPanel(at);
+    const lineOf = (name: string) => rowOf(name).querySelector(".signals-heard");
+    expect(lineOf("UVB-76")?.textContent).toBe("");
+    rerenderAt(at, { heard: { "uvb-76": { heardMs: Date.parse(at) - 40 * 60_000, either: null, heard24h: 1, notHeard24h: 0 } } });
+    expect(lineOf("UVB-76")?.textContent).toBe("heard 40 min ago");
+    expect(rowOf("UVB-76").querySelector(".sched-place")?.textContent).not.toContain("heard");
+    const history = [...document.querySelectorAll('.signals-history tr[data-slug]')];
+    expect(history.length).toBeGreaterThan(0);
+    expect(history.every((r) => r.querySelector(".signals-heard") === null)).toBe(true);
   });
 });

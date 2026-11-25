@@ -155,6 +155,9 @@ const submitReport = vi.fn();
 // Priyom's numbers-station schedule (#100): none from the server unless a test sets it.
 const priyomSchedule: { current: import("@/lib/priyom-schedule").PriyomTx[] | null } = { current: null };
 vi.mock("@/lib/use-priyom-schedule", () => ({ usePriyomSchedule: () => priyomSchedule.current }));
+// No listener reports (#102) unless a test sets them: the panel shows no "heard" badges.
+const signalHeard: { current: Record<string, import("@/lib/signal-heard").LastHeard> | null } = { current: null };
+vi.mock("@/lib/use-signal-last-heard", () => ({ useSignalLastHeard: () => signalHeard.current }));
 vi.mock("@/lib/use-submit-report", () => ({ useSubmitReport: () => submitReport }));
 // The radio service's measured noise floors (issue #67), as useNoise hands them to the page.
 const noise: { current: import("@/lib/noise-rank").NoiseLevels | null } = { current: null };
@@ -563,6 +566,19 @@ describe("ListenPage", () => {
       expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host, freqKhz: 20_167 }));
     } finally {
       priyomSchedule.current = null;
+    }
+  });
+
+  // Value: protects=#102 the page hands signals.lastHeard's answer to the Signal stations panel, so a station listeners heard shows its "heard N ago" badge on the real page; fails_when=page.tsx drops heard={signalHeard} (the prop is optional, so TypeScript wouldn't notice) and every badge silently disappears; why_new=the panel test passes heard directly and this file mocked the hook to null; seam=useSignalLastHeard mocked; no_claim=the query's polling
+  it("shows the panel's last-heard badge from the page's lastHeard query", () => {
+    const minute = Math.floor(Date.now() / 60_000) * 60_000;
+    signalHeard.current = { "uvb-76": { heardMs: minute - 40 * 60_000, either: null, heard24h: 1, notHeard24h: 0 } };
+    try {
+      render(<ListenPage />);
+      const row = screen.getAllByRole("row").find((r) => within(r).queryByText("UVB-76", { exact: true }))!;
+      expect(row.textContent).toMatch(/heard (40|41) min ago/);
+    } finally {
+      signalHeard.current = null;
     }
   });
 

@@ -143,6 +143,27 @@ describe("globals.css", () => {
     }
   });
 
+  // Value: protects=#102 owner decision D5: every live signal row's "heard" line holds one line's height from the first render (1.5em kept before 1lh for browsers without the lh unit) and never wraps, and on phones the cell may shrink so the line ends in an ellipsis instead of widening the row; fails_when=a duplicate-property cleanup drops the 1.5em fallback or puts it after 1lh, nowrap/ellipsis go, or the phone min-width:0 leaves the media block, so a badge arriving moves another station's Listen under a press; why_new=SignalStations.test checks the empty span exists but jsdom has no layout and nothing read these rules; seam=none; no_claim=how any browser renders it (source text only)
+  it("reserves one unwrapped line for a signal row's heard badge", () => {
+    const heard = ruleBody(".signals-heard");
+    const fallback = heard.search(/min-height:\s*1\.5em\s*;/);
+    const lh = heard.search(/min-height:\s*1lh\s*;/);
+    expect(fallback, "min-height: 1.5em").toBeGreaterThan(-1);
+    expect(lh, "min-height: 1lh after the 1.5em fallback").toBeGreaterThan(fallback);
+    expect(heard).toMatch(/display:\s*block\s*;/);
+    expect(heard).toMatch(/white-space:\s*nowrap\s*;/);
+    expect(heard).toMatch(/overflow:\s*hidden\s*;/);
+    expect(heard).toMatch(/text-overflow:\s*ellipsis\s*;/);
+    expect(ruleBody(".signals .sched-strip tr > td")).toMatch(/min-width:\s*0\s*;/);
+    // That shrink rule is the phone grid's: inside the max-width media block.
+    const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const at = text.search(/(^|[}\s])\.signals \.sched-strip tr > td\s*\{/);
+    const open = text.lastIndexOf("@media (max-width:", at);
+    expect(open).toBeGreaterThan(-1);
+    const between = text.slice(open, at);
+    expect(between.split("{").length - between.split("}").length).toBeGreaterThan(0);
+  });
+
   // Value: protects=a renamed or deleted selector can't silently unstyle a component; fails_when=a component uses a class globals.css never defines; why_new=pre-gate had no lane for globals.css; seam=source text; no_claim=how anything looks
   it("defines every class the page and its components use", () => {
     const used = sources.flatMap((url) => classesIn(readFileSync(url, "utf8")));

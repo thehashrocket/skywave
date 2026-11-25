@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { formatWait, mhz } from "@/lib/ghostnet";
 import { PRIYOM_ON_AIR_MS, PRIYOM_SCHEDULE_PAGE, type PriyomTx } from "@/lib/priyom-schedule";
 import { MODE_LABELS, type Mode } from "@/lib/radio-types";
+import { HEARD_SHOWN_MS, type LastHeard } from "@/lib/signal-heard";
 import { onKhz, panelGroups, type PanelGroups, type PanelRow } from "@/lib/signal-panel";
 import type { SignalCategory, SignalChannel, SignalStation } from "@/lib/signal-stations";
 import { localLabel, utcLabel } from "@/lib/utc-time";
@@ -29,6 +30,8 @@ type Props = {
   mode: Mode;
   /** Priyom's schedule for the numbers stations; null while the server has none. */
   priyom: readonly PriyomTx[] | null;
+  /** When listeners last heard each station, by slug (signals.lastHeard, #102); null for no badges. */
+  heard?: Record<string, LastHeard> | null;
   /** The station a Listen or a shared link picked (its slug), while the dial stays on it. */
   picked: string | null;
   /** A receiver is being tuned or connected for that pick, with no audio yet. */
@@ -67,6 +70,7 @@ export function SignalStations({
   freqKhz,
   mode,
   priyom,
+  heard = null,
   picked,
   connecting = false,
   playing = false,
@@ -97,6 +101,7 @@ export function SignalStations({
             freqKhz={freqKhz}
             mode={mode}
             priyom={priyom}
+            heard={heard}
             picked={picked}
             busy={connecting || playing}
             onListen={onListen}
@@ -119,18 +124,28 @@ export function SignalStations({
   );
 }
 
+/** "heard 40 min ago", or "WWV or WWVH heard …" on a frequency they share; null with no heard report this week. */
+export function heardText(h: LastHeard | undefined, now: number): string | null {
+  // The server drops week-old answers when it reads them; a stale cached answer
+  // (the database down) mustn't keep a badge past the week either.
+  if (!h || h.heardMs === null || now - h.heardMs > HEARD_SHOWN_MS) return null;
+  const ago = `heard ${formatWait(now - h.heardMs, false)} ago`;
+  return h.either ? `${h.either.join(" or ")} ${ago}` : ago;
+}
+
 type RowProps = {
   now: number;
   freqKhz: number;
   mode: Mode;
   priyom: readonly PriyomTx[] | null;
+  heard: Record<string, LastHeard> | null;
   picked: string | null;
   busy: boolean;
   onListen: Props["onListen"];
 };
 
-function Groups({ groups: g, now, freqKhz, mode, priyom, picked, busy, onListen }: { groups: PanelGroups } & RowProps) {
-  const rowProps = { now, freqKhz, mode, priyom, picked, busy, onListen };
+function Groups({ groups: g, now, freqKhz, mode, priyom, heard, picked, busy, onListen }: { groups: PanelGroups } & RowProps) {
+  const rowProps = { now, freqKhz, mode, priyom, heard, picked, busy, onListen };
   return (
     <>
       {g.onNow.length > 0 && <Group title="On now" caption="Signal stations on the air now" rows={g.onNow} {...rowProps} />}
@@ -185,6 +200,7 @@ function Row({
   freqKhz,
   mode,
   priyom,
+  heard,
   picked,
   busy,
   onListen,
@@ -196,6 +212,8 @@ function Row({
   // picked, so a second press while it connects or plays can't restart Pick best.
   const isPicked = picked === station.slug && ch !== null && onKhz(freqKhz, ch.khz);
   const { text, checkPriyom } = timeText(r, now, priyom);
+  const live = r.group !== "history";
+  const heardLine = live ? heardText(heard?.[station.slug], now) : null;
   const aka = station.aka.length ? ` · ${station.aka.join(", ")}` : "";
   return (
     // Explicit roles: on phones the rows are laid out as a grid, as in the GhostNet strip.
@@ -217,6 +235,10 @@ function Row({
             </>
           )}
         </span>
+        {/* Its own line, there (empty) before any answer arrives (owner decision D5 on #102): a
+            badge arriving or changing never changes the row's height, so it can't move another
+            station's Listen under a press. */}
+        {live && <span className="signals-heard">{heardLine}</span>}
       </td>
       <td role="cell">
         <span className="sched-next signals-wait">

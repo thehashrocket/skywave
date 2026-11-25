@@ -2514,6 +2514,23 @@ html:has(.tuning-bar:not([hidden])) {
   white-space: nowrap;
 }
 
+/* "heard 40 min ago" (#102): listeners' word, quiet like the place line above it. Its line is
+   held from the first render and never wraps (owner decision D5), so a badge arriving can't
+   push the rows below down under a press. */
+.signals-heard {
+  display: block;
+  /* 1.5em first: browsers without the lh unit (Safari < 16.4, Firefox < 120) keep it,
+     so the reserved line holds there too (#102 review). */
+  min-height: 1.5em;
+  min-height: 1lh;
+  overflow: hidden;
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  color: var(--muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .signals-wait {
   margin-right: 10px;
   white-space: nowrap;
@@ -2705,6 +2722,11 @@ html:has(.tuning-bar:not([hidden])) {
   .ghostnet .sched-strip tr > th,
   .signals .sched-strip tr > th {
     grid-row: span 2;
+  }
+  /* Lets the one-line "heard" line end in an ellipsis instead of widening the row past
+     the panel (#102 review). */
+  .signals .sched-strip tr > td {
+    min-width: 0;
   }
   .ghostnet .sched-strip tr > td:last-child,
   .signals .sched-strip tr > td:last-child {

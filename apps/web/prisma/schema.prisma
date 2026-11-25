@@ -127,6 +127,8 @@ model ReceptionReport {
 
   @@index([receiverHost, receiverPort, freqKhz])
   @@index([listenerId, createdAt])
+  /// signals.lastHeard (#102): a kind's answers from the last week.
+  @@index([txKind, createdAt])
 }
 
 model RbnSkimmerDay {

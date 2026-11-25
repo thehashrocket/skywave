@@ -8,7 +8,10 @@ import {
   priyomSpan,
   type PriyomTx,
 } from "@/lib/priyom-schedule";
+import { COUNT_MS, HEARD_SHOWN_MS, lastHeard, sharedChannels, type LastHeard } from "@/lib/signal-heard";
+import { ON_KHZ } from "@/lib/signal-panel";
 import { SIGNAL_STATIONS } from "@/lib/signal-stations";
+import type { db as Db } from "../db";
 import { readCapped } from "../read-capped";
 import { publicProcedure, router } from "../trpc";
 
@@ -126,6 +129,123 @@ export function priyomScheduleSource({ fetchImpl = (...args) => fetch(...args), 
 /** The one cached Priyom schedule for this server. */
 export const getPriyomSchedule = priyomScheduleSource();
 
+/**
+ * How long the server keeps a lastHeard answer before reading the reports
+ * again (#102). Ten minutes, not one (owner decision on the #102 review): the
+ * database (Neon) only sleeps after five idle minutes, so reading every minute
+ * while anyone has the page open would keep it awake and billing; a "heard"
+ * can take up to ~20 minutes (this plus the page's poll) to show instead.
+ */
+export const LAST_HEARD_TTL_MS = 10 * 60_000;
+
+/**
+ * How long a lastHeard read may take (#102 review). A hung read (a database
+ * resuming, a half-open socket) would otherwise pin the shared in-flight read
+ * for the instance's life; past this it counts as a failed read, so the last
+ * answer is served and the backoff applies.
+ */
+export const LAST_HEARD_READ_TIMEOUT_MS = 8_000;
+
+/** The channels signal stations share (WWV and WWVH), from the catalog: fixed, so worked out once. */
+const SHARED_CHANNELS = sharedChannels();
+
+export type LastHeardAnswer = { heard: Record<string, LastHeard>; at: number };
+
+/**
+ * The "last heard" badges' data (#102): signal-station answers summed per
+ * station by the database (each station's newest "heard" of the last
+ * HEARD_SHOWN_MS, overall and on each channel stations share, and the last
+ * COUNT_MS's answers by outcome), so a read returns a few rows per station
+ * however many answers there are, and a flood of answers about one station
+ * can't push another's newest "heard" out of it (#102 review). Turned into
+ * badges by lib/signal-heard.ts, read at most once a LAST_HEARD_TTL_MS per
+ * server instance and shared between concurrent callers. When
+ * a read fails (or takes over LAST_HEARD_READ_TIMEOUT_MS), the next read waits
+ * a LAST_HEARD_TTL_MS, so a struggling database isn't asked on every poll;
+ * meanwhile the last good answer is served, or, with none yet, the error goes
+ * to the page, which shows no badges.
+ */
+export function lastHeardSource({ now = () => Date.now() }: { now?: () => number } = {}) {
+  let cached: LastHeardAnswer | null = null;
+  let inflight: Promise<LastHeardAnswer> | null = null;
+  let lastFailureAt: number | null = null;
+  let lastError: unknown = null;
+
+  async function read(db: typeof Db): Promise<LastHeardAnswer> {
+    const at = now();
+    const until = new Date(at);
+    const heard = { txKind: "signal", outcome: "heard", createdAt: { gte: new Date(at - HEARD_SHOWN_MS), lte: until } };
+    const newestBy = (where: typeof heard & { freqKhz?: { gte: number; lte: number } }) =>
+      db.receptionReport.groupBy({ by: ["txName"], where, _max: { createdAt: true } });
+    const [latest, shared, counts] = await Promise.all([
+      newestBy(heard),
+      Promise.all(
+        SHARED_CHANNELS.map(async ({ khz }) =>
+          (await newestBy({ ...heard, freqKhz: { gte: khz - ON_KHZ, lte: khz + ON_KHZ } })).map((r) => ({ khz, ...r })),
+        ),
+      ),
+      db.receptionReport.groupBy({
+        by: ["txName", "outcome"],
+        where: { txKind: "signal", createdAt: { gte: new Date(at - COUNT_MS), lte: until } },
+        _count: { _all: true },
+      }),
+    ]);
+    const ms = (r: { _max: { createdAt: Date | null } }) => r._max.createdAt?.getTime() ?? null;
+    const sums = {
+      latest: latest.flatMap((r) => (ms(r) === null ? [] : [{ txName: r.txName, ms: ms(r)! }])),
+      shared: shared.flat().flatMap((r) => (ms(r) === null ? [] : [{ khz: r.khz, txName: r.txName, ms: ms(r)! }])),
+      counts: counts.map((r) => ({ txName: r.txName, outcome: r.outcome, n: r._count._all })),
+    };
+    return { heard: lastHeard(sums, at), at };
+  }
+
+  return async function get(db: typeof Db): Promise<LastHeardAnswer> {
+    const t = now();
+    if (cached && t - cached.at < LAST_HEARD_TTL_MS) return cached;
+    // Backing off after a failed read, with or without an answer to serve (#102 review):
+    // a fresh instance facing a sleeping or failing database mustn't read on every request.
+    if (lastFailureAt !== null && t - lastFailureAt < LAST_HEARD_TTL_MS) {
+      if (cached) return cached;
+      throw lastError;
+    }
+    inflight ??= withTimeout(read(db), LAST_HEARD_READ_TIMEOUT_MS)
+      .then(
+        (fresh) => {
+          lastFailureAt = null;
+          return (cached = fresh);
+        },
+        (error: unknown) => {
+          lastFailureAt = now();
+          lastError = error;
+          throw error;
+        },
+      )
+      .finally(() => {
+        inflight = null;
+      });
+    try {
+      return await inflight;
+    } catch (error) {
+      if (!cached) throw error;
+      console.warn("signals.lastHeard: read failed, serving the last answer:", error);
+      return cached;
+    }
+  };
+}
+
+/** `p`, or a rejection once `ms` pass without it settling. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`signals.lastHeard: read took over ${ms} ms`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
+/** The one cached lastHeard answer for this server instance. */
+export const getLastHeard = lastHeardSource();
+
 export const signalsRouter = router({
   priyom: publicProcedure.query(() => getPriyomSchedule()),
+  lastHeard: publicProcedure.query(({ ctx }) => getLastHeard(ctx.db)),
 });
