@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { loadIdent } from "./listener-ident";
 import { inTuneRange, isMode, type Mode } from "./radio-types";
 import type { WideView } from "./wide-view";
 
@@ -236,7 +237,14 @@ export function useRadio() {
   // playing; one that arrives after its session ended opens no Kiwi channel.
   const sendTune = useCallback((ws: WebSocket, t: Tuning, retune = false) => {
     if (serviceLiveRef.current) owedRef.current++;
-    ws.send(JSON.stringify(retune ? { type: "tune", ...t, retune: true } : { type: "tune", ...t }));
+    // A new connection carries the listener's name for the receiver's user
+    // list (#108); a retune keeps the one it joined with, so it isn't sent.
+    const ident = retune ? undefined : loadIdent();
+    ws.send(
+      JSON.stringify(
+        retune ? { type: "tune", ...t, retune: true } : { type: "tune", ...t, ...(ident ? { ident } : {}) },
+      ),
+    );
   }, []);
   // Band scan. canScan: the service said it can ("features" on its statuses);
   // an older one would answer a scan request with an error status.

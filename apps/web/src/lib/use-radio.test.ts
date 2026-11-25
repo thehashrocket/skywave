@@ -316,6 +316,25 @@ describe("useRadio", () => {
     expect(FakeSocket.instances[0]!.sent.at(-1)).toEqual({ type: "tune", ...tuning, secure: true });
   });
 
+  // Value: protects=the saved call sign rides on a tune that connects, and a dial retune leaves it off (the service keeps the name a connection joined with); fails_when=sendTune drops the ident, sends a refused one, or adds it to retunes; why_new=issue #108; seam=jsdom localStorage; no_claim=what the service does with it (radio test_ident.py)
+  it("sends the saved call sign on a tune, not on a retune", async () => {
+    try {
+      localStorage.setItem("skywave.ident", "N0CALL");
+      const { result } = renderHook(() => useRadio());
+      await act(() => result.current.tune(tuning));
+      const ws = FakeSocket.instances[0]!;
+      expect(ws.sent.at(-1)).toEqual({ type: "tune", ...tuning, ident: "N0CALL" });
+      act(() => ws.status("listening", { host: tuning.host, port: tuning.port }));
+      act(() => result.current.retune({ ...tuning, freqKhz: tuning.freqKhz + 5 }));
+      expect(ws.sent.at(-1)).toEqual({ type: "tune", ...tuning, freqKhz: tuning.freqKhz + 5, retune: true });
+      localStorage.setItem("skywave.ident", "bad;name");
+      await act(() => result.current.tune({ ...tuning, host: "other.example" }));
+      expect(ws.sent.at(-1)).toEqual({ type: "tune", ...tuning, host: "other.example" });
+    } finally {
+      localStorage.removeItem("skywave.ident");
+    }
+  });
+
   // Value: protects=a second Stop is harmless and leaves the radio idle; fails_when=stop() assumes a live socket; why_new=state matrix stopped x stop; seam=none; no_claim=none beyond protects
   it("treats Stop when already stopped as a no-op", async () => {
     const { result } = renderHook(() => useRadio());

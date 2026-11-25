@@ -11,6 +11,7 @@ import { StationSearch } from "@/components/StationSearch";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SMeter } from "@/components/SMeter";
 import { SpanPicker } from "@/components/SpanPicker";
+import { IdentField } from "@/components/IdentField";
 import { AudioSpectrum } from "@/components/AudioSpectrum";
 import { BeaconStrip, focusBeaconStrip } from "@/components/BeaconStrip";
 import { focusGhostNetStrip, GhostNetStrip, type GhostPick } from "@/components/GhostNetStrip";
@@ -1512,6 +1513,7 @@ export default function ListenPage() {
             .
           </p>
         </ReceiverPicker>
+        <IdentField />
       </section>
 
       <h2 className="visually-hidden">Tuner</h2>

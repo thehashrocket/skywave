@@ -27,7 +27,7 @@ import struct
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from urllib.parse import unquote, urljoin, urlsplit
+from urllib.parse import quote, unquote, urljoin, urlsplit
 
 import numpy as np
 import websockets
@@ -37,6 +37,17 @@ from websockets.exceptions import InvalidStatus
 from websockets.uri import parse_uri
 
 from .dsp import int16_iq_to_complex
+
+def ident_param(user: str) -> str:
+    """The name for SET ident_user, percent-encoded.
+
+    The Kiwi reads the value with sscanf("%s"), which stops at the first space,
+    then URL-decodes it (rx_cmd.cpp, kiwi_str_decode_inplace), so a name with
+    spaces must go encoded or the Kiwi keeps only its first word: a listener's
+    "skywave N0CALL" (session.listener_ident) goes as "skywave%20N0CALL".
+    """
+    return quote(user, safe="/")
+
 
 log = logging.getLogger(__name__)
 
@@ -524,7 +535,7 @@ class KiwiClient(KiwiConnection):
         await self._send("SET squelch=0 max=0")
         await self._send("SET genattn=0")
         await self._send("SET gen=0 mix=-1")
-        await self._send(f"SET ident_user={self.user}")
+        await self._send(f"SET ident_user={ident_param(self.user)}")
         if self.freq_khz is not None:
             await self._send_mod()
         if self.kiwi_agc:

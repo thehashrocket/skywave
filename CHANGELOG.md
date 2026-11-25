@@ -2,6 +2,11 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.50.0.0] - 2026-11-25 ([#108](https://github.com/thehashrocket/skywave/issues/108))
+
+### Added
+- **Show up by name on receivers.** An optional "Your call sign or name" field in the receiver drawer. When set, the receiver's user list shows you as "skywave N0CALL" instead of the plain Skywave name, so other listeners on that Kiwi can see who's there. The field previews exactly what most receivers will show (many cut names at 16 characters), and notes that the receiver's owner and its other listeners can see it. Letters, digits, `/`, `-`, `_` and spaces, up to 24 characters; anything else falls back to the default. It applies the next time a receiver connects.
+
 ## [0.48.2.0] - 2026-11-24 ([#116](https://github.com/thehashrocket/skywave/issues/116), [#117](https://github.com/thehashrocket/skywave/issues/117))
 
 ### Fixed

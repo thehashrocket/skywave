@@ -1,12 +1,17 @@
 """One browser listener: owns a Kiwi connection and the DSP chain for it.
 
 Browser -> service (JSON text frames):
-    {"type": "tune", "host": "...", "port": 8073, "freqKhz": 9535, "mode": "am", "source": "list", "secure": true}
+    {"type": "tune", "host": "...", "port": 8073, "freqKhz": 9535, "mode": "am", "source": "list", "secure": true,
+     "ident": "N0CALL"}
     ("source": "list" marks a receiver the browser picked from the public list
     rather than one a person typed; those are only ever dialed on public
     addresses, even with ALLOW_PRIVATE_HOSTS on. "secure": true dials wss://.
     "retune": true marks a dial move: it only retunes the session playing that
-    receiver and never starts one.)
+    receiver and never starts one. "ident", optional, is the listener's call
+    sign or name: shown in the receiver's user list as "skywave N0CALL"
+    when it passes listener_ident's check, else the service's own name. It
+    applies when a receiver connects; a retune of the one playing keeps the
+    name it joined with. The waterfalls (scan, view) always use the service's name.)
     {"type": "stop"}
     {"type": "scan", "id": 3, "fresh": false}
     (scan the receiver being listened to for strong broadcast signals; "fresh"
@@ -47,6 +52,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 import struct
 import time
 from collections.abc import Awaitable, Callable, Hashable, Iterable
@@ -113,11 +119,32 @@ TASK_NAME_MAX = 200
 # is copied (stripped, lowercased), the cleaned one after.
 RAW_HOST_MAX = 1024
 HOST_MAX = 253
+# A listener's own name for the receiver's user list (issue #108): letters,
+# digits, / - _ and single spaces, at most IDENT_MAX characters once trimmed.
+IDENT_MAX = 24
+IDENT_CHARS = re.compile(r"[A-Za-z0-9/_\- ]+")
+# Put before it, so the receiver's owner still sees the listener came through
+# Skywave. First, not last (owner decision, #108): a Kiwi cuts idents at its
+# ident_len (16 on most), and a cut must take the name's end, not the marker.
+IDENT_PREFIX = "skywave "
 # Longer than any name in MODES: refused before it is lowercased.
 MODE_MAX = 8
 # A port or frequency sent as text longer than this is refused before int() or
 # float() parses it: no real one is near this long.
 NUMBER_TEXT_MAX = 32
+
+
+def listener_ident(raw: object, default: str) -> str:
+    """The ident_user for a listener's audio connection: their name with
+    IDENT_PREFIX before it, or `default` for anything blank or outside IDENT_CHARS.
+    Runs of whitespace (tabs and newlines too) become one space, so nothing
+    but those characters can reach a SET command."""
+    if not isinstance(raw, str) or len(raw) > 4 * IDENT_MAX:
+        return default
+    name = " ".join(raw.split())
+    if not name or len(name) > IDENT_MAX or not IDENT_CHARS.fullmatch(name):
+        return default
+    return IDENT_PREFIX + name
 
 
 def _task_name(task: asyncio.Task[Any]) -> str:
@@ -695,8 +722,9 @@ class ListenSession:
         self._mode = mode
         self._target = target
         self._ending_target = None
+        ident = listener_ident(msg.get("ident"), self.settings.ident)
         self._pump = self._slot_holder = asyncio.create_task(
-            self._run(host, port, public_only=public_only, secure=secure), name=f"{host}:{port}"
+            self._run(host, port, public_only=public_only, secure=secure, ident=ident), name=f"{host}:{port}"
         )
         self.idle_since = None
         # A done callback, not a finally in _run: a task cancelled before it
@@ -726,7 +754,9 @@ class ListenSession:
         if pump is self._pump:
             self.idle_since = time.monotonic()
 
-    async def _run(self, host: str, port: int, *, public_only: bool = False, secure: bool = False) -> None:
+    async def _run(
+        self, host: str, port: int, *, public_only: bool = False, secure: bool = False, ident: str | None = None
+    ) -> None:
         await self._status("connecting", host=host)
         # How this pump ended, for the browser. Sent only once its Kiwi sockets
         # are closed and its slot is free, so a reconnect on "Stopped" or an
@@ -739,7 +769,12 @@ class ListenSession:
             allow_private = self.settings.allow_private_hosts and not public_only
             ip = await self._resolver(host, port, allow_private=allow_private, owner=self.lookup_owner)
             client = self._client_factory(
-                host, port, connect_host=ip, secure=secure, user=self.settings.ident, kiwi_agc=self.settings.kiwi_agc
+                host,
+                port,
+                connect_host=ip,
+                secure=secure,
+                user=ident or self.settings.ident,
+                kiwi_agc=self.settings.kiwi_agc,
             )
             self._client = client
             await client.tune(kiwi_freq_khz(self._freq_khz, self._mode))
