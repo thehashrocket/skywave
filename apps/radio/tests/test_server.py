@@ -5939,6 +5939,24 @@ def until_type(ws, want, pred=lambda p: True, limit=20000):
     raise AssertionError(f"never got {want}: {seen}")
 
 
+def until_text(ws, needle, limit=20000):
+    """Messages up to the one that completes `needle` in the decoded text so far.
+
+    Text comes in half-second batches, so a phrase is often split across two.
+    """
+    seen, text = [], ""
+    for _ in range(limit):
+        msg = ws.receive()
+        if msg.get("text"):
+            payload = json.loads(msg["text"])
+            seen.append(payload)
+            if payload.get("type") == "decoded":
+                text += payload["text"]
+                if needle in text:
+                    return seen
+    raise AssertionError(f"never decoded {needle!r}: {text!r}")
+
+
 # Value: protects=turning RTTY on mid-session streams decoded text over the socket, locks on the tone pair, and turning it off stops the text while the audio plays on; fails_when=the decode message isn't routed, the decoder isn't fed the session's I/Q, or off doesn't stop it; why_new=first decoder in the session; seam=FakeKiwi streams synthetic FSK; no_claim=a real Kiwi's I/Q levels
 @pytest.mark.timeout(30)
 def test_rtty_decode_on_and_off_over_socket():
@@ -5947,8 +5965,7 @@ def test_rtty_decode_on_and_off_over_socket():
             ws.send_text(tune_msg(kiwi.port))
             until_state(ws, "listening")
             ws.send_text(json.dumps({"type": "decode", "mode": "rtty"}))
-            seen = until_type(ws, "decoded", lambda p: "CQ DE TEST" in p["text"])
-            seen += until_type(ws, "decoded", lambda p: "12345" in p["text"])
+            seen = until_text(ws, "CQ DE TEST 73 12345")
             ws.send_text(json.dumps({"type": "decode", "mode": None}))
             off = until_type(ws, "decode", lambda p: p["state"] == "off")
             # Audio keeps coming, and no more text after the off.
@@ -6033,7 +6050,7 @@ def test_decode_set_before_listen_and_reset_on_retune():
             on_listen = until_type(ws, "decode")
             ws.send_text(tune_msg(kiwi.port, freq=7201))
             on_retune = until_type(ws, "decode")
-            text = until_type(ws, "decoded", lambda p: "CQ DE TEST" in p["text"])
+            text = until_text(ws, "CQ DE TEST")
         return first, on_listen, on_retune, text
 
     first, on_listen, on_retune, text = run_with_fake(body, iq_source=rtty_iq())
