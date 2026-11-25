@@ -10,8 +10,10 @@ Browser -> service (JSON text frames):
     receiver and never starts one. "ident", optional, is the listener's call
     sign or name: shown in the receiver's user list as "skywave N0CALL"
     when it passes listener_ident's check, else the service's own name. It
-    applies when a receiver connects; a retune of the one playing keeps the
-    name it joined with. The waterfalls (scan, view) always use the service's name.)
+    applies from the Listen that carries it: a tune without "retune" for the
+    receiver already playing renames its connections in place, while a dial
+    retune keeps the name. The waterfall a scan or view opens joins the audio's
+    channel, so it carries the audio's name.)
     {"type": "stop"}
     {"type": "scan", "id": 3, "fresh": false}
     (scan the receiver being listened to for strong broadcast signals; "fresh"
@@ -150,6 +152,9 @@ IDENT_CHARS = re.compile(r"[A-Za-z0-9/_\- ]+")
 # Put before it, so the receiver's owner still sees the listener came through
 # Skywave. First, not last (owner decision, #108): a Kiwi cuts idents at its
 # ident_len (16 on most), and a cut must take the name's end, not the marker.
+# Fixed, not KIWI_IDENT: production's "skywavehf.com " would leave a 16-character
+# ident_len room for two letters of the name. KIWI_IDENT names only the
+# connections that carry no listener's name.
 IDENT_PREFIX = "skywave "
 # Longer than any name in MODES: refused before it is lowercased.
 MODE_MAX = 8
@@ -483,6 +488,8 @@ class ListenSession:
         # it's kept here too: ending the session can drop it even if that scan
         # never stops.
         self._connecting: WaterfallClient | None = None
+        # The receiver user-list name for this listener's connections (#108).
+        self._ident: str = settings.ident
         self._waterfall_idle: asyncio.Task[None] | None = None
         self._scan: asyncio.Task[None] | None = None
         # The live view the browser asked for, (id, zoom, RF centre in kHz), or
@@ -690,6 +697,11 @@ class ListenSession:
                     # it up when the Kiwi stopped reading); the pump sees that
                     # failure and reports it, so don't send a second error.
                     return
+            if msg.get("retune") is not True:
+                # A Listen on the receiver already playing: the name it carries
+                # (perhaps edited since, or cleared) is the one to show now.
+                if not await self._rename(listener_ident(msg.get("ident"), self.settings.ident)):
+                    return
             moved = freq != self._freq_khz or mode != self._mode
             freq_moved = freq != self._freq_khz
             self._freq_khz = freq
@@ -781,9 +793,9 @@ class ListenSession:
         self._mode = mode
         self._target = target
         self._ending_target = None
-        ident = listener_ident(msg.get("ident"), self.settings.ident)
+        self._ident = listener_ident(msg.get("ident"), self.settings.ident)
         self._pump = self._slot_holder = asyncio.create_task(
-            self._run(host, port, public_only=public_only, secure=secure, ident=ident), name=f"{host}:{port}"
+            self._run(host, port, public_only=public_only, secure=secure), name=f"{host}:{port}"
         )
         self.idle_since = None
         # A done callback, not a finally in _run: a task cancelled before it
@@ -813,9 +825,29 @@ class ListenSession:
         if pump is self._pump:
             self.idle_since = time.monotonic()
 
-    async def _run(
-        self, host: str, port: int, *, public_only: bool = False, secure: bool = False, ident: str | None = None
-    ) -> None:
+    async def _rename(self, ident: str) -> bool:
+        """Show `ident` for this listener on the receiver playing: the audio and
+        any waterfall on its channel. False when the audio's connection is gone
+        (its pump reports that). A waterfall that fails is left to its own
+        error handling: the name matters less than the scan or view."""
+        if ident == self._ident:
+            return True
+        self._ident = ident
+        client = self._client
+        if client is not None:
+            try:
+                await client.rename(ident)
+            except KiwiError:
+                return False
+        for waterfall in (self._waterfall, self._connecting):
+            if waterfall is not None:
+                try:
+                    await waterfall.rename(ident)
+                except KiwiError:
+                    pass
+        return True
+
+    async def _run(self, host: str, port: int, *, public_only: bool = False, secure: bool = False) -> None:
         await self._status("connecting", host=host)
         # How this pump ended, for the browser. Sent only once its Kiwi sockets
         # are closed and its slot is free, so a reconnect on "Stopped" or an
@@ -832,7 +864,9 @@ class ListenSession:
                 port,
                 connect_host=ip,
                 secure=secure,
-                user=ident or self.settings.ident,
+                # Read now, not when the pump started: a Listen during the
+                # lookup may have renamed it.
+                user=self._ident,
                 kiwi_agc=self.settings.kiwi_agc,
             )
             self._client = client
@@ -1496,7 +1530,10 @@ class ListenSession:
             client.port,
             connect_host=client.connect_host,
             secure=client.secure,
-            user=self.settings.ident,
+            # The audio's own name: the waterfall joins its channel, so it is the
+            # same listener on the receiver's user list, and a different name here
+            # could replace theirs there.
+            user=self._ident,
             # Same timestamp: joins the audio's channel instead of being refused.
             timestamp=client.timestamp,
         )

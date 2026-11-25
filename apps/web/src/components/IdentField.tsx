@@ -11,6 +11,9 @@ import { IDENT_MAX, identProblem, identShown, loadIdent, normalizeIdent, saveIde
 export function IdentField() {
   const id = useId();
   const [value, setValue] = useState("");
+  // False once a usable name couldn't be stored (site data blocked): tunes
+  // read it from storage, so it would never reach a receiver.
+  const [saved, setSaved] = useState(true);
   // Read after mount: the server render has no storage.
   useEffect(() => setValue(loadIdent() ?? ""), []);
   const problem = identProblem(value);
@@ -29,14 +32,18 @@ export function IdentField() {
         aria-describedby={`${id}-note`}
         onChange={(e) => {
           setValue(e.target.value);
-          saveIdent(e.target.value);
+          const usable = saveIdent(e.target.value);
+          const name = normalizeIdent(e.target.value);
+          setSaved(!usable || !name || loadIdent() === name);
         }}
       />
       <p id={`${id}-note`} className="ident-note">
         {problem ??
-          (name
-            ? `Receivers you connect to next show you as “${identShown(name)}” (some allow more or fewer characters). Their owner and other listeners there can see it.`
-            : "Optional. Shown on the receiver's user list, where its owner and other listeners can see it.")}
+          (name && !saved
+            ? "This browser isn't saving site data, so receivers will show Skywave's own name instead."
+            : name
+              ? `From your next Listen, receivers show you as “${identShown(name)}” (some allow more or fewer characters). Their owners and other listeners there can see it.`
+              : "Optional. Shown on the receiver's user list, where its owner and other listeners can see it.")}
       </p>
     </div>
   );

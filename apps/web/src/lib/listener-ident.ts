@@ -8,7 +8,10 @@ export const IDENT_KEY = "skywave.ident";
 /** Keep in step with IDENT_MAX in apps/radio/skywave_radio/session.py. */
 export const IDENT_MAX = 24;
 const IDENT_CHARS = /^[A-Za-z0-9/_\- ]+$/;
-/** Keep in step with IDENT_PREFIX in session.py: first, so a receiver's cut takes the name's end. */
+/**
+ * Keep in step with IDENT_PREFIX in session.py: first, so a receiver's cut takes the name's end.
+ * Fixed, not the service's KIWI_IDENT, which names only connections without a listener's name.
+ */
 export const IDENT_PREFIX = "skywave ";
 /** Where most receivers cut an ident (the KiwiSDR's usual ident_len); owners can set more or fewer. */
 export const IDENT_SHOWN = 16;

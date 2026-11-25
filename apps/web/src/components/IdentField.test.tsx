@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDENT_KEY } from "@/lib/listener-ident";
 import { IdentField } from "./IdentField";
 
@@ -16,7 +16,7 @@ describe("IdentField", () => {
     expect(input.value).toBe("N0CALL");
     expect(
       screen.getByText(
-        "Receivers you connect to next show you as “skywave N0CALL” (some allow more or fewer characters). Their owner and other listeners there can see it.",
+        "From your next Listen, receivers show you as “skywave N0CALL” (some allow more or fewer characters). Their owners and other listeners there can see it.",
       ),
     ).toBeTruthy();
     fireEvent.change(input, { target: { value: "Jason Shultz" } });
@@ -32,5 +32,20 @@ describe("IdentField", () => {
         /Optional\. Shown on the receiver's user list, where its owner and other listeners can see it\./,
       ),
     ).toBeTruthy();
+  });
+
+  // Value: protects=when the browser won't store site data, the field says the name won't reach receivers instead of previewing it; fails_when=a failed save still shows "shows you as …" while every tune goes out with Skywave's name; why_new=review of PR 121; seam=localStorage.setItem stubbed to throw; no_claim=which browsers block storage
+  it("says so when the name can't be saved", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    try {
+      render(<IdentField />);
+      fireEvent.change(screen.getByLabelText("Your call sign or name"), { target: { value: "N0CALL" } });
+      expect(screen.getByText(/isn't saving site data, so receivers will show Skywave's own name/)).toBeTruthy();
+      expect(screen.queryByText(/show you as/)).toBeNull();
+    } finally {
+      setItem.mockRestore();
+    }
   });
 });

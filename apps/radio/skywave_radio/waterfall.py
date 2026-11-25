@@ -29,7 +29,7 @@ from dataclasses import dataclass
 import numpy as np
 from websockets.protocol import State
 
-from .kiwi import MAX_EXTRA_KEYS, KiwiConnection, KiwiError, ident_param, parse_msg
+from .kiwi import MAX_EXTRA_KEYS, KiwiConnection, KiwiError, parse_msg
 
 WF_BINS = 1024
 MAX_ZOOM = 14
@@ -131,7 +131,7 @@ class WaterfallClient(KiwiConnection):
         await self._send("SET maxdb=0 mindb=-200")  # needed, though uncompressed bins ignore it
         await self._send("SET wf_comp=0")
         await self._send(f"SET wf_speed={FAST_SPEED}")
-        await self._send(f"SET ident_user={ident_param(self.user)}")
+        await self._send_ident()
         await self._keepalive(force=True)
         self._configured = True
 

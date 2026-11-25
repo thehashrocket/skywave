@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import struct
 import time
 from collections.abc import AsyncIterator
@@ -37,17 +38,6 @@ from websockets.exceptions import InvalidStatus
 from websockets.uri import parse_uri
 
 from .dsp import int16_iq_to_complex
-
-def ident_param(user: str) -> str:
-    """The name for SET ident_user, percent-encoded.
-
-    The Kiwi reads the value with sscanf("%s"), which stops at the first space,
-    then URL-decodes it (rx_cmd.cpp, kiwi_str_decode_inplace), so a name with
-    spaces must go encoded or the Kiwi keeps only its first word: a listener's
-    "skywave N0CALL" (session.listener_ident) goes as "skywave%20N0CALL".
-    """
-    return quote(user, safe="/")
-
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +73,26 @@ MAX_FRAME_BYTES = 2**20
 # MSG values kept in KiwiInfo.extra; a hostile Kiwi could otherwise send
 # endless unique keys on a stream that stays open for the whole session.
 MAX_EXTRA_KEYS = 64
+
+
+def ident_param(user: str) -> str:
+    """The name for SET ident_user, percent-encoded.
+
+    The Kiwi reads the value with sscanf("%s"), which stops at the first space,
+    then URL-decodes it (rx_cmd.cpp, kiwi_str_decode_inplace), so a name with
+    spaces must go encoded or the Kiwi keeps only its first word: a listener's
+    "skywave N0CALL" (session.listener_ident) goes as "skywave%20N0CALL".
+    """
+    return quote(user, safe="/")
+
+
+IDENT_SET = re.compile(r"(SET ident_user=)\S*")
+
+
+def loggable(msg: str) -> str:
+    """A command as the debug log shows it: a listener's name (SET ident_user)
+    is a person's call sign or name, so it never goes in the log."""
+    return IDENT_SET.sub(r"\1<name>", msg)
 
 
 def _drop_late_socket(dial: asyncio.Future[ClientConnection]) -> None:
@@ -236,6 +246,9 @@ class KiwiConnection:
         self._last_keepalive = 0.0
         # Whether the Kiwi has sent anything since we sent auth.
         self._answered = False
+        # Whether the handshake has sent SET ident_user: rename() sends a new
+        # name only after it (before, the handshake sends the stored one).
+        self._ident_sent = False
         # Why this connection was given up while still open (a retune the Kiwi
         # stopped reading): what any read or send raises once the socket is dropped.
         self._broken: KiwiError | None = None
@@ -428,7 +441,7 @@ class KiwiConnection:
         if self._ws is None:
             return
         if msg != "SET keepalive":
-            log.debug("-> %s: %s", self.host, msg)
+            log.debug("-> %s: %s", self.host, loggable(msg))
         try:
             # A Kiwi that stops reading would block this forever once the
             # socket buffers fill, and no deadline in blocks() runs meanwhile.
@@ -443,6 +456,19 @@ class KiwiConnection:
                 # (normally our own abort).
                 raise _fresh_broken(self._broken, e) from self._broken
             raise KiwiError("closed", f"{self.host} closed the connection") from e
+
+    async def _send_ident(self) -> None:
+        # The flag goes up before self.user is read, with no await between: a
+        # rename() during this send's wait then sends its own name after it.
+        self._ident_sent = True
+        await self._send(f"SET ident_user={ident_param(self.user)}")
+
+    async def rename(self, user: str) -> None:
+        """Change the name the receiver's user list shows for this connection.
+        Before the handshake has sent a name, only stored: the handshake sends it."""
+        self.user = user
+        if self._ident_sent:
+            await self._send(f"SET ident_user={ident_param(user)}")
 
     def abort(self) -> None:
         """Drop the socket at once: an open one, or one a close() is still
@@ -535,7 +561,7 @@ class KiwiClient(KiwiConnection):
         await self._send("SET squelch=0 max=0")
         await self._send("SET genattn=0")
         await self._send("SET gen=0 mix=-1")
-        await self._send(f"SET ident_user={ident_param(self.user)}")
+        await self._send_ident()
         if self.freq_khz is not None:
             await self._send_mod()
         if self.kiwi_agc:
