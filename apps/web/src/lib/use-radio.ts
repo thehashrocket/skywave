@@ -340,7 +340,7 @@ export function useRadio() {
     // The page unmounted while the worklet loaded: its cleanup found no
     // context to close, so close this one here.
     if (!mountedRef.current) {
-      void ctx.close();
+      ctx.close().catch(() => {});
       throw new Error("unmounted");
     }
     const node = new AudioWorkletNode(ctx, "radio-player", { numberOfInputs: 0, outputChannelCount: [1] });
@@ -849,7 +849,7 @@ export function useRadio() {
       latestRef.current = null;
       wsRef.current?.close();
       wsRef.current = null;
-      void ctxRef.current?.close();
+      ctxRef.current?.close().catch(() => {});
       // A closed context can't resume; a remount (dev double mount) builds a new one.
       ctxRef.current = null;
       nodeRef.current = null;
