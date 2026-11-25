@@ -212,8 +212,9 @@ function Row({
       <td role="cell">
         <span className="signals-name">
           {/* The station's own page (#103), in a new tab: leaving the listening page would
-              stop the audio, and a plain link (not next/link) means no in-app navigation. */}
-          <a href={`/signals/${station.slug}`} target="_blank" rel="noopener" className="signals-page-link">
+              stop the audio, and a plain link (not next/link) means no in-app navigation.
+              noreferrer: the listening page's URL can carry a receiver's address (?rx=). */}
+          <a href={`/signals/${station.slug}`} target="_blank" rel="noopener noreferrer" className="signals-page-link">
             {station.name}
           </a>
           <span className="signals-aka">{aka}</span> <span className="signals-kind">{CATEGORY_LABELS[station.category]}</span>
