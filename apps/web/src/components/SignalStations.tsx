@@ -61,7 +61,7 @@ function listenLabel(station: SignalStation, ch: SignalChannel): string {
 export function SignalStations({ freqKhz, mode, priyom, picked, connecting = false, playing = false, onListen }: Props) {
   const now = useServerTick(MINUTE);
   const groups = now === null ? null : panelGroups(now, priyom);
-  const announce = useAnnouncements(groups?.onNow ?? null, picked, connecting, playing);
+  const announce = useAnnouncements(groups?.onNow ?? null, picked, freqKhz, connecting, playing);
   return (
     <section className="presets signals" aria-labelledby="signal-stations-heading">
       <h2 id="signal-stations-heading">Signal stations</h2>
@@ -227,43 +227,67 @@ function Row({
 }
 
 /**
- * What the hidden status line says: only changes, never the countdowns. A
- * station coming on or going off the air, and the picked station connecting
- * or playing.
+ * What the hidden status line says: only changes, never the countdowns, and
+ * only about the station the listener picked (owner, after #124 shipped). The
+ * section is always on the page and Priyom lists dozens of slots a day, so
+ * speaking every station's start and end would interrupt a screen-reader user
+ * all visit long, whatever they're listening to. For the picked station: it
+ * connecting or playing, and its schedule slot starting or ending. The others'
+ * state stays readable in the tables.
  */
 function useAnnouncements(
   onNow: readonly PanelRow[] | null,
   picked: string | null,
+  freqKhz: number,
   connecting: boolean,
   playing: boolean,
 ): string {
   const [text, setText] = useState("");
-  const last = useRef<{ names: Map<string, string>; state: string } | null>(null);
+  const last = useRef<{ picked: string | null; slot: string | null; name: string | null; phase: string } | null>(
+    null,
+  );
   let phase = "";
   if (connecting) phase = "connecting";
   else if (playing) phase = "playing";
-  const state = picked ? `${picked}:${phase}` : "";
-  // The on-air names as one string, so a new groups object each tick doesn't re-run the effect.
-  const onAir = onNow ? JSON.stringify(onNow.map((r) => [r.station.slug, r.station.name])) : null;
+  const known = onNow !== null;
+  // The picked station's slot on the air on the dial's frequency (On now), else null:
+  // a slot on another frequency is silence here. Keyed by frequency too, so a slot
+  // that moves elsewhere reads as an end. Always-on stations are never in On now.
+  const row = picked
+    ? onNow?.find((r) => r.station.slug === picked && r.listen !== null && onKhz(freqKhz, r.listen.khz))
+    : undefined;
+  const slot = row?.listen ? `${row.station.slug}@${row.listen.khz}` : null;
+  const name = row?.station.name ?? null;
 
   useEffect(() => {
-    if (onAir === null) {
+    if (!known) {
       last.current = null;
       return;
     }
-    const names = new Map(JSON.parse(onAir) as [string, string][]);
     const prev = last.current;
-    last.current = { names, state };
+    last.current = { picked, slot, name, phase };
     if (!prev) return;
+    if (!picked) {
+      // No pick: nothing to say, and a later identical line must read as new.
+      if (prev.picked) setText("");
+      return;
+    }
+    const same = prev.picked === picked;
     const lines: string[] = [];
-    for (const [slug, name] of names) if (!prev.names.has(slug)) lines.push(`${name} on the air now.`);
-    for (const [slug, name] of prev.names) if (!names.has(slug)) lines.push(`${name} ended.`);
-    if (picked && state !== prev.state) {
-      if (connecting) lines.push("Connecting…");
-      else if (playing) lines.push("Playing.");
+    // Its slot starting or ending on the dial's frequency, for the same picked station only.
+    if (same && slot && slot !== prev.slot) lines.push(`${name} on the air now.`);
+    if (same && !slot && prev.slot) lines.push(`${prev.name} ended.`);
+    // The run moving on: connecting, then playing. On a new pick only "Connecting…":
+    // "playing" can still be the receiver that was playing before this Listen.
+    if (same ? phase !== prev.phase : phase === "connecting") {
+      if (phase === "connecting") lines.push("Connecting…");
+      else if (phase === "playing") lines.push("Playing.");
     }
     if (lines.length) setText(lines.join(" "));
-  }, [onAir, picked, state, connecting, playing]);
+    // Back to idle (a failed connect, or Stop): clear the line, so pressing Listen again
+    // and hearing the same "Connecting…" changes the live region and is spoken.
+    else if (phase === "" && prev.phase !== "") setText("");
+  }, [known, picked, slot, name, phase]);
 
   return text;
 }

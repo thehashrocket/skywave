@@ -2,6 +2,11 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.54.1.0] - 2026-11-25
+
+### Fixed
+- **The Signal stations section no longer talks over you.** Screen readers used to hear every numbers station starting and ending ("E11 on the air now", "E11 ended") for the whole visit, which with Priyom's schedule could be every few minutes, even while you were listening to something else. Now the section speaks only about the station you pressed Listen on: connecting, playing, and its own slot starting or ending on the frequency you're tuned to. If a connection fails and you press Listen again, you hear "Connecting…" again, and picking a new station never repeats a "Playing." left over from the one before. Other stations' times are still in the tables.
+
 ## [0.54.0.0] - 2026-11-25 ([#99](https://github.com/thehashrocket/skywave/issues/99), [#100](https://github.com/thehashrocket/skywave/issues/100))
 
 ### Added
