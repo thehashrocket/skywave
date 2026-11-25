@@ -227,9 +227,13 @@ function Row({
 }
 
 /**
- * What the hidden status line says: only changes, never the countdowns. A
- * station coming on or going off the air, and the picked station connecting
- * or playing.
+ * What the hidden status line says: only changes, never the countdowns, and
+ * only about the station the listener picked (owner, after #124 shipped). The
+ * section is always on the page and Priyom lists dozens of slots a day, so
+ * speaking every station's start and end would interrupt a screen-reader user
+ * all visit long, whatever they're listening to. For the picked station: it
+ * connecting or playing, and its schedule slot starting or ending. The others'
+ * state stays readable in the tables.
  */
 function useAnnouncements(
   onNow: readonly PanelRow[] | null,
@@ -238,32 +242,35 @@ function useAnnouncements(
   playing: boolean,
 ): string {
   const [text, setText] = useState("");
-  const last = useRef<{ names: Map<string, string>; state: string } | null>(null);
+  const last = useRef<{ picked: string | null; onAir: string | null; phase: string } | null>(null);
   let phase = "";
   if (connecting) phase = "connecting";
   else if (playing) phase = "playing";
-  const state = picked ? `${picked}:${phase}` : "";
-  // The on-air names as one string, so a new groups object each tick doesn't re-run the effect.
-  const onAir = onNow ? JSON.stringify(onNow.map((r) => [r.station.slug, r.station.name])) : null;
+  const known = onNow !== null;
+  // The picked station's name while one of its slots is on the air (On now), else null.
+  // Always-on stations are never in On now, so they never get on/off lines.
+  const onAir = (picked && onNow?.find((r) => r.station.slug === picked)?.station.name) || null;
 
   useEffect(() => {
-    if (onAir === null) {
+    if (!known) {
       last.current = null;
       return;
     }
-    const names = new Map(JSON.parse(onAir) as [string, string][]);
     const prev = last.current;
-    last.current = { names, state };
-    if (!prev) return;
+    last.current = { picked, onAir, phase };
+    if (!prev || !picked) return;
+    const same = prev.picked === picked;
     const lines: string[] = [];
-    for (const [slug, name] of names) if (!prev.names.has(slug)) lines.push(`${name} on the air now.`);
-    for (const [slug, name] of prev.names) if (!names.has(slug)) lines.push(`${name} ended.`);
-    if (picked && state !== prev.state) {
-      if (connecting) lines.push("Connecting…");
-      else if (playing) lines.push("Playing.");
+    // Its slot starting or ending, for the same picked station only.
+    if (same && onAir && !prev.onAir) lines.push(`${onAir} on the air now.`);
+    if (same && !onAir && prev.onAir) lines.push(`${prev.onAir} ended.`);
+    // A new pick (Listen) or the run moving on: connecting, then playing.
+    if (!same || phase !== prev.phase) {
+      if (phase === "connecting") lines.push("Connecting…");
+      else if (phase === "playing") lines.push("Playing.");
     }
     if (lines.length) setText(lines.join(" "));
-  }, [onAir, picked, state, connecting, playing]);
+  }, [known, picked, onAir, phase]);
 
   return text;
 }

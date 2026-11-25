@@ -38,19 +38,29 @@ function renderPanel(
 ) {
   nowMs = Date.parse(iso);
   const onListen = vi.fn();
-  render(
+  const panel = (p: typeof props) => (
     <SignalStations
-      freqKhz={props.freqKhz ?? 9420}
-      mode={props.mode ?? "am"}
-      priyom={props.priyom ?? null}
-      picked={props.picked ?? null}
-      connecting={props.connecting ?? false}
-      playing={props.playing ?? false}
+      freqKhz={p.freqKhz ?? 9420}
+      mode={p.mode ?? "am"}
+      priyom={p.priyom ?? null}
+      picked={p.picked ?? null}
+      connecting={p.connecting ?? false}
+      playing={p.playing ?? false}
       onListen={onListen}
-    />,
+    />
   );
-  return { onListen };
+  const view = render(panel(props));
+  return {
+    onListen,
+    /** Re-render at another time and/or with other props, as the page would. */
+    rerenderAt: (next: string, over: typeof props = {}) => {
+      nowMs = Date.parse(next);
+      view.rerender(panel({ ...props, ...over }));
+    },
+  };
 }
+
+const status = () => screen.getByRole("status").textContent;
 
 const heads = () => [...document.querySelectorAll(".signals .sched-head")].map((e) => e.textContent);
 const rowOf = (name: string) => screen.getAllByRole("row").find((r) => within(r).queryByText(name, { exact: true }))!;
@@ -115,5 +125,29 @@ describe("SignalStations", () => {
     expect(button.getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(button, { detail: 1 });
     expect(onListen).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=stations the listener didn't pick come on and go off the air in silence: the section is always on the page and Priyom lists dozens of slots a day, so announcing them would interrupt a screen-reader user all visit (owner, after #124 shipped); fails_when=every station's start or end is spoken again; why_new=accessibility fix after #124; seam=useServerTick mocked; no_claim=what a screen reader does with the text
+  it("says nothing when a station nobody picked comes on or goes off", () => {
+    const priyom = [tx("E11", "2026-11-25T07:15:00Z", 20_167)];
+    const { rerenderAt } = renderPanel("2026-11-25T07:10:00Z", { priyom });
+    rerenderAt("2026-11-25T07:16:00Z");
+    expect(rowOf("E11").textContent).toContain("left");
+    rerenderAt("2026-11-25T07:30:00Z");
+    expect(status()).toBe("");
+  });
+
+  // Value: protects=the picked station's own slot starting and ending, and its run connecting then playing, are still announced; fails_when=the fix silences the picked station too, or a first Listen's "Connecting…" is lost because the pick is new; why_new=accessibility fix after #124; seam=useServerTick mocked; no_claim=what a screen reader does with the text
+  it("announces only the picked station's slot and its connecting and playing", () => {
+    const priyom = [tx("E11", "2026-11-25T07:15:00Z", 20_167)];
+    const { rerenderAt } = renderPanel("2026-11-25T07:10:00Z", { priyom });
+    rerenderAt("2026-11-25T07:11:00Z", { picked: "e11", connecting: true });
+    expect(status()).toBe("Connecting…");
+    rerenderAt("2026-11-25T07:12:00Z", { picked: "e11", connecting: false, playing: true });
+    expect(status()).toBe("Playing.");
+    rerenderAt("2026-11-25T07:16:00Z", { picked: "e11", playing: true });
+    expect(status()).toBe("E11 on the air now.");
+    rerenderAt("2026-11-25T07:30:00Z", { picked: "e11", playing: true });
+    expect(status()).toBe("E11 ended.");
   });
 });
