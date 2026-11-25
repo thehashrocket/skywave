@@ -109,6 +109,7 @@ apps/web/
   src/lib/station-search.ts          Find a station: name matching, on now and next 24 h, area/language filters, the mode a row tunes in
   src/lib/utc-time.ts                the UTC clock's labels and the saved-frequency stamps (#106, #107)
   src/lib/ghostnet.ts                GhostNet's weekly UTC schedule, region boxes, and the receiver ranking its Listen uses (#91)
+  src/lib/signal-stations.ts         signal stations (time signals, markers, numbers stations): the catalog and what's on the air when (#98)
   src/lib/kiwi-list.ts               parses and ranks the public receiver list (with positions)
   src/lib/solar.ts                   where the sun is; which receivers are in darkness
   src/lib/use-solar-clock.ts         one minute clock for the page's Night column and map
