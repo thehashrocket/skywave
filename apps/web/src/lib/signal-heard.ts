@@ -8,6 +8,7 @@
  * time, so tests need no database or clock.
  */
 
+import { formatWait } from "./ghostnet";
 import { onKhz } from "./signal-panel";
 import { SIGNAL_STATIONS, type SignalStation } from "./signal-stations";
 
@@ -109,4 +110,13 @@ export function lastHeard(
     }
   }
   return out;
+}
+
+/** "heard 40 min ago", or "WWV or WWVH heard …" on a frequency they share; null with no heard report this week. */
+export function heardText(h: LastHeard | undefined, now: number): string | null {
+  // The server drops week-old answers when it reads them; a stale cached answer
+  // (the database down) mustn't keep a badge past the week either.
+  if (!h || h.heardMs === null || now - h.heardMs > HEARD_SHOWN_MS) return null;
+  const ago = `heard ${formatWait(now - h.heardMs, false)} ago`;
+  return h.either ? `${h.either.join(" or ")} ${ago}` : ago;
 }

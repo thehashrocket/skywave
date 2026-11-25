@@ -13,9 +13,9 @@ import {
 } from "@/lib/signal-stations";
 import { usePriyomSchedule } from "@/lib/use-priyom-schedule";
 import { useServerTick } from "@/lib/use-server-tick";
+import { heardText } from "@/lib/signal-heard";
 import { useSignalLastHeard } from "@/lib/use-signal-last-heard";
 import { localLabel, utcLabel } from "@/lib/utc-time";
-import { heardText } from "./SignalStations";
 
 const MINUTE = 60_000;
 
