@@ -46,6 +46,24 @@ describe("/signals/[slug]", () => {
     expect(screen.queryByRole("link", { name: /^Tune / })).toBeNull();
   });
 
+  // Value: protects=#103 a page says where the station is sent from and flags a reported area as such, and names each source by its site (Wikipedia, NIST, Priyom) rather than a raw host; fails_when=the transmitter section vanishes, an approximate site reads as exact, or sourceName mislabels a source; why_new=the existing page tests only count source links and never read the transmitter section; seam=SignalLive mocked; no_claim=catalog facts
+  it("says where it's sent from and names its sources by site", async () => {
+    render(await SignalStationPage(params("uvb-76")));
+    const where = screen.getByRole("heading", { name: "Where it’s sent from" }).parentElement!;
+    expect(where.textContent).toContain("Naro-Fominsk, Russia (reported area)");
+    expect(screen.getByRole("link", { name: "Wikipedia" }).getAttribute("href")).toBe("https://en.wikipedia.org/wiki/UVB-76");
+    cleanup();
+    render(await SignalStationPage(params("wwv")));
+    const known = screen.getByRole("heading", { name: "Where it’s sent from" }).parentElement!;
+    expect(known.textContent).toContain("Fort Collins, Colorado");
+    expect(known.textContent).not.toContain("(");
+    const sources = screen.getByRole("heading", { name: "Read more" }).parentElement!;
+    expect(within(sources).getAllByRole("link").map((a) => a.textContent)).toEqual(["NIST", "Wikipedia"]);
+    cleanup();
+    render(await SignalStationPage(params("e11")));
+    expect(screen.getByRole("link", { name: "Priyom" })).toBeTruthy();
+  });
+
   // Value: protects=one static page per catalog station, an unknown slug is a 404, and each page's title, description and canonical name the station (live: "listen live"; defunct: not); fails_when=a station has no page, unknown slugs render, or a defunct station is titled "listen live"; why_new=#103 metadata; seam=none; no_claim=how search engines rank it
   it("builds a page per station with its own metadata", async () => {
     expect(generateStaticParams().map((p) => p.slug)).toEqual(SIGNAL_STATIONS.map((s) => s.slug));

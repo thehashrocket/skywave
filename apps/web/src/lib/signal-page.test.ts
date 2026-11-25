@@ -17,6 +17,25 @@ describe("signal page text", () => {
     for (const s of SIGNAL_STATIONS) expect(scheduleLines(s).join("").length).toBeGreaterThan(0);
   });
 
+  // Value: protects=#103 a station on set hours reads as days and UTC times with its channel ("Daily" when no days), a defunct station with no known end says only "Off the air.", and a fractional frequency keeps its fourth digit (3.3635, not 3.364); fails_when=windowText drops the days or channel, hhmm mis-pads, a missing `ended` prints "undefined", or channelText rounds 3363.5 kHz to the wrong channel; why_new=no catalog station uses windows or lacks `ended` yet, and no test checked a fractional channel's text since channelText moved out of the panel; seam=none (synthetic station objects); no_claim=catalog facts
+  it("describes set-hours windows, an unknown end, and a fractional channel", () => {
+    const base = station("uvb-76");
+    const windowed = {
+      ...base,
+      channels: [{ khz: 4_625, mode: "usb" as const }],
+      schedule: {
+        kind: "windows" as const,
+        windows: [
+          { days: "Mo-Fr", startUtc: 14 * 60, endUtc: 15 * 60 + 30, khz: 4_625 },
+          { startUtc: 5, endUtc: 65, khz: 9_999 },
+        ],
+      },
+    };
+    expect(scheduleLines(windowed)).toEqual(["Mo-Fr 14:00–15:30 UTC on 4.625 USB", "Daily 00:05–01:05 UTC"]);
+    expect(scheduleLines({ ...base, schedule: { kind: "defunct" } })).toEqual(["Off the air."]);
+    expect(scheduleLines(station("squeaky-wheel"))[0]).toContain("3.3635 USB by night");
+  });
+
   // Value: protects=a station page's Tune link opens the main page tuned to that channel with the station named, exactly as the main page parses links (?f=&m=&sig=), so its Listen ranks by the station's path; fails_when=the link format drifts from parseShareLink (wrong param, a dropped sig) and the page opens untuned or unnamed; why_new=#103 Listen links; seam=share-link parser; no_claim=the main page's Listen behaviour
   it("links to the main page tuned to the station, as the page reads links", () => {
     for (const s of SIGNAL_STATIONS)
