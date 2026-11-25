@@ -11,6 +11,7 @@ import { StationSearch } from "@/components/StationSearch";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SMeter } from "@/components/SMeter";
 import { SpanPicker } from "@/components/SpanPicker";
+import { DecodePanel } from "@/components/DecodePanel";
 import { IdentField } from "@/components/IdentField";
 import { AudioSpectrum } from "@/components/AudioSpectrum";
 import { BeaconStrip, focusBeaconStrip } from "@/components/BeaconStrip";
@@ -301,6 +302,7 @@ const AUTO_SCAN_MS = 10_000;
 
 export default function ListenPage() {
   const radio = useRadio();
+  const { decodeState, setDecode } = radio;
   const { status, meter, tune } = radio;
   useListenTracking(status, radio.heardAudio);
   const sun = useSolarClock();
@@ -742,6 +744,8 @@ export default function ListenPage() {
     (o: Occurrence) => {
       const { dialKhz, mode: m } = o.slot;
       if (dialKhz === null || m === null) return;
+      // The RTTY slot is text: turn the decoder on with it (#92).
+      if (o.slot.kind === "rtty" && (!decodeState || decodeState.state === "error")) setDecode({ mode: "rtty" });
       if (ghostPick?.eventId === o.event.id && status.state === "listening") {
         // Following the picked net to its next slot: the receiver playing it
         // moves to the new dial; no Pick best, which could switch receivers and
@@ -763,7 +767,7 @@ export default function ListenPage() {
         nextStartMs: eventStart(o) + WEEK_MS,
       });
     },
-    [listenAt, ghostPick, status.state, sendRetune],
+    [listenAt, ghostPick, status.state, sendRetune, decodeState, setDecode],
   );
   // What the map draws, once per slot while beacon mode is on.
   const beaconSlot = useServerTick(SLOT_MS, beaconMode);
@@ -1560,6 +1564,14 @@ export default function ListenPage() {
             />
             Letter keys change mode (A U L C)
           </label>
+          <label className="letter-keys">
+            <input
+              type="checkbox"
+              checked={decodeState !== null && decodeState.state !== "error"}
+              onChange={(e) => setDecode(e.target.checked ? { mode: "rtty" } : null)}
+            />
+            Decode RTTY
+          </label>
         </div>
 
         <SMeter meter={meter} />
@@ -1724,6 +1736,18 @@ export default function ListenPage() {
           active={status.state === "listening"}
           subscribe={radio.onSpectrum}
           onClickOffset={onWaterfallClick}
+        />
+      )}
+
+      {decodeState && (
+        <DecodePanel
+          state={decodeState}
+          text={radio.decoded}
+          canDecode={radio.canDecode}
+          playing={status.state === "listening"}
+          onReverse={() => setDecode({ mode: "rtty", reverse: !decodeState.reverse })}
+          onClear={radio.clearDecoded}
+          onOff={() => setDecode(null)}
         />
       )}
 

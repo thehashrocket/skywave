@@ -46,7 +46,7 @@ const S2_URL = "https://github.com/s2underground/GhostNet";
  */
 const KIND_NOTES: Record<SlotKind, string> = {
   js8: "JS8Call data: you'll hear tones. Skywave can't decode them yet.",
-  rtty: "RTTY at 45.45 baud: you'll hear two-tone data. Skywave can't decode it yet.",
+  rtty: "RTTY at 45.45 baud: Listen turns on the decoder, and text shows under the waterfall.",
   vara: "Can't be decoded here.",
   ale: "Can't be decoded here.",
   voice: "Emergency voice only; usually silent.",

@@ -97,6 +97,26 @@ export type ScanState =
     }
   | { state: "error"; host: string; port: number; message: string };
 
+/** A decoder the browser asks the service to run (session.py, "decode"). */
+export type DecodeRequest = {
+  mode: "rtty";
+  /** Mark tone's offset from the dial in Hz (its USB pitch); leave out to find the tones automatically. */
+  markHz?: number;
+  /** Mark on the lower tone instead of the higher. */
+  reverse?: boolean;
+};
+
+/** What the service says its decoder is doing. */
+export type DecodeState = {
+  state: "searching" | "locked" | "off" | "error";
+  markHz?: number;
+  reverse: boolean;
+  message?: string;
+};
+
+// Decoded text kept for the panel; older text scrolls away.
+export const DECODED_MAX_CHARS = 4000;
+
 type SpectrumListener = (row: Float32Array, sampleRate: number) => void;
 
 /** One row of the receiver's own waterfall: where it really landed (RF kHz), and one level per bin. */
@@ -268,6 +288,18 @@ export function useRadio() {
   const viewIdRef = useRef(0);
   const [viewError, setViewError] = useState<string | null>(null);
   const wideListenersRef = useRef(new Set<WideListener>());
+  // Decoding. Like the view, the request is kept across receivers and sent
+  // again to each one; the service also keeps it while the socket lasts.
+  const [canDecode, setCanDecode] = useState(false);
+  const canDecodeRef = useRef(false);
+  const decodeRef = useRef<DecodeRequest | null>(null);
+  const [decodeState, setDecodeState] = useState<DecodeState | null>(null);
+  const [decoded, setDecoded] = useState("");
+  const sendDecode = useCallback((ws: WebSocket | null) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !canDecodeRef.current) return;
+    const d = decodeRef.current;
+    ws.send(JSON.stringify(d ? { type: "decode", ...d } : { type: "decode", mode: null }));
+  }, []);
   const sendView = useCallback((ws: WebSocket | null) => {
     if (!ws || ws.readyState !== WebSocket.OPEN || !canViewRef.current || !listeningRef.current) return;
     const v = viewRef.current;
@@ -358,6 +390,9 @@ export function useRadio() {
         setCanScan(Array.isArray(msg.features) && msg.features.includes("scan"));
         canViewRef.current = Array.isArray(msg.features) && msg.features.includes("view");
         setCanView(canViewRef.current);
+        const couldDecode = canDecodeRef.current;
+        canDecodeRef.current = Array.isArray(msg.features) && msg.features.includes("decode");
+        setCanDecode(canDecodeRef.current);
         const before = listeningRef.current;
         listeningRef.current =
           state === "listening" && host !== undefined && port !== undefined ? { host, port } : null;
@@ -371,6 +406,9 @@ export function useRadio() {
           setViewError(null);
           sendView(wsRef.current);
         }
+        // A new socket's service knows nothing of the decoder asked for: tell it
+        // once it says it can decode.
+        if (decodeRef.current && canDecodeRef.current && !couldDecode) sendDecode(wsRef.current);
         const freqKhz =
           typeof msg.freqKhz === "number" && Number.isFinite(msg.freqKhz) && inTuneRange(msg.freqKhz)
             ? msg.freqKhz
@@ -409,6 +447,30 @@ export function useRadio() {
         if (msg.state === "error" && viewRef.current && msg.id === viewRef.current.id) {
           setViewError(typeof msg.message === "string" ? msg.message : "Couldn't show this receiver's waterfall.");
         }
+      } else if (msg.type === "decode") {
+        const state = msg.state;
+        if (state !== "searching" && state !== "locked" && state !== "off" && state !== "error") return;
+        // "off" answers a request to stop: nothing more to show. One that comes
+        // while a decoder is asked for is the service catching up; the request
+        // that follows answers it.
+        if (state === "off") {
+          if (!decodeRef.current) setDecodeState(null);
+          return;
+        }
+        // A state from before the listener turned it off, still in flight,
+        // must not bring the panel back.
+        if (!decodeRef.current && state !== "error") return;
+        if (state === "error") decodeRef.current = null;
+        setDecodeState({
+          state,
+          markHz: typeof msg.markHz === "number" && Number.isFinite(msg.markHz) ? msg.markHz : undefined,
+          reverse: msg.reverse === true,
+          message: typeof msg.message === "string" ? msg.message : undefined,
+        });
+      } else if (msg.type === "decoded") {
+        if (!decodeRef.current || typeof msg.text !== "string") return;
+        const text = msg.text;
+        setDecoded((old) => (old + text).slice(-DECODED_MAX_CHARS));
       } else if (msg.type === "meter") {
         setMeter({ rssi: Number(msg.rssi), overflow: Boolean(msg.overflow) });
       } else if (msg.type === "scan") {
@@ -438,7 +500,7 @@ export function useRadio() {
         }
       }
     },
-    [setTuningBoth, setHeardAudioBoth, clearScan, forgetOwed, sendView],
+    [setTuningBoth, setHeardAudioBoth, clearScan, forgetOwed, sendView, sendDecode],
   );
 
   const handleBinary = useCallback(
@@ -547,6 +609,9 @@ export function useRadio() {
         canViewRef.current = false;
         setCanView(false);
         setViewError(null);
+        // The next socket is told again (on its first status that lists "decode").
+        canDecodeRef.current = false;
+        setCanDecode(false);
         clearScan();
         setMeter(null);
         setTuningBoth(false);
@@ -672,6 +737,10 @@ export function useRadio() {
     canViewRef.current = false;
     setCanView(false);
     setViewError(null);
+    // The request stays for the next Listen; what the old socket said doesn't.
+    canDecodeRef.current = false;
+    setCanDecode(false);
+    if (decodeRef.current) setDecodeState({ state: "searching", reverse: decodeRef.current.reverse === true });
     setMeter(null);
     setTuningBoth(false);
     setHeardAudioBoth(false);
@@ -728,6 +797,27 @@ export function useRadio() {
     [sendView],
   );
 
+  /**
+   * Run a decoder (or, with null, none) on whatever plays, from now on and on
+   * every receiver after. Turning it on clears the text from before.
+   */
+  const setDecode = useCallback(
+    (d: DecodeRequest | null) => {
+      const was = decodeRef.current;
+      decodeRef.current = d;
+      if (!d) {
+        setDecodeState(null);
+      } else {
+        if (!was) setDecoded("");
+        setDecodeState({ state: "searching", markHz: d.markHz, reverse: d.reverse === true });
+      }
+      sendDecode(wsRef.current);
+    },
+    [sendDecode],
+  );
+
+  const clearDecoded = useCallback(() => setDecoded(""), []);
+
   const onWideFrame = useCallback((fn: WideListener) => {
     wideListenersRef.current.add(fn);
     return () => {
@@ -754,6 +844,11 @@ export function useRadio() {
     scan,
     canView,
     viewError,
+    canDecode,
+    decodeState,
+    decoded,
+    setDecode,
+    clearDecoded,
     tune,
     retune,
     stop,
