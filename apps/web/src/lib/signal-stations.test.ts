@@ -89,7 +89,7 @@ describe("onAirAt", () => {
   });
 
   // Value: protects=defunct and irregular stations are never on air, so the panel never offers Listen into dead air for them; fails_when=either kind falls through to "on"; why_new=new catalog (#98, #104's dead-air rule); seam=none; no_claim=none
-  it.each(["chu", "lincolnshire-poacher", "e07", "m12"])("%s is never on", (slug) => {
+  it.each(["chu", "lincolnshire-poacher", "e07", "e11", "m12"])("%s is never on", (slug) => {
     const s = findStation(slug)!;
     for (const iso of ["2026-11-23T00:00:00Z", "2026-11-25T12:00:00Z", "2026-11-28T23:30:00Z"]) {
       expect(onAirAt(s, at(iso))).toBe(false);
@@ -170,7 +170,7 @@ describe("nextStartAfter", () => {
 });
 
 describe("SIGNAL_STATIONS", () => {
-  // Value: protects=the hand-edited catalog stays usable: unique slugs, tunable channels in a real mode, window and day/night frequencies among the channels, window times within a day, a transmitter (ranking, #99) and a channel (Listen) for every station still on the air, and sources on every entry; fails_when=a typo or copy-paste breaks an entry; why_new=new catalog (#98); seam=radio-types; no_claim=that the facts are right (sources and the Priyom check cover that)
+  // Value: protects=the hand-edited catalog stays usable: unique slugs, tunable channels in a real mode, window and day/night frequencies among the channels, window times within a day, a transmitter (ranking, #99) for every station still on the air and a channel (Listen) for every one with a schedule, and sources on every entry; fails_when=a typo or copy-paste breaks an entry; why_new=new catalog (#98); seam=radio-types; no_claim=that the facts are right (sources and the Priyom check cover that)
   it("is well formed", () => {
     const slugs = SIGNAL_STATIONS.map((s) => s.slug);
     expect(new Set(slugs).size).toBe(slugs.length);
@@ -183,7 +183,7 @@ describe("SIGNAL_STATIONS", () => {
       }
       if (s.schedule.kind === "defunct") continue;
       expect(s.tx, s.slug).toBeDefined();
-      expect(s.channels.length, s.slug).toBeGreaterThan(0);
+      if (s.schedule.kind !== "irregular") expect(s.channels.length, s.slug).toBeGreaterThan(0);
       const khzs = s.channels.map((c) => c.khz);
       if (s.schedule.kind === "windows")
         for (const w of s.schedule.windows) {

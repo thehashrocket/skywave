@@ -5,24 +5,25 @@
  * the time it's asked about, which the page reads from the server-corrected
  * clock (server-clock.ts), as ibp.ts and ghostnet.ts do.
  *
- * Sources: operator pages (NIST) and Wikipedia, checked 2026-11-24; each entry
- * links its own. Blurbs are our own words. Nothing is fetched: this file is
- * the catalog until Priyom agrees to us using their schedules (#104 owner task).
+ * Sources: operator pages (NIST) and Wikipedia, checked 2026-11-24, and
+ * Priyom (priyom.org, CC BY-NC-SA 4.0) for the numbers stations, read
+ * 2026-11-25; each entry links its own, and the panel must credit Priyom.
+ * Facts only: blurbs and notes are our own words. Nothing is fetched.
  *
  * Not yet checked against Priyom (do before #100 shows the panel):
  * - The Pip's and Squeaky Wheel's modes (USB, as UVB-76's; their pages don't say).
  * - Their day/night switch times: unpublished, so `dayNight` follows the sun at
  *   the transmitter (owner's choice) and can be wrong for a while around dawn and dusk.
  * - Squeaky Wheel's channels (Wikipedia's 5367/3363.5; VE3SUN's list has 3829.18/3830.45).
- * - The numbers stations' frequencies and countries, which come from listener
- *   logs (VE3SUN's export), so they stay `irregular` and never show as on now.
  *
  * Left out of #98's seed list for now, each waiting on a source:
  * - CHU is listed as defunct: Wikipedia says its last broadcast was 2023-10-09
  *   (NRC's own page refused automated fetches). The issue listed it as live.
- * - UVB-76's night channel, E11, Swedish Rhapsody (no end date found), and
+ * - UVB-76's night channel, Swedish Rhapsody (no end date found), and
  *   VE3SUN-only entries such as HD2IOA (waiting on his OK).
- * - Windowed schedules for the numbers stations (waiting on Priyom).
+ * - Priyom's other active stations (M01, M14, M23, V13, V28, V32...): their pages aren't read yet.
+ * - Numbers-station times and frequencies: Priyom's schedule is a live calendar,
+ *   not a fixed table, so they'd need a feed, not a copy (#104 owner task).
  */
 
 import { onDay } from "./eibi";
@@ -54,7 +55,7 @@ export type Schedule =
    */
   | { kind: "dayNight"; dayKhz: number; nightKhz: number }
   | { kind: "windows"; windows: readonly SignalWindow[] }
-  /** Listed, never shown as on now: no schedule we can trust. */
+  /** Listed, never shown as on now: no schedule we can trust. May have no channels (nothing fixed to tune). */
   | { kind: "irregular"; note: string }
   /** History only, no Listen. `ended` is "YYYY-MM" when a source gives it. */
   | { kind: "defunct"; ended?: string };
@@ -72,7 +73,7 @@ export type SignalStation = {
   name: string;
   aka: readonly string[];
   category: SignalCategory;
-  /** The first is the main one (what activeChannelAt returns for an always-on station). */
+  /** The first is the main one (what activeChannelAt returns for an always-on station). Empty when nothing is fixed to tune. */
   channels: readonly SignalChannel[];
   schedule: Schedule;
   /** Required for every station that isn't defunct (receiver ranking, #99). */
@@ -85,8 +86,15 @@ const am = (khz: number): SignalChannel => ({ khz, mode: "am" });
 const usb = (khz: number): SignalChannel => ({ khz, mode: "usb" });
 const cw = (khz: number): SignalChannel => ({ khz, mode: "cw" });
 
-const RUSSIA: Transmitter = { lat: 55.75, lon: 37.62, label: "Russia", confidence: "country" };
-const NUMBERS_NOTE = "No published schedule; transmissions come and go.";
+// Numbers stations (Priyom, read 2026-11-25): Priyom publishes no fixed
+// frequencies (they change monthly or by season), so these list no channels and
+// offer no Listen; the panel should link Priyom's schedule. Sites are as Priyom gives them.
+const MOSCOW: Transmitter = { lat: 55.75, lon: 37.62, label: "Moscow, Russia", confidence: "approx" };
+const WARSAW: Transmitter = { lat: 52.4294, lon: 20.8814, label: "near Warsaw, Poland", confidence: "known" };
+const RUSSIAN_7_NOTE =
+  "Usually twice a week, three transmissions 20 minutes apart on different frequencies, which change monthly. See Priyom's schedule.";
+const POLISH_11_NOTE =
+  "Twice a week on year-round UTC times, on a frequency that changes with the season. See Priyom's schedule.";
 
 export const SIGNAL_STATIONS: readonly SignalStation[] = [
   {
@@ -170,33 +178,69 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     name: "E07",
     aka: ["English Man"],
     category: "numbers",
-    channels: [usb(5_257), usb(8_157), usb(9_323)],
-    schedule: { kind: "irregular", note: NUMBERS_NOTE },
-    tx: RUSSIA,
-    blurb: "A computer voice reading groups of numbers in English.",
-    sources: ["https://en.wikipedia.org/wiki/Numbers_station"],
+    channels: [],
+    schedule: { kind: "irregular", note: RUSSIAN_7_NOTE },
+    tx: MOSCOW,
+    blurb: "A man's voice reading groups of numbers in English, from the Russian operator Priyom calls \"7\".",
+    sources: ["https://priyom.org/number-stations/english/e07"],
+  },
+  {
+    slug: "e11",
+    name: "E11",
+    aka: ["Oblique"],
+    category: "numbers",
+    channels: [],
+    schedule: { kind: "irregular", note: POLISH_11_NOTE },
+    tx: WARSAW,
+    blurb: "A woman's voice reading numbers in English, from the Polish operator Priyom calls \"11\".",
+    sources: ["https://priyom.org/number-stations/english/e11"],
   },
   {
     slug: "s06",
     name: "S06",
     aka: ["Russian Man"],
     category: "numbers",
-    channels: [usb(14_535)],
-    schedule: { kind: "irregular", note: NUMBERS_NOTE },
-    tx: RUSSIA,
-    blurb: "A computer voice reading groups of numbers in Russian.",
-    sources: ["https://en.wikipedia.org/wiki/Numbers_station"],
+    channels: [],
+    schedule: {
+      kind: "irregular",
+      note: "Two transmissions 30 or 60 minutes apart on different frequencies, often repeated the next day. See Priyom's schedule.",
+    },
+    tx: MOSCOW,
+    blurb: "A man's voice reading groups of numbers in Russian, sent from several sites across Russia.",
+    sources: ["https://priyom.org/number-stations/slavic/s06"],
+  },
+  {
+    slug: "s11a",
+    name: "S11a",
+    aka: ["Cherta"],
+    category: "numbers",
+    channels: [],
+    schedule: { kind: "irregular", note: POLISH_11_NOTE },
+    tx: WARSAW,
+    blurb: "E11's Russian-language counterpart: a woman's voice reading numbers in Russian, from Poland.",
+    sources: ["https://priyom.org/number-stations/slavic/s11a"],
+  },
+  {
+    slug: "v07",
+    name: "V07",
+    aka: ["Spanish Lady"],
+    category: "numbers",
+    channels: [],
+    schedule: { kind: "irregular", note: RUSSIAN_7_NOTE },
+    tx: { lat: 48.48, lon: 135.07, label: "Khabarovsk, Russia", confidence: "approx" },
+    blurb: "E07's Spanish-language counterpart: a woman's voice reading numbers in Spanish, sent from Russia's Far East.",
+    sources: ["https://priyom.org/number-stations/other/v07"],
   },
   {
     slug: "m12",
     name: "M12",
     aka: [],
     category: "numbers",
-    channels: [cw(10_168)],
-    schedule: { kind: "irregular", note: NUMBERS_NOTE },
-    tx: RUSSIA,
-    blurb: "Groups of numbers sent in Morse code.",
-    sources: ["https://en.wikipedia.org/wiki/Numbers_station"],
+    channels: [],
+    schedule: { kind: "irregular", note: RUSSIAN_7_NOTE },
+    tx: MOSCOW,
+    blurb: "The Morse code station of the Russian operator Priyom calls \"7\" (E07's operator).",
+    sources: ["https://priyom.org/number-stations/morse/m12"],
   },
   {
     slug: "chu",

@@ -78,15 +78,15 @@
 
 ### Signal stations: verify the seed catalog before the panel ships (#98 follow-up)
 
-**What:** Before #100 shows the panel, check these entries in `apps/web/src/lib/signal-stations.ts` against Priyom (priyom.org) or the operators, and fix any that are wrong: (1) CHU is listed as off the air since 2023-10-09, on Wikipedia's word alone (NRC's page refused automated fetches); (2) The Pip's and Squeaky Wheel's mode, set to USB like UVB-76's but stated on neither page; (3) their day/night switch times: `dayNight` follows the sun at the transmitter, so check a dawn and a dusk on a live Kiwi; (4) Squeaky Wheel's channels: Wikipedia gives 5367/3363.5 kHz, VE3SUN's list 3829.18/3830.45; (5) E07, S06 and M12's frequencies and Russia attribution, from VE3SUN's listener logs.
+**What:** Before #100 shows the panel, check these entries in `apps/web/src/lib/signal-stations.ts` against Priyom (priyom.org) or the operators, and fix any that are wrong: (1) CHU is listed as off the air since 2023-10-09, on Wikipedia's word alone (NRC's page refused automated fetches); (2) The Pip's and Squeaky Wheel's mode, set to USB like UVB-76's but stated on neither page; (3) their day/night switch times: `dayNight` follows the sun at the transmitter, so check a dawn and a dusk on a live Kiwi; (4) Squeaky Wheel's channels: Wikipedia gives 5367/3363.5 kHz, VE3SUN's list 3829.18/3830.45; (5) the credit line the panel shows for Priyom (CC BY-NC-SA 4.0), which the numbers-station entries come from.
 
 **Why:** #104's rule is that Listen must never land in dead air. A wrong frequency or mode is silence, and a live station marked defunct loses its Listen.
 
-**Context:** Built in PR #123 from operator pages (NIST) and Wikipedia, except the numbers stations' frequencies and countries, which already come from VE3SUN's listener logs. The VE3SUN and Priyom asks are drafted in the Notion Bot Inbox; their answers may also add E11, UVB-76's night channel, Swedish Rhapsody, VE3SUN-only entries such as HD2IOA, and windowed numbers schedules (listed in the file's header).
+**Context:** Built in PR #123 from operator pages (NIST) and Wikipedia; the numbers stations (E07, E11, S06, S11a, V07, M12) come from Priyom's station pages and list no frequencies, because Priyom's change monthly or by season. The VE3SUN and Priyom asks are drafted in the Notion Bot Inbox; their answers may also add UVB-76's night channel, Swedish Rhapsody, VE3SUN-only entries such as HD2IOA, and a feed of Priyom's schedule calendar (listed in the file's header).
 
 **Effort:** S
 **Priority:** P2
-**Depends on:** #100 starting; Priyom's and VE3SUN's answers for (5)
+**Depends on:** #100 starting
 
 ### GhostNet: confirm the RTTY dial on a live slot (#91 follow-up)
 
