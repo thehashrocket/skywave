@@ -65,7 +65,9 @@ export function SignalList({
   // While folded: where the scan stands (collapsible sections).
   let foldTail: string | null = null;
   if (scan?.state === "scanning") foldTail = "scanning…";
-  else if (scan?.state === "done") foldTail = `${scan.signals.length} found`;
+  else if (scan?.state === "error") foldTail = "scan failed";
+  // A receiver behind a converter can sit outside every broadcast band: nothing was scanned.
+  else if (scan?.state === "done") foldTail = scan.bandsTotal === 0 ? "no broadcast bands" : `${scan.signals.length} found`;
 
   return (
     <section className="presets signals" aria-labelledby="signals-heading">

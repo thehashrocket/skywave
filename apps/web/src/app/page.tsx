@@ -1,6 +1,6 @@
 "use client";
 
-import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Dial } from "@/components/Dial";
 import { FrequencyReadout } from "@/components/FrequencyReadout";
 import { MapPanel } from "@/components/MapPanel";
@@ -351,24 +351,31 @@ export default function ListenPage() {
   const [tuningRestored, setTuningRestored] = useState(false);
   const [volume, setVolume] = useState(0.8);
   const [letterKeys, setLetterKeys] = useState(true);
-  // The main page's folded sections (collapsible sections): all open until the
-  // mount effect reads this browser's saved folds, so the server's render matches.
+  // The main page's folded sections (collapsible sections): all open in the server's
+  // render, then this browser's saved folds before the first paint (below), so a
+  // returning listener never sees folded sections open and collapse.
   const [folded, setFolded] = useState<ReadonlySet<SectionId>>(() => new Set());
-  // What this browser remembers, kept apart from what shows: a share link can open a
-  // section for this visit, and a later toggle of another section mustn't forget its fold.
-  const savedFolds = useRef<ReadonlySet<SectionId>>(new Set());
+  useLayoutEffect(() => {
+    const shown = new Set(loadFolded());
+    // A link naming a signal station opens that section for this visit, folded or not.
+    // Read before the mount effect clears the query.
+    const sig = parseShareLink(window.location.search)?.signal;
+    if (sig) shown.delete("signal-stations");
+    setFolded(shown);
+  }, []);
   const foldOf = (id: SectionId): Fold => ({
     folded: folded.has(id),
     onToggle: () => {
       const nowFolded = !folded.has(id);
       const shown = new Set(folded);
-      const saved = new Set(savedFolds.current);
+      // What's remembered changes by this one section, read afresh: a share link may have
+      // opened another for this visit, and another tab may have saved since this one loaded.
+      const saved = new Set(loadFolded());
       for (const set of [shown, saved]) {
         if (nowFolded) set.add(id);
         else set.delete(id);
       }
       setFolded(shown);
-      savedFolds.current = saved;
       saveFolded(saved);
     },
   });
@@ -451,11 +458,6 @@ export default function ListenPage() {
     setFreqKhz(startKhz);
     setMode(shared?.mode ?? linkCh?.mode ?? stationCh?.mode ?? t.mode);
     if (station) setScrollToSignals(true);
-    // A link naming a signal station opens that section for this visit, folded or not.
-    savedFolds.current = loadFolded();
-    const shownFolds = new Set(savedFolds.current);
-    if (station) shownFolds.delete("signal-stations");
-    setFolded(shownFolds);
     // Header Listen ranks by the station's path only when the dial is on a frequency of
     // it: a catalog channel, its channel now, or (for a numbers station, whose
     // frequencies come from Priyom's schedule) the one the link gives. A station off the

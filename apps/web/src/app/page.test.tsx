@@ -479,6 +479,14 @@ describe("ListenPage", () => {
     expect(screen.getByRole("button", { name: "Signal stations" }).getAttribute("aria-expanded")).toBe("true");
   });
 
+  // Value: protects=a fold saved in another tab after this page loaded survives a toggle here, because a toggle changes only its own section in what's remembered, read afresh; fails_when=this tab writes its stale copy back and forgets the other tab's fold; why_new=collapsible sections review (PR #126); seam=localStorage; no_claim=live sync of what shows across tabs
+  it("keeps a fold another tab saved when this tab toggles a section", () => {
+    render(<ListenPage />);
+    localStorage.setItem("skywave.folded", JSON.stringify(["presets"]));
+    act(() => fireEvent.click(screen.getByRole("button", { name: "Find a station" })));
+    expect(JSON.parse(localStorage.getItem("skywave.folded")!)).toEqual(["presets", "station-search"]);
+  });
+
   // Value: protects=a share link naming a signal station opens Signal stations even when the listener folded it, so the link lands on what it names, without changing the saved folds, even when another section is toggled during that visit; fails_when=the link scrolls to a folded section, or opening it (or a later toggle) overwrites the listener's remembered folds; why_new=collapsible sections; seam=localStorage; no_claim=scroll position
   it("opens a folded Signal stations for a station link without changing the saved folds", () => {
     localStorage.setItem("skywave.folded", JSON.stringify(["signal-stations"]));
