@@ -262,10 +262,13 @@ describe("SignalStations", () => {
     expect(history.every((r) => r.querySelector(".signals-heard") === null)).toBe(true);
   });
 
-  // Value: protects=#103 each station's name in the panel links to its own page (/signals/<slug>), so the panel leads to what the station is and when to tune; fails_when=the link is dropped or points at another slug; why_new=#103 pages; seam=useServerTick mocked; no_claim=none
-  it("links each station's name to its page", () => {
+  // Value: protects=#103 each station's name in the panel links to its own page (/signals/<slug>) in a new tab, so following it from the listening page never stops the audio (owner decision D1, DESIGN.md's rule for that page); fails_when=the link is dropped, points at another slug, or opens in the same tab (which unmounts the player, ending the audio and possibly finishing a tune with no UI); why_new=#103 pages, #103 review; seam=useServerTick mocked; no_claim=browser tab behaviour
+  it("links each station's name to its page in a new tab", () => {
     renderPanel("2026-11-25T12:00:00Z");
-    expect(within(rowOf("UVB-76")).getByRole("link", { name: "UVB-76" }).getAttribute("href")).toBe("/signals/uvb-76");
+    const link = within(rowOf("UVB-76")).getByRole("link", { name: "UVB-76" });
+    expect(link.getAttribute("href")).toBe("/signals/uvb-76");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
     expect(within(rowOf("Cherry Ripe")).getByRole("link", { name: "Cherry Ripe" }).getAttribute("href")).toBe("/signals/cherry-ripe");
   });
 });

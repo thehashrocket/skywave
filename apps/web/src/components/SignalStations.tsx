@@ -2,12 +2,11 @@
 
 import { SectionBody, SectionHeading } from "@/components/SectionHeading";
 import type { Fold } from "@/lib/section-folds";
-import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { formatWait } from "@/lib/ghostnet";
 import { PRIYOM_ON_AIR_MS, PRIYOM_SCHEDULE_PAGE, type PriyomTx } from "@/lib/priyom-schedule";
 import type { Mode } from "@/lib/radio-types";
-import { HEARD_SHOWN_MS, type LastHeard } from "@/lib/signal-heard";
+import { heardText, type LastHeard } from "@/lib/signal-heard";
 import { channelText } from "@/lib/signal-page";
 import { onKhz, panelGroups, type PanelGroups, type PanelRow } from "@/lib/signal-panel";
 import type { SignalCategory, SignalChannel, SignalStation } from "@/lib/signal-stations";
@@ -121,14 +120,6 @@ export function SignalStations({
   );
 }
 
-/** "heard 40 min ago", or "WWV or WWVH heard …" on a frequency they share; null with no heard report this week. */
-export function heardText(h: LastHeard | undefined, now: number): string | null {
-  // The server drops week-old answers when it reads them; a stale cached answer
-  // (the database down) mustn't keep a badge past the week either.
-  if (!h || h.heardMs === null || now - h.heardMs > HEARD_SHOWN_MS) return null;
-  const ago = `heard ${formatWait(now - h.heardMs, false)} ago`;
-  return h.either ? `${h.either.join(" or ")} ${ago}` : ago;
-}
 
 type RowProps = {
   now: number;
@@ -220,10 +211,11 @@ function Row({
       </th>
       <td role="cell">
         <span className="signals-name">
-          {/* The station's own page (#103): what it is, its schedule and its sources. */}
-          <Link href={`/signals/${station.slug}`} className="signals-page-link">
+          {/* The station's own page (#103), in a new tab: leaving the listening page would
+              stop the audio, and a plain link (not next/link) means no in-app navigation. */}
+          <a href={`/signals/${station.slug}`} target="_blank" rel="noopener" className="signals-page-link">
             {station.name}
-          </Link>
+          </a>
           <span className="signals-aka">{aka}</span> <span className="signals-kind">{CATEGORY_LABELS[station.category]}</span>
         </span>
         <span className="sched-place">
