@@ -15,6 +15,15 @@ const HOUR = 60 * MINUTE;
  * after the server's retry wait.
  */
 export function usePriyomSchedule(): readonly PriyomTx[] | null {
+  return usePriyomScheduleState() ?? null;
+}
+
+/**
+ * The same schedule, but undefined while the first answer is still on its way,
+ * so a station page (#103) doesn't call the schedule unavailable during the
+ * load; null still means the server has none.
+ */
+export function usePriyomScheduleState(): readonly PriyomTx[] | null | undefined {
   const trpc = useTRPC();
   const { data } = useQuery({
     ...trpc.signals.priyom.queryOptions(),
@@ -22,5 +31,5 @@ export function usePriyomSchedule(): readonly PriyomTx[] | null {
     refetchOnWindowFocus: false,
     refetchInterval: (query) => (query.state.data ? HOUR : 15 * MINUTE),
   });
-  return data?.transmissions ?? null;
+  return data === undefined ? undefined : (data?.transmissions ?? null);
 }

@@ -11,7 +11,7 @@ import {
   windowSpanAt,
   type SignalChannel,
 } from "@/lib/signal-stations";
-import { usePriyomSchedule } from "@/lib/use-priyom-schedule";
+import { usePriyomScheduleState } from "@/lib/use-priyom-schedule";
 import { useServerTick } from "@/lib/use-server-tick";
 import { heardText } from "@/lib/signal-heard";
 import { useSignalLastHeard } from "@/lib/use-signal-last-heard";
@@ -36,13 +36,15 @@ function txChannel(tx: PriyomTx | null): SignalChannel | null {
 export function SignalLive({ slug }: { slug: string }) {
   const station = findStation(slug);
   const now = useServerTick(MINUTE);
-  const priyom = usePriyomSchedule();
+  const priyom = usePriyomScheduleState();
   const heard = useSignalLastHeard();
   if (!station || station.schedule.kind === "defunct") return null;
   if (now === null) return <p className="signal-live" aria-busy="true" />;
 
   let status: React.ReactNode = null;
-  if (station.priyom) {
+  if (station.priyom && priyom === undefined) {
+    // Priyom's schedule is still loading: say nothing yet rather than "unavailable".
+  } else if (station.priyom) {
     const on = priyom ? onAirTx(priyom, station.priyom, now) : null;
     const next = priyom ? nextTx(priyom, station.priyom, now) : null;
     const onCh = txChannel(on);

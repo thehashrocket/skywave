@@ -6,11 +6,11 @@ import type { LastHeard } from "@/lib/signal-heard";
 
 const state = {
   now: null as number | null,
-  priyom: null as PriyomTx[] | null,
+  priyom: null as PriyomTx[] | null | undefined,
   heard: null as Record<string, LastHeard> | null,
 };
 vi.mock("@/lib/use-server-tick", () => ({ useServerTick: () => state.now }));
-vi.mock("@/lib/use-priyom-schedule", () => ({ usePriyomSchedule: () => state.priyom }));
+vi.mock("@/lib/use-priyom-schedule", () => ({ usePriyomScheduleState: () => state.priyom }));
 vi.mock("@/lib/use-signal-last-heard", () => ({ useSignalLastHeard: () => state.heard }));
 
 const { SignalLive } = await import("./SignalLive");
@@ -90,5 +90,13 @@ describe("SignalLive", () => {
     render(<SignalLive slug="m12" />);
     expect(screen.getByText(/On the air now; Priyom hasn.t listed the frequency yet\./)).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Listen" })).toBeNull();
+  });
+
+  // Value: protects=while Priyom's schedule is still loading, a numbers station's page says nothing about it yet instead of "Schedule unavailable" (a cold load of a static page is the common case, and during a transmission the false message hid Listen); fails_when=loading (undefined) is treated like the server having no schedule (null); why_new=#103 Codex full-branch review; seam=clock and queries mocked; no_claim=network timing
+  it("says nothing about a numbers station's schedule while it loads", () => {
+    Object.assign(state, { now: NOW, priyom: undefined });
+    const { container } = render(<SignalLive slug="e11" />);
+    expect(screen.queryByText(/Schedule unavailable/)).toBeNull();
+    expect(container.querySelector(".signal-status")).toBeNull();
   });
 });
