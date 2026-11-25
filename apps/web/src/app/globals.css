@@ -1900,6 +1900,11 @@ html:has(.tuning-bar:not([hidden])) {
   grid-template-columns: 6ch 9.5ch 1fr;
 }
 
+/* Browse rows show only the mode tag in the time slot; the name gets the width (#116). */
+.station-search[data-browse] .station-results .preset-tune {
+  grid-template-columns: 6ch 3.2ch 1fr;
+}
+
 .station-when {
   display: flex;
   flex-direction: column;

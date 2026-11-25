@@ -2,7 +2,16 @@
 
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { type Broadcast, languageChoices, languageNames, type LanguageChoice, MATCH_KHZ, pickedNames } from "@/lib/eibi";
-import { areaCodes, BROAD_REGIONS, type BroadRegion, broadRegionAt, isBroadRegion, regionName } from "@/lib/eibi-targets";
+import {
+  areaCodes,
+  areaLabel,
+  BROAD_REGIONS,
+  type BroadRegion,
+  broadRegionAt,
+  displayName,
+  isBroadRegion,
+  regionName,
+} from "@/lib/eibi-targets";
 import type { Mode } from "@/lib/radio-types";
 import {
   type AreaFilter,
@@ -103,11 +112,15 @@ function orList(names: string[]): string {
   return names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names.at(-1)}` : (names[0] ?? "");
 }
 
-/** The active filters in words, for the status line (eng D6): "in English to Africa", "" for none. */
+/**
+ * The active filters in words, for the status line (eng D6): "in English to
+ * Africa", "" for none. With a language picked, included non-voice rows are
+ * named too, since they match no language (#116).
+ */
 function describeFilters(f: Filters, choices: readonly LanguageChoice[], areaName: string | undefined): string {
   const langs = pickedNames(choices, f.language.codes);
   return [
-    langs.length ? `in ${orList(langs)}` : "",
+    langs.length ? `in ${orList(langs)}${f.language.nonVoice ? " (plus non-voice)" : ""}` : "",
     areaName ? `to ${areaName}` : "",
     f.language.nonVoice ? "" : "with non-voice hidden",
   ]
@@ -331,7 +344,7 @@ export function StationSearch({
   const row = (f: FoundBroadcast, i: number): ReactNode => {
     const mode = clickMode(f.khz, f.lang, f.station);
     const targets = f.targets
-      .map((t) => (Object.hasOwn(targetNames, t) ? targetNames[t] : undefined))
+      .map((t) => (Object.hasOwn(targetNames, t) ? displayName(targetNames[t]!) : undefined))
       .filter((n): n is string => !!n);
     const to = [...new Set(targets)].join(", ");
     const strongHere = isStrong(f);
@@ -351,8 +364,14 @@ export function StationSearch({
           <span className="preset-freq">{khz(f.khz)}</span>
           <span className="station-when">
             <span>
-              {when ? when.time : "on now"}
-              {mode !== "am" && <span className="preset-mode"> {mode.toUpperCase()}</span>}
+              {/* Browse rows are all on now, as the status line says, so they don't repeat it (#116). */}
+              {when ? when.time : typed ? "on now" : ""}
+              {mode !== "am" && (
+                <span className="preset-mode">
+                  {when || typed ? " " : ""}
+                  {mode.toUpperCase()}
+                </span>
+              )}
             </span>
             {when && <span className="station-when-until">{when.until}</span>}
           </span>
@@ -385,6 +404,7 @@ export function StationSearch({
       className="presets station-search"
       aria-labelledby="station-search-heading"
       data-phone-open={phoneOpen || undefined}
+      data-browse={(ready && !typed) || undefined}
     >
       <h2 id="station-search-heading">Find a station</h2>
       <div className="station-filters">
@@ -423,7 +443,7 @@ export function StationSearch({
             <optgroup label="Areas and countries">
               {codes.map((c) => (
                 <option key={c.code} value={`code:${c.code}`}>
-                  {c.stale ? `${c.name} (none in this schedule)` : c.name}
+                  {c.stale ? `${areaLabel(c)} (none in this schedule)` : areaLabel(c)}
                 </option>
               ))}
             </optgroup>

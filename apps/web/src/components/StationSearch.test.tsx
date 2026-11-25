@@ -160,6 +160,41 @@ describe("StationSearch", () => {
     expect(statusLine()).toBe(BROWSE);
   });
 
+  // Value: protects=with a language picked and non-voice included, the status line says non-voice rows are in the list too (they match no language), and browse rows drop the visible "on now" the status line already says while keeping it in their spoken label and in name-search rows; fails_when=the line reads "in English" over aircraft-data rows, or browse rows repeat "on now" (cutting off names) or lose it for screen readers; why_new=#116 (design critique 2026-11-23); seam=none; no_claim=column widths (CSS, not run in jsdom)
+  it("names included non-voice and doesn't repeat on now while browsing", () => {
+    const { type, view } = show();
+    const visibleWhen = () => [...view.container.querySelectorAll(".station-when")].map((w) => w.textContent);
+    expect(view.container.querySelector(".station-search")!.hasAttribute("data-browse")).toBe(true);
+    expect(visibleWhen()).toEqual(["", "", "USB"]);
+    expect(rowNames()[0]).toBe("9,410 kHz, BBC, English, on now, to Europe");
+    fireEvent.click(languagesButton());
+    fireEvent.click(screen.getByLabelText("English"));
+    expect(statusLine()).toBe(
+      "3 broadcasts on now in English (plus non-voice), broadcast bands first. Type a name to find one station.",
+    );
+    fireEvent.click(screen.getByLabelText("Include non-voice (time signals, Morse, data)"));
+    expect(statusLine()).toMatch(/^3 broadcasts on now in English with non-voice hidden,/);
+    type("bbc");
+    expect(view.container.querySelector(".station-search")!.hasAttribute("data-browse")).toBe(false);
+    expect(visibleWhen()).toEqual(["on now", "on now", "18:00 UTCin 6 h"]);
+  });
+
+  // Value: protects=names from a schedule cached before this deploy show tidied in rows as in the area filter, and the filter's "(beam heading)" option suffix stays out of the status line, which uses the bare name; fails_when=a row says "to Taiwan *" beside a "Taiwan" option, or the status reads "to West-northwest (beam heading)"; why_new=/ship review of PR #119 (#117 follow-up); seam=none; no_claim=react-query's cache lifetime
+  it("tidies cached target names in rows and keeps option labels out of the status line", () => {
+    const cached: SearchSchedule = {
+      ...SCHEDULE,
+      targetNames: { ...SCHEDULE.targetNames, TWN: "Taiwan *", WNW: "West-northwest" },
+      broadcasts: [b("RTI", 9735, 660, 780, { target: "TWN" }), b("CNR1", 9800, 660, 780, { lang: "M", target: "WNW" })],
+    };
+    show({ schedule: cached });
+    expect(rowNames()).toContain("9,735 kHz, RTI, English, on now, to Taiwan");
+    const options = [...areaSelect().options].map((o) => o.textContent);
+    expect(options).toContain("Taiwan");
+    expect(options).toContain("West-northwest (beam heading)");
+    pickArea("code:WNW");
+    expect(statusLine()).toMatch(/^1 broadcast on now to West-northwest,/);
+  });
+
   // Value: protects=a schedule cached from a server older than this deploy (no targetNames) still lists rows, just without a "to" line; fails_when=the list crashes on deploy skew; why_new=station search build review (correctness reviewer); seam=none; no_claim=react-query's cache lifetime
   it("lists rows from a schedule without target names", () => {
     const old = { ...SCHEDULE, targetNames: undefined } as unknown as SearchSchedule;
@@ -311,7 +346,7 @@ describe("StationSearch", () => {
     localStorage.setItem(FILTERS_KEY, JSON.stringify({ area: "region:mars", languages: ["E"], nonVoice: true }));
     show();
     expect(areaSelect().value).toBe("");
-    expect(statusLine()).toMatch(/^3 broadcasts on now in English,/);
+    expect(statusLine()).toMatch(/^3 broadcasts on now in English \(plus non-voice\),/);
     cleanup();
     for (const bad of [
       "{not json",
@@ -439,7 +474,7 @@ describe("StationSearch", () => {
     expect(screen.getByText("No language matches “zz”.")).toBeTruthy();
     fireEvent.change(filter, { target: { value: "tur" } });
     fireEvent.click(screen.getByLabelText("Turkish"));
-    expect(statusLine()).toMatch(/^1 broadcast on now in Turkish,/);
+    expect(statusLine()).toMatch(/^1 broadcast on now in Turkish \(plus non-voice\),/);
     fireEvent.keyDown(filter, { key: "Escape" });
     expect(screen.queryByLabelText("Filter languages")).toBeNull();
     expect(document.activeElement).toBe(languagesButton());
@@ -448,7 +483,7 @@ describe("StationSearch", () => {
     fireEvent.click(screen.getByLabelText("Italian"));
     expect(languagesButton().textContent).toBe("French, Italian +1");
     // The status line names all three, where the button stops at two.
-    expect(statusLine()).toMatch(/^3 broadcasts on now in French, Italian or Turkish,/);
+    expect(statusLine()).toMatch(/^3 broadcasts on now in French, Italian or Turkish \(plus non-voice\),/);
     fireEvent.keyDown(screen.getByLabelText("Filter languages"), { key: "Escape" });
     fireEvent.click(languagesButton());
     expect(panelOptions()).toEqual(["French", "Italian", "Turkish", "English"]);
