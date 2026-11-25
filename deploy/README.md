@@ -53,7 +53,9 @@ copies, which the README's "One process" rule forbids).
    `docker compose -f docker-compose.prod.yml logs caddy` says why (usually DNS
    not pointing here yet).
 6. **Web app.** On Vercel set `NEXT_PUBLIC_RADIO_WS_URL=wss://radio.example.com/ws`
-   (Production) and redeploy: `NEXT_PUBLIC_` values are baked in at build time.
+   (Production), and `NEXT_PUBLIC_GTM_ID` (Production only) if you want Google
+   Tag Manager behind the cookie bar, then redeploy: `NEXT_PUBLIC_` values are
+   baked in at build time.
 
 ## Later deploys: GitHub Actions
 

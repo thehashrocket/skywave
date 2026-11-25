@@ -131,7 +131,7 @@ class WaterfallClient(KiwiConnection):
         await self._send("SET maxdb=0 mindb=-200")  # needed, though uncompressed bins ignore it
         await self._send("SET wf_comp=0")
         await self._send(f"SET wf_speed={FAST_SPEED}")
-        await self._send(f"SET ident_user={self.user}")
+        await self._send_ident()
         await self._keepalive(force=True)
         self._configured = True
 

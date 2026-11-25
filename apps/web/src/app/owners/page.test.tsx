@@ -21,10 +21,12 @@ describe("/owners", () => {
     expect(existsSync(resolve(REPO_ROOT, ".github/ISSUE_TEMPLATE", template!))).toBe(true);
   });
 
-  // Value: protects=the page names the identity owners see in their user list; fails_when=the heading or the skywavehf.com name is dropped from the lede; why_new=new page; seam=none; no_claim=what KIWI_IDENT is set to in production
-  it("names the identity owners see in their Kiwi's user list", () => {
-    render(<OwnersPage />);
+  // Value: protects=the page names both identities owners see in their user list: the service's own and a named listener's "skywave <name>"; fails_when=the heading, the skywavehf.com name or the named-listener form is dropped from the lede; why_new=new page, and named listeners (#108); seam=none; no_claim=what KIWI_IDENT is set to in production
+  it("names the identities owners see in their Kiwi's user list", () => {
+    const { container } = render(<OwnersPage />);
     expect(screen.getByRole("heading", { level: 1, name: "For KiwiSDR owners" })).toBeTruthy();
     expect(screen.getByText("skywavehf.com")).toBeTruthy();
+    const lede = container.querySelector(".owners-lede")?.textContent?.replace(/\s+/g, " ");
+    expect(lede).toContain("shows as skywave followed by it, like “skywave N0CALL”");
   });
 });

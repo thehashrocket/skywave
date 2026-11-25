@@ -4,3 +4,7 @@ allowBuilds:
   '@prisma/engines': false
   esbuild: false
   prisma: false
+overrides:
+  # GHSA-7589-6fvf-x4pw (ReDoS, fixed in 3.22.1): prisma's @prisma/config pins
+  # effect 3.20.0 exactly. Drop this once a prisma release ships a fixed effect.
+  effect: 3.22.5
