@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { formatWait, mhz } from "@/lib/ghostnet";
 import { PRIYOM_ON_AIR_MS, PRIYOM_SCHEDULE_PAGE, type PriyomTx } from "@/lib/priyom-schedule";
 import { MODE_LABELS, type Mode } from "@/lib/radio-types";
-import { confirmedFirst, HEARD_SHOWN_MS, keepOrder, type LastHeard } from "@/lib/signal-heard";
+import { HEARD_SHOWN_MS, type LastHeard } from "@/lib/signal-heard";
 import { onKhz, panelGroups, type PanelGroups, type PanelRow } from "@/lib/signal-panel";
 import type { SignalCategory, SignalChannel, SignalStation } from "@/lib/signal-stations";
 import { localLabel, utcLabel } from "@/lib/utc-time";
@@ -77,25 +77,7 @@ export function SignalStations({
   onListen,
 }: Props) {
   const now = useServerTick(MINUTE);
-  const sorted = now === null ? null : withHeard(panelGroups(now, priyom), heard, now);
-  // While the pointer is over the tables or focus is inside them, rows keep the order
-  // they were shown in (#102 review): a new heard answer or a minute tick mustn't
-  // move another station's Listen under the click.
-  const [held, setHeld] = useState(false);
-  const shownOrder = useRef<{ onNow: string[]; always: string[] } | null>(null);
-  const groups =
-    sorted && held && shownOrder.current
-      ? {
-          ...sorted,
-          onNow: keepOrder(sorted.onNow, shownOrder.current.onNow),
-          always: keepOrder(sorted.always, shownOrder.current.always),
-        }
-      : sorted;
-  const onNowKey = groups ? slugsOf(groups.onNow) : "";
-  const alwaysKey = groups ? slugsOf(groups.always) : "";
-  useEffect(() => {
-    shownOrder.current = { onNow: onNowKey.split(" ").filter(Boolean), always: alwaysKey.split(" ").filter(Boolean) };
-  }, [onNowKey, alwaysKey]);
+  const groups = now === null ? null : panelGroups(now, priyom);
   const announce = useAnnouncements(groups?.onNow ?? null, picked, freqKhz, connecting, playing);
   // While folded: what's on the air (collapsible sections).
   let foldTail: string | null = null;
@@ -113,27 +95,17 @@ export function SignalStations({
           Time signals, markers and numbers stations: the oddities people tune shortwave to find.
         </p>
         {now !== null && groups && (
-          <div
-            className="signals-groups"
-            onPointerEnter={() => setHeld(true)}
-            onPointerLeave={() => setHeld(false)}
-            onFocus={() => setHeld(true)}
-            onBlur={(e) => {
-              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setHeld(false);
-            }}
-          >
-            <Groups
-              groups={groups}
-              now={now}
-              freqKhz={freqKhz}
-              mode={mode}
-              priyom={priyom}
-              heard={heard}
-              picked={picked}
-              busy={connecting || playing}
-              onListen={onListen}
-            />
-          </div>
+          <Groups
+            groups={groups}
+            now={now}
+            freqKhz={freqKhz}
+            mode={mode}
+            priyom={priyom}
+            heard={heard}
+            picked={picked}
+            busy={connecting || playing}
+            onListen={onListen}
+          />
         )}
         <p className="sched-note">
           Numbers-station schedules from{" "}
@@ -150,18 +122,6 @@ export function SignalStations({
       </div>
     </section>
   );
-}
-
-/** A group's stations as one string, so the shown order can be an effect dependency. */
-const slugsOf = (rows: readonly PanelRow[]) => rows.map((r) => r.station.slug).join(" ");
-
-/**
- * On now and Always on with the stations listeners confirmed today first
- * (#102): a report beats a schedule for "is it really on the air". On now
- * otherwise stays ending-soonest first, Always on in catalog order.
- */
-function withHeard(g: PanelGroups, heard: Record<string, LastHeard> | null, now: number): PanelGroups {
-  return { ...g, onNow: confirmedFirst(g.onNow, heard, now), always: confirmedFirst(g.always, heard, now) };
 }
 
 /** "heard 40 min ago", or "WWV or WWVH heard …" on a frequency they share; null with no heard report this week. */

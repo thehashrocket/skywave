@@ -197,8 +197,8 @@ describe("SignalStations", () => {
     expect(status()).toBe("Connecting…");
   });
 
-  // Value: protects=#102 badge: a station heard this week shows "heard N ago" in its row, a shared WWV/WWVH frequency reads "WWV or WWVH heard", a station heard today moves to the top of Always on, and a station with no heard time shows no badge; fails_when=the badge is missing or on the wrong row, the shared wording is lost, or the order ignores reports; why_new=#102 panel badge; seam=useServerTick mocked, heard passed as the query would return it; no_claim=layout
-  it("shows when listeners last heard a station and lists today's first", () => {
+  // Value: protects=#102 badge: a station heard this week shows "heard N ago" in its row, a shared WWV/WWVH frequency reads "WWV or WWVH heard", and a station with no heard time shows no badge; fails_when=the badge is missing or on the wrong row, or the shared wording is lost; why_new=#102 panel badge; seam=useServerTick mocked, heard passed as the query would return it; no_claim=layout
+  it("shows when listeners last heard a station", () => {
     const now = Date.parse("2026-11-25T12:00:00Z");
     const ago = (min: number) => now - min * 60_000;
     renderPanel("2026-11-25T12:00:00Z", {
@@ -213,39 +213,25 @@ describe("SignalStations", () => {
     expect(rowOf("WWV").textContent).toContain("WWV or WWVH heard 2h 5m ago");
     expect(rowOf("WWVH").textContent).toContain("WWV or WWVH heard 2h 5m ago");
     expect(rowOf("RWM").textContent).not.toContain("heard");
-    const always = [...document.querySelectorAll(".signals tr[data-slug]")].map((r) => r.getAttribute("data-slug"));
-    expect(always.slice(0, 4)).toEqual(["uvb-76", "wwv", "wwvh", "rwm"]);
   });
 
-  // Value: protects=#102 On now also lists the stations listeners confirmed in the last day first (a report beats the schedule), while unconfirmed rows stay ending-soonest first; fails_when=withHeard reorders only Always on, so a heard numbers station stays below one ending sooner; why_new=the existing badge test only checks Always on and confirmedFirst's unit test is given Always on rows; seam=useServerTick mocked, heard passed as the query would return it; no_claim=layout
-  it("lists a station heard today first under On now", () => {
+  // Value: protects=owner decision D4 on #102: listener reports never reorder the rows (On now stays ending-soonest first, Always on in catalog order), so a report arriving can't move another station's Listen under a press, retuning the receiver and ending the audio, for any input (mouse, touch, keyboard, screen reader); fails_when=a heard-first sort comes back; why_new=the #102 review found the re-sort's mis-click path; seam=useServerTick mocked; no_claim=row height when a badge first appears
+  it("never reorders rows when a report arrives", () => {
     const priyom = [tx("E07", "2026-11-25T07:12:00Z", 9_150), tx("E11", "2026-11-25T07:15:00Z", 20_167)];
-    const onNow = () => [...document.querySelectorAll(".signals tr[data-slug]")].map((r) => r.getAttribute("data-slug")).slice(0, 2);
     const at = "2026-11-25T07:17:00Z";
-    renderPanel(at, { priyom });
-    expect(heads()[0]).toBe("On now");
-    expect(onNow()).toEqual(["e07", "e11"]);
-    cleanup();
+    const order = () => [...document.querySelectorAll(".signals tr[data-slug]")].map((r) => r.getAttribute("data-slug")).slice(0, 6);
+    const { rerenderAt } = renderPanel(at, { priyom });
+    const before = order();
+    expect(before).toEqual(["e07", "e11", "wwv", "wwvh", "rwm", "uvb-76"]);
     const heardMs = Date.parse(at) - 30 * 60_000;
-    renderPanel(at, { priyom, heard: { e11: { heardMs, either: null, heard24h: 1, notHeard24h: 0 } } });
-    expect(onNow()).toEqual(["e11", "e07"]);
+    rerenderAt(at, {
+      heard: {
+        e11: { heardMs, either: null, heard24h: 1, notHeard24h: 0 },
+        "uvb-76": { heardMs, either: null, heard24h: 1, notHeard24h: 0 },
+      },
+    });
+    expect(order()).toEqual(before);
     expect(rowOf("E11").textContent).toContain("heard 30 min ago");
-  });
-
-  // Value: protects=#102 review: while the pointer is over the tables (or focus is inside), a new heard answer doesn't re-sort the rows, so a click can't land on another station's Listen (retuning the receiver, ending the audio); the sort applies once the pointer leaves; fails_when=rows re-sort under the pointer, or stay frozen after it leaves; why_new=rows moving under the click (Red Team + Codex); seam=useServerTick mocked; no_claim=touch pointers
-  it("keeps the rows still while the pointer is over them", () => {
-    const at = "2026-11-25T12:00:00Z";
-    const heard = { "uvb-76": { heardMs: Date.parse(at) - 5 * 60_000, either: null, heard24h: 1, notHeard24h: 0 } };
-    const order = () => [...document.querySelectorAll(".signals tr[data-slug]")].map((r) => r.getAttribute("data-slug")).slice(0, 4);
-    const { rerenderAt } = renderPanel(at);
-    expect(order()).toEqual(["wwv", "wwvh", "rwm", "uvb-76"]);
-    const groups = document.querySelector(".signals-groups")!;
-    fireEvent.pointerEnter(groups);
-    rerenderAt(at, { heard });
-    expect(order()).toEqual(["wwv", "wwvh", "rwm", "uvb-76"]);
-    expect(rowOf("UVB-76").textContent).toContain("heard 5 min ago");
-    fireEvent.pointerLeave(groups);
-    expect(order()).toEqual(["uvb-76", "wwv", "wwvh", "rwm"]);
   });
 
   // Value: protects=a heard answer older than a week shows no badge even when the server serves an old cached answer (its read failing), per #102's 7-day rule; fails_when=badges keep aging past a week ("heard 8d 2h ago") during a database outage; why_new=#102 review (cutoff applied only on the server's read); seam=useServerTick mocked; no_claim=the server's cache

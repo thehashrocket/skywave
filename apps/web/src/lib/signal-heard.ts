@@ -14,8 +14,6 @@ const HOUR = 60 * 60_000;
 export const HEARD_SHOWN_MS = 7 * 24 * HOUR;
 /** The answer counts cover this long. */
 export const COUNT_MS = 24 * HOUR;
-/** A station heard this recently sorts first in its group: confirmed today, not last week. */
-export const CONFIRMED_MS = COUNT_MS;
 
 /** One stored answer, as signals.lastHeard reads it. */
 export type SignalAnswer = {
@@ -85,38 +83,4 @@ export function lastHeard(
     }
   }
   return out;
-}
-
-/** Whether a station was heard within CONFIRMED_MS of `ms`. */
-export function confirmed(h: LastHeard | undefined, ms: number): boolean {
-  return h?.heardMs != null && ms - h.heardMs <= CONFIRMED_MS;
-}
-
-/**
- * Rows sorted so stations confirmed heard within CONFIRMED_MS come first,
- * most recent first; the rest keep their order (stable).
- */
-export function confirmedFirst<T extends { station: SignalStation }>(
-  rows: readonly T[],
-  heard: Record<string, LastHeard> | null,
-  ms: number,
-): T[] {
-  if (!heard) return [...rows];
-  const at = (r: T) => {
-    const h = heard[r.station.slug];
-    return confirmed(h, ms) ? h!.heardMs! : 0;
-  };
-  return [...rows].sort((a, b) => at(b) - at(a));
-}
-
-/**
- * Rows in the order they were last shown (`slugs`), for while the listener is
- * pointing at or tabbing through the panel (#102 review): a re-sort then could
- * move another station's Listen under the click, retuning the receiver and
- * ending what's playing. Rows not shown before go last, in their new order.
- */
-export function keepOrder<T extends { station: SignalStation }>(rows: readonly T[], slugs: readonly string[]): T[] {
-  const at = new Map(slugs.map((s, i) => [s, i]));
-  const place = (r: T) => at.get(r.station.slug) ?? slugs.length;
-  return [...rows].sort((a, b) => place(a) - place(b));
 }

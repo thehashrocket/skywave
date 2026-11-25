@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { confirmedFirst, COUNT_MS, HEARD_SHOWN_MS, keepOrder, lastHeard, type SignalAnswer } from "./signal-heard";
-import { panelGroups } from "./signal-panel";
+import { COUNT_MS, HEARD_SHOWN_MS, lastHeard, type SignalAnswer } from "./signal-heard";
 
 const NOW = Date.parse("2026-11-25T12:00:00Z");
 const MIN = 60_000;
@@ -48,32 +47,5 @@ describe("lastHeard", () => {
   // Value: protects=rows the catalog doesn't know (a renamed slug) or a defunct station are ignored rather than crashing or badging history; fails_when=an old slug throws or a defunct station looks alive; why_new=#102; seam=signal-stations catalog; no_claim=none
   it("ignores unknown and defunct stations", () => {
     expect(lastHeard([answer("gone", 1_000, "heard", MIN), answer("lincolnshire-poacher", 1_000, "heard", MIN)], NOW)).toEqual({});
-  });
-});
-
-describe("confirmedFirst", () => {
-  // Value: protects=Always on puts stations heard in the last day first, most recent first, and keeps the catalog order for the rest (a week-old heard doesn't reorder); fails_when=unconfirmed stations jump ahead or the order shuffles with no reports; why_new=#102 sort; seam=signal-panel groups; no_claim=none
-  it("sorts stations heard today first, the rest in order", () => {
-    const always = panelGroups(NOW, null).always;
-    const heard = lastHeard(
-      [answer("rwm", 9_996, "heard", 30 * MIN), answer("the-pip", 5_448, "heard", 5 * MIN), answer("uvb-76", 4_625, "heard", 2 * COUNT_MS)],
-      NOW,
-    );
-    const slugs = confirmedFirst(always, heard, NOW).map((r) => r.station.slug);
-    expect(slugs).toEqual(["the-pip", "rwm", "wwv", "wwvh", "uvb-76", "squeaky-wheel"]);
-    expect(confirmedFirst(always, null, NOW)).toEqual(always);
-  });
-});
-
-describe("keepOrder", () => {
-  // Value: protects=while held, rows keep the order last shown and a row not shown before goes last, so a re-sort can't move another station's Listen under the click; fails_when=held rows still re-sort, or a new row jumps to the top; why_new=#102 review (rows moving under the pointer); seam=none (pure); no_claim=pointer or focus handling
-  it("keeps the shown order and puts new rows last", () => {
-    const always = panelGroups(NOW, null).always;
-    const shown = ["rwm", "wwv", "wwvh", "uvb-76", "the-pip", "squeaky-wheel"];
-    const heard = lastHeard([answer("the-pip", 5_448, "heard", 5 * MIN)], NOW);
-    const resorted = confirmedFirst(always, heard, NOW);
-    expect(resorted[0]!.station.slug).toBe("the-pip");
-    expect(keepOrder(resorted, shown).map((r) => r.station.slug)).toEqual(shown);
-    expect(keepOrder(resorted, ["wwvh"]).map((r) => r.station.slug).slice(0, 2)).toEqual(["wwvh", "the-pip"]);
   });
 });
