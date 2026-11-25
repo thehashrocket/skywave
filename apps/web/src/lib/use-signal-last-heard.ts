@@ -19,6 +19,10 @@ export function useSignalLastHeard(): Record<string, LastHeard> | null {
     ...trpc.signals.lastHeard.queryOptions(),
     staleTime: 10 * MINUTE,
     refetchInterval: 10 * MINUTE,
+    // The badges are optional and the server backs off after a failed read, so no
+    // extra asks: no retries, and no refetch when the tab regains focus (#102 review).
+    retry: false,
+    refetchOnWindowFocus: false,
   });
   return data?.heard ?? null;
 }

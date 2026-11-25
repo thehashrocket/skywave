@@ -228,11 +228,20 @@ describe("lastHeardSource", () => {
     }
   });
 
-  // Value: protects=with no answer cached yet, a failed read reaches the page as an error (it then shows no badges) rather than an empty answer that reads as "nobody heard anything"; fails_when=a database outage looks like silence; why_new=#102; seam=groupBy faked; no_claim=none
-  it("fails when the first read fails", async () => {
-    const get = lastHeardSource({ now: () => NOW });
+  // Value: protects=with no answer cached yet, a failed read reaches the page as an error (it then shows no badges) rather than an empty answer that reads as "nobody heard anything", and the instance backs off for a TTL instead of reading on every request (#102 review); fails_when=a database outage looks like silence, or a fresh instance hammers a sleeping or failing database; why_new=#102, cold-instance backoff from the #102 review; seam=groupBy faked, clock injected; no_claim=none
+  it("fails when the first read fails, then backs off", async () => {
+    let clock = NOW;
+    const get = lastHeardSource({ now: () => clock });
     const { db, groupBy } = fakeDb([]);
     groupBy.mockRejectedValue(new Error("db down"));
     await expect(get(db)).rejects.toThrow("db down");
+    const calls = groupBy.mock.calls.length;
+    clock += LAST_HEARD_TTL_MS - 1;
+    await expect(get(db)).rejects.toThrow("db down");
+    expect(groupBy.mock.calls.length).toBe(calls);
+    clock += 1;
+    groupBy.mockReset();
+    const { db: healthy } = fakeDb([row("signal", "rwm", 9_996, "heard", 5)]);
+    expect((await get(healthy)).heard["rwm"]).toMatchObject({ heardMs: NOW - 5 * 60_000 });
   });
 });

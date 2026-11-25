@@ -160,14 +160,16 @@ export type LastHeardAnswer = { heard: Record<string, LastHeard>; at: number };
  * can't push another's newest "heard" out of it (#102 review). Turned into
  * badges by lib/signal-heard.ts, read at most once a LAST_HEARD_TTL_MS per
  * server instance and shared between concurrent callers. When
- * a read fails, the last good answer is served, and the next read waits a
- * LAST_HEARD_TTL_MS, so a struggling database isn't asked on every poll; with
- * no answer yet, the error goes to the page, which shows no badges.
+ * a read fails (or takes over LAST_HEARD_READ_TIMEOUT_MS), the next read waits
+ * a LAST_HEARD_TTL_MS, so a struggling database isn't asked on every poll;
+ * meanwhile the last good answer is served, or, with none yet, the error goes
+ * to the page, which shows no badges.
  */
 export function lastHeardSource({ now = () => Date.now() }: { now?: () => number } = {}) {
   let cached: LastHeardAnswer | null = null;
   let inflight: Promise<LastHeardAnswer> | null = null;
   let lastFailureAt: number | null = null;
+  let lastError: unknown = null;
 
   async function read(db: typeof Db): Promise<LastHeardAnswer> {
     const at = now();
@@ -200,7 +202,12 @@ export function lastHeardSource({ now = () => Date.now() }: { now?: () => number
   return async function get(db: typeof Db): Promise<LastHeardAnswer> {
     const t = now();
     if (cached && t - cached.at < LAST_HEARD_TTL_MS) return cached;
-    if (cached && lastFailureAt !== null && t - lastFailureAt < LAST_HEARD_TTL_MS) return cached;
+    // Backing off after a failed read, with or without an answer to serve (#102 review):
+    // a fresh instance facing a sleeping or failing database mustn't read on every request.
+    if (lastFailureAt !== null && t - lastFailureAt < LAST_HEARD_TTL_MS) {
+      if (cached) return cached;
+      throw lastError;
+    }
     inflight ??= withTimeout(read(db), LAST_HEARD_READ_TIMEOUT_MS)
       .then(
         (fresh) => {
@@ -209,6 +216,7 @@ export function lastHeardSource({ now = () => Date.now() }: { now?: () => number
         },
         (error: unknown) => {
           lastFailureAt = now();
+          lastError = error;
           throw error;
         },
       )
