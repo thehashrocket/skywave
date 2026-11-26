@@ -162,8 +162,10 @@ const promptKey = (p: ReceptionPromptData) => `${p.host.toLowerCase()}:${p.port}
  * `region` is where the receiver is, from its listed position only (never a
  * filter the listener picked, since answers are saved under the station named):
  * stations sharing the frequency that are aimed there are asked about first
- * (#115). While a receiver plays the readout ranks by the same region, so the
- * two agree. Undefined keeps EiBi's order.
+ * (#115). While a receiver plays the readout ranks by the same region, but it
+ * also puts catalog and Priyom stations first on a tie (#152) and this, reading
+ * EiBi's own rows, doesn't: on 10 MHz the readout names WWV while this asks
+ * about PPE. Undefined keeps EiBi's order.
  */
 export function useReceptionPrompt(
   status: RadioStatus,

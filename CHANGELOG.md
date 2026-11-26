@@ -2,6 +2,12 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.61.1.0] - 2026-11-26 ([#152](https://github.com/thehashrocket/skywave/issues/152))
+
+### Changed
+- **A frequency several stations share names the Signal stations one first.** With nothing to decide between them, 10,000 kHz now reads "WWV · Time signal +4 more" instead of naming PPE, Brazil's time signal, with WWV hidden in the list. The same goes for a numbers station during a slot Priyom confirms: E11 is named first on 11,100 kHz, not the all-day jammer beside it. Where your receiver is, or the region Find a station is set to, still comes first, so in Europe 10 MHz names ItalCable and in Latin America PPE. The waterfall's labels follow the readout, and clicking a strong signal tunes the named station's mode, so 11,100 tunes USB while E11 is on. Rows standing in for Priyom's schedule ("season schedule, not confirmed") stay behind.
+- **"Did you hear it?" asks about the same station as before.** On a frequency several stations share, the question still names the station EiBi lists first, so on 10 MHz the readout can say WWV while the question asks about PPE.
+
 ## [0.61.0.0] - 2026-11-26 ([#144](https://github.com/thehashrocket/skywave/issues/144), [#146](https://github.com/thehashrocket/skywave/issues/146))
 
 ### Added

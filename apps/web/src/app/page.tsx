@@ -1349,9 +1349,11 @@ export default function ListenPage() {
   // has the schedule and its own clock (the server's time isn't the viewer's).
   const scheduleQuery = useSchedule();
   const eibiSchedule = scheduleQuery.data?.broadcasts;
-  // The one schedule every "what's on" reads (#148): EiBi, Priyom and the catalog merged
-  // (on-air.ts), so the readout, waterfall, Strong signals, Find a station and the
-  // prompt never disagree with each other or with the Signal stations panel.
+  // The one schedule the readout, waterfall, Strong signals, Find a station and the
+  // signal question read (#148): EiBi, Priyom and the catalog merged (on-air.ts), so
+  // they agree with each other and with the Signal stations panel. EiBi's reception
+  // question reads `askableEibi` below, so on a shared frequency it can ask about a
+  // station other than the one the readout names (WWV named, PPE asked on 10 MHz, #152).
   const schedule = useMemo(
     () => (eibiSchedule ? onAirSchedule(eibiSchedule, priyomCopy) : undefined),
     [eibiSchedule, priyomCopy],

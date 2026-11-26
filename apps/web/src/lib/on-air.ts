@@ -2,8 +2,10 @@
  * One schedule for every "what's on" (#148): EiBi's season schedule, Priyom's
  * numbers-station calendar and the hand-curated catalog (signal-stations.ts),
  * merged at read time into one list of Broadcast rows, sorted by frequency, so
- * the readout, waterfall, Strong signals, Find a station and the reception
- * prompt all read it through eibi.ts's and station-search.ts's own lookups. The
+ * the readout, waterfall, Strong signals, Find a station and the signal question
+ * all read it through eibi.ts's and station-search.ts's own lookups. EiBi's
+ * reception question reads EiBi's own rows instead (page.tsx `askableEibi`), so
+ * this list's order never changes which station it asks about (#152). The
  * three sources stay in their own stores; Priyom's data is never copied into
  * EiBi's or exported (CC BY-NC-SA).
  *
@@ -112,7 +114,12 @@ function priyomRow(tx: PriyomTx, s: SignalStation, like: Broadcast | undefined):
 
 /**
  * The merged schedule (see the file comment). Rows are sorted by frequency, as
- * eibi.ts's lookups need, keeping each source's own order within a frequency.
+ * eibi.ts's lookups need. Within a frequency the catalog's and Priyom's rows come
+ * before EiBi's (#152), so with no region to rank by a station with a page leads
+ * (WWV, not PPE, on 10 MHz); rows standing in for Priyom's are EiBi's, so they
+ * stay behind. Each source keeps its own order. `rankBroadcasts` ranks by region
+ * on top of this: with one, the stations aimed there still lead (ItalCable on
+ * 10 MHz for Europe).
  */
 export function onAirSchedule(
   eibi: readonly Broadcast[],
@@ -186,5 +193,5 @@ export function onAirSchedule(
   }
   // Still loading (undefined): nothing for them, rather than EiBi's season grid (D4).
 
-  return rows.sort((a, b) => a.khz - b.khz);
+  return rows.sort((a, b) => a.khz - b.khz || Number(a.source === "eibi") - Number(b.source === "eibi"));
 }
