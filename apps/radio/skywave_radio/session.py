@@ -863,14 +863,14 @@ class ListenSession:
         """A receiver_log line for a coded refusal of ours, at most once per
         REFUSED_LOG_INTERVAL_S for the same receiver and code."""
         assert e.code is not None
-        key = (loggable_host(e.host), e.port, e.code)
+        which = (loggable_host(e.host), e.port, e.code)
         now = time.monotonic()
-        last = self._refused_logged.get(key)
+        last = self._refused_logged.get(which)
         if last is not None and now - last[0] < REFUSED_LOG_INTERVAL_S:
-            self._refused_logged[key] = (last[0], last[1] + 1)
+            self._refused_logged[which] = (last[0], last[1] + 1)
             return
         dropped = last[1] if last is not None else 0
-        self._refused_logged[key] = (now, 0)
+        self._refused_logged[which] = (now, 0)
         self._log_receiver("refused", e.host, e.port, code=e.code, detail=e.detail, suppressed=dropped)
 
     def _receiver_full(self, host: str, port: int, knows_cap: bool) -> BadRequest:

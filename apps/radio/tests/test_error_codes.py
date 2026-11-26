@@ -14,7 +14,8 @@ def raised_codes(module: str, error: str) -> set[str]:
 
 def bad_request_codes() -> set[str]:
     """Codes on the service's own refusals (BadRequest in session.py), such as skywave_cap."""
-    return set(re.findall(r'code="([a-z_]+)"', (PKG / "session.py").read_text()))
+    # Only codes a BadRequest carries to the browser, not the receiver log's own labels.
+    return set(re.findall(r'BadRequest\((?:[^()]|\([^()]*\))*?\bcode="([a-z_]+)"', (PKG / "session.py").read_text()))
 
 
 # Value: protects=the web app knows every code the service can send, its own refusals (skywave_cap, #144) included, so none reads as an uncoded failure that stops Pick best; fails_when=a code is added on one side only; why_new=BadRequest codes weren't scanned; seam=none; no_claim=codes built at runtime rather than written as literals
