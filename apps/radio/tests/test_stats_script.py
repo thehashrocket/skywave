@@ -47,8 +47,11 @@ PROC_TCP = textwrap.dedent(
 FAKE_DOCKER = """#!/usr/bin/env bash
 case "$1" in
   compose) case "$6" in radio) echo radioid;; caddy) echo caddyid;; esac ;;
-  stats) echo "  skywave-radio-1  cpu=21.73%  mem=125.9MiB / 1.922GiB" ;;
+  stats)
+    [ -n "${FAKE_FAIL_STATS:-}" ] && { echo "Error: container is restarting" >&2; exit 1; }
+    echo "  skywave-radio-1  cpu=21.73%  mem=125.9MiB / 1.922GiB" ;;
   inspect)
+    [ -n "${FAKE_FAIL_INSPECT:-}" ] && { echo "Error: container is restarting" >&2; exit 1; }
     case "$3" in
       *Created*) echo "${FAKE_CREATED:-2026-11-20T00:00:00.000000000Z}" ;;
       *Health*) echo "  radio started=${FAKE_STARTED:-2026-11-25T06:00:00Z}  health=healthy" ;;
@@ -203,10 +206,16 @@ def test_label_after_recreate(tmp_path: Path):
     assert "previous container" not in kept
 
 
-# Value: protects=a failed docker exec or docker logs skips only its own section, so the rest of the daily report still posts, and a receiver section that read nothing says so instead of "no lines"; fails_when=any exec or logs call loses its fallback under set -euo pipefail, or both reads failing prints the quiet-day message; why_new=stats.sh:46 ended the script on a failed exec (D5); seam=fake docker on PATH; no_claim=docker's real error behaviour while a container restarts
+# Value: protects=a failed docker stats, inspect, exec or logs call skips only its own section, so the rest of the daily report still posts, and a receiver section that read nothing says so instead of "no lines"; fails_when=any docker call loses its fallback under set -euo pipefail, or both reads failing prints the quiet-day message; why_new=stats.sh:46 ended the script on a failed exec (D5); seam=fake docker on PATH; no_claim=docker's real error behaviour while a container restarts
 def test_failed_exec_and_logs_keep_reporting(tmp_path: Path):
-    out = run_stats(tmp_path, LOGS, sar=SAR, receivers=RECEIVERS, FAKE_FAIL_EXEC="1", FAKE_FAIL_LOGS="1")
+    out = run_stats(
+        tmp_path, LOGS, sar=SAR, receivers=RECEIVERS,
+        FAKE_FAIL_EXEC="1", FAKE_FAIL_LOGS="1", FAKE_FAIL_STATS="1", FAKE_FAIL_INSPECT="1",
+    )
     assert out.returncode == 0, out.stderr
+    assert "(couldn't read the containers' CPU and memory)" in out.stdout
+    assert "(couldn't read the radio container's start and health)" in out.stdout
+    assert "previous container" not in out.stdout  # no .Created, no label
     assert "(couldn't read the container's sockets)" in out.stdout
     assert "(couldn't read the container's logs)" in out.stdout
     # Nothing was read, so it must not read as a quiet day.

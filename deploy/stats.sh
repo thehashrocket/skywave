@@ -39,9 +39,12 @@ main() {
 
   echo
   echo "== containers"
+  # Like every docker read below: a failure (container restarting) skips this
+  # line, not the rest of the report.
   docker stats --no-stream --format '  {{.Name}}  cpu={{.CPUPerc}}  mem={{.MemUsage}}' \
-    "$radio" ${caddy:+"$caddy"}
-  docker inspect -f '  radio started={{.State.StartedAt}}  health={{.State.Health.Status}}' "$radio"
+    "$radio" ${caddy:+"$caddy"} 2>/dev/null || echo "  (couldn't read the containers' CPU and memory)"
+  docker inspect -f '  radio started={{.State.StartedAt}}  health={{.State.Health.Status}}' "$radio" 2>/dev/null \
+    || echo "  (couldn't read the radio container's start and health)"
 
   echo
   echo "== open now"
