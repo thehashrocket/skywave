@@ -42,7 +42,8 @@ main() {
   echo "== open now"
   # The container's TCP table, established only (st 01). Local port 8765
   # (0x223D) is a browser socket through Caddy; anything else it dialed out is a
-  # Kiwi socket (audio, waterfall, scans and noise measurements).
+  # Kiwi socket (audio, waterfall and band scans; noise levels come from those
+  # waterfall frames, never from a socket of their own, see noise.py).
   docker exec "$radio" cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '
     $4 == "01" { split($2, a, ":"); if (a[2] == "223D") ws++; else kiwi++ }
     END { printf "  browser_sockets=%d  kiwi_sockets=%d\n", ws, kiwi }'
