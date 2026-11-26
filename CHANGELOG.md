@@ -2,6 +2,12 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.58.2.1] - 2026-11-25 ([#104](https://github.com/thehashrocket/skywave/issues/104))
+
+### Fixed
+- **CHU's page gives the right closing date.** Canada's CHU time signal went off the air on 22 June 2026, after more than a century of broadcasts. Its page and the Signal stations history said October 2023, which was when a different time signal, the one CBC radio carried, ended. It now says "Off the air since 2026-06".
+- **The Pip and The Squeaky Wheel link Priyom.** Their pages now list Priyom's station page first under Read more. Priyom confirms the frequencies skywave already used: The Pip on 5448 kHz by day and 3756 kHz by night, The Squeaky Wheel on 5367 kHz by day and 3363.5 kHz by night.
+
 ## [0.58.2.0] - 2026-11-25 ([#137](https://github.com/thehashrocket/skywave/issues/137))
 
 ### Fixed
