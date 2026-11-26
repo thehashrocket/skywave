@@ -2409,8 +2409,7 @@ describe("ListenPage", () => {
       expect(tx.askRegion).toBe(region);
     });
 
-    // Value: protects=with Priyom unavailable a frequency E11 shares with a broadcaster asks today's EiBi question about the broadcaster only (D12, D9), while the readout shows E11 marked unconfirmed (D4), and a frequency with only E11's fallback row asks nothing (D5); fails_when=the prompt reads the merged list, names E11 by EiBi's name, or skips the broadcaster; why_new=#148 D5/D12 on the page; seam=useRadio, useSchedule, usePriyomSchedule and useSubmitReport mocked, fake timers; no_claim=the server's refusal (reports.test)
-    // Value: protects=D12's "more than one station" rule on a time-signal frequency: hand-tuned to 10,000 kHz, where WWV and WWVH share the dial with PPE, BPM and ItalCable, the question is today's EiBi one about the first-ranked station (more than 3 names), never a signal question about WWV; fails_when=the merged dial's catalog WWV row is taken as the only station, or EiBi's question stops naming the first listing; why_new=R10 named this case; seam=useRadio, useSchedule and useSubmitReport mocked, fake timers; no_claim=region ranking (eibi/reception tests)
+    // Value: protects=D12's "more than one station" rule on a time-signal frequency: hand-tuned to 10,000 kHz, where WWV and WWVH share the dial with PPE, BPM and ItalCable, the question is today's EiBi one about the first-ranked station (more than 3 names), never a signal question about WWV, while the readout names WWV (#152, readout only); fails_when=the merged dial's catalog WWV row is taken as the only station, EiBi's question stops naming the first listing, the readout loses its catalog-first order, or the prompt starts reading the merged list; why_new=R10 named this case, #152 added the readout; seam=useRadio, useSchedule and useSubmitReport mocked, fake timers; no_claim=region ranking (eibi/reception tests)
     it("asks today's EiBi question on a time-signal frequency several stations share", () => {
       const daily = (station: string, target: string) => ({ khz: 10_000, start: 0, end: 1440, days: "", station, lang: "-TS", target });
       schedule.data!.broadcasts = [
@@ -2423,6 +2422,8 @@ describe("ListenPage", () => {
       receiverList.data = { receivers: [{ ...listed, lat: undefined, lon: undefined }, backup] };
       listeningOn(10_000);
       act(() => vi.advanceTimersByTime(62_000));
+      // #152: the readout names the catalog's WWV while the question stays EiBi's, about PPE.
+      expect(document.querySelector(".readout-station")!.textContent).toMatch(/^WWV · .* \+\d+ more$/);
       expect(line().textContent).toContain("Did you hear PPE Observatorio Nac. on the receiver");
       fireEvent.click(screen.getByRole("button", { name: "Heard" }));
       expect(submitReport.mock.lastCall![0].tx).toMatchObject({ kind: "eibi", name: "PPE Observatorio Nac.", askRule: 2 });
@@ -2476,6 +2477,7 @@ describe("ListenPage", () => {
       }
     });
 
+    // Value: protects=with Priyom unavailable a frequency E11 shares with a broadcaster asks today's EiBi question about the broadcaster only (D12, D9), while the readout shows E11 marked unconfirmed (D4), and a frequency with only E11's fallback row asks nothing (D5); fails_when=the prompt reads the merged list, names E11 by EiBi's name, or skips the broadcaster; why_new=#148 D5/D12 on the page; seam=useRadio, useSchedule, usePriyomSchedule and useSubmitReport mocked, fake timers; no_claim=the server's refusal (reports.test)
     it("asks about the broadcaster, not E11's unconfirmed row, when Priyom is unavailable", () => {
       schedule.data!.broadcasts = [
         { khz: 11_100, start: 0, end: 1440, days: "", station: "E11 Polish Spy Numbers", lang: "E", target: "" },
@@ -3326,8 +3328,12 @@ describe("ListenPage", () => {
       ]);
     });
 
-    // Value: protects=a Strong signals click tunes the mode of the station the row names: the AM broadcaster EiBi lists first on 11,100 even while a Priyom E11 slot (USB) shares the frequency, and a numbers slot alone on its frequency in its own USB (#148); fails_when=the click takes the first mode found among all rows there, or ignores Priyom's mode; why_new=bug review of #148; seam=useRadio, useSchedule, usePriyomSchedule mocked; no_claim=what the receiver actually hears
-    it("tunes a strong signal in the named station's mode", () => {
+    // Value: protects=a Strong signals click tunes the mode of the station the row names (#148, #152 D4): on 11,100, shared by an AM broadcaster and a Priyom E11 slot (USB), E11 leads and tunes USB unless the receiver's region favours the broadcaster (an Asian receiver: AM), and a numbers slot alone on its frequency tunes its own USB; fails_when=the click takes the first mode found among all rows there, always picks USB or AM, ignores Priyom's mode, or ranks by a different region than the readout; why_new=bug review of #148, D4; seam=useRadio, useSchedule, usePriyomSchedule mocked; no_claim=what the receiver actually hears
+    it.each([
+      ["a receiver with no listed position", {}, "USB", "E11"],
+      ["an Asian receiver", { lat: 35.7, lon: 139.7 }, "AM", "Sound of Hope"],
+    ])("tunes a strong signal in the named station's mode, on %s", (_, place, mode, named) => {
+      receiverList.data = { receivers: [{ ...listed, ...place }, backup] };
       localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_650, mode: "am" }));
       radio.canView = true;
       radio.canScan = true;
@@ -3357,8 +3363,10 @@ describe("ListenPage", () => {
         };
         playing(view);
         const modeChecked = (m: string) => (screen.getByRole("radio", { name: m }) as HTMLInputElement).checked;
-        fireEvent.click(screen.getByRole("button", { name: /11,100\s*25m/ }));
-        expect(modeChecked("AM")).toBe(true);
+        const row = screen.getByRole("button", { name: /11,100\s*25m/ });
+        expect(row.textContent).toContain(named);
+        fireEvent.click(row);
+        expect(modeChecked(mode)).toBe(true);
         fireEvent.click(screen.getByRole("button", { name: /20,167\s*15m/ }));
         expect(modeChecked("USB")).toBe(true);
       } finally {

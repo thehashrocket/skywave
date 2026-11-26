@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import snapshot from "../server/eibi-snapshot.json";
-import { forPage, listedOn, parseEibi, type Broadcast } from "./eibi";
+import {
+  forPage,
+  listedOn,
+  parseEibi,
+  rankBroadcasts,
+  scheduledBetween,
+  scheduledOn,
+  shortLabel,
+  stationLine,
+  type Broadcast,
+} from "./eibi";
 import { onAirSchedule, stationNamed, type OnAirRow, type PriyomCopy } from "./on-air";
 import { priyomSpan, type PriyomTx } from "./priyom-schedule";
 import { findBroadcasts } from "./station-search";
@@ -73,6 +83,34 @@ describe("onAirSchedule", () => {
     expect(ten.filter((r) => r.slug === "wwv")).toMatchObject([{ station: "WWV", source: "catalog", mode: "am", lang: "-TS" }]);
     expect(names(ten)).not.toContain("WWV Colorado (m.ann.)");
     expect(names(ten)).toContain("BPM Xian");
+  });
+
+  // Value: protects=#152: on a shared frequency a catalog station leads the readout and the waterfall label when no region decides (WWV, not PPE, on 10 MHz), while a region still puts the stations aimed there first; fails_when=the merged sort loses its catalog-first tiebreak, puts it ahead of the region rank, or the catalog order flips WWV and WWVH; why_new=no test ordered catalog against EiBi rows on one frequency; seam=none; no_claim=the page passing the right region (page.test)
+  it.each([
+    [undefined, "WWV"],
+    ["na", "WWV"],
+    ["la", "PPE Observatorio Nac."],
+    ["eu", "ItalCable"],
+  ] as const)("on 10 MHz with region %s, %s leads", (region, leader) => {
+    const merged = onAirSchedule(EIBI, PRIYOM);
+    const t = at(`${THU}T08:49:00Z`);
+    const ranked = scheduledOn(merged, 10_000, t, region);
+    expect(ranked[0]!.station).toBe(leader);
+    expect(stationLine(ranked)!.all).toContain("PPE Observatorio Nac.");
+    const [channel] = scheduledBetween(merged, 10_000, 10_000, t, region);
+    expect(shortLabel(rankBroadcasts(channel!.broadcasts, region))).toBe(`${leader} +${ranked.length - 1}`);
+  });
+
+  // Value: protects=#152 D3: a Priyom-confirmed slot leads a frequency it shares with EiBi broadcasters (E11 over the all-day jammer on 11,100), and a season row standing in for Priyom's keeps trailing; fails_when=the tiebreak keys on catalog only (E11 trails) or on slug (the unconfirmed row leads); why_new=D3's rule is new; seam=none; no_claim=Priyom's live feed (fixture copy)
+  it("puts a confirmed Priyom slot first on a shared frequency, not a season row", () => {
+    const confirmed = onAirSchedule(EIBI, copy([tx("E11", `${THU}T10:45:00Z`, 11_100)]));
+    const live = scheduledOn(confirmed, 11_100, at(`${THU}T10:47:00Z`));
+    expect(live[0]).toMatchObject({ station: "E11", source: "priyom" });
+    expect(names(live)).toContain("CNR1 Jammer/Firedrake");
+    // Wednesday: EiBi's E11 row on 11,100 (Mo,We 10:45-10:55) stands in, marked.
+    const season = scheduledOn(onAirSchedule(EIBI, null), 11_100, at("2026-11-25T10:47:00Z"));
+    expect(season[0]!.station).toBe("CNR1 Jammer/Firedrake");
+    expect(season.at(-1)).toMatchObject({ station: "E11", unconfirmed: true });
   });
 
   // Value: protects=day/night stations keep EiBi's hours under the catalog identity (D8): The Pip on 3756 at 20:00, not at 12:00; The Squeaky Wheel's 3364 row moves to the catalog's 3363.5 and is still found from 3364; fails_when=0000-2400 rows or the sun guess replace EiBi's hours, or 3364 loses the name; why_new=R6; seam=none; no_claim=#149's both-windows flaw
