@@ -30,7 +30,7 @@ function setup() {
 }
 
 describe("priyomScheduleSource", () => {
-  // Value: protects=the week is fetched as PRIYOM_SLICES slices without following redirects, merged with duplicates dropped, cut down to the catalog's stations (E07, E11, S06, S11a, V07, M12: not V13, F06a, M14, F03), and cached for hours; fails_when=the page gets every Priyom station, slices double up, or every request refetches; why_new=new feed (#98); seam=fetch; no_claim=Priyom's availability
+  // Value: protects=the week is fetched as PRIYOM_SLICES slices without following redirects, merged with duplicates dropped, cut down to the catalog's stations (E07, E11, S06, S11a, M12, and F06a filed under F06 with its designator kept, #148; not V13, M14, F03), and cached for hours; fails_when=the page gets every Priyom station, F06a is dropped or loses its designator, slices double up, or every request refetches; why_new=new feed (#98), F06a decision (#148); seam=fetch; no_claim=Priyom's availability
   it("fetches the week, keeps the catalog's stations, and caches it", async () => {
     const { get, fetchImpl, advance } = setup();
     const schedule = await get();
@@ -38,6 +38,7 @@ describe("priyomScheduleSource", () => {
     expect(fetchImpl.mock.calls[0]![1]).toMatchObject({ redirect: "error" });
     // Every slice returns the same ten events: each appears once.
     expect(schedule?.transmissions.map((t) => t.summary)).toEqual([
+      "F06a 17532kHz RTTY [Target: Pacific]",
       "E11 8102kHz USB",
       "S06 11616kHz USB/AM [Target: Pacific]",
       "S11a 21906kHz USB",
@@ -45,6 +46,7 @@ describe("priyomScheduleSource", () => {
       "M12 Search",
       "E07 17428kHz USB",
     ]);
+    expect(schedule?.transmissions.find((t) => t.summary.startsWith("F06a"))).toMatchObject({ station: "F06", designator: "F06a" });
     advance(5 * HOUR);
     await get();
     expect(fetchImpl).toHaveBeenCalledTimes(PRIYOM_SLICES);
@@ -69,7 +71,7 @@ describe("priyomScheduleSource", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(calls);
     advance(10 * 60_000);
     serve(ok(EVENTS));
-    expect((await get())?.transmissions).toHaveLength(6);
+    expect((await get())?.transmissions).toHaveLength(7);
   });
 
   // Value: protects=once the cache expires the last good week is served at once while a refresh runs through defer, and a failed refresh keeps it; fails_when=a request waits on priyom.org, or a failed refresh drops the schedule; why_new=new feed (#98); seam=fetch, defer; no_claim=none

@@ -26,10 +26,17 @@ describe("panelGroups", () => {
     expect(g.always.every((r) => r.listen !== null)).toBe(true);
     expect(slugs(g.history)).toEqual(["chu", "lincolnshire-poacher", "cherry-ripe"]);
     expect(g.history.every((r) => r.listen === null && r.shown === null)).toBe(true);
-    expect(slugs(g.later).sort()).toEqual(["e07", "e11", "m12", "s06", "s11a", "v07"]);
+    expect(slugs(g.later).sort()).toEqual(["e06", "e07", "e11", "f06", "m12", "s06", "s11a", "v07"]);
     expect(g.later.every((r) => r.listen === null && r.atMs === null)).toBe(true);
     expect(g.onNow).toEqual([]);
     expect(g.upNext).toEqual([]);
+  });
+
+  // Value: protects=the panel's Listen on an F06 RTTY slot tunes the dial parsePriyomEvents gives it (USB, 2.125 kHz below the listed 17532), so the panel, the dial and search agree (owner: apply it to the panel too); fails_when=data slots lose their Listen or the panel tunes the listed frequency; why_new=R15 panel scope; seam=none; no_claim=mark-vs-centre on the air
+  it("offers Listen on an F06 data slot at its USB dial (#148 R15)", () => {
+    const f06: PriyomTx = { station: "F06", designator: "F06a", startMs: at(NOW) - 60_000, khz: 17_529.875, mode: "usb", data: true, listedKhz: 17_532, summary: "F06a 17532kHz RTTY" };
+    const row = panelGroups(at(NOW), [f06]).onNow.find((r) => r.station.slug === "f06");
+    expect(row?.listen).toEqual({ khz: 17_529.875, mode: "usb", listedKhz: 17_532 });
   });
 
   // Value: protects=a Priyom slot is "on now" with its frequency as Listen for PRIYOM_ON_AIR_MS from its start (ending soonest first), a slot within 6 hours is "up next" with its frequency shown but no Listen, and one further off is "later" with its time; fails_when=Listen is offered before a transmission starts (dead air), the 6-hour boundary is off, or the groups sort wrong; why_new=#100 panel groups; seam=priyom-schedule; no_claim=how long a transmission really lasts

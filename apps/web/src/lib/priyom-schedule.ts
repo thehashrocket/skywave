@@ -10,7 +10,7 @@
  * Priyom.org is CC BY-NC-SA 4.0: the panel credits it and links the schedule page.
  */
 
-import type { Mode } from "./radio-types";
+import { RTTY_MARK_OFFSET_KHZ, type Mode } from "./radio-types";
 
 export const PRIYOM_EVENTS_URL = "https://calendar2.priyom.org/events";
 export const PRIYOM_SCHEDULE_PAGE = "https://priyom.org/number-stations/station-schedule";
@@ -33,8 +33,25 @@ export const PRIYOM_SLICES = 8;
  */
 export const PRIYOM_ON_AIR_MS = 10 * 60_000;
 
-/** One scheduled transmission. `khz` and `mode` are null when Priyom has no frequency ("Search") or no mode we tune. */
-export type PriyomTx = { station: string; startMs: number; khz: number | null; mode: Mode | null; summary: string };
+/**
+ * One scheduled transmission. `khz` is the dial to tune (an RTTY slot's sits
+ * RTTY_MARK_OFFSET_KHZ below the listed frequency, which `summary` keeps) and
+ * `mode` the mode to tune it in; both are null only when Priyom has no frequency
+ * yet ("Search"). `data`: Priyom lists it in a data mode (RTTY), heard as
+ * "Digital data". `designator`: the designator Priyom used, when the server
+ * filed it under a catalog station's main one (F06a under F06, #148).
+ */
+export type PriyomTx = {
+  station: string;
+  startMs: number;
+  khz: number | null;
+  mode: Mode | null;
+  summary: string;
+  data?: true;
+  /** Priyom's listed frequency, when the dial differs from it (an RTTY slot's sits RTTY_MARK_OFFSET_KHZ below): what logs and Priyom's pages call the slot. */
+  listedKhz?: number;
+  designator?: string;
+};
 
 /**
  * The URLs for the slices covering a week from `ms`: 24 hours each, starting
@@ -50,13 +67,20 @@ export function priyomSliceUrls(ms: number): string[] {
   });
 }
 
-/** Priyom's modes as the dial takes them: USB/AM is tuned as USB. RTTY and other data modes have none. */
-function tunedMode(priyom: string): Mode | null {
-  if (priyom === "USB" || priyom === "USB/AM") return "usb";
-  if (priyom === "LSB") return "lsb";
-  if (priyom === "AM") return "am";
-  if (priyom === "CW") return "cw";
-  return null;
+/**
+ * The dial for a listed frequency in Priyom's mode (#148, owner): USB/AM is
+ * tuned as USB; RTTY as USB with the dial RTTY_MARK_OFFSET_KHZ below, so the
+ * bursts are heard (the decoder stays off: its 45.45 Bd / 170 Hz needn't match);
+ * any other mode as USB at the listed frequency, so no listed slot is left
+ * without a dial.
+ */
+function dial(priyom: string, khz: number): { khz: number; mode: Mode; data?: true; listedKhz?: number } {
+  if (priyom === "USB" || priyom === "USB/AM") return { khz, mode: "usb" };
+  if (priyom === "LSB") return { khz, mode: "lsb" };
+  if (priyom === "AM") return { khz, mode: "am" };
+  if (priyom === "CW") return { khz, mode: "cw" };
+  if (priyom === "RTTY") return { khz: khz - RTTY_MARK_OFFSET_KHZ, mode: "usb", data: true, listedKhz: khz };
+  return { khz, mode: "usb" };
 }
 
 // Priyom's own pattern (nextevents-20201105.js): station, then "Search" or the
@@ -80,8 +104,8 @@ export function parsePriyomEvents(json: unknown): PriyomTx[] {
     const startMs = Date.parse(start);
     const m = SUMMARY.exec(summary.trim());
     if (!Number.isFinite(startMs) || !m) continue;
-    const khz = m[2] ? Number(m[2]) : null;
-    out.push({ station: m[1]!, startMs, khz, mode: khz === null ? null : tunedMode(m[3]!.toUpperCase()), summary });
+    const station = m[1]!;
+    out.push(m[2] ? { station, startMs, summary, ...dial(m[3]!.toUpperCase(), Number(m[2])) } : { station, startMs, khz: null, mode: null, summary });
   }
   return out;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseShareLink } from "./share-link";
-import { listenHref, pageDescription, scheduleLines, stationHref } from "./signal-page";
+import { channelText, listenHref, pageDescription, scheduleLines, stationHref } from "./signal-page";
 import { findStation, SIGNAL_STATIONS } from "./signal-stations";
 
 const station = (slug: string) => findStation(slug)!;
@@ -52,5 +52,13 @@ describe("signal page text", () => {
     expect(pageDescription(station("uvb-76"))).toMatch(/Listen live/);
     expect(pageDescription(station("cherry-ripe"))).toMatch(/Off the air now/);
     expect(pageDescription(station("cherry-ripe"))).not.toMatch(/Listen live/);
+  });
+
+  // Value: protects=a Priyom RTTY slot reads with Priyom's listed frequency first, the number logs and Priyom's pages use, then the exact dial Listen tunes ("17532 kHz RTTY · dial 17529.875 USB", owner #148), never a rounded "17.5299"; other channels keep their MHz form with every kHz decimal (The Squeaky Wheel's 3363.5 as 3.3635, WWV-style whole kHz unchanged); fails_when=the listed frequency is dropped, the dial is rounded, or ordinary channels change; why_new=review note on the F06 page, owner chose this format; seam=none; no_claim=mark-vs-centre on the air
+  it("shows an RTTY slot by Priyom's frequency then its dial, and other channels as before", () => {
+    expect(channelText({ khz: 17_529.875, mode: "usb", listedKhz: 17_532 })).toBe("17532 kHz RTTY · dial 17529.875 USB");
+    expect(channelText({ khz: 3_363.5, mode: "usb" })).toBe("3.3635 USB");
+    expect(channelText({ khz: 4_625, mode: "usb" })).toBe("4.625 USB");
+    expect(channelText({ khz: 17_529.875, mode: "usb" })).toBe("17.529875 USB");
   });
 });

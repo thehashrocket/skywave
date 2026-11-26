@@ -2338,6 +2338,14 @@ html:has(.tuning-bar:not([hidden])) {
   color: var(--muted);
   white-space: nowrap;
 }
+/* A Priyom RTTY slot (#148): the listed frequency and the dial, each kept whole,
+   may sit on two lines in a narrow cell rather than widen the table. */
+.sched-freq.sched-freq-split {
+  white-space: normal;
+}
+.sched-freq-parts > span {
+  white-space: nowrap;
+}
 
 .sched-strip tr[data-current] .sched-freq {
   color: var(--lamp);
