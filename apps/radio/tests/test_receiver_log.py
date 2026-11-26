@@ -11,7 +11,7 @@ import pytest
 
 from skywave_radio.hostguard import HostRejected, loggable_host
 from skywave_radio.kiwi import IQBlock, KiwiError
-from skywave_radio.server import attach_receiver_log
+from skywave_radio.server import attach_receiver_log, close_receiver_logs
 from skywave_radio.session import Slots, receiver_log
 
 from .test_listener_caps import QuietClient, listening, resolver, session, tune
@@ -125,8 +125,19 @@ def test_only_checked_hosts_reach_the_log(host, shown):
     assert loggable_host(host) == shown
 
 
-# Value: protects=RECEIVER_LOG sends the lines to a rotating file (once per path), none when unset, and a path that can't be opened never stops the service (#144 D4); fails_when=no file, a second handler per create_app, or attach raises; why_new=no file logging existed; seam=none; no_claim=Docker volume permissions on the Droplet
-def test_the_receiver_log_file(tmp_path, caplog):
+# Value: protects=RECEIVER_LOG sends the lines to a rotating file (once per path), written by a thread other than the caller's so a slow disk can't hold the event loop (owner D4), none when unset, and a path that can't be opened never stops the service (#144); fails_when=no file, a second handler per create_app, the write runs on the caller's thread, or attach raises; why_new=no file logging existed; seam=none; no_claim=Docker volume permissions on the Droplet
+def test_the_receiver_log_file(tmp_path, caplog, monkeypatch):
+    import threading
+    from logging.handlers import RotatingFileHandler
+
+    writers: list[threading.Thread] = []
+    real_emit = RotatingFileHandler.emit
+
+    def emit(self, record):
+        writers.append(threading.current_thread())
+        real_emit(self, record)
+
+    monkeypatch.setattr(RotatingFileHandler, "emit", emit)
     assert attach_receiver_log(None) is None
     path = tmp_path / "receivers.log"
     handler = attach_receiver_log(str(path))
@@ -134,11 +145,10 @@ def test_the_receiver_log_file(tmp_path, caplog):
         assert handler is not None
         assert attach_receiver_log(str(path)) is handler
         receiver_log.info("event=listening host=kiwi.example")
-        handler.flush()
-        assert "event=listening host=kiwi.example" in path.read_text()
     finally:
-        receiver_log.removeHandler(handler)
-        handler.close()
+        close_receiver_logs()  # waits for the writer thread to write what's queued
+    assert "event=listening host=kiwi.example" in path.read_text()
+    assert writers and threading.current_thread() not in writers
     with caplog.at_level(logging.WARNING):
         assert attach_receiver_log(str(tmp_path / "missing" / "receivers.log")) is None
     assert "stdout only" in caplog.text
@@ -182,15 +192,12 @@ def test_receiver_log_setting_reaches_the_file_and_the_volume(tmp_path, monkeypa
     path = str(tmp_path / "receivers.log")
     monkeypatch.setenv("RECEIVER_LOG", path)
     assert Settings.from_env().receiver_log == path
-    before = list(receiver_log.handlers)
     create_app(settings(receiver_log=path))
-    added = [h for h in receiver_log.handlers if h not in before]
     try:
-        assert [h.baseFilename for h in added] == [path]
+        receiver_log.info("event=listening host=kiwi.example")
     finally:
-        for h in added:
-            receiver_log.removeHandler(h)
-            h.close()
+        close_receiver_logs()
+    assert "event=listening host=kiwi.example" in Path(path).read_text()
     compose = (Path(__file__).resolve().parents[3] / "docker-compose.prod.yml").read_text()
     assert "RECEIVER_LOG: /data/receivers.log" in compose
     assert "- radio_data:/data" in compose

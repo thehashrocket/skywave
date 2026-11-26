@@ -6,6 +6,7 @@ Run with:  uvicorn skywave_radio.server:app --port 8765
 from __future__ import annotations
 
 import asyncio
+import atexit
 import collections
 import contextlib
 import hmac
@@ -13,8 +14,9 @@ import ipaddress
 import json
 import logging
 import os
+import queue
 import time
-from logging.handlers import RotatingFileHandler
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from typing import Any
 
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, status
@@ -64,26 +66,48 @@ RECEIVER_LOG_BYTES = 5 * 1024 * 1024
 RECEIVER_LOG_BACKUPS = 4
 
 
+# Each RECEIVER_LOG file: its handler, the queue handler on receiver_log, and the writer thread.
+_receiver_files: dict[str, tuple[RotatingFileHandler, QueueHandler, QueueListener]] = {}
+
+
 def attach_receiver_log(path: str | None) -> RotatingFileHandler | None:
     """Also write receiver_log to `path` (rotated), once per path.
 
+    The event loop only queues each line; a writer thread does the file write and
+    any rotation, so a slow or full disk never holds up anyone's audio (owner D4).
     A file that can't be opened never stops the service: it says so and the
     lines still go to stdout.
     """
     if not path:
         return None
     full = os.path.abspath(path)
-    for handler in receiver_log.handlers:
-        if isinstance(handler, RotatingFileHandler) and handler.baseFilename == full:
-            return handler
+    if full in _receiver_files:
+        return _receiver_files[full][0]
     try:
         handler = RotatingFileHandler(full, maxBytes=RECEIVER_LOG_BYTES, backupCount=RECEIVER_LOG_BACKUPS, encoding="utf-8")
     except OSError as e:
         log.warning("can't write the receiver log to %s (%r); it goes to stdout only", full, e)
         return None
     handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
-    receiver_log.addHandler(handler)
+    lines: queue.SimpleQueue[logging.LogRecord] = queue.SimpleQueue()
+    writer = QueueListener(lines, handler)
+    writer.start()
+    queued = QueueHandler(lines)
+    receiver_log.addHandler(queued)
+    _receiver_files[full] = (handler, queued, writer)
     return handler
+
+
+def close_receiver_logs() -> None:
+    """Stop each RECEIVER_LOG writer thread once it has written what's queued (at exit)."""
+    while _receiver_files:
+        _, (handler, queued, writer) = _receiver_files.popitem()
+        receiver_log.removeHandler(queued)
+        writer.stop()
+        handler.close()
+
+
+atexit.register(close_receiver_logs)
 
 
 async def _close_bounded(ws: WebSocket, code: int, reason: str) -> None:

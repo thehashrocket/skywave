@@ -375,6 +375,29 @@ describe("ListenPage", () => {
     });
   });
 
+  // Value: protects=after the service refuses a listener's switch (Skywave's own cap) while the old station plays on, dial moves go to the station still playing and the Receiver field shows it again (owner D6/D7, #144); fails_when=the page keeps tuning the refused receiver or keeps its name in the field; why_new=TODO "Restore the receiver after a refused switch" had no fix; seam=mocked radio hook; no_claim=the service's own refusal order (radio test_listener_caps.py)
+  it("goes back to the station still playing when a switch is refused", () => {
+    vi.useFakeTimers();
+    try {
+      savePin({ host: "f4kiy.ddns.net", port: 8073 });
+      radio.status = { state: "listening", host: "f4kiy.ddns.net", port: 8073 };
+      const view = render(<ListenPage />);
+      fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+      expect((screen.getByLabelText("Receiver") as HTMLInputElement).value).toBe("sdr.k1vl.com");
+      radio.status = { state: "error", code: "skywave_cap", host: "sdr.k1vl.com", port: 8076, message: "x" };
+      view.rerender(<ListenPage />);
+      radio.status = { state: "listening", host: "f4kiy.ddns.net", port: 8073 };
+      view.rerender(<ListenPage />);
+      expect((screen.getByLabelText("Receiver") as HTMLInputElement).value).toBe("f4kiy.ddns.net");
+      radio.retune.mockClear();
+      fireEvent.keyDown(screen.getByRole("slider", { name: "Tuning dial" }), { key: "ArrowUp" });
+      act(() => vi.advanceTimersByTime(500));
+      expect(radio.retune).toHaveBeenCalledWith(expect.objectContaining({ host: "f4kiy.ddns.net", port: 8073 }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // Value: protects=a failed Pick best run leaves no dead receiver saved; fails_when=tuneReceiver saves before the receiver plays; why_new=no test covered a chain that fails; seam=none; no_claim=real browser storage
   it("doesn't save receivers that Pick best tried and abandoned", () => {
     const view = render(<ListenPage />);

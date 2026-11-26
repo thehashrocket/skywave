@@ -763,13 +763,23 @@ class ListenSession:
                     await self._decode_reply()
             return
 
+        receiver = (host, port)
+        # Our own per-receiver cap, checked before anything changes (owner D5): a
+        # switch to a receiver Skywave already fills is refused with the current
+        # audio, frequency and mark as they were. This session's own lease on it
+        # (a reconnect while its old pump still holds the slot) doesn't count.
+        # Rechecked below, as another listener can take the slot while the old
+        # pump stops.
+        current = self._lease
+        if self._slots.receiver_full(receiver) and not (current is not None and current.receiver == receiver):
+            raise self._receiver_full(host, port, knows_cap)
+
         if self._freq_khz and freq != self._freq_khz:
             # Another receiver on another frequency: same rule as a retune. (A
             # mark set before the first Listen is for that Listen: kept.)
             self._forget_mark()
         self._freq_khz = freq
 
-        receiver = (host, port)
         # Keep the slot the old pump holds: its done callback then releases nothing.
         old_holder = self._slot_holder
         lease = self._lease
@@ -789,7 +799,7 @@ class ListenSession:
                 old_holder.add_done_callback(lambda _: self._slots.release(lease))
             raise
         # Checked once the old pump has closed its Kiwi, like the overall limit:
-        # a refusal ends the old session too, the same as a busy Kiwi would.
+        # a refusal here ends the old session too, the same as a busy Kiwi would.
         blocked = self.settings.blocked_receivers
         if (host.rstrip("."), port) in blocked or (host.rstrip("."), None) in blocked:
             if handing_over:
