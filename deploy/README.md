@@ -17,6 +17,7 @@ copies, which the README's "One process" rule forbids).
 | `forced-command.sh` | The only command the GitHub Actions key may run on the box |
 | `../.github/workflows/radio-stats.yml` | Posts `stats.sh` output daily to the `radio-load` issue |
 | `stats.sh` | Read-only load numbers (CPU, memory, open sockets, sessions per hour, refusals); also the only command the monitoring key may run |
+| `profile.sh` | Where the radio service spends its CPU: steal, CPU and listeners over a window, plus a py-spy profile of the live process (issue #153); run by hand as root |
 | `../.github/workflows/deploy-radio.yml` | Deploys `main` after CI passes, or any branch by hand |
 
 ## First deploy
@@ -134,6 +135,38 @@ browser and Kiwi sockets open right now, `/ws` sessions opened per UTC hour over
 the last 24 h, and, on builds with the receiver log (#144), refusals by code and
 the most listeners seen per hour. Counts only: it never prints log lines,
 addresses, the token or anything else from `.env`. Changes nothing.
+
+### Where the CPU goes (profile.sh)
+
+To see which code a busy box spends its CPU on (issue #153), as root during a
+moderately busy hour, not the very top of a peak:
+
+```sh
+sudo python3 -m venv /opt/py-spy && sudo /opt/py-spy/bin/pip install py-spy   # once
+# A one-second check that py-spy (0.4.x or newer, for Python 3.13) can attach
+# from the host, before spending a busy hour on it:
+cd ~/skywave && sudo /opt/py-spy/bin/py-spy dump --native \
+  --pid "$(docker inspect -f '{{.State.Pid}}' "$(docker compose -f docker-compose.prod.yml ps -q radio)")"
+# In tmux, so a dropped SSH session doesn't lose the summary (written at the end):
+tmux new -s prof
+sudo ~/skywave/deploy/profile.sh 120
+```
+
+It samples host CPU and steal (`vmstat`), both containers' CPU and the
+`/healthz` listener count for 60 s with nothing attached, then again for the
+given window (30-300 s, in steps of 5) while `py-spy record --native` profiles
+the radio's process. `py-spy --native` pauses that process briefly for each
+sample, 50 times a second, so keep the window short and listen for audio gaps
+while it runs. Ctrl-C or a dropped SSH session stops py-spy and sends the radio
+a SIGCONT in case it was left paused.
+Output goes to `/var/tmp/skywave-profile-<time>/`: `summary.txt` (averages, the
+top functions by self time, and by inclusive time with each thread's share: the
+event loop's share should roughly match the baseline `radio_cpu`), the raw
+samples, and `radio.raw`, collapsed
+stacks you can open at https://www.speedscope.app for the flame graph. High
+steal means a shared-CPU plan is taking time from the box: try a dedicated-CPU
+plan before changing code. Unlike `stats.sh` it needs root and is not for the
+monitoring key; it changes nothing and installs nothing.
 
 ### Daily load log
 
