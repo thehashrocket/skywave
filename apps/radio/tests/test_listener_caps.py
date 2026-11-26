@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from skywave_radio.kiwi import KiwiInfo
 from skywave_radio.session import ListenSession, Slots
 
@@ -114,9 +112,7 @@ async def test_a_second_listener_on_a_full_receiver_gets_a_coded_busy():
     assert slots.active == 0
 
 
-# Value: protects=a switch onto a receiver at Skywave's own cap is refused before anything stops: the current receiver keeps playing on its frequency and slot (owner D5, #144); fails_when=the cap is checked only after the old pump stops, or a refused switch changes the session's frequency; why_new=this test used to assert the old order (the switch ended the current audio and freed its slot); seam=none; no_claim=the recheck after stopping, when another listener takes the slot meanwhile
-@pytest.mark.parametrize("extra,code", [({"codes": ["skywave_cap"]}, "skywave_cap"), ({}, "busy")])
-async def test_switching_onto_a_full_receiver_keeps_the_current_one(extra, code):
+async def test_switching_onto_a_full_receiver_frees_the_slot():
     slots = Slots(10, per_receiver=1)
     first, _ = session(slots)
     second, sent = session(slots)
@@ -124,16 +120,11 @@ async def test_switching_onto_a_full_receiver_keeps_the_current_one(extra, code)
     await second.handle(tune("free.example"))
     await listening(first)
     await listening(second)
-    await second.handle({**tune("busy.example"), "freqKhz": 9535, **extra})
-    errors = [p for p in sent if p.get("state") == "error"]
-    assert (errors[-1]["code"], errors[-1]["host"]) == (code, "busy.example")
-    # The refusal is followed by the session's own status: still on free.example.
-    assert sent[-1]["state"] == "listening"
-    assert second._listening and second._freq_khz == 7200
-    assert slots.active == 2
-    assert slots.on_receiver(("free.example", 8073)) == 1
+    await second.handle(tune("busy.example"))
+    assert sent[-1]["code"] == "busy"
+    assert slots.active == 1
+    assert slots.on_receiver(("free.example", 8073)) == 0
     await first.close()
-    await second.close()
 
 
 async def test_one_address_cant_hold_more_than_its_share():

@@ -336,8 +336,6 @@ export default function ListenPage() {
   const [secure, setSecure] = useState(false);
   // The Receiver and Port fields. Typing a host clears fromList and secure, typing a port clears fromList.
   const [draft, setDraft] = useState<Draft>(BLANK_DRAFT);
-  const draftRef = useRef(draft);
-  draftRef.current = draft;
   // The receiver the listener chose; null is Auto (Listen picks the best for the frequency).
   const [pin, setPin] = useState<Heard | null>(null);
   const pinRef = useRef(pin);
@@ -634,43 +632,6 @@ export default function ListenPage() {
     },
     [isTarget],
   );
-  /**
-   * What a listener's own switch (pinTo) replaced: the pin and Receiver field,
-   * keyed by the receiver it switched to. Put back if the service refuses that
-   * receiver while the station before it plays on (owner D7).
-   */
-  const switchUndo = useRef<{ to: string; pin: Heard | null; draft: Draft } | null>(null);
-  const lastStatus = useRef(status);
-  // A refused switch (TODO "Restore the receiver after a refused switch", owner
-  // D6/D7): the service refused the receiver just tuned, and the station before
-  // it plays on, its "listening" right after the error. Put the dial target back
-  // on that station, or every dial move goes to the refused receiver, and put the
-  // pin and Receiver field back as they were before the click. Pick best isn't
-  // affected: it tunes its next candidate on the error, so the target has moved on.
-  useEffect(() => {
-    const prev = lastStatus.current;
-    lastStatus.current = status;
-    if (status.state !== "listening" || !status.host || status.port === undefined) return;
-    const t = tuning.current;
-    if (isTarget(status.host, status.port) || !t.host) return;
-    const refusedTarget =
-      prev.state === "error" &&
-      (!prev.code || (prev.host === t.host && (prev.port === undefined || prev.port === Number(t.port))));
-    if (!refusedTarget) return;
-    const refused = receiverKey({ host: t.host, port: Number(t.port) });
-    const { fromList: playingFromList, secure: playingSecure } = provenance(status.host, status.port);
-    tuning.current = { host: status.host, port: String(status.port), fromList: playingFromList, secure: playingSecure };
-    setHost(status.host);
-    setPort(String(status.port));
-    setFromList(playingFromList);
-    setSecure(playingSecure);
-    const undo = switchUndo.current;
-    switchUndo.current = null;
-    if (undo && undo.to === refused) {
-      setPin(undo.pin);
-      setDraft(undo.draft);
-    }
-  }, [status, isTarget, provenance]);
   const pickBest = usePickBest(status, tuneReceiver, coversDial, provenance);
   const {
     cancel: cancelPickBest,
@@ -985,7 +946,6 @@ export default function ListenPage() {
         secure: r.secure === true,
         label: r.name ?? names.current.get(receiverKey(r)) ?? r.host,
       };
-      switchUndo.current = { to: receiverKey(r), pin: pinRef.current, draft: draftRef.current };
       setPin(p);
       setDraft(draftOf(p));
       switchTo(r, fromList);
