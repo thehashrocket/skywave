@@ -62,7 +62,6 @@ RAW = textwrap.dedent(
 FAKE_PY_SPY = """#!/usr/bin/env bash
 if [[ "$1" == --version ]]; then echo "py-spy 0.4.1"; exit 0; fi
 echo "$*" >"$FAKE_DIR/py-spy-args"
-/bin/ps -o nice= -p $$ >"$FAKE_DIR/py-spy-nice"
 # The signal dispositions and OOM score py-spy starts with (Linux only).
 [[ -r /proc/$$/status ]] && grep '^SigIgn:' /proc/$$/status >"$FAKE_DIR/py-spy-sigign"
 [[ -r /proc/$$/oom_score_adj ]] && cat /proc/$$/oom_score_adj >"$FAKE_DIR/py-spy-oom"
@@ -251,7 +250,7 @@ def test_summary(tmp_path: Path):
     assert len(rows) == 1 + 60 // 5 + 30 // 5  # header, baseline, profile
 
 
-# Value: protects=the profiler settings the owner approved for production (--nonblocking and never --native, so the radio is never paused; nice 19, so the radio gets the core first; per function, per thread, 20 Hz, the requested window, the radio's host PID) and that py-spy starts only after the baseline window, with vmstat covering each window; fails_when=a flag or the nice prefix is dropped, the rate or duration drifts, py-spy overlaps the baseline, or a vmstat count drifts from its window; why_new=new script; seam=fake py-spy and vmstat on PATH; no_claim=py-spy's own flag parsing
+# Value: protects=the profiler settings the owner approved for production (--nonblocking and never --native, so the radio is never paused; per function, per thread, 20 Hz, the requested window, the radio's host PID) and that py-spy starts only after the baseline window, with vmstat covering each window; fails_when=a flag is dropped, the rate or duration drifts, py-spy overlaps the baseline, or a vmstat count drifts from its window; why_new=new script; seam=fake py-spy and vmstat on PATH; no_claim=py-spy's own flag parsing
 def test_py_spy_settings_and_windows(tmp_path: Path):
     result, _ = run_profile(tmp_path, "45")
     assert result.returncode == 0, result.stderr
@@ -261,7 +260,6 @@ def test_py_spy_settings_and_windows(tmp_path: Path):
         assert args[args.index(flag) + 1] == value
     assert {"--nonblocking", "--function", "--threads"} <= set(args)
     assert "--native" not in args
-    assert (tmp_path / "py-spy-nice").read_text().strip() == "19"
     assert int((tmp_path / "rows-at-spy-start").read_text()) >= 1 + 60 // 5
     assert (tmp_path / "vmstat-args").read_text().splitlines() == ["-n 5 13", "-n 5 10"]
 
@@ -463,7 +461,7 @@ def test_second_signal_does_not_cut_cleanup_short(tmp_path: Path):
     script = subprocess.Popen([*cmd, "30"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _wait_for(tmp_path / "spy-pid")
     script.send_signal(signal.SIGTERM)
-    time.sleep(0.5)  # inside stop_spy's 3 s escalation
+    time.sleep(0.5)  # inside stop_spy's 2 s escalation
     script.send_signal(signal.SIGTERM)
     assert script.wait(timeout=20) == 130
     assert _gone(int((tmp_path / "spy-pid").read_text()))

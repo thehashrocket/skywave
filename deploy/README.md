@@ -184,13 +184,11 @@ when the baseline shows the host over 70% busy or couldn't measure it (pass
 host reached 95%), with under 250 MB of memory available, if the radio's
 container restarted during the baseline, or if the radio has no network
 address for the watchdog to probe (`--force` again), and the kernel is told to
-kill py-spy, not the radio, if memory runs out. py-spy runs at the lowest CPU
-priority (`nice -n 19`), so the kernel gives the radio the core first; the
-cost is that on a busy box py-spy samples late and undercounts the radio's
-busiest moments. From the moment py-spy starts,
-a watchdog probes `/healthz` every second and stops py-spy within 6 s of
+kill py-spy, not the radio, if memory runs out. From the moment py-spy starts,
+a watchdog probes `/healthz` every second and stops py-spy within about 6 s of
 the radio going quiet or answering with errors (even a py-spy that ignores
-SIGINT and SIGTERM: 1 s each before the next signal), inside the ~10 s after which
+SIGINT and SIGTERM: 1 s each before the next signal; a core starved badly
+enough can stretch that), inside the ~10 s after which
 the radio drops its Kiwi streams. It also stops py-spy when py-spy keeps
 saying it is behind in sampling, or if it is still attached 30 s past its
 window (the summary says "aborted" and why). Ctrl-C or a dropped SSH session

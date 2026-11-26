@@ -25,10 +25,8 @@
 # baseline shows the host over 70% busy (--force overrides that and the next
 # one), with no radio address for the /healthz watchdog, with under 250 MB of
 # memory free, or if the radio restarted during the baseline; the kernel is
-# told to kill py-spy, not the radio, if memory runs out; py-spy runs at the
-# lowest CPU priority (nice 19), so the kernel gives the radio the core first;
-# and from its launch py-spy is stopped as soon as the radio misses two
-# /healthz answers in a row.
+# told to kill py-spy, not the radio, if memory runs out; and from its launch
+# py-spy is stopped as soon as the radio misses two /healthz answers in a row.
 #
 # Needs py-spy on the host, on root's PATH or in its own venv (Ubuntu's pip
 # won't install into the system Python, and stock Ubuntu lacks venv):
@@ -57,9 +55,11 @@ MIN_AVAILABLE_MB=250
 # every listener's Kiwi stream once audio is ~10 s late (timeout_s in
 # apps/radio/skywave_radio/kiwi.py), so a radio starved of CPU by py-spy must
 # get it back well before then: WATCH_MISSES * (WATCH_S + WATCH_TIMEOUT_S) +
-# (STOP_INT_TENTHS + STOP_TERM_TENTHS) / 10 = 6 s at most here, even for a
-# py-spy that ignores SIGINT and SIGTERM; in practice it stops sampling as
-# soon as it gets SIGINT. The tests check this against kiwi.py.
+# (STOP_INT_TENTHS + STOP_TERM_TENTHS) / 10 = 6 s here, even for a py-spy that
+# ignores SIGINT and SIGTERM; in practice it stops sampling as soon as it gets
+# SIGINT. The tests check this against kiwi.py. That is scheduler time: the
+# waits are counted in sleeps, so on a core starved badly enough to miss
+# /healthz they can stretch past 6 s.
 WATCH_S=1
 WATCH_TIMEOUT_S=1
 WATCH_MISSES=2
@@ -317,14 +317,13 @@ main() {
   # jobs; py-spy's own Ctrl-C handler overrides that.
   trap 'pending=1' INT TERM HUP
   # oom_score_adj 1000: if memory runs out, the kernel kills py-spy, not the radio.
-  # nice -n 19: the kernel gives the radio (and the watchdog) the core first.
   # --nonblocking: never pauses the radio (see the top of this file).
   # --function: one row per function, not per line it was on when sampled.
   # --threads: each stack starts with its thread, so the inclusive view below
   # shows the event loop apart from the noise store's and DNS lookups' threads.
   (
     echo 1000 2>/dev/null >/proc/self/oom_score_adj || echo "warning: couldn't set py-spy's oom_score_adj" >&2
-    exec nice -n 19 "$spy_bin" record --pid "$pid" --nonblocking --function --threads --rate "$RATE_HZ" --duration "$seconds" \
+    exec "$spy_bin" record --pid "$pid" --nonblocking --function --threads --rate "$RATE_HZ" --duration "$seconds" \
       --format raw --output "$out/radio.raw"
   ) >"$out/py-spy.log" 2>&1 &
   spy_pid=$!
@@ -363,8 +362,6 @@ main() {
     echo
     echo "== profile (${seconds} s, py-spy attached, --nonblocking)"
     echo "  py-spy runs on the host, so its own CPU is in host us/sy here, not in radio_cpu."
-    echo "  It runs at the lowest CPU priority: on a busy box it samples late, so the"
-    echo "  radio's busiest moments are undercounted."
     echo "  $(phase_avg profile)"
     echo "  $(vmstat_avg "$out/vmstat-profile.txt")"
     if grep -q "^warning: couldn't set py-spy's oom_score_adj" "$out/py-spy.log"; then
