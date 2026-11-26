@@ -61,10 +61,14 @@ copies, which the README's "One process" rule forbids).
 
 The radio service writes one line per receiver outcome (#144): every error a
 Listen ends on, each refusal of its own (`skywave_cap`, `blocked`), and every
-receiver that starts playing, with the service's load at the time (#146). It
-goes to stdout and, in production, to `/data/receivers.log` on the `radio_data`
-volume (`RECEIVER_LOG` in `docker-compose.prod.yml`), rotated at 5 MB with 4 old
-files kept, so a rebuild doesn't lose it the way it loses `docker compose logs`:
+receiver that starts playing, with the service's load at the time (#146). In
+production it goes to `/data/receivers.log` on the `radio_data` volume
+(`RECEIVER_LOG` in `docker-compose.prod.yml`), rotated at 5 MB with 4 old files
+kept, so a rebuild doesn't lose it the way it loses `docker compose logs`. A
+writer thread does the file writes, and the lines stay out of stdout, so a slow
+disk never holds up anyone's audio; if the disk stalls long enough to back up
+10,000 lines, newer ones are dropped and an `event=dropped lines=N` line says
+how many. Without `RECEIVER_LOG` (local development) the lines go to stdout.
 
 ```sh
 docker compose -f docker-compose.prod.yml exec radio sh -c 'cat /data/receivers.log*' \

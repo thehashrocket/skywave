@@ -64,10 +64,41 @@ NOISE_READ_TIMEOUT_S = 5.0
 # (25 MB in all; a line is about 120 bytes).
 RECEIVER_LOG_BYTES = 5 * 1024 * 1024
 RECEIVER_LOG_BACKUPS = 4
+# Lines waiting for the writer thread, at most. Past this (the disk under the
+# file stalled) new lines are dropped and counted, so the log can't grow the
+# service's memory until it is killed (owner D2): about 2 MB of records.
+RECEIVER_LOG_QUEUE = 10_000
+
+
+class _DroppingQueueHandler(QueueHandler):
+    """Queues receiver-log lines for the writer thread; drops and counts them
+    when the queue is full, and says how many on the next line that fits."""
+
+    def __init__(self, lines: queue.Queue[logging.LogRecord]):
+        super().__init__(lines)
+        self.dropped = 0
+
+    def enqueue(self, record: logging.LogRecord) -> None:
+        lines = self.queue
+        assert isinstance(lines, queue.Queue)
+        if self.dropped and not lines.full():
+            note = logging.makeLogRecord(
+                {"name": record.name, "levelno": logging.WARNING, "levelname": "WARNING",
+                 "msg": f"event=dropped lines={self.dropped}"}
+            )
+            try:
+                lines.put_nowait(self.prepare(note))
+                self.dropped = 0
+            except queue.Full:
+                pass
+        try:
+            lines.put_nowait(record)
+        except queue.Full:
+            self.dropped += 1
 
 
 # Each RECEIVER_LOG file: its handler, the queue handler on receiver_log, and the writer thread.
-_receiver_files: dict[str, tuple[RotatingFileHandler, QueueHandler, QueueListener]] = {}
+_receiver_files: dict[str, tuple[RotatingFileHandler, _DroppingQueueHandler, QueueListener]] = {}
 
 
 def attach_receiver_log(path: str | None) -> RotatingFileHandler | None:
@@ -89,11 +120,14 @@ def attach_receiver_log(path: str | None) -> RotatingFileHandler | None:
         log.warning("can't write the receiver log to %s (%r); it goes to stdout only", full, e)
         return None
     handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
-    lines: queue.SimpleQueue[logging.LogRecord] = queue.SimpleQueue()
+    lines: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=RECEIVER_LOG_QUEUE)
     writer = QueueListener(lines, handler)
     writer.start()
-    queued = QueueHandler(lines)
+    queued = _DroppingQueueHandler(lines)
     receiver_log.addHandler(queued)
+    # The file is the copy that matters: off stdout too, whose writes happen on
+    # the event loop like any other log line (owner D1). Unset, they stay on stdout.
+    receiver_log.propagate = False
     _receiver_files[full] = (handler, queued, writer)
     return handler
 
@@ -105,6 +139,7 @@ def close_receiver_logs() -> None:
         receiver_log.removeHandler(queued)
         writer.stop()
         handler.close()
+    receiver_log.propagate = True
 
 
 atexit.register(close_receiver_logs)
@@ -200,8 +235,8 @@ def check_settings(settings: Settings) -> None:
 
 def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
     settings = settings or Settings.from_env()
-    attach_receiver_log(settings.receiver_log)
     check_settings(settings)
+    attach_receiver_log(settings.receiver_log)
     # Every socket cleanup, from creation until it finishes (track_cleanup):
     # held so it isn't garbage-collected mid-run, and so shutdown can wait on it.
     cleanups: set[asyncio.Task[None]] = set()

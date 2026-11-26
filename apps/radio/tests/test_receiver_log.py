@@ -144,9 +144,12 @@ def test_the_receiver_log_file(tmp_path, caplog, monkeypatch):
     try:
         assert handler is not None
         assert attach_receiver_log(str(path)) is handler
+        # Off stdout while the file takes the lines (owner D1).
+        assert receiver_log.propagate is False
         receiver_log.info("event=listening host=kiwi.example")
     finally:
         close_receiver_logs()  # waits for the writer thread to write what's queued
+    assert receiver_log.propagate is True
     assert "event=listening host=kiwi.example" in path.read_text()
     assert writers and threading.current_thread() not in writers
     with caplog.at_level(logging.WARNING):
@@ -253,3 +256,49 @@ async def test_repeated_refusals_are_throttled_per_receiver(lines, monkeypatch):
     await first.close()
     await other.close()
     await second.close()
+
+
+# Value: protects=a stalled receiver-log disk can't grow memory: past the queue's size lines are dropped and counted, and the next line that fits says how many (owner D2); fails_when=the queue is unbounded, a full queue raises into the caller, or the dropped count is lost; why_new=the queue was unbounded; seam=none (the handler's own queue, no writer thread); no_claim=the real queue size or disk behaviour
+def test_a_full_receiver_log_queue_drops_and_counts():
+    import queue as queue_module
+
+    from skywave_radio.server import _DroppingQueueHandler
+
+    lines: queue_module.Queue = queue_module.Queue(maxsize=2)
+    handler = _DroppingQueueHandler(lines)
+    record = lambda n: logging.makeLogRecord({"name": receiver_log.name, "msg": f"event=listening n={n}"})  # noqa: E731
+    for n in range(5):
+        handler.handle(record(n))
+    assert handler.dropped == 3
+    assert [lines.get_nowait().getMessage() for _ in range(2)] == ["event=listening n=0", "event=listening n=1"]
+    handler.handle(record(5))
+    assert [lines.get_nowait().getMessage() for _ in range(2)] == ["event=dropped lines=3", "event=listening n=5"]
+    assert handler.dropped == 0
+
+
+# Value: protects=lookup refusals (no Kiwi dialed) are throttled like our own refusals, and counts held back are written when the session closes, so a page looping dead names can't flood the log and nothing is silently lost (#144 review); fails_when=each lookup refusal writes a line, or close drops the held-back count; why_new=lookup errors were unthrottled and counts were lost at close; seam=none (stub resolver); no_claim=real DNS
+async def test_lookup_refusals_are_throttled_and_flushed_at_close(lines):
+    async def refuse(host, port, *, allow_private, owner):
+        raise HostRejected("dns", "nope")
+
+    s, _ = session(Slots(10, per_receiver=1))
+    s._resolver = refuse
+    for _ in range(5):
+        await s.handle(tune("nowhere.example"))
+        await until(lambda: s._pump is None or s._pump.done())
+    await until(lambda: bool(lines()))
+    assert len([line for line in lines() if line.startswith("event=error")]) == 1
+    await s.close()
+    assert lines()[-1] == "event=error host=nowhere.example port=8073 code=dns detail=throttled audio_s=0.0 listeners=0 suppressed=4"
+
+
+# Value: protects=settings the service refuses to start with never start the receiver-log writer or attach a handler (#144 review); fails_when=create_app attaches the log before check_settings; why_new=it attached first; seam=none; no_claim=none beyond protects
+def test_rejected_settings_attach_no_receiver_log(tmp_path):
+    from skywave_radio.server import _receiver_files, create_app
+
+    from .test_server import settings
+
+    path = str(tmp_path / "receivers.log")
+    with pytest.raises(Exception):
+        create_app(settings(allowed_origins=("https://skywave.example",), token=None, receiver_log=path))
+    assert path not in _receiver_files
