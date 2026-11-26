@@ -2,6 +2,19 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.59.0.0] - 2026-11-26 ([#144](https://github.com/thehashrocket/skywave/issues/144), [#146](https://github.com/thehashrocket/skywave/issues/146))
+
+### Added
+- **The radio service keeps a log of why receivers refuse.** Every Listen that ends on an error, every refusal the service makes itself, and every receiver that starts playing writes one line: the receiver, the error, the receiver's own reason (for example "full, 4 listeners max" or "HTTP 503"), how many seconds of audio played first, and how many listeners the service had at that moment. In production it lives in a rotating file on the data volume, so a redeploy doesn't wipe it the way it wipes the container's logs, and it never holds up anyone's audio while it writes. It is how we will find out why Pick best was giving up under load (#144) and whether the service itself falls behind when busy (#146). Listener names and addresses are never written.
+- **Analytics now say how each Pick best run ended:** played, gave up, stopped or failed, with the refusals it met on the way.
+
+### Changed
+- **A receiver that already has a Skywave listener no longer uses up one of Pick best's three tries.** Skywave allows one of its listeners per volunteer receiver, and that refusal used to look like a full receiver ("busy"). It now has its own reason, Pick best skips past it for free, and it no longer contributes to "Tried 3 receivers and none worked". Tabs left open from before the update keep the old behaviour until reloaded.
+- **Switching to a receiver that already has a Skywave listener keeps your current station playing.** Before, the station you were hearing stopped first and then the switch was refused, leaving you with nothing. Now the switch is refused straight away, the dial and receiver field go back to the station still playing, and the status line says why.
+
+### Fixed
+- **Pick best always finishes going back.** When a run gave up and went back to the station you were hearing, a receiver whose address has capital letters could leave the button on "checking" for good. It now says "Back on …" once that station plays, or "Couldn't get back to …" if it refuses.
+
 ## [0.58.2.1] - 2026-11-25 ([#104](https://github.com/thehashrocket/skywave/issues/104))
 
 ### Fixed
