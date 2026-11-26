@@ -119,6 +119,8 @@ async def test_our_cap_is_its_own_code_for_pages_that_know_it(lines, extra, code
         ("fe80::1%x\nevent=listening host=kiwi.example", "fe80::1"),  # an IPv6 zone keeps any text
         ("fe80::1%eth0", "fe80::1"),
         ("192.0.2.7%x", "<invalid>"),
+        ("kiwi.example\n.", "<invalid>"),  # `$` matches before a trailing newline
+        ("a\n..", "<invalid>"),
         ("alice@example.com", "<invalid>"),
         (None, "<invalid>"),
         (8073, "<invalid>"),

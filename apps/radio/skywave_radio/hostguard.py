@@ -60,7 +60,8 @@ def loggable_host(host: object) -> str:
     try:
         return str(ipaddress.ip_address(host.partition("%")[0] if ":" in host else host))
     except ValueError:
-        return host if HOSTNAME_RE.match(host) else "<invalid>"
+        # fullmatch: the pattern's `$` would also match before a trailing newline.
+        return host if HOSTNAME_RE.fullmatch(host) else "<invalid>"
 
 
 class HostRejected(Exception):
