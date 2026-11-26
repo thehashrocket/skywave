@@ -8,7 +8,7 @@ import type { Receiver } from "./kiwi-list";
 import { PICK_CONTEXT_VERSION } from "./pick-context";
 import { MAX_ATTEMPTS, REFUSED_MS, usePickBest, WATCH_MS } from "./use-pick-best";
 import { noteResponse, resetServerClock, serverNow } from "./server-clock";
-import { RADIO_ERROR_CODES, type RadioErrorCode, type RadioStatus } from "./use-radio";
+import { RADIO_ERROR_CODES, type RadioErrorCode, type RadioRefusal, type RadioStatus } from "./use-radio";
 
 function rx(host: string): Receiver {
   return {
@@ -758,6 +758,38 @@ describe("usePickBest", () => {
     expect(tuned()).toEqual(["a", "b", "c", "d", "e"]);
     report(fail("e", "busy"));
     expect(hook.result.current.note).toMatch(/Tried 5 receivers and none worked/);
+  });
+
+  // Value: protects=a candidate the service refuses while the old station plays on (a refusal, with the old station's listening status in the same render) moves the run on without a try and reports it, instead of waiting on the refused candidate for good (#144, owner D5/D8); fails_when=Pick best reads refusals only from status, or a refusal for another receiver moves the run; why_new=D8's hang came from reading the pair as statuses; seam=none (mocked track); no_claim=how use-radio builds the refusal (use-radio tests)
+  it("moves on from a refused candidate even when the old station's status comes with it", () => {
+    const tune = vi.fn();
+    const hook = renderHook(
+      ({ status, refusal }) => usePickBest(status, tune, undefined, undefined, refusal),
+      {
+        initialProps: {
+          status: { state: "listening", host: "home.example", port: 8073 } as RadioStatus,
+          refusal: null as RadioRefusal | null,
+        },
+      },
+    );
+    act(() => hook.result.current.start(candidates));
+    const refusal = (seq: number, host: string): RadioRefusal => ({
+      seq,
+      host,
+      port: 8073,
+      code: "skywave_cap",
+      message: "x",
+      stillOn: { host: "home.example", port: 8073 },
+    });
+    // A refusal for a receiver the run isn't on changes nothing.
+    hook.rerender({ status: { state: "listening", host: "home.example", port: 8073 }, refusal: refusal(1, "zzz") });
+    expect(tune.mock.calls.map(([r]) => (r as Receiver).host)).toEqual(["a"]);
+    hook.rerender({ status: { state: "listening", host: "home.example", port: 8073 }, refusal: refusal(2, "a") });
+    expect(tune.mock.calls.map(([r]) => (r as Receiver).host)).toEqual(["a", "b"]);
+    expect(hook.result.current.note).toBe("A already has a Skywave listener; trying B…");
+    // The same refusal on a later render isn't counted twice.
+    hook.rerender({ status: { state: "listening", host: "home.example", port: 8073 }, refusal: refusal(2, "a") });
+    expect(tune).toHaveBeenCalledTimes(2);
   });
 
   // Value: protects=our cap isn't remembered as the receiver refusing, so it isn't hidden from runs for 15 minutes; fails_when=skywave_cap joins REFUSALS; why_new=new code; seam=none; no_claim=none beyond protects

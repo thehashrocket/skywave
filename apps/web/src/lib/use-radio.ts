@@ -77,6 +77,21 @@ export type RadioStatus = {
   mode?: Mode;
 };
 
+/**
+ * A switch the service refused before anything stopped (#144, owner D5/D8): the
+ * receiver asked for (`host`/`port`, refused with `code`) never started, and
+ * the one in `stillOn` plays on. Its own state, not a status, so a status
+ * arriving with it can't overwrite it; `seq` tells one refusal from the next.
+ */
+export type RadioRefusal = {
+  seq: number;
+  host: string;
+  port: number;
+  code: RadioErrorCode;
+  message: string;
+  stillOn: { host: string; port: number };
+};
+
 /** The service's tuning once it has answered every tune sent while it played. */
 export type Settled = { freqKhz?: number; mode?: Mode };
 
@@ -268,6 +283,8 @@ export function useRadio() {
     refusedRef.current = false;
   }, []);
   const [settled, setSettled] = useState<Settled | null>(null);
+  const [refusal, setRefusal] = useState<RadioRefusal | null>(null);
+  const refusalSeq = useRef(0);
   // retune: a dial move, which the service applies only to a session still
   // playing; one that arrives after its session ended opens no Kiwi channel.
   const sendTune = useCallback((ws: WebSocket, t: Tuning, retune = false) => {
@@ -481,6 +498,34 @@ export function useRadio() {
           port,
           freqKhz,
           mode,
+        });
+      } else if (msg.type === "refused") {
+        // A switch refused before anything stopped: the receiver in stillOn
+        // plays on, and the service's own status for it follows (which settles
+        // the tune's owed answer as usual). Malformed ones are ignored.
+        const host = typeof msg.host === "string" ? msg.host : undefined;
+        const port = typeof msg.port === "number" ? msg.port : undefined;
+        const code =
+          typeof msg.code === "string" && KNOWN_CODES.has(msg.code) ? (msg.code as RadioErrorCode) : undefined;
+        const still = msg.stillOn as { host?: unknown; port?: unknown } | undefined;
+        if (
+          host === undefined ||
+          port === undefined ||
+          !code ||
+          !still ||
+          typeof still.host !== "string" ||
+          typeof still.port !== "number"
+        )
+          return;
+        const pending = pendingRef.current;
+        if (pending && pending.host.toLowerCase() === host.toLowerCase() && pending.port === port) setTuningBoth(false);
+        setRefusal({
+          seq: ++refusalSeq.current,
+          host,
+          port,
+          code,
+          message: typeof msg.message === "string" ? msg.message : "",
+          stillOn: { host: still.host, port: still.port },
         });
       } else if (msg.type === "view") {
         // Only about the view asked for now: an older one's error is moot.
@@ -909,6 +954,7 @@ export function useRadio() {
 
   return {
     status,
+    refusal,
     settled,
     meter,
     tuning,

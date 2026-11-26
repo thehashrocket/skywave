@@ -1348,6 +1348,30 @@ describe("useRadio", () => {
       expect(result.current.settled).toEqual({ freqKhz: khz, mode: "am" });
     });
 
+    // Value: protects=a switch the service refuses while the old station plays on arrives as a refusal the page can read even when the service's status for the old station comes in the same render, the tune stops showing as starting, and the tune's answer still settles on the station playing (#144, owner D5/D8); fails_when=the refusal is carried in status (and overwritten), the pending tune stays open, or malformed refusals are accepted; why_new=the refused message is new; seam=FakeSocket, both messages in one act; no_claim=real browser batching
+    it("reads a refused switch beside the status that follows it in one render", async () => {
+      const { result, ws } = await playing();
+      const other = { host: "full.example", port: 8073 };
+      await act(() => result.current.tune({ ...tuning, ...other }));
+      expect(result.current.tuning).toBe(true);
+      const refused = {
+        type: "refused",
+        ...other,
+        code: "skywave_cap",
+        message: "full.example already has 1 Skywave listener.",
+        stillOn: on,
+      };
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ ...refused, stillOn: "junk" }) });
+        ws.onmessage?.({ data: JSON.stringify(refused) });
+        ws.status("listening", { ...on, freqKhz: 10_000, mode: "am" });
+      });
+      expect(result.current.refusal).toEqual({ seq: 1, ...other, code: "skywave_cap", message: refused.message, stillOn: on });
+      expect(result.current.status).toMatchObject({ state: "listening", ...on });
+      expect(result.current.tuning).toBe(false);
+      expect(result.current.settled).toEqual({ freqKhz: 10_000, mode: "am" });
+    });
+
     // Value: protects=two refused retunes in a row each settle back on the playing tuning (each error is followed by its status, so neither is taken for an ending); fails_when=the refusal flag outlives the status that answers it; why_new=round 3d web review pass 2 (mutation survived); seam=FakeSocket; no_claim=none beyond protects
     it("settles after each of two refusals in a row", async () => {
       const { result, ws } = await playing();

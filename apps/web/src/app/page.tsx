@@ -323,8 +323,8 @@ const AUTO_SCAN_MS = 10_000;
 export default function ListenPage() {
   const radio = useRadio();
   const { decodeState, setDecode } = radio;
-  const { status, meter, tune } = radio;
-  useListenTracking(status, radio.heardAudio);
+  const { status, meter, tune, refusal } = radio;
+  useListenTracking(status, radio.heardAudio, refusal);
   const sun = useSolarClock();
   // The receiver the page is tuned to (or last was): where dial retunes go.
   // Only a tune sets it; the fields edit `draft`.
@@ -336,6 +336,8 @@ export default function ListenPage() {
   const [secure, setSecure] = useState(false);
   // The Receiver and Port fields. Typing a host clears fromList and secure, typing a port clears fromList.
   const [draft, setDraft] = useState<Draft>(BLANK_DRAFT);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   // The receiver the listener chose; null is Auto (Listen picks the best for the frequency).
   const [pin, setPin] = useState<Heard | null>(null);
   const pinRef = useRef(pin);
@@ -390,6 +392,8 @@ export default function ListenPage() {
   // list as it loads or fails. `from` names the control to press again: after
   // the error link, Listen would redial the receiver that just failed.
   const [pageMessage, setPageMessage] = useState<{ from: "listen" | "link" | "search" | "browse" | "clock" } | null>(null);
+  // Why the service refused the listener's own switch, while the old station plays on (#144).
+  const [refusedNote, setRefusedNote] = useState<string | null>(null);
   // Where focus goes when the error link starts a run and goes away.
   const statusRef = useRef<HTMLDivElement>(null);
   // The sticky tuning bar (#90) shows once this group has scrolled up under it.
@@ -604,6 +608,7 @@ export default function ListenPage() {
       pending.current = null;
       if (r.name) names.current.set(receiverKey(r), r.name);
       setPageMessage(null);
+      setRefusedNote(null);
       const secure = r.secure === true;
       tuning.current = { host: r.host, port: String(r.port), fromList, secure };
       setHost(r.host);
@@ -632,7 +637,38 @@ export default function ListenPage() {
     },
     [isTarget],
   );
-  const pickBest = usePickBest(status, tuneReceiver, coversDial, provenance);
+  /**
+   * What a listener's own switch (pinTo) replaced: the pin and Receiver field,
+   * keyed by the receiver it switched to. Put back if the service refuses that
+   * receiver while the station before it plays on (owner D7).
+   */
+  const switchUndo = useRef<{ to: string; pin: Heard | null; draft: Draft } | null>(null);
+  // A switch the service refused before anything stopped (#144, owner D5-D8;
+  // TODO "Restore the receiver after a refused switch"): the station in
+  // stillOn plays on. Put the dial target back on it, or every dial move goes
+  // to the refused receiver, and, for the listener's own switch, the pin and
+  // Receiver field as they were before the click, with the reason. A Pick best
+  // run moves on by itself (it reads the same refusal), retargeting the page.
+  useEffect(() => {
+    if (!refusal) return;
+    const t = tuning.current;
+    if (receiverKey({ host: t.host, port: Number(t.port) }) !== receiverKey(refusal)) return;
+    const { host: stillHost, port: stillPort } = refusal.stillOn;
+    const { fromList: playingFromList, secure: playingSecure } = provenance(stillHost, stillPort);
+    tuning.current = { host: stillHost, port: String(stillPort), fromList: playingFromList, secure: playingSecure };
+    setHost(stillHost);
+    setPort(String(stillPort));
+    setFromList(playingFromList);
+    setSecure(playingSecure);
+    const undo = switchUndo.current;
+    switchUndo.current = null;
+    if (undo && undo.to === receiverKey(refusal)) {
+      setPin(undo.pin);
+      setDraft(undo.draft);
+      setRefusedNote(refusal.message || null);
+    }
+  }, [refusal, provenance]);
+  const pickBest = usePickBest(status, tuneReceiver, coversDial, provenance, refusal);
   const {
     cancel: cancelPickBest,
     stop: stopPickBest,
@@ -946,6 +982,7 @@ export default function ListenPage() {
         secure: r.secure === true,
         label: r.name ?? names.current.get(receiverKey(r)) ?? r.host,
       };
+      switchUndo.current = { to: receiverKey(r), pin: pinRef.current, draft: draftRef.current };
       setPin(p);
       setDraft(draftOf(p));
       switchTo(r, fromList);
@@ -1196,7 +1233,7 @@ export default function ListenPage() {
   // The status row shows whichever message is newest: Pick best's note, the
   // service's message, or the page's own. A finished run's note doesn't hide
   // what happens next, and a new press isn't hidden by an older failure.
-  const [newest, setNewest] = useState<"note" | "service" | "page" | null>(null);
+  const [newest, setNewest] = useState<"note" | "service" | "page" | "refused" | null>(null);
   useEffect(() => {
     if (pickBest.note) setNewest("note");
   }, [pickBest.note]);
@@ -1206,10 +1243,14 @@ export default function ListenPage() {
   useEffect(() => {
     if (pageMessage) setNewest("page");
   }, [pageMessage]);
+  useEffect(() => {
+    if (refusedNote) setNewest("refused");
+  }, [refusedNote]);
   const serviceMessage = starting ? undefined : status.message;
   const messages = {
     note: pickBest.note,
     service: serviceMessage,
+    refused: refusedNote ?? undefined,
     page:
       pageMessage &&
       (pageMessage.from === "clock"

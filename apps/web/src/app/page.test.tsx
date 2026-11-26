@@ -6,10 +6,11 @@ import type { Receiver } from "@/lib/kiwi-list";
 import { noteResponse, resetServerClock } from "@/lib/server-clock";
 import { activeChannelAt, findStation } from "@/lib/signal-stations";
 import { fakeIntersectionObserver } from "@/test/fake-intersection-observer";
-import type { DecodeState, RadioStatus, ScanState, Settled } from "@/lib/use-radio";
+import type { DecodeState, RadioRefusal, RadioStatus, ScanState, Settled } from "@/lib/use-radio";
 
 const radio = {
   status: { state: "idle" } as RadioStatus,
+  refusal: null as RadioRefusal | null,
   settled: null as Settled | null,
   meter: null,
   tuning: false,
@@ -227,6 +228,7 @@ beforeEach(() => {
   receiverList.data = { receivers: [listed, backup] };
   receiverList.errorUpdatedAt = 0;
   radio.status = { state: "idle" };
+  radio.refusal = null;
   radio.settled = null;
   radio.tuning = false;
   radio.heardAudio = false;
@@ -373,6 +375,37 @@ describe("ListenPage", () => {
       port: "8076",
       fromList: true,
     });
+  });
+
+  // Value: protects=after the service refuses a listener's switch (Skywave's own cap) while the old station plays on, dial moves go to the station still playing, the Receiver field shows it again, and the status row says why (#144, owner D5-D8); fails_when=the page keeps tuning the refused receiver, keeps its name in the field, or hides the reason; why_new=TODO "Restore the receiver after a refused switch" had no fix; seam=mocked radio hook; no_claim=the service's message order (radio test_listener_caps.py)
+  it("goes back to the station still playing when a switch is refused", () => {
+    vi.useFakeTimers();
+    try {
+      savePin({ host: "f4kiy.ddns.net", port: 8073 });
+      radio.status = { state: "listening", host: "f4kiy.ddns.net", port: 8073 };
+      const view = render(<ListenPage />);
+      fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+      expect((screen.getByLabelText("Receiver") as HTMLInputElement).value).toBe("sdr.k1vl.com");
+      // The refusal and the old station's status land in one render.
+      radio.refusal = {
+        seq: 1,
+        host: "sdr.k1vl.com",
+        port: 8076,
+        code: "skywave_cap",
+        message: "sdr.k1vl.com already has 1 Skywave listener.",
+        stillOn: { host: "f4kiy.ddns.net", port: 8073 },
+      };
+      radio.status = { state: "listening", host: "f4kiy.ddns.net", port: 8073 };
+      view.rerender(<ListenPage />);
+      expect((screen.getByLabelText("Receiver") as HTMLInputElement).value).toBe("f4kiy.ddns.net");
+      expect(screen.getByText("sdr.k1vl.com already has 1 Skywave listener.")).toBeTruthy();
+      radio.retune.mockClear();
+      fireEvent.keyDown(screen.getByRole("slider", { name: "Tuning dial" }), { key: "ArrowUp" });
+      act(() => vi.advanceTimersByTime(500));
+      expect(radio.retune).toHaveBeenCalledWith(expect.objectContaining({ host: "f4kiy.ddns.net", port: 8073 }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Value: protects=a failed Pick best run leaves no dead receiver saved; fails_when=tuneReceiver saves before the receiver plays; why_new=no test covered a chain that fails; seam=none; no_claim=real browser storage

@@ -494,7 +494,7 @@ class ListenSession:
         # The slot that holder's end releases.
         self._lease: Lease | None = None
         # Refusal lines written to the receiver log: (host, port, code) -> (when, dropped since).
-        self._refused_logged: dict[tuple[str, object, str], tuple[float, int]] = {}
+        self._refused_logged: dict[tuple[str, object, str, str], tuple[float, int]] = {}
         self._demod: Demodulator | None = None
         self._spectrum: Spectrum | None = None
         self._mode = "am"
@@ -600,7 +600,7 @@ class ListenSession:
         except BadRequest as e:
             if e.code is not None:
                 # Ours, about one receiver (our per-receiver cap, an owner's opt-out).
-                self._log_refused(e)
+                self._log_refused(e.host, e.port, e.code, detail=e.detail)
             await self._status("error", message=str(e), code=e.code, host=e.host, port=e.port)
             if self._pump_owns_receiver():
                 # Refused before anything changed: the session still plays. The
@@ -763,13 +763,30 @@ class ListenSession:
                     await self._decode_reply()
             return
 
+        receiver = (host, port)
+        current = self._lease
+        if (
+            knows_cap
+            and self._pump_owns_receiver()
+            and self._slots.receiver_full(receiver)
+            and not (current is not None and current.receiver == receiver)
+        ):
+            # A switch onto a receiver at our own cap, from a page that knows
+            # skywave_cap: refused before anything changes, so the station
+            # playing keeps playing on its frequency (owner D5, #144). One
+            # "refused" message says so, then the session's own status answers
+            # the tune as usual. An error status followed by that status would
+            # be merged into one render on the page and lost (owner D8). An
+            # older page gets the old order below: stop, then "busy".
+            await self._refuse_switch(self._receiver_full(host, port, knows_cap))
+            return
+
         if self._freq_khz and freq != self._freq_khz:
             # Another receiver on another frequency: same rule as a retune. (A
             # mark set before the first Listen is for that Listen: kept.)
             self._forget_mark()
         self._freq_khz = freq
 
-        receiver = (host, port)
         # Keep the slot the old pump holds: its done callback then releases nothing.
         old_holder = self._slot_holder
         lease = self._lease
@@ -859,11 +876,13 @@ class ListenSession:
             f" suppressed={suppressed}" if suppressed else "",
         )
 
-    def _log_refused(self, e: BadRequest) -> None:
-        """A receiver_log line for a coded refusal of ours, at most once per
-        REFUSED_LOG_INTERVAL_S for the same receiver and code."""
-        assert e.code is not None
-        which = (loggable_host(e.host), e.port, e.code)
+    def _log_refused(
+        self, host: object, port: object, code: str, *, detail: str | None = None, event: str = "refused"
+    ) -> None:
+        """A receiver_log line for a refusal that dialed no Kiwi (ours, or a
+        lookup's), at most once per REFUSED_LOG_INTERVAL_S for the same
+        receiver, code and event; flush_refused_counts() writes what's left at close."""
+        which = (loggable_host(host), port, code, event)
         now = time.monotonic()
         last = self._refused_logged.get(which)
         if last is not None and now - last[0] < REFUSED_LOG_INTERVAL_S:
@@ -871,7 +890,34 @@ class ListenSession:
             return
         dropped = last[1] if last is not None else 0
         self._refused_logged[which] = (now, 0)
-        self._log_receiver("refused", e.host, e.port, code=e.code, detail=e.detail, suppressed=dropped)
+        self._log_receiver(event, host, port, code=code, detail=detail, suppressed=dropped)
+
+    def flush_refused_counts(self) -> None:
+        """Write the refusals still held back by the throttle, so a session
+        that ends mid-burst doesn't lose them from the receiver log."""
+        for (host, port, code, event), (_, dropped) in self._refused_logged.items():
+            if dropped:
+                self._log_receiver(event, host, port, code=code, detail="throttled", suppressed=dropped)
+        self._refused_logged.clear()
+
+    async def _refuse_switch(self, e: BadRequest) -> None:
+        """Refuse a switch while this session's receiver keeps playing: a
+        "refused" message naming both receivers, then the session's own status."""
+        assert self._target is not None
+        still_host, still_port = self._target[0], self._target[1]
+        assert e.code is not None
+        self._log_refused(e.host, e.port, e.code, detail=e.detail)
+        await self._send_text(
+            {
+                "type": "refused",
+                "host": e.host,
+                "port": e.port,
+                "code": e.code,
+                "message": str(e),
+                "stillOn": {"host": still_host, "port": still_port},
+            }
+        )
+        await self._status("listening" if self._listening else "connecting")
 
     def _receiver_full(self, host: str, port: int, knows_cap: bool) -> BadRequest:
         # Its own code, not "busy" (#144): the receiver itself may have room, and
@@ -1015,7 +1061,9 @@ class ListenSession:
                 log.info("looking up %s ended as the session was cancelled: %r", host, e)
                 cancelled = True
                 raise asyncio.CancelledError from e
-            self._log_receiver("error", host, port, code=e.code or "service", audio_s=audio_s)
+            # Throttled like our own refusals: a lookup dials no Kiwi, so a page
+            # looping dead names could otherwise flood the receiver log.
+            self._log_refused(host, port, e.code or "service", event="error")
             ending = self._status_payload("error", message=str(e), code=e.code, retryAfterMs=e.retry_after_ms)
         except KiwiError as e:
             if (current := asyncio.current_task()) is not None and current.cancelling():
@@ -1173,6 +1221,7 @@ class ListenSession:
 
     async def close(self) -> None:
         await self.stop(None)
+        self.flush_refused_counts()
 
     async def _set_decode(self, msg: dict[str, Any]) -> None:
         mode, mark, reverse = msg.get("mode"), msg.get("markHz"), msg.get("reverse", False)

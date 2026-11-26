@@ -1,6 +1,6 @@
 import { track } from "@vercel/analytics";
 import { useEffect, useRef } from "react";
-import type { RadioStatus } from "./use-radio";
+import type { RadioRefusal, RadioStatus } from "./use-radio";
 
 /**
  * Vercel Analytics custom events for the two things page views can't show:
@@ -12,8 +12,10 @@ import type { RadioStatus } from "./use-radio";
  * - radio_error: each error status, with its code ("service" for our own,
  *   uncoded ones: the listener limit, a lost connection). Pick best hunting past
  *   full Kiwis sends several "busy"; unique visitors per code is the useful view.
+ *   A switch the service refused while the old station plays on comes as a
+ *   refusal, not an error status (#144); it counts here the same way.
  */
-export function useListenTracking(status: RadioStatus, heardAudio: boolean): void {
+export function useListenTracking(status: RadioStatus, heardAudio: boolean, refusal: RadioRefusal | null = null): void {
   const countedRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -31,4 +33,8 @@ export function useListenTracking(status: RadioStatus, heardAudio: boolean): voi
   useEffect(() => {
     if (status.state === "error") track("radio_error", { code: status.code ?? "service" });
   }, [status]);
+
+  useEffect(() => {
+    if (refusal) track("radio_error", { code: refusal.code });
+  }, [refusal]);
 }

@@ -6,7 +6,7 @@ import { LIST_MAX_AGE_MS, receiverKey, type Receiver } from "./kiwi-list";
 import { pickContext, pickKey, type PickContext, type PickSource } from "./pick-context";
 import { DEFAULT_KIWI_PORT } from "./receiver";
 import { onServerOffset, serverClockCorrections, serverNow } from "./server-clock";
-import type { RadioErrorCode, RadioStatus } from "./use-radio";
+import type { RadioErrorCode, RadioRefusal, RadioStatus } from "./use-radio";
 
 /**
  * Each attempt takes a channel on, or at least knocks on, a volunteer's
@@ -171,6 +171,8 @@ export function usePickBest(
   accepts: (r: Receiver) => boolean = () => true,
   /** How the receiver now playing was dialed. */
   provenance: Provenance = () => ({ fromList: false, secure: false }),
+  /** The service's latest refused switch (use-radio): a candidate it refused while the old station plays on. */
+  refusal: RadioRefusal | null = null,
 ) {
   const chain = useRef<Chain | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -387,6 +389,33 @@ export function usePickBest(
     return false;
   }, [finish, goBack, drop, reportLeft]);
 
+  /** Receiver `current` of run `c` failed with `code`: try the next candidate, or give up. */
+  const moveOn = useCallback(
+    (c: Chain, current: Receiver, code: RadioErrorCode) => {
+      c.codes.push(code);
+      if (!FREE_CODES.has(code)) c.strikes++;
+      const tried = new Set(c.tried.map(receiverKey));
+      // The dial may have moved since the run started; skip what no longer fits.
+      const next = c.candidates.find((r) => !tried.has(receiverKey(r)) && acceptsRef.current(r));
+      if (!next || c.strikes >= MAX_ATTEMPTS || c.tried.length >= MAX_TOTAL) {
+        const summary =
+          c.tried.length === 1
+            ? "Tried 1 receiver and it didn't work."
+            : `Tried ${c.tried.length} receivers and none worked.`;
+        report(c, "gave_up");
+        if (goBack(c, summary)) return;
+        // Out of receivers and nowhere to go back to: the last one tried refused, so nothing was chosen.
+        drop();
+        return finish(`${summary} Pick one from the list.`);
+      }
+      c.tried.push(next);
+      c.retried = false;
+      setNote(`${current.name} ${WHY_SKIPPED[code]}; trying ${next.name}…`);
+      tuneCandidate(c, next);
+    },
+    [tuneCandidate, finish, goBack, drop, report],
+  );
+
   useEffect(() => {
     // A coded refusal is the receiver's own answer, however it was dialed; a
     // receiver that plays has answered the other way.
@@ -458,27 +487,21 @@ export function usePickBest(
       }, status.retryAfterMs);
       return;
     }
-    c.codes.push(status.code);
-    if (!FREE_CODES.has(status.code)) c.strikes++;
-    const tried = new Set(c.tried.map(receiverKey));
-    // The dial may have moved since the run started; skip what no longer fits.
-    const next = c.candidates.find((r) => !tried.has(receiverKey(r)) && acceptsRef.current(r));
-    if (!next || c.strikes >= MAX_ATTEMPTS || c.tried.length >= MAX_TOTAL) {
-      const summary =
-        c.tried.length === 1
-          ? "Tried 1 receiver and it didn't work."
-          : `Tried ${c.tried.length} receivers and none worked.`;
-      report(c, "gave_up");
-      if (goBack(c, summary)) return;
-      // Out of receivers and nowhere to go back to: the last one tried refused, so nothing was chosen.
-      drop();
-      return finish(`${summary} Pick one from the list.`);
-    }
-    c.tried.push(next);
-    c.retried = false;
-    setNote(`${current.name} ${WHY_SKIPPED[status.code]}; trying ${next.name}…`);
-    tuneCandidate(c, next);
-  }, [status, tune, tuneCandidate, finish, goBack, drop, report]);
+    moveOn(c, current, status.code);
+  }, [status, tune, finish, drop, report, moveOn]);
+
+  // A candidate the service refused while the station before it plays on (a
+  // "refused" message, not a status): the same move on as a coded error.
+  const lastRefusal = useRef(0);
+  useEffect(() => {
+    if (!refusal || refusal.seq === lastRefusal.current) return;
+    lastRefusal.current = refusal.seq;
+    const c = chain.current;
+    if (!c || c.returning || c.watchTimer) return;
+    const current = c.tried[c.tried.length - 1]!;
+    if (refusal.host.toLowerCase() !== current.host.toLowerCase() || refusal.port !== current.port) return;
+    moveOn(c, current, refusal.code);
+  }, [refusal, moveOn]);
 
   /** How many choices have been dropped so far (see `drops`). */
   const dropCount = useCallback(() => drops.current, []);

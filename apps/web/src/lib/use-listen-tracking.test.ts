@@ -6,7 +6,7 @@ const track = vi.fn();
 vi.mock("@vercel/analytics", () => ({ track: (...args: unknown[]) => track(...args) }));
 
 import { useListenTracking } from "./use-listen-tracking";
-import type { RadioStatus } from "./use-radio";
+import type { RadioRefusal, RadioStatus } from "./use-radio";
 
 type Props = { status: RadioStatus; heard: boolean };
 const listening = (host: string, freqKhz = 9_420): RadioStatus => ({ state: "listening", host, port: 8073, freqKhz, mode: "am" });
@@ -51,5 +51,24 @@ describe("useListenTracking", () => {
       ["radio_error", { code: "busy" }],
       ["radio_error", { code: "service" }],
     ]);
+  });
+
+  // Value: protects=a switch refused while the old station plays on still counts in radio_error by its code, once per refusal, so Vercel's skywave_cap counts include refused switches (#144); fails_when=refusals aren't tracked, or the same refusal is tracked again on a later render; why_new=refusals no longer arrive as error statuses; seam=mocked track; no_claim=Vercel ingestion
+  it("counts a refused switch once, by its code", () => {
+    const listening: RadioStatus = { state: "listening", host: "a.example", port: 8073 };
+    const refusal: RadioRefusal = {
+      seq: 1,
+      host: "b.example",
+      port: 8073,
+      code: "skywave_cap",
+      message: "x",
+      stillOn: { host: "a.example", port: 8073 },
+    };
+    const hook = renderHook(({ refusal }) => useListenTracking(listening, false, refusal), {
+      initialProps: { refusal: null as RadioRefusal | null },
+    });
+    hook.rerender({ refusal });
+    hook.rerender({ refusal });
+    expect(track.mock.calls).toEqual([["radio_error", { code: "skywave_cap" }]]);
   });
 });
