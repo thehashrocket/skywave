@@ -216,7 +216,7 @@ def run_profile(tmp_path: Path, *args: str, spy: bool = True, **fake_env: str):
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
 
-# Value: protects=the Step 0 numbers for issue #153: steal and CPU averages per window (vmstat's since-boot row dropped), listeners from /healthz, radio/caddy CPU, rows per phase, busy share, self time per function and inclusive time per function and thread; fails_when=the since-boot row is averaged in, columns are misread, self time counts outer frames, a frame is split by line, or recursion is counted twice; why_new=new script; seam=fake docker/py-spy/vmstat/curl/free/sleep on PATH; no_claim=real py-spy attaching across the container boundary, real vmstat column order, tick timing (sleep is faked)
+# Value: protects=the Step 0 numbers for issue #153: steal and CPU averages per window (vmstat's since-boot row dropped), listeners from /healthz, radio/caddy CPU, rows per phase, busy share, self time per function and inclusive time per function and thread, and the --nonblocking accuracy caveat; fails_when=the caveat is dropped,the since-boot row is averaged in, columns are misread, self time counts outer frames, a frame is split by line, or recursion is counted twice; why_new=new script; seam=fake docker/py-spy/vmstat/curl/free/sleep on PATH; no_claim=real py-spy attaching across the container boundary, real vmstat column order, tick timing (sleep is faked)
 def test_summary(tmp_path: Path):
     result, out = run_profile(tmp_path, "30")
     assert result.returncode == 0, result.stderr
@@ -228,6 +228,8 @@ def test_summary(tmp_path: Path):
     assert "aborted" not in summary
     assert "py-spy warnings" not in summary
     assert "100 non-idle samples of about 600 per thread (17% busy, all threads)" in summary
+    # --nonblocking samples can be garbled, so the summary says how far to trust close entries.
+    assert "pick a hot\n  spot only if it clearly leads" in summary
     self_time = summary.split("by self time")[1].split("== top 25")[0]
     assert "  50.0%  deflate (zlib)" in self_time
     assert "  30.0%  parse_snd (kiwi.py)" in self_time
@@ -676,3 +678,24 @@ def test_a_long_py_spy_log_keeps_its_warnings(tmp_path: Path):
     summary = (out / "summary.txt").read_text()
     assert "== py-spy warnings" in summary
     assert "by self time" in summary
+
+
+# Value: protects=a py-spy that hangs without ever saying "Sampling process" (a new version's wording) is still stopped once launch + the 30 s attach wait + its window + 30 s pass, not left attached forever; fails_when=the never-started branch of the overrun limit is dropped or stops counting from launch; why_new=the overrun test's py-spy says it started, so only the started branch is checked; seam=fake py-spy that never prints the line and hangs; no_claim=what a future py-spy prints (takes about 95 s of wall time)
+@pytest.mark.timeout(150)
+def test_watchdog_caps_a_py_spy_that_never_says_it_started(tmp_path: Path):
+    started = time.monotonic()
+    result, summary = _run_and_reap_spy(tmp_path, ["30"], 130, FAKE_SPY_QUIET="1", FAKE_SPY_HANG="1")
+    assert result.returncode == 0, result.stderr
+    assert "== aborted: py-spy was still attached 30 s past its window" in summary
+    # Launch + 30 s attach wait + 30 s window + 30 s overrun, then the stop; the fake sleeps 120 s.
+    assert time.monotonic() - started < 115
+
+
+# Value: protects=when py-spy's OOM score can't be set, the summary tells the owner the radio wasn't protected if memory ran out; fails_when=the summary's grep drifts from the subshell's warning text, or the warning line is dropped; why_new=on Linux the write succeeds, so no test saw the failure path; seam=none (off Linux /proc/self/oom_score_adj doesn't exist, so the real write fails); no_claim=Linux, where the write succeeds (skipped there; test_py_spy_is_the_oom_killers_first_choice covers it)
+@pytest.mark.skipif(sys.platform.startswith("linux"), reason="the oom_score_adj write succeeds on Linux")
+def test_summary_says_when_the_oom_score_was_not_set(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30")
+    assert result.returncode == 0, result.stderr
+    summary = (out / "summary.txt").read_text()
+    assert "warning: py-spy's OOM score couldn't be set" in summary
+    assert "py-spy warnings" not in summary  # its own log line isn't one of py-spy's warnings

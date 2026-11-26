@@ -168,9 +168,14 @@ It samples host CPU and steal (`vmstat`), both containers' CPU and the
 given window (30-300 s, in steps of 5) while `py-spy record --nonblocking`
 profiles the radio's process at 20 Hz. `--nonblocking` reads the radio's
 memory without ever pausing it, so nothing py-spy does, or fails to do, can
-freeze listeners' audio. The cost: stacks are Python-level, so time spent
+freeze listeners' audio. Two costs. Stacks are Python-level, so time spent
 inside C code (NumPy, zlib, websockets' speedups) shows under the Python line
-that called it. A `--native` run, which has to pause the radio for every
+that called it. And because the radio keeps running while py-spy reads a
+sample, some samples come out garbled or charged to the wrong function
+(py-spy's help: it "may lead to inaccurate results"). Over a 2-minute run the
+overall shape holds, but small gaps between the top functions don't: pick a
+hot spot only if it clearly leads, and if two entries are close, run the
+profile again to confirm. A `--native` run, which has to pause the radio for every
 sample, is a separate, deliberate step if C code turns out to dominate.
 
 py-spy still uses CPU on the radio's single core, so it isn't attached at all

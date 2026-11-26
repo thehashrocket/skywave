@@ -13,9 +13,12 @@
 #
 # py-spy runs with --nonblocking: it reads the radio's memory without ever
 # pausing it, so nothing py-spy does, or fails to do, can freeze the process
-# that streams every listener's audio. The cost is Python-level stacks: time
-# spent inside C code (NumPy, zlib, websockets' speedups) shows under the
-# Python line that called it. A --native run, which has to pause the radio for
+# that streams every listener's audio. The costs: Python-level stacks (time
+# spent inside C code, such as NumPy, zlib or websockets' speedups, shows under
+# the Python line that called it), and samples read while the radio keeps
+# running, which py-spy warns "may lead to inaccurate results": some are
+# garbled or charged to the wrong function, so only a clear leader counts as a
+# hot spot (the summary says so). A --native run, which has to pause the radio for
 # each sample, is a separate, deliberate step if C code turns out to dominate.
 #
 # py-spy still uses CPU on the same single core. So it isn't attached when the
@@ -402,6 +405,9 @@ main() {
       # roughly match the baseline radio_cpu.
       awk -v want=$((seconds * RATE_HZ)) '{ n = $NF; total += n }
            END { printf "== py-spy: %d non-idle samples of about %d per thread (%.0f%% busy, all threads)\n", total, want, 100 * total / want }' "$out/radio.raw"
+      echo "  --nonblocking: the radio keeps running while a sample is read, so some samples"
+      echo "  are garbled or charged to the wrong function. Trust the overall shape; pick a hot"
+      echo "  spot only if it clearly leads, and run again if the top entries are close."
       # Self time: only the innermost frame of each sample.
       echo "== top 20 functions by self time (% of non-idle samples; C time shows under its Python caller)"
       awk '{ n = $NF; total += n; sub(/ [0-9]+$/, ""); k = split($0, f, ";"); leaf = f[k]
