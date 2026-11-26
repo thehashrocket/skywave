@@ -277,7 +277,14 @@ export function usePickBest(
     setNote(why);
   }, []);
 
-  useEffect(() => () => clearTimers(chain.current), []);
+  // Leaving the page ends the run too: report it (played, if it was only being watched).
+  useEffect(
+    () => () => {
+      reportLeft(chain.current);
+      clearTimers(chain.current);
+    },
+    [reportLeft],
+  );
 
   /**
    * Switching away already dropped what was playing; go back to it if we can.
@@ -313,6 +320,8 @@ export function usePickBest(
       // choice standing; a dial move drops it anyway (forgetOffFrequency), and
       // a run that does start replaces it.
       if (run?.source === "beacon") drop();
+      // Whatever this start does, the run before it ends here, even when this one can't begin.
+      reportLeft(chain.current);
       if (!covering.length) {
         finish("No listed receiver covers this frequency.");
         return false;
@@ -327,7 +336,6 @@ export function usePickBest(
         );
         return false;
       }
-      reportLeft(chain.current);
       clearTimers(chain.current);
       const before = latestStatus.current;
       const c: Chain = {

@@ -194,3 +194,55 @@ def test_receiver_log_setting_reaches_the_file_and_the_volume(tmp_path, monkeypa
     compose = (Path(__file__).resolve().parents[3] / "docker-compose.prod.yml").read_text()
     assert "RECEIVER_LOG: /data/receivers.log" in compose
     assert "- radio_data:/data" in compose
+
+
+class CrashesAfterAudio(QuietClient):
+    """Plays 0.1 s, then fails in a way that isn't a KiwiError (a bug in our own code)."""
+
+    async def blocks(self):
+        rng = np.random.default_rng(0)
+        samples = (rng.standard_normal(BLOCK) * 0.01).astype(np.complex64)
+        yield IQBlock(seq=0, rssi_dbm=-80.0, samples=samples, adc_overflow=False)
+        await asyncio.sleep(0)
+        raise RuntimeError("boom")
+
+
+# Value: protects=a pump that crashes mid-play still writes an error line (code=service, the exception class only), so it doesn't count as a session that played cleanly (#144, red-team #2); fails_when=the crash path skips the receiver log or writes the exception text; why_new=only KiwiError and HostRejected endings were logged; seam=none (stand-in Kiwi client); no_claim=which real bugs crash the pump
+async def test_a_crash_after_audio_is_logged_as_service(lines):
+    s, _ = session(Slots(10, per_receiver=1))
+    s._client_factory = CrashesAfterAudio
+    await s.handle(tune("kiwi.example"))
+    await until(lambda: any(line.startswith("event=error") for line in lines()))
+    assert lines()[-1] == "event=error host=kiwi.example port=8073 code=service detail=RuntimeError audio_s=0.1 listeners=1"
+    assert not any("boom" in line for line in lines())
+    await s.close()
+
+
+# Value: protects=a page looping refused tunes on one socket writes one refusal line per receiver and code per interval, and the next one counts what was dropped, so a loop can't rotate #144's history out (red-team #1, owner D2); fails_when=every refusal writes a line, the count is lost, or other receivers are throttled too; why_new=refusal lines were unthrottled; seam=none (interval shortened via the module constant); no_claim=throttling across sockets or addresses
+async def test_repeated_refusals_are_throttled_per_receiver(lines, monkeypatch):
+    import skywave_radio.session as session_module
+
+    monkeypatch.setattr(session_module, "REFUSED_LOG_INTERVAL_S", 0.3)
+    slots = Slots(10, per_receiver=1)
+    first, _ = session(slots)
+    other, _ = session(slots)
+    second, sent = session(slots)
+    await first.handle(tune("kiwi.example"))
+    await other.handle(tune("other.example"))
+    await listening(first)
+    await listening(other)
+    for _ in range(5):
+        await second.handle(tune("kiwi.example", codes=["skywave_cap"]))
+    # Another receiver at its cap: its own line, not throttled by kiwi.example's.
+    await second.handle(tune("other.example", codes=["skywave_cap"]))
+    refused = [line for line in lines() if line.startswith("event=refused")]
+    assert [line.split()[1] for line in refused] == ["host=kiwi.example", "host=other.example"]
+    errors = [p for p in sent if p.get("state") == "error"]
+    assert len(errors) == 6 and all(p["code"] == "skywave_cap" for p in errors)
+    await asyncio.sleep(0.35)
+    await second.handle(tune("kiwi.example", codes=["skywave_cap"]))
+    refused = [line for line in lines() if line.startswith("event=refused")]
+    assert refused[-1].startswith("event=refused host=kiwi.example") and refused[-1].endswith("suppressed=4")
+    await first.close()
+    await other.close()
+    await second.close()

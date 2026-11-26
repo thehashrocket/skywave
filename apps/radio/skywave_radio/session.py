@@ -110,6 +110,10 @@ METER_INTERVAL_S = 0.25
 # this we give up on it so it stops holding a slot and a volunteer's channel.
 # Long enough to ride out a Wi-Fi roam or a laptop waking up.
 SEND_TIMEOUT_S = 15.0
+# A session writes at most one receiver-log line per refusal of ours (receiver,
+# code) this often, so a page looping refused tunes, which dial nothing, can't
+# rotate the receiver log's history out (#144). The next line says how many it dropped.
+REFUSED_LOG_INTERVAL_S = 10.0
 
 # Statuses list what this service can do, so a newer web app knows whether to ask.
 FEATURES = ["scan", "view", "decode"]
@@ -489,6 +493,8 @@ class ListenSession:
         self._slot_holder: asyncio.Task[None] | None = None
         # The slot that holder's end releases.
         self._lease: Lease | None = None
+        # Refusal lines written to the receiver log: (host, port, code) -> (when, dropped since).
+        self._refused_logged: dict[tuple[str, object, str], tuple[float, int]] = {}
         self._demod: Demodulator | None = None
         self._spectrum: Spectrum | None = None
         self._mode = "am"
@@ -594,7 +600,7 @@ class ListenSession:
         except BadRequest as e:
             if e.code is not None:
                 # Ours, about one receiver (our per-receiver cap, an owner's opt-out).
-                self._log_receiver("refused", e.host, e.port, code=e.code, detail=e.detail)
+                self._log_refused(e)
             await self._status("error", message=str(e), code=e.code, host=e.host, port=e.port)
             if self._pump_owns_receiver():
                 # Refused before anything changed: the session still plays. The
@@ -838,10 +844,11 @@ class ListenSession:
         code: str | None = None,
         detail: str | None = None,
         audio_s: float = 0.0,
+        suppressed: int = 0,
     ) -> None:
-        """One receiver_log line (see there)."""
+        """One receiver_log line (see there); `suppressed` adds how many like it were dropped."""
         receiver_log.info(
-            "event=%s host=%s port=%s code=%s detail=%s audio_s=%.1f listeners=%d",
+            "event=%s host=%s port=%s code=%s detail=%s audio_s=%.1f listeners=%d%s",
             event,
             loggable_host(host),
             port if isinstance(port, int) and not isinstance(port, bool) else "-",
@@ -849,7 +856,22 @@ class ListenSession:
             detail or "-",
             audio_s,
             self._slots.active,
+            f" suppressed={suppressed}" if suppressed else "",
         )
+
+    def _log_refused(self, e: BadRequest) -> None:
+        """A receiver_log line for a coded refusal of ours, at most once per
+        REFUSED_LOG_INTERVAL_S for the same receiver and code."""
+        assert e.code is not None
+        key = (loggable_host(e.host), e.port, e.code)
+        now = time.monotonic()
+        last = self._refused_logged.get(key)
+        if last is not None and now - last[0] < REFUSED_LOG_INTERVAL_S:
+            self._refused_logged[key] = (last[0], last[1] + 1)
+            return
+        dropped = last[1] if last is not None else 0
+        self._refused_logged[key] = (now, 0)
+        self._log_receiver("refused", e.host, e.port, code=e.code, detail=e.detail, suppressed=dropped)
 
     def _receiver_full(self, host: str, port: int, knows_cap: bool) -> BadRequest:
         # Its own code, not "busy" (#144): the receiver itself may have room, and
@@ -1016,6 +1038,8 @@ class ListenSession:
                 cancelled = True
                 raise asyncio.CancelledError from e
             log.exception("listen session crashed")
+            # The listener gets "Something broke"; the receiver log names the class only.
+            self._log_receiver("error", host, port, code="service", detail=type(e).__name__, audio_s=audio_s)
             ending = self._status_payload("error", message="Something broke in the radio service. Check its logs.")
         finally:
             self._listening = False

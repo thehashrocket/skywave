@@ -846,6 +846,32 @@ describe("usePickBest", () => {
       expect(ends()).toEqual([end]);
     });
 
+    // Value: protects=a run still being watched or running when a new Pick best can't begin (nothing covers the dial, or every receiver refused) still sends its one pick_best_end (owner D3); fails_when=start()'s early returns drop the old chain unreported; why_new=only a start that begins was covered; seam=none (mocked track); no_claim=Vercel ingestion
+    it.each<[string, Receiver[]]>([
+      ["nothing covers the dial", []],
+      ["every receiver refused", [rx("a")]],
+    ])("reports the old run when a new one can't begin (%s)", (_, covering) => {
+      const { hook, report } = setup();
+      act(() => hook.result.current.start(candidates));
+      report(fail("a", "busy"));
+      report({ state: "listening", host: "b", port: 8073 });
+      act(() => {
+        hook.result.current.start(covering);
+      });
+      expect(ends()).toEqual([{ outcome: "played", codes: "busy" }]);
+    });
+
+    // Value: protects=leaving the page during the watch reports the run that played (owner D3); fails_when=the unmount cleanup only clears timers; why_new=unmount wasn't covered; seam=none (mocked track); no_claim=Vercel delivering an event from a closing page
+    it("reports a watched run when the page unmounts, once", () => {
+      const { hook, report } = setup();
+      act(() => hook.result.current.start(candidates));
+      report({ state: "listening", host: "a", port: 8073 });
+      hook.unmount();
+      expect(ends()).toEqual([{ outcome: "played", codes: null }]);
+      act(() => vi.advanceTimersByTime(WATCH_MS));
+      expect(ends()).toHaveLength(1);
+    });
+
     it("reports the old run when Pick best starts again", () => {
       const { hook, report } = setup();
       act(() => hook.result.current.start(candidates));
