@@ -2,6 +2,12 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.58.2.0] - 2026-11-25 ([#137](https://github.com/thehashrocket/skywave/issues/137))
+
+### Fixed
+- **Sound comes back when you return to the listening tab on a phone.** On iPhones especially, opening a link in a new tab (a station's page, Priyom, a receiver) could leave skywave silent when you came back, until you pressed Listen again. Now the sound starts again by itself when you return. If the phone won't allow that without a tap, the status line shows **Tap to resume audio** instead of a silent player, and screen readers hear "Sound paused". This also covers an iPhone pausing the sound for a call.
+- **Resumed sound plays live, not seconds behind.** Audio that arrived while the phone had the sound stopped is thrown away, so you hear what the receiver is picking up now. More generally, if the player ever falls more than a second behind (a burst of delayed audio arriving at once), it jumps to the current audio instead of taking minutes to catch up.
+
 ## [0.58.1.1] - 2026-11-25 ([#139](https://github.com/thehashrocket/skywave/issues/139))
 
 ### Fixed
