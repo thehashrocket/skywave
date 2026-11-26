@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const track = vi.fn();
@@ -857,6 +857,25 @@ describe("usePickBest", () => {
       expect(ends()).toEqual([{ outcome: "gave_up", codes: "skywave_cap,busy,unreachable,busy" }]);
       report({ state: "idle" });
       expect(ends()).toHaveLength(1);
+    });
+
+    // Value: protects=a run cut short by the tab closing still sends its pick_best_end and radio_refused, once (a closing tab never unmounts); fails_when=only finish, Stop, a new run or unmount report, or pagehide and the later unmount both send; why_new=owner asked about runs cut short on busy evenings; seam=a dispatched pagehide event (mocked track); no_claim=that the browser delivers the beacon while the tab closes
+    it("reports a run cut short by the tab closing, once", () => {
+      // Hooks earlier tests left mounted would hear the same pagehide.
+      cleanup();
+      track.mockClear();
+      const sent = (name: string) => track.mock.calls.filter(([n]) => n === name).map(([, props]) => props);
+      const { hook, report } = setup();
+      act(() => hook.result.current.start(candidates));
+      report(fail("a", "skywave_cap"));
+      act(() => {
+        window.dispatchEvent(new Event("pagehide"));
+      });
+      expect(sent("pick_best_end")).toEqual([{ outcome: "stopped", codes: "skywave_cap" }]);
+      expect(sent("radio_refused")).toEqual([{ code: "skywave_cap", receivers: 1, source: "pick_best" }]);
+      hook.unmount();
+      expect(sent("pick_best_end")).toHaveLength(1);
+      expect(sent("radio_refused")).toHaveLength(1);
     });
 
     // Value: protects=a Pick best run that meets Skywave's own cap sends one radio_refused at its end with how many receivers it met, not one per receiver, and a run that met none sends none (owner, final review); fails_when=the count is missing or per receiver, or a run without skywave_cap sends one; why_new=radio_refused split from radio_error; seam=none (mocked track); no_claim=Vercel ingestion

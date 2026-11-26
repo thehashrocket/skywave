@@ -283,13 +283,18 @@ export function usePickBest(
   }, []);
 
   // Leaving the page ends the run too: report it (played, if it was only being watched).
-  useEffect(
-    () => () => {
+  // Unmounting covers leaving within the app; a closing tab never unmounts, so
+  // pagehide reports it as a best effort (a run reports once, so a tab that
+  // comes back from the back-forward cache won't report it again).
+  useEffect(() => {
+    const left = () => reportLeft(chain.current);
+    window.addEventListener("pagehide", left);
+    return () => {
+      window.removeEventListener("pagehide", left);
       reportLeft(chain.current);
       clearTimers(chain.current);
-    },
-    [reportLeft],
-  );
+    };
+  }, [reportLeft]);
 
   /**
    * Switching away already dropped what was playing; go back to it if we can.
