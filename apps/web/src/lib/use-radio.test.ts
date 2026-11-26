@@ -1616,7 +1616,7 @@ describe("useRadio", () => {
 });
 
 describe("coming back to a tab the phone paused (#137)", () => {
-  async function listening() {
+  async function listening(paused: "suspended" | "interrupted" = "suspended") {
     const hook = renderHook(() => useRadio());
     await act(() => hook.result.current.tune(tuning));
     act(() => FakeSocket.instances[0]!.status("listening", { host: tuning.host, port: tuning.port }));
@@ -1624,7 +1624,7 @@ describe("coming back to a tab the phone paused (#137)", () => {
     // The phone stops the sound while the listener is on another tab.
     act(() => {
       setVisibility("hidden");
-      ctx.setState("suspended");
+      ctx.setState(paused);
     });
     workletMessages.mockClear();
     return { ...hook, ctx };
@@ -1633,6 +1633,18 @@ describe("coming back to a tab the phone paused (#137)", () => {
   // Value: protects=audio comes back by itself when the listener returns from a new-tab link (a station page, Priyom, /owners) and plays live, not seconds behind; fails_when=nothing resumes the context on visibilitychange, or the samples buffered while it was stopped aren't dropped; why_new=#137; seam=Web Audio and visibility faked; no_claim=whether real iOS Safari lets a resume without a tap succeed
   it("resumes the sound on return and drops what queued while it was stopped", async () => {
     const { result, ctx } = await listening();
+    expect(result.current.audioSuspended).toBe(true);
+
+    await act(async () => setVisibility("visible"));
+
+    expect(ctx.state).toBe("running");
+    expect(result.current.audioSuspended).toBe(false);
+    expect(resets()).toBe(1);
+  });
+
+  // Value: protects=an iPhone's "interrupted" state (a call, a backgrounded tab) counts as paused and resumes on return like "suspended"; fails_when=the checks narrow to state === "suspended"; why_new=#137 review: only "suspended" was driven; seam=Web Audio faked; no_claim=when real iOS reports interrupted vs suspended
+  it("resumes after an iOS interruption too", async () => {
+    const { result, ctx } = await listening("interrupted");
     expect(result.current.audioSuspended).toBe(true);
 
     await act(async () => setVisibility("visible"));
