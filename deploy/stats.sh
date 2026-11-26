@@ -23,6 +23,11 @@ main() {
     return 1
   fi
 
+  # The last 24 h starts here. Every timestamp below is put in this same form
+  # (YYYY-MM-DDTHH:MM:SS, UTC) and compared to it as text.
+  local cutoff
+  cutoff=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%S)
+
   echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) $(hostname)"
   echo "cpus=$(nproc)  load=$(cut -d' ' -f1-3 /proc/loadavg)  up=$(uptime -p | sed 's/^up //')"
   free -m | awk '/^Mem:/ {printf "mem_total=%sMB  mem_used=%sMB  mem_available=%sMB\n", $2, $3, $7}'
@@ -42,27 +47,70 @@ main() {
   echo "== open now"
   # The container's TCP table, established only (st 01). Local port 8765
   # (0x223D) is a browser socket through Caddy; anything else it dialed out is a
-  # Kiwi socket (audio, waterfall, scans and noise measurements).
-  docker exec "$radio" cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '
-    $4 == "01" { split($2, a, ":"); if (a[2] == "223D") ws++; else kiwi++ }
-    END { printf "  browser_sockets=%d  kiwi_sockets=%d\n", ws, kiwi }'
+  # Kiwi socket (audio, waterfall, scans and noise measurements). A failed exec
+  # (container restarting) skips this section, not the rest of the report, and
+  # a kernel without IPv6 has no tcp6.
+  local tcp
+  if tcp=$(docker exec "$radio" cat /proc/net/tcp 2>/dev/null); then
+    tcp+=$'\n'$(docker exec "$radio" cat /proc/net/tcp6 2>/dev/null || true)
+    awk '
+      $4 == "01" { split($2, a, ":"); if (a[2] == "223D") ws++; else kiwi++ }
+      END { printf "  browser_sockets=%d  kiwi_sockets=%d\n", ws, kiwi }' <<<"$tcp"
+  else
+    echo "  (couldn't read the container's sockets)"
+  fi
 
-  local logs
-  logs=$(docker logs -t --since 24h "$radio" 2>&1 || true)
+  # The container's own logs (uvicorn writes to stderr, hence 2>&1). They go
+  # when a deploy recreates the container; a restart keeps them.
+  local logs logs_ok=1
+  logs=$(docker logs -t --since 24h "$radio" 2>&1) || { logs_ok=0; logs=; }
 
   echo
   echo "== /ws sessions opened per hour, last 24 h (UTC)"
-  grep 'WebSocket /ws' <<<"$logs" | cut -c1-13 | sort | uniq -c | awk '{printf "  %s  %s\n", $2, $1}' \
-    || echo "  (none)"
+  local created
+  created=$(docker inspect -f '{{.Created}}' "$radio" 2>/dev/null || true)
+  created=${created:0:19}
+  if [[ -n "$created" && ! "$created" < "$cutoff" ]]; then
+    echo "  (since ${created}Z; earlier hours were in the previous container)"
+  fi
+  if (( ! logs_ok )); then
+    echo "  (couldn't read the container's logs)"
+  else
+    grep 'WebSocket /ws' <<<"$logs" | cut -c1-13 | sort | uniq -c | awk '{printf "  %s  %s\n", $2, $1}' \
+      || echo "  (none)"
+  fi
 
-  # Receiver-log lines (#144) when the deployed build writes them: refusals by
-  # code and the most listeners seen per hour.
-  local events
-  events=$(grep -F ' event=' <<<"$logs" || true)
+  # Receiver-log lines (#144): refusals by code and the most listeners seen per
+  # hour. With RECEIVER_LOG set (production) the service writes them to that
+  # file and its rotated copies (.1-.4), not to its own logs; if it can't open
+  # the file they go to its logs instead. Each line is in exactly one of the
+  # two, so both are read and joined, with no dedupe.
+  #
+  # File lines start "2026-11-26 09:21:00,123" in the container's local time,
+  # which is UTC (python:3.13-slim sets no TZ); docker's start
+  # "2026-11-26T09:21:00.000000000Z". Both become "2026-11-26T09:21:00 event=..."
+  # and are cut at $cutoff as they stream, so the rotated files (up to 25 MB)
+  # are never held whole.
+  # shellcheck disable=SC2016  # awk's own $1/$2/$0, not the shell's
+  local to_events='
+    { i = index($0, " event="); if (!i) next
+      if (length($1) == 10 && substr($1, 5, 1) == "-") ts = $1 "T" substr($2, 1, 8)
+      else ts = substr($1, 1, 19)
+      if (ts >= cutoff) print ts substr($0, i) }'
+  local file_events file_ok=1 events
+  # shellcheck disable=SC2016  # $RECEIVER_LOG expands inside the container
+  file_events=$(docker exec "$radio" sh -c \
+      'f=${RECEIVER_LOG:-}; [ -z "$f" ] || cat "$f.4" "$f.3" "$f.2" "$f.1" "$f" 2>/dev/null; exit 0' \
+    | awk -v cutoff="$cutoff" "$to_events") || file_ok=0
+  events=$(printf '%s\n%s\n' "$file_events" \
+    "$(awk -v cutoff="$cutoff" "$to_events" <<<"$logs")" | grep -F ' event=' || true)
   echo
   echo "== receiver log, last 24 h"
+  if (( ! file_ok )); then
+    echo "  (couldn't read the receiver log file; only the container's logs are counted)"
+  fi
   if [[ -z "$events" ]]; then
-    echo "  (no receiver-log lines: this build doesn't write them)"
+    echo "  (no receiver-log lines in the last 24 h)"
   else
     echo "  by event and code:"
     grep -oE 'event=[a-z_]+ .* code=[A-Za-z0-9_-]+' <<<"$events" \
