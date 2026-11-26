@@ -11,12 +11,11 @@
  * Facts only: blurbs and notes are our own words. Nothing is fetched.
  *
  * Checked against Priyom 2026-11-25: The Pip's 5448/3756 and Squeaky Wheel's
- * 5367/3363.5 (USB voice). VE3SUN's list has Squeaky Wheel on 3829.18/3830.45;
+ * 5367/3363.5, both USB. VE3SUN's list has Squeaky Wheel on 3829.18/3830.45;
  * no other source has that, so it isn't used.
- * Still unchecked:
- * - The Pip's mode (USB, as UVB-76's; Priyom's page doesn't say).
- * - Day/night switch times: unpublished, so `dayNight` follows the sun at
- *   the transmitter (owner's choice) and can be wrong for a while around dawn and dusk.
+ * Still unchecked: day/night switch times. They're unpublished, so `dayNight`
+ * follows the sun at the transmitter (owner's choice) and can be wrong for a
+ * while around dawn and dusk.
  *
  * Left out of #98's seed list for now, each waiting on a source:
  * - CHU is listed as defunct: NRC shut it down 2026-06-22 at 14:10 UTC (Wikipedia,
