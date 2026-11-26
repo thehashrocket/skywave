@@ -83,6 +83,25 @@ const statusLine = () => document.querySelector(".station-search-status")!.textC
 const rowNames = () => screen.queryAllByRole("button", { name: /kHz/ }).map((r) => r.getAttribute("aria-label"));
 
 describe("StationSearch", () => {
+  // Value: protects=a Priyom RTTY slot found by name reads with Priyom's listed frequency first and then its dial ("17,532" then "RTTY · dial 17,529.875 USB"), says the same to a screen reader, and a click tunes the dial in USB (owner, #148); fails_when=search shows only the dial, loses the listed frequency, or tunes the listed frequency; why_new=pass-2 review: search rows lacked the owner's format; seam=none (a merged-schedule row given directly); no_claim=what the merge builds (on-air tests)
+  it("shows an RTTY slot by Priyom's frequency, then the dial it tunes", () => {
+    const f06 = {
+      ...b("F06", 17_529.875, 720, 730),
+      lang: "-TY",
+      target: "",
+      source: "priyom" as const,
+      mode: "usb" as const,
+      listedKhz: 17_532,
+    };
+    const { type, props } = show({ schedule: { ...SCHEDULE, broadcasts: [...SCHEDULE.broadcasts, f06] } });
+    type("F06");
+    const row = screen.getByRole("button", { name: /^17,532 kHz RTTY, dial 17,529\.875 USB, F06/ });
+    expect(row.querySelector(".preset-freq")!.textContent).toBe("17,532");
+    expect(row.textContent).toContain("RTTY · dial 17,529.875 USB");
+    fireEvent.click(row);
+    expect(props.onTune).toHaveBeenCalledWith(17_529.875, "usb");
+  });
+
   // Value: protects=every state before results says what's happening: loading (field off) until both the schedule and the page's clock are in, a failed load with Try again (outside the live region) that keeps typed text, and the empty field's hint; fails_when=a failed load says "Loading" forever, retry is missing, the empty section is blank, or the field opens before the clock is set (results worked out for 1970); why_new=design review 3A, 5A and the eng re-check error state; clock-null case added by the /ship coverage audit; seam=none; no_claim=react-query's retry timing
   it("says what's happening before there are results", () => {
     const loading = show({ schedule: undefined });

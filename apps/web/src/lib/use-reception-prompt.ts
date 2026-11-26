@@ -128,8 +128,8 @@ const promptKey = (p: ReceptionPromptData) => `${p.host.toLowerCase()}:${p.port}
 
 /**
  * "Did you hear it?": offers a reception prompt once audio has played for
- * DWELL_MS on one receiver, frequency and mode where the EiBi schedule lists
- * a station, on a receiver from the public list (`onList`: the server only
+ * DWELL_MS on one receiver, frequency and mode where a station is on the air,
+ * on a receiver from the public list (`onList`: the server only
  * keeps reports about listed receivers, so a typed one is never asked about).
  * A retune, mode change, another receiver, Stop or an error starts the wait
  * over. One prompt per channel until it changes, at most one per
@@ -145,12 +145,19 @@ const promptKey = (p: ReceptionPromptData) => `${p.host.toLowerCase()}:${p.port}
  * Listen, on the band it was picked on, once enough of its slot has played
  * (beaconPromptAt). Tuned to a beacon frequency by hand: no prompt at all.
  *
- * `signal`: the signal station picked with Listen (#101), while the dial is on
- * a channel it's on the air on (signalAsk). Then it's the only thing asked
+ * `signal`: the signal station the question is about (#101, #148): the one
+ * picked with Listen, while the dial is on a channel it's on the air on
+ * (signalAsk), or, tuned by hand, the one catalog station on the dial when
+ * it's the only station there and not a season row standing in for Priyom's
+ * (owner D3, D12, D5; the page works it out). Then it's the only thing asked
  * about, once DWELL_MS has played after first audio plus STREAM_LATENCY_MS,
  * all of it before the station goes off (signalPromptAt); one that goes off
- * first isn't asked about. A station tuned by hand or named by a shared
- * link gets no signal question (the page passes null).
+ * first isn't asked about.
+ *
+ * `schedule`: what an EiBi question may name: EiBi's rows less the Priyom
+ * stations' (the server refuses those, D9), so on a frequency several stations
+ * share the question is today's (D12), and a season row standing in for
+ * Priyom's is never asked about (D5). Read on the server-corrected clock (D14).
  *
  * `region` is where the receiver is, from its listed position only (never a
  * filter the listener picked, since answers are saved under the station named):
@@ -198,7 +205,7 @@ export function useReceptionPrompt(
       ? true
       : band >= 0
         ? pick !== null
-        : schedule !== undefined && scheduledOn(schedule, status.freqKhz!, Date.now()).length > 0);
+        : schedule !== undefined && scheduledOn(schedule, status.freqKhz!, serverNow()).length > 0);
   const pickCall = sig === null ? (pick?.call ?? null) : null;
   // What the question is about beyond the channel: the beacon's callsign or the station's slug.
   const pickId = sig !== null ? sig.slug : pickCall;
@@ -212,8 +219,8 @@ export function useReceptionPrompt(
   // jump (lib/server-clock.ts). On a beacon frequency the plan below starts over
   // then, counting audio from that moment on the new clock, so the question and
   // the band strip (useServerTick) never work from two clocks; at worst the
-  // question waits one more turn. Broadcasts run on this browser's clock and
-  // aren't restarted.
+  // question waits one more turn. Broadcasts are read on the same clock (#148 D14)
+  // and aren't restarted.
   const [clockEpoch, setClockEpoch] = useState(0);
   // On every clock move, also close a beacon or signal-station prompt whose
   // answer the server would no longer take (it sat on screen through a sleep,
@@ -332,7 +339,7 @@ export function useReceptionPrompt(
       const { status: s, schedule: sched, region: r } = latest.current;
       if (!sched || !s.host || s.freqKhz === undefined || !s.mode) return;
       // The listing may have ended during the wait.
-      const listed = listedOn(sched, s.freqKhz, Date.now(), r);
+      const listed = listedOn(sched, s.freqKhz, serverNow(), r);
       const tx = eibiTransmitter(listed, rankBroadcasts(listed, r), r);
       if (!tx) return;
       askedOn.current = askKey;

@@ -1,8 +1,7 @@
-import type { Broadcast } from "./eibi";
+import { MATCH_KHZ, type Broadcast } from "./eibi";
 import type { BroadRegion } from "./eibi-targets";
 import { BEACONS, CYCLE_MS, IBP_BANDS_KHZ, SLOT_MS } from "./ibp";
 import { onAirTx, PRIYOM_ON_AIR_MS, type PriyomTx } from "./priyom-schedule";
-import { onKhz } from "./signal-panel";
 import { activeChannelAt, windowSpanAt, type SignalStation } from "./signal-stations";
 
 /**
@@ -95,10 +94,17 @@ function orList(names: readonly string[]): string {
  * known that's still EiBi's first. Also from 1, with a region known, a station
  * EiBi lists more than once in one language (several sites) is described by its
  * row aimed at that region, so txDetail's target can differ from EiBi's first
- * row on any frequency (scheduledBetween). Bump it, and say what changed here,
- * when the choice of station or row changes.
+ * row on any frequency (scheduledBetween). 2 (#148): the EiBi question never
+ * names a station Priyom drives (E11, E07...); on a frequency with only one
+ * catalog station on the merged dial a signal question is asked instead, and
+ * on a frequency several stations share it's rule 1 over the rest. Bump it,
+ * and say what changed here, when the choice of station or row changes.
+ *
+ * EiBi answers with askRule null or 1 about Priyom-driven stations are left out
+ * of #61's analysis by the CTE in apps/web/analysis/61-exclude-priyom-eibi.sql;
+ * any new analysis query over reception reports must apply it too.
  */
-export const ASK_RULE_VERSION = 1;
+export const ASK_RULE_VERSION = 2;
 
 /**
  * What to ask about, from what's scheduled on the frequency: `broadcasts`
@@ -285,10 +291,10 @@ export type SignalAsk = { slug: string; name: string; khz: number; untilMs: numb
 
 /**
  * The question `station` allows at `ms` with the dial on `freqKhz`, or null:
- * defunct, no transmitter, or not on the air on that frequency now. A day/night
- * station counts on either of its channels, since its switch times are only the
- * sun's guess. A numbers station needs Priyom's schedule (`priyom`) to have it
- * on that frequency now.
+ * defunct, no transmitter, or not on the air within MATCH_KHZ of that frequency
+ * now (#148 D10). A day/night station counts on either of its channels, since its
+ * switch times are only the sun's guess. A numbers station needs Priyom's schedule
+ * (`priyom`) to have it on that frequency now.
  */
 export function signalAsk(
   station: SignalStation,
@@ -299,18 +305,22 @@ export function signalAsk(
   const { schedule, slug, name } = station;
   if (!station.tx) return null;
   const base = { slug, name, khz: freqKhz, ...(station.askHint && { hint: station.askHint }) };
+  // Within MATCH_KHZ of the station's frequency, the tolerance the dial names it at
+  // (owner D10, widened to every catalog station, #148): if the dial names a station
+  // the listener can answer about it. Half a kHz off is the same signal; a Listen
+  // tunes the frequency exactly, and Pick best's context still needs an exact match.
+  const near = (khz: number) => Math.abs(freqKhz - khz) <= MATCH_KHZ;
   if (schedule.kind === "always")
-    return station.channels.some((c) => onKhz(freqKhz, c.khz)) ? { ...base, untilMs: Infinity } : null;
-  if (schedule.kind === "dayNight")
-    return [schedule.dayKhz, schedule.nightKhz].some((k) => onKhz(freqKhz, k)) ? { ...base, untilMs: Infinity } : null;
+    return station.channels.some((c) => near(c.khz)) ? { ...base, untilMs: Infinity } : null;
+  if (schedule.kind === "dayNight") return [schedule.dayKhz, schedule.nightKhz].some(near) ? { ...base, untilMs: Infinity } : null;
   if (schedule.kind === "windows") {
     const ch = activeChannelAt(station, ms);
     const span = windowSpanAt(station, ms);
-    return ch && span && onKhz(freqKhz, ch.khz) ? { ...base, untilMs: span.endMs } : null;
+    return ch && span && near(ch.khz) ? { ...base, untilMs: span.endMs } : null;
   }
   if (station.priyom && priyom) {
     const tx = onAirTx(priyom, station.priyom, ms);
-    if (tx && tx.khz !== null && onKhz(freqKhz, tx.khz))
+    if (tx && tx.khz !== null && near(tx.khz))
       return { ...base, untilMs: tx.startMs + PRIYOM_ON_AIR_MS, slotStartMs: tx.startMs };
   }
   return null;

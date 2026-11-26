@@ -102,7 +102,7 @@ describe("useReceptionPrompt", () => {
       port: 8073,
       freqKhz: 9_580,
       mode: "am",
-      tx: { kind: "eibi", name: "KBS World Radio", detail: "E/NAm", label: "KBS World Radio", askRule: 1 },
+      tx: { kind: "eibi", name: "KBS World Radio", detail: "E/NAm", label: "KBS World Radio", askRule: 2 },
     });
   });
 
@@ -126,14 +126,14 @@ describe("useReceptionPrompt", () => {
       kind: "eibi",
       name: "Radio A / Radio B",
       label: "anything from Radio A or Radio B",
-      askRule: 1,
+      askRule: 2,
     });
   });
 
   // Value: protects=with 4+ stations the hook asks about the one aimed at the region it was given and records that region with the rule, and with none keeps EiBi's first and records no region; fails_when=the hook ranks by one region but records another, or drops the region; why_new=#115 review D2 (askRegion); seam=fake timers; no_claim=the page passing the receiver's region (page.test)
   it.each<[BroadRegion | undefined, string, Record<string, unknown>]>([
-    ["na", "WWCR 2", { askRule: 1, askRegion: "na" }],
-    [undefined, "Asia One", { askRule: 1 }],
+    ["na", "WWCR 2", { askRule: 2, askRegion: "na" }],
+    [undefined, "Asia One", { askRule: 2 }],
   ])("asks a crowded frequency's station by region %s and records it", (region, name, rule) => {
     const hook = setup({ status: listening(15_000), region });
     wait(DWELL_MS);

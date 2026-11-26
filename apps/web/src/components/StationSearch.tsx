@@ -3,7 +3,7 @@
 import { SectionBody, SectionHeading } from "@/components/SectionHeading";
 import type { Fold } from "@/lib/section-folds";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { type Broadcast, languageChoices, languageNames, type LanguageChoice, MATCH_KHZ, pickedNames } from "@/lib/eibi";
+import { languageChoices, languageNames, type LanguageChoice, MATCH_KHZ, pickedNames, UNCONFIRMED } from "@/lib/eibi";
 import {
   areaCodes,
   areaLabel,
@@ -25,6 +25,7 @@ import {
   inBroadcastBand,
   NO_FILTERS,
   type SearchResult,
+  type SearchRow,
   startsParts,
   startsSentence,
 } from "@/lib/station-search";
@@ -33,7 +34,7 @@ import { LanguagePicker } from "./LanguagePicker";
 import { PHONE_ROWS } from "./SignalList";
 
 /** The schedule as the page gets it (stations.schedule). */
-export type SearchSchedule = { broadcasts: readonly Broadcast[]; season: string; targetNames: Record<string, string> };
+export type SearchSchedule = { broadcasts: readonly SearchRow[]; season: string; targetNames: Record<string, string> };
 
 type Props = {
   /** Folding this section (collapsible sections); without it the heading is a plain h2. */
@@ -73,10 +74,14 @@ export const PAGE_ROWS = 20;
 /** How long typing must pause before the count is read out (design 13A). */
 export const ANNOUNCE_DELAY_MS = 500;
 
-const khz = (f: number) => f.toLocaleString("en-US", { maximumFractionDigits: 2 });
+// Three decimals: an RTTY dial sits 2.125 kHz below Priyom's listed frequency (#148).
+const khz = (f: number) => f.toLocaleString("en-US", { maximumFractionDigits: 3 });
 const plural = (n: number, one: string, many: string) => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
 const language = (codes: string) => languageNames(codes) || codes;
-const title = (f: FoundBroadcast) => (f.lang ? `${f.station} · ${language(f.lang)}` : f.station);
+const title = (f: FoundBroadcast) => {
+  const text = f.lang ? `${f.station} · ${language(f.lang)}` : f.station;
+  return f.unconfirmed ? `${text} (${UNCONFIRMED})` : text;
+};
 
 /** Where filters are kept between visits (#109, #110). */
 export const FILTERS_KEY = "skywave.stationFilters";
@@ -177,7 +182,9 @@ function spokenLabel(
   strongHere: boolean,
 ) {
   return [
-    `${khz(f.khz)} kHz${mode === "am" ? "" : ` ${mode.toUpperCase()}`}`,
+    f.listedKhz !== undefined
+      ? `${khz(f.listedKhz)} kHz RTTY, dial ${khz(f.khz)} ${mode.toUpperCase()}`
+      : `${khz(f.khz)} kHz${mode === "am" ? "" : ` ${mode.toUpperCase()}`}`,
     f.station,
     f.lang && language(f.lang),
     when ? `starts ${when.time}, ${when.until}` : "on now",
@@ -327,7 +334,7 @@ export function StationSearch({
   };
 
   const tune = (f: FoundBroadcast) => {
-    const mode = clickMode(f.khz, f.lang, f.station);
+    const mode = f.mode ?? clickMode(f.khz, f.lang, f.station);
     onTune(f.khz, mode);
     const browse = !typed;
     if (idle) setNote({ kind: "idle", khz: f.khz, mode, browse });
@@ -352,7 +359,7 @@ export function StationSearch({
     f.onNow && (strong?.some((s) => Math.abs(s.freqKhz - f.khz) <= MATCH_KHZ) ?? false);
 
   const row = (f: FoundBroadcast, i: number): ReactNode => {
-    const mode = clickMode(f.khz, f.lang, f.station);
+    const mode = f.mode ?? clickMode(f.khz, f.lang, f.station);
     const targets = f.targets
       .map((t) => (Object.hasOwn(targetNames, t) ? displayName(targetNames[t]!) : undefined))
       .filter((n): n is string => !!n);
@@ -371,7 +378,8 @@ export function StationSearch({
           aria-label={spoken}
           onClick={() => tune(f)}
         >
-          <span className="preset-freq">{khz(f.khz)}</span>
+          {/* A Priyom RTTY slot leads with Priyom's listed frequency, then its dial (owner, #148). */}
+          <span className="preset-freq">{khz(f.listedKhz ?? f.khz)}</span>
           <span className="station-when">
             <span>
               {/* Browse rows are all on now, as the status line says, so they don't repeat it (#116). */}
@@ -379,7 +387,7 @@ export function StationSearch({
               {mode !== "am" && (
                 <span className="preset-mode">
                   {when || typed ? " " : ""}
-                  {mode.toUpperCase()}
+                  {f.listedKhz !== undefined ? `RTTY · dial ${khz(f.khz)} ${mode.toUpperCase()}` : mode.toUpperCase()}
                 </span>
               )}
             </span>
