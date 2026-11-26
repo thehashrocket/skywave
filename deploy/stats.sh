@@ -72,6 +72,21 @@ main() {
              split($i, a, "="); if (a[2] + 0 > m[h]) m[h] = a[2] + 0 } }
          END { for (h in m) print h, m[h] }' <<<"$events" | sort | awk '{printf "    %s  %s\n", $1, $2}'
   fi
+
+  # Host CPU by hour, from sysstat's samples (every 10 min once it's enabled:
+  # see deploy/README.md). The box keeps UTC, so this is today's UTC day so far.
+  echo
+  echo "== host CPU busy % per hour, today (UTC; avg / max of 10-min samples)"
+  if ! command -v sar >/dev/null; then
+    echo "  (sysstat not installed)"
+  else
+    LC_ALL=C sar -u 2>/dev/null | awk '
+      $1 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ && $2 == "all" {
+        h = substr($1, 1, 2); busy = 100 - $NF
+        n[h]++; sum[h] += busy; if (busy > max[h]) max[h] = busy }
+      END { for (h in n) printf "  %s:00  %5.1f / %5.1f\n", h, sum[h] / n[h], max[h] }' | sort \
+      | grep . || echo "  (no samples yet today)"
+  fi
 }
 
 main

@@ -53,7 +53,7 @@ esac
 """
 
 
-def run_stats(tmp_path: Path, logs: str) -> subprocess.CompletedProcess[str]:
+def run_stats(tmp_path: Path, logs: str, sar: str | None = None) -> subprocess.CompletedProcess[str]:
     # A copy of the repo's layout: the script cds to its parent's parent and
     # reads apps/radio/.env there.
     root = tmp_path / "repo"
@@ -71,6 +71,10 @@ def run_stats(tmp_path: Path, logs: str) -> subprocess.CompletedProcess[str]:
     docker.chmod(docker.stat().st_mode | stat.S_IEXEC)
     (tmp_path / "proc_tcp").write_text(PROC_TCP)
     (tmp_path / "logs").write_text(logs)
+    if sar is not None:
+        fake_sar = bin_dir / "sar"
+        fake_sar.write_text(f"#!/usr/bin/env bash\ncat <<'OUT'\n{sar}OUT\n")
+        fake_sar.chmod(fake_sar.stat().st_mode | stat.S_IEXEC)
 
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_DIR": str(tmp_path)}
     return subprocess.run(
@@ -107,3 +111,26 @@ def test_without_receiver_log(tmp_path: Path):
     out = run_stats(tmp_path, logs)
     assert out.returncode == 0, out.stderr
     assert "no receiver-log lines" in out.stdout
+
+
+# `sar -u` as LC_ALL=C prints it: a header, 10-minute samples, then an Average line.
+SAR = textwrap.dedent(
+    """\
+    Linux 6.8.0-149-generic (skywave-radio) 11/26/2026 _x86_64_ (1 CPU)
+
+    00:00:01        CPU     %user     %nice   %system   %iowait    %steal     %idle
+    00:10:01        all     10.00      0.00      5.00      0.00      0.00     85.00
+    00:20:01        all     20.00      0.00     10.00      0.00      0.00     70.00
+    10:00:01        all     60.00      0.00     20.00      0.00      0.00     20.00
+    10:10:01        all     40.00      0.00     10.00      0.00      0.00     50.00
+    Average:        all     32.50      0.00     11.25      0.00      0.00     56.25
+    """
+)
+
+
+# Value: protects=hourly host CPU in the daily load log, avg and max of sysstat's 10-minute samples per UTC hour, so a short peak isn't averaged away; fails_when=busy isn't 100 - %idle, the header or Average line is counted, or hours mix; why_new=the radio-stats workflow (issue #153) needs CPU history, not one reading; seam=fake sar on PATH; no_claim=sysstat's own sampling or that it's enabled on the box
+def test_hourly_cpu_from_sar(tmp_path: Path):
+    out = run_stats(tmp_path, LOGS, sar=SAR).stdout
+    assert "  00:00   22.5 /  30.0" in out
+    assert "  10:00   65.0 /  80.0" in out
+    assert "Average" not in out.split("== host CPU")[1]

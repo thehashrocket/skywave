@@ -1,0 +1,65 @@
+# Daily load numbers for the radio Droplet (issue #153): runs deploy/stats.sh
+# over SSH with a key that can run nothing else, and posts the output as a
+# comment on the open issue labelled `radio-load`. A Claude scheduled task reads
+# that issue each morning and flags trends; see deploy/README.md.
+#
+# 17:07 UTC, after the busiest hours (10:00-16:00 UTC), so the day's peaks are in.
+name: Radio stats
+
+on:
+  schedule:
+    - cron: "7 17 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: radio-stats
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  stats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DROPLET_STATS_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DROPLET_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$SSH_KEY" ]; then
+            echo "::error::DROPLET_STATS_KEY isn't set; see deploy/README.md (A monitoring key)"
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Collect
+        env:
+          HOST: ${{ vars.DROPLET_HOST }}
+        run: |
+          # The key's forced command is stats.sh; whatever we send is ignored.
+          # Output goes to a file, not the job log.
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes "deploy@${HOST}" > stats.txt
+          test -s stats.txt
+
+      - name: Post to the load log
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          issue=$(gh issue list -R "$GITHUB_REPOSITORY" --label radio-load --state open --json number -q '.[0].number')
+          if [ -z "$issue" ]; then
+            echo "::error::no open issue labelled radio-load"
+            exit 1
+          fi
+          {
+            echo '```'
+            cat stats.txt
+            echo '```'
+          } > body.md
+          gh issue comment "$issue" -R "$GITHUB_REPOSITORY" --body-file body.md
