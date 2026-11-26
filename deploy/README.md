@@ -57,6 +57,24 @@ copies, which the README's "One process" rule forbids).
    Tag Manager behind the cookie bar, then redeploy: `NEXT_PUBLIC_` values are
    baked in at build time.
 
+## Receiver log
+
+The radio service writes one line per receiver outcome (#144): every error a
+Listen ends on, each refusal of its own (`skywave_cap`, `blocked`), and every
+receiver that starts playing, with the service's load at the time (#146). It
+goes to stdout and, in production, to `/data/receivers.log` on the `radio_data`
+volume (`RECEIVER_LOG` in `docker-compose.prod.yml`), rotated at 5 MB with 4 old
+files kept, so a rebuild doesn't lose it the way it loses `docker compose logs`:
+
+```sh
+docker compose -f docker-compose.prod.yml exec radio sh -c 'cat /data/receivers.log*' \
+  | grep -o 'event=error .* code=[a-z_]* detail=[^ ]*' | sort | uniq -c | sort -rn | head
+```
+
+A line reads `event=error host=kiwi.example port=8073 code=busy detail=too_busy=4
+audio_s=3.2 listeners=6`. `detail` holds only the Kiwi's own numbers, an HTTP
+status, an error class name or a fixed word; no listener names or addresses.
+
 ## Later deploys: GitHub Actions
 
 `Deploy radio` runs after `CI` passes on a push to `main`, and by hand from

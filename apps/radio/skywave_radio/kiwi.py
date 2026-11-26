@@ -102,16 +102,42 @@ def _drop_late_socket(dial: asyncio.Future[ClientConnection]) -> None:
 
 
 class KiwiError(Exception):
-    """A Kiwi refused or dropped us. `code` is machine-readable."""
+    """A Kiwi refused or dropped us. `code` is machine-readable.
 
-    def __init__(self, code: str, message: str):
+    `detail`, when set, says more for the radio service's receiver log (#144):
+    the Kiwi's own refusal value (`badp=5`, `too_busy=4`), the HTTP status or
+    exception class of a failed dial, or which of our deadlines fired. It is
+    built only from digits, fixed words and class names (never text a Kiwi
+    sent), and it never goes to the browser.
+    """
+
+    def __init__(self, code: str, message: str, *, detail: str | None = None):
         super().__init__(message)
         self.code = code
+        self.detail = detail
+
+
+# A refusal value kept in `detail`: a Kiwi sends counts and codes as digits.
+_DETAIL_NUMBER = re.compile(r"[0-9]{1,6}")
+
+
+def refusal_detail(name: str, value: str | None) -> str:
+    """`name=value` for a refusal MSG, keeping the value only if it is a short
+    run of digits (anything else is `name=other`), or just `name` with none."""
+    if value is None:
+        return name
+    return f"{name}={value if _DETAIL_NUMBER.fullmatch(value) else 'other'}"
+
+
+def _closed_detail(e: websockets.ConnectionClosed) -> str:
+    """The WebSocket close code the Kiwi sent, or `close=none`."""
+    code = e.rcvd.code if e.rcvd is not None else None
+    return f"close={code}" if isinstance(code, int) else "close=none"
 
 
 def _fresh_broken(broken: KiwiError, closed: BaseException) -> KiwiError:
-    """A new error with the given-up connection's code and message, noting the close that followed."""
-    error = KiwiError(broken.code, str(broken))
+    """A new error with the given-up connection's code, message and detail, noting the close that followed."""
+    error = KiwiError(broken.code, str(broken), detail=broken.detail)
     error.add_note(f"then the connection closed: {closed!r}")
     return error
 
@@ -284,8 +310,8 @@ class KiwiConnection:
             if self.CLOSE_ON_HANDSHAKE_TIMEOUT:
                 await self.close()
             if not self._answered:
-                raise KiwiError("timeout", f"{self.host} connected but never answered") from e
-            raise KiwiError("timeout", f"{self.host} never sent {self.HANDSHAKE_WANTS}") from e
+                raise KiwiError("timeout", f"{self.host} connected but never answered", detail="no_answer") from e
+            raise KiwiError("timeout", f"{self.host} never sent {self.HANDSHAKE_WANTS}", detail="no_setup") from e
         return self.info
 
     def _dropped(self) -> KiwiError:
@@ -388,7 +414,12 @@ class KiwiConnection:
             reason = f"it redirects to {e.response.headers.get('Location', 'somewhere else')}"
         else:
             reason = str(e) or type(e).__name__
-        return KiwiError("unreachable", f"Couldn't connect to {self.hostport} ({reason})")
+        if isinstance(e, InvalidStatus):
+            status = e.response.status_code
+            detail = f"http={status}" if isinstance(status, int) and 100 <= status <= 599 else "http=other"
+        else:
+            detail = type(e).__name__
+        return KiwiError("unreachable", f"Couldn't connect to {self.hostport} ({reason})", detail=detail)
 
     async def _handshake(self) -> None:
         raise NotImplementedError
@@ -404,14 +435,17 @@ class KiwiConnection:
                     "no_apps",
                     f"{self.host} only lets listeners in through its own web page, "
                     "not apps like this one. Try another receiver.",
+                    detail=refusal_detail(name, value),
                 )
             most = f" ({value} listeners max)" if value else ""
-            raise KiwiError("busy", f"{self.host} is full{most}. Try another receiver.")
+            raise KiwiError("busy", f"{self.host} is full{most}. Try another receiver.", detail=refusal_detail(name, value))
         if name == "badp" and value == "5":
             # A second stream from the same listener under another timestamp.
-            raise KiwiError("busy", f"{self.host} refused another connection from this listener.")
+            raise KiwiError(
+                "busy", f"{self.host} refused another connection from this listener.", detail=refusal_detail(name, value)
+            )
         if name == "badp" and value not in (None, "0"):
-            raise KiwiError("password", f"{self.host} requires a password.")
+            raise KiwiError("password", f"{self.host} requires a password.", detail=refusal_detail(name, value))
         if name == "down":
             raise KiwiError("down", f"{self.host} is down right now.")
         if name == "redirect":
@@ -428,7 +462,7 @@ class KiwiConnection:
                 # the connection was given up, with the close that followed noted
                 # (normally our own abort).
                 raise _fresh_broken(self._broken, e) from self._broken
-            raise KiwiError("closed", f"{self.host} closed the connection") from e
+            raise KiwiError("closed", f"{self.host} closed the connection", detail=_closed_detail(e)) from e
         return msg if isinstance(msg, bytes) else msg.encode()
 
     async def _keepalive(self, force: bool = False) -> None:
@@ -447,7 +481,7 @@ class KiwiConnection:
             # socket buffers fill, and no deadline in blocks() runs meanwhile.
             await asyncio.wait_for(self._ws.send(msg), timeout=self.timeout_s)
         except asyncio.TimeoutError as e:
-            raise KiwiError("timeout", f"{self.host} stopped reading") from e
+            raise KiwiError("timeout", f"{self.host} stopped reading", detail="send_stalled") from e
         except websockets.ConnectionClosed as e:
             if self._broken is not None:
                 # A fresh error each time (re-raising the stored one would grow
@@ -455,7 +489,7 @@ class KiwiConnection:
                 # the connection was given up, with the close that followed noted
                 # (normally our own abort).
                 raise _fresh_broken(self._broken, e) from self._broken
-            raise KiwiError("closed", f"{self.host} closed the connection") from e
+            raise KiwiError("closed", f"{self.host} closed the connection", detail=_closed_detail(e)) from e
 
     async def _send_ident(self) -> None:
         # The flag goes up before self.user is read, with no await between: a
@@ -675,5 +709,5 @@ class KiwiClient(KiwiConnection):
                 await self._handle_msg(parse_msg(frame[4:]))
 
     def _stopped(self) -> KiwiError:
-        return KiwiError("timeout", f"{self.host} stopped sending audio")
+        return KiwiError("timeout", f"{self.host} stopped sending audio", detail="audio_stalled")
 

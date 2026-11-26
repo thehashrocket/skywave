@@ -149,6 +149,10 @@ class Settings:
     # Where each receiver's noise-floor aggregates live (SQLite, issue #67):
     # a file on a volume in production, or ":memory:" (lost on restart).
     noise_db: str = ":memory:"
+    # Also write the receiver log (session.receiver_log, #144) to this file,
+    # size-capped and rotated; on a volume in production so it outlives a
+    # rebuild. None: stdout only.
+    receiver_log: str | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -167,4 +171,5 @@ class Settings:
             max_sockets_per_ip=_count("MAX_SOCKETS_PER_IP", "8"),
             blocked_receivers=parse_blocked(os.environ.get("BLOCKED_RECEIVERS", "")),
             noise_db=os.environ.get("NOISE_DB") or ":memory:",
+            receiver_log=os.environ.get("RECEIVER_LOG") or None,
         )

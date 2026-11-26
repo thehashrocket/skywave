@@ -20,11 +20,14 @@ export type Tuning = {
 
 /**
  * Every `code` the radio service puts on an error status: KiwiError codes
- * (apps/radio/skywave_radio/kiwi.py) and HostRejected codes (hostguard.py).
+ * (apps/radio/skywave_radio/kiwi.py), HostRejected codes (hostguard.py) and
+ * the service's own coded refusals (BadRequest in session.py).
  * apps/radio/tests/test_error_codes.py fails if the two sides drift.
  */
 export const RADIO_ERROR_CODES = [
   "busy",
+  // The service already has its most listeners on that receiver (MAX_SESSIONS_PER_RECEIVER).
+  "skywave_cap",
   "no_apps",
   "down",
   "unreachable",
@@ -41,6 +44,11 @@ export const RADIO_ERROR_CODES = [
 export type RadioErrorCode = (typeof RADIO_ERROR_CODES)[number];
 
 const KNOWN_CODES: ReadonlySet<string> = new Set(RADIO_ERROR_CODES);
+/**
+ * Codes the service sends only to a page that lists them on its tune: a page
+ * built before one would read it as the service's own failure (#144).
+ */
+const NEW_CODES: readonly RadioErrorCode[] = ["skywave_cap"];
 // How long a new connection to the radio service may take to open.
 const CONNECT_TIMEOUT_MS = 10_000;
 // The service closes a socket left idle (nothing playing, no messages) with
@@ -269,7 +277,9 @@ export function useRadio() {
     const ident = retune ? undefined : loadIdent();
     ws.send(
       JSON.stringify(
-        retune ? { type: "tune", ...t, retune: true } : { type: "tune", ...t, ...(ident ? { ident } : {}) },
+        retune
+          ? { type: "tune", ...t, retune: true, codes: NEW_CODES }
+          : { type: "tune", ...t, codes: NEW_CODES, ...(ident ? { ident } : {}) },
       ),
     );
   }, []);

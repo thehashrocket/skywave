@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const track = vi.fn();
+vi.mock("@vercel/analytics", () => ({ track: (...args: unknown[]) => track(...args) }));
 import type { Receiver } from "./kiwi-list";
 import { PICK_CONTEXT_VERSION } from "./pick-context";
 import { MAX_ATTEMPTS, REFUSED_MS, usePickBest, WATCH_MS } from "./use-pick-best";
@@ -739,6 +742,94 @@ describe("usePickBest", () => {
     report(fail("f", "dns"));
     expect(tuned()).toEqual(["a", "b", "c", "d", "e", "f"]);
     expect(hook.result.current.note).toMatch(/Tried 6 receivers/);
+  });
+
+  // Value: protects=Skywave's own per-receiver cap moves the run on without spending a try, so our cap alone can't end in "Tried 3 receivers and none worked" (#144); fails_when=skywave_cap counts as a strike or stops the run; why_new=the cap used to arrive as busy, a strike; seam=none; no_claim=which pages the service sends the code to (radio test_receiver_log.py)
+  it("doesn't count Skywave's own per-receiver cap against the tries", () => {
+    const many = ["a", "b", "c", "d", "e", "f"].map(rx);
+    const { hook, report, tuned } = setup();
+    act(() => hook.result.current.start(many));
+    report(fail("a", "skywave_cap"));
+    expect(hook.result.current.note).toBe("A already has a Skywave listener; trying B…");
+    report(fail("b", "skywave_cap"));
+    report(fail("c", "busy"));
+    report(fail("d", "busy"));
+    // Two strikes so far: E is still tried, where four strikes-worth of busy would have stopped at C.
+    expect(tuned()).toEqual(["a", "b", "c", "d", "e"]);
+    report(fail("e", "busy"));
+    expect(hook.result.current.note).toMatch(/Tried 5 receivers and none worked/);
+  });
+
+  // Value: protects=our cap isn't remembered as the receiver refusing, so it isn't hidden from runs for 15 minutes; fails_when=skywave_cap joins REFUSALS; why_new=new code; seam=none; no_claim=none beyond protects
+  it("doesn't mark a receiver refused for Skywave's own cap", () => {
+    const { hook, report } = setup();
+    act(() => hook.result.current.start(candidates));
+    report(fail("a", "skywave_cap"));
+    expect(hook.result.current.isRefused(rx("a"))).toBe(false);
+  });
+
+  describe("pick_best_end", () => {
+    beforeEach(() => {
+      track.mockClear();
+      vi.useFakeTimers();
+    });
+    afterEach(() => vi.useRealTimers());
+    const ends = () => track.mock.calls.filter(([name]) => name === "pick_best_end").map(([, props]) => props);
+
+    // Value: protects=one run-end event per Pick best run, saying whether it played or gave up and which codes moved it on, in order (#144 D6); fails_when=the event is missing, sent twice, or the codes are wrong or out of order; why_new=only per-error events existed; seam=none (mocked track); no_claim=Vercel ingestion
+    it("reports a run that gives up, once, with its codes in order", () => {
+      const { hook, report } = setup();
+      act(() => hook.result.current.start(candidates));
+      report(fail("a", "skywave_cap"));
+      report(fail("b", "busy"));
+      report(fail("c", "unreachable"));
+      report(fail("d", "busy"));
+      expect(ends()).toEqual([{ outcome: "gave_up", codes: "skywave_cap,busy,unreachable,busy" }]);
+      report({ state: "idle" });
+      expect(ends()).toHaveLength(1);
+    });
+
+    it("reports a run that played once its watch ends, codes and all", () => {
+      const { hook, report } = setup();
+      act(() => hook.result.current.start(candidates));
+      report(fail("a", "busy"));
+      report({ state: "listening", host: "b", port: 8073 });
+      expect(ends()).toEqual([]);
+      act(() => vi.advanceTimersByTime(WATCH_MS));
+      expect(ends()).toEqual([{ outcome: "played", codes: "busy" }]);
+    });
+
+    it("reports a run that plays first time with no codes", () => {
+      const { hook, report } = setup();
+      act(() => hook.result.current.start(candidates));
+      report({ state: "listening", host: "a", port: 8073 });
+      act(() => hook.result.current.cancel());
+      expect(ends()).toEqual([{ outcome: "played", codes: null }]);
+    });
+
+    it("reports a run stopped mid-way, and one the service failed", () => {
+      const first = setup();
+      act(() => first.hook.result.current.start(candidates));
+      first.report(fail("a", "busy"));
+      act(() => {
+        first.hook.result.current.stop();
+      });
+      const second = setup();
+      act(() => second.hook.result.current.start(candidates));
+      second.report({ state: "error", message: "Lost the connection to the radio service." });
+      expect(ends()).toEqual([
+        { outcome: "stopped", codes: "busy" },
+        { outcome: "service", codes: null },
+      ]);
+    });
+
+    it("reports the old run when Pick best starts again", () => {
+      const { hook, report } = setup();
+      act(() => hook.result.current.start(candidates));
+      report(fail("a", "busy"));
+      act(() => hook.result.current.start(candidates.slice(1)));
+      expect(ends()).toEqual([{ outcome: "stopped", codes: "busy" }]);
+    });
   });
 
   it("stops without going back when the service itself fails mid-run", () => {

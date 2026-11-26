@@ -1,5 +1,6 @@
 "use client";
 
+import { track } from "@vercel/analytics";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LIST_MAX_AGE_MS, receiverKey, type Receiver } from "./kiwi-list";
 import { pickContext, pickKey, type PickContext, type PickSource } from "./pick-context";
@@ -16,6 +17,7 @@ export const MAX_ATTEMPTS = 3; // README "Using it" quotes this number.
 /** How the skip note describes each failure. Every code needs one. */
 const WHY_SKIPPED: Record<RadioErrorCode, string> = {
   busy: "was full",
+  skywave_cap: "already has a Skywave listener",
   no_apps: "only takes listeners on its own web page",
   down: "is down",
   unreachable: "didn't answer",
@@ -38,6 +40,13 @@ const WHY_SKIPPED: Record<RadioErrorCode, string> = {
 const ADDRESS_CODES = new Set<RadioErrorCode>(["dns", "blocked", "invalid"]);
 
 /**
+ * Failures that don't use up one of the MAX_ATTEMPTS tries: the address ones
+ * above, and the radio service's own per-receiver cap (skywave_cap), which
+ * knocks on no one's receiver and says nothing about whether it has room (#144).
+ */
+const FREE_CODES = new Set<RadioErrorCode>([...ADDRESS_CODES, "skywave_cap"]);
+
+/**
  * A receiver that refused is left out of new runs for this long, the age the
  * public list's copy can reach: its stale counts would rank it first again, and
  * retrying cuts the listener off and knocks on the volunteer's receiver for
@@ -57,6 +66,14 @@ const refusedKey = (r: { host: string; port?: number }) =>
   receiverKey({ host: r.host.toLowerCase(), port: r.port ?? DEFAULT_KIWI_PORT });
 
 const MAX_TOTAL = 6; // README "Using it" quotes this number too.
+
+/**
+ * How a run ended, for the `pick_best_end` analytics event (#144): it played
+ * (and the watch ended without a refusal), it gave up after its tries, the
+ * service failed it (an uncoded error), or the listener stopped it or chose
+ * something else first.
+ */
+export type PickOutcome = "played" | "gave_up" | "service" | "stopped";
 
 /**
  * Some receivers refuse only after playing for a while: one whose owner allows
@@ -86,6 +103,10 @@ type Chain = {
   tried: Receiver[];
   /** Failures that count against MAX_ATTEMPTS. */
   strikes: number;
+  /** Every error code that moved the run on, in order, strikes or not (for pick_best_end). */
+  codes: RadioErrorCode[];
+  /** pick_best_end was sent for this run. */
+  reported?: boolean;
   /** The status on screen when the run started, which says nothing about this run. */
   before: RadioStatus;
   /** What was playing (or connecting) when the run started, to go back to if nothing works. */
@@ -231,6 +252,22 @@ export function usePickBest(
     [],
   );
 
+  /**
+   * Sends pick_best_end for run `c`, once. The codes are the ones that moved it
+   * on, comma-joined (at most MAX_TOTAL); no receiver or listener in it.
+   */
+  const report = useCallback((c: Chain | null, outcome: PickOutcome) => {
+    if (!c || c.reported) return;
+    c.reported = true;
+    track("pick_best_end", { outcome, codes: c.codes.join(",") || null });
+  }, []);
+
+  /** How a run that the listener ended (or replaced) counts: played if it was only being watched. */
+  const reportLeft = useCallback(
+    (c: Chain | null) => report(c, c?.watchTimer ? "played" : "stopped"),
+    [report],
+  );
+
   /** End the chain, optionally leaving a note about why. */
   const finish = useCallback((why: string | null = null) => {
     clearTimers(chain.current);
@@ -290,6 +327,7 @@ export function usePickBest(
         );
         return false;
       }
+      reportLeft(chain.current);
       clearTimers(chain.current);
       const before = latestStatus.current;
       const c: Chain = {
@@ -298,6 +336,7 @@ export function usePickBest(
         candidates,
         tried: [first],
         strikes: 0,
+        codes: [],
         before,
         fallback: playing(before, known, provenanceRef.current),
         retried: false,
@@ -309,14 +348,15 @@ export function usePickBest(
       tuneCandidate(c, first);
       return true;
     },
-    [finish, tuneCandidate, isRefused, drop],
+    [finish, tuneCandidate, isRefused, drop, reportLeft],
   );
 
   /** The user chose something else (a row, Listen): just stop following, and forget how the last run chose. */
   const cancel = useCallback(() => {
+    reportLeft(chain.current);
     drop();
     finish();
-  }, [finish, drop]);
+  }, [finish, drop, reportLeft]);
 
   /**
    * The user pressed Stop picking: stop, and don't leave them in silence.
@@ -325,6 +365,7 @@ export function usePickBest(
    */
   const stop = useCallback((): boolean => {
     const c = chain.current;
+    reportLeft(c);
     // While only watching, the receiver the run settled on is playing: end the
     // watch and leave it playing.
     if (c?.watchTimer) {
@@ -336,7 +377,7 @@ export function usePickBest(
     if (c) drop();
     finish();
     return false;
-  }, [finish, goBack, drop]);
+  }, [finish, goBack, drop, reportLeft]);
 
   useEffect(() => {
     // A coded refusal is the receiver's own answer, however it was dialed; a
@@ -365,7 +406,10 @@ export function usePickBest(
       // ends the watch.
       const about = status.host === current.host && status.port === current.port;
       if (about && (status.state === "listening" || status.state === "connecting")) return;
-      if (!about || status.state !== "error" || !status.code || !REFUSALS.has(status.code)) return finish();
+      if (!about || status.state !== "error" || !status.code || !REFUSALS.has(status.code)) {
+        report(c, "played");
+        return finish();
+      }
       clearTimeout(c.watchTimer);
       c.watchTimer = undefined;
       setRunning(true);
@@ -380,6 +424,7 @@ export function usePickBest(
       setNote(null);
       c.watchTimer = setTimeout(() => {
         if (chain.current !== c) return;
+        report(c, "played");
         chain.current = null;
         setSettled(true);
       }, WATCH_MS);
@@ -394,6 +439,7 @@ export function usePickBest(
     if (!status.code) {
       if (!status.retryAfterMs || c.retried) {
         // The run ends on the service's failure, not on a choice that played.
+        report(c, "service");
         drop();
         return finish();
       }
@@ -404,7 +450,8 @@ export function usePickBest(
       }, status.retryAfterMs);
       return;
     }
-    if (!ADDRESS_CODES.has(status.code)) c.strikes++;
+    c.codes.push(status.code);
+    if (!FREE_CODES.has(status.code)) c.strikes++;
     const tried = new Set(c.tried.map(receiverKey));
     // The dial may have moved since the run started; skip what no longer fits.
     const next = c.candidates.find((r) => !tried.has(receiverKey(r)) && acceptsRef.current(r));
@@ -413,6 +460,7 @@ export function usePickBest(
         c.tried.length === 1
           ? "Tried 1 receiver and it didn't work."
           : `Tried ${c.tried.length} receivers and none worked.`;
+      report(c, "gave_up");
       if (goBack(c, summary)) return;
       // Out of receivers and nowhere to go back to: the last one tried refused, so nothing was chosen.
       drop();
@@ -422,7 +470,7 @@ export function usePickBest(
     c.retried = false;
     setNote(`${current.name} ${WHY_SKIPPED[status.code]}; trying ${next.name}…`);
     tuneCandidate(c, next);
-  }, [status, tune, tuneCandidate, finish, goBack, drop]);
+  }, [status, tune, tuneCandidate, finish, goBack, drop, report]);
 
   /** How many choices have been dropped so far (see `drops`). */
   const dropCount = useCallback(() => drops.current, []);

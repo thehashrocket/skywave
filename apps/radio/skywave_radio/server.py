@@ -12,7 +12,9 @@ import hmac
 import ipaddress
 import json
 import logging
+import os
 import time
+from logging.handlers import RotatingFileHandler
 from typing import Any
 
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, status
@@ -21,7 +23,7 @@ from fastapi.responses import JSONResponse
 from .config import Settings, is_local_origin, origin_allowed
 from .hostguard import is_public_address
 from .noise import BAND_IDS, WINDOW_DAYS, NoiseSampler, NoiseStore, utc_slot
-from .session import ClientGone, ListenSession, ScanCache, Slots, SweepTimes
+from .session import ClientGone, ListenSession, ScanCache, Slots, SweepTimes, receiver_log
 from .session import scan_stragglers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -56,6 +58,32 @@ NOISE_CACHE_S = 300
 NOISE_PAIR_MAX = 260
 # How long GET /noise waits on the store's thread before answering 503.
 NOISE_READ_TIMEOUT_S = 5.0
+# RECEIVER_LOG's size: rotated at this many bytes, keeping this many old files
+# (25 MB in all; a line is about 120 bytes).
+RECEIVER_LOG_BYTES = 5 * 1024 * 1024
+RECEIVER_LOG_BACKUPS = 4
+
+
+def attach_receiver_log(path: str | None) -> RotatingFileHandler | None:
+    """Also write receiver_log to `path` (rotated), once per path.
+
+    A file that can't be opened never stops the service: it says so and the
+    lines still go to stdout.
+    """
+    if not path:
+        return None
+    full = os.path.abspath(path)
+    for handler in receiver_log.handlers:
+        if isinstance(handler, RotatingFileHandler) and handler.baseFilename == full:
+            return handler
+    try:
+        handler = RotatingFileHandler(full, maxBytes=RECEIVER_LOG_BYTES, backupCount=RECEIVER_LOG_BACKUPS, encoding="utf-8")
+    except OSError as e:
+        log.warning("can't write the receiver log to %s (%r); it goes to stdout only", full, e)
+        return None
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    receiver_log.addHandler(handler)
+    return handler
 
 
 async def _close_bounded(ws: WebSocket, code: int, reason: str) -> None:
@@ -148,6 +176,7 @@ def check_settings(settings: Settings) -> None:
 
 def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
     settings = settings or Settings.from_env()
+    attach_receiver_log(settings.receiver_log)
     check_settings(settings)
     # Every socket cleanup, from creation until it finishes (track_cleanup):
     # held so it isn't garbage-collected mid-run, and so shutdown can wait on it.
