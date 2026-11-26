@@ -102,28 +102,35 @@ main() {
       if (ts >= cutoff) print ts substr($0, i) }'
   local file_events file_ok=1 events
   # shellcheck disable=SC2016  # $RECEIVER_LOG expands inside the container
+  # A set RECEIVER_LOG whose live file is missing (wrong path, volume not
+  # mounted) is a failed read, not an empty day; missing rotated copies are normal.
   file_events=$(docker exec "$radio" sh -c \
-      'f=${RECEIVER_LOG:-}; [ -z "$f" ] || cat "$f.4" "$f.3" "$f.2" "$f.1" "$f" 2>/dev/null; exit 0' \
+      'f=${RECEIVER_LOG:-}; [ -z "$f" ] && exit 0; [ -r "$f" ] || exit 3
+       cat "$f.4" "$f.3" "$f.2" "$f.1" "$f" 2>/dev/null; exit 0' \
     | awk -v cutoff="$cutoff" "$to_events") || file_ok=0
   events=$(printf '%s\n%s\n' "$file_events" \
     "$(awk -v cutoff="$cutoff" "$to_events" <<<"$logs")" | grep -F ' event=' || true)
   echo
   echo "== receiver log, last 24 h"
-  if (( ! file_ok )); then
-    if (( logs_ok )); then
-      echo "  (couldn't read the receiver log file; only the container's logs are counted)"
-    else
-      echo "  (couldn't read the receiver log file or the container's logs)"
-    fi
-  fi
   if (( ! file_ok && ! logs_ok )); then
-    : # nothing was read: "no lines" would read as a quiet day
-  elif [[ -z "$events" ]]; then
-    echo "  (no receiver-log lines in the last 24 h)"
+    echo "  (couldn't read the receiver log file or the container's logs)"
+  elif (( ! file_ok )); then
+    echo "  (couldn't read the receiver log file; only the container's logs are counted)"
+  elif (( ! logs_ok )); then
+    echo "  (couldn't read the container's logs; only the receiver log file is counted)"
+  fi
+  if [[ -z "$events" ]]; then
+    # "No lines" only when both places were read: otherwise the lines may be
+    # in the one that wasn't, and it would read as a quiet day.
+    if (( file_ok && logs_ok )); then
+      echo "  (no receiver-log lines in the last 24 h)"
+    fi
   else
     echo "  by event and code:"
+    # A day of only event=dropped notes has no code= field: say so, don't exit.
     grep -oE 'event=[a-z_]+ .* code=[A-Za-z0-9_-]+' <<<"$events" \
-      | awk '{print $1, $NF}' | sort | uniq -c | sort -rn | awk '{printf "    %5d  %s %s\n", $1, $2, $3}'
+      | awk '{print $1, $NF}' | sort | uniq -c | sort -rn | awk '{printf "    %5d  %s %s\n", $1, $2, $3}' \
+      || echo "    (none)"
     echo "  most listeners per hour:"
     awk '{ h = substr($1, 1, 13); for (i = 2; i <= NF; i++) if ($i ~ /^listeners=/) {
              split($i, a, "="); if (a[2] + 0 > m[h]) m[h] = a[2] + 0 } }

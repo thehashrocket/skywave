@@ -66,7 +66,8 @@ case "$1" in
       # The script the real container runs, with RECEIVER_LOG set as in production.
       "sh -c")
         [ -n "${FAKE_FAIL_FILE:-}" ] && { echo "Error: container is restarting" >&2; exit 1; }
-        if [ -f "$FAKE_DIR/receivers.log" ]; then RECEIVER_LOG="$FAKE_DIR/receivers.log" sh -c "$5"
+        if [ -n "${FAKE_RECEIVER_LOG:-}" ]; then RECEIVER_LOG="$FAKE_RECEIVER_LOG" sh -c "$5"
+        elif [ -f "$FAKE_DIR/receivers.log" ]; then RECEIVER_LOG="$FAKE_DIR/receivers.log" sh -c "$5"
         else sh -c "$5"; fi ;;
       *) echo "unexpected docker exec: $*" >&2; exit 9 ;;
     esac ;;
@@ -259,6 +260,33 @@ def test_reads_older_rotated_copies(tmp_path: Path):
     ).stdout
     for counted in ("event=refused code=skywave_cap", "event=error code=timeout", "event=error code=busy", "event=listening code=-"):
         assert f"1  {counted}" in out
+
+
+# Value: protects=when the container's logs can't be read the receiver section says so, still counts the file, and never prints the quiet-day "no lines" message; fails_when=a logs-only failure falls through to "no receiver-log lines" or drops the note; why_new=the other failure tests fail the file read too; seam=fake docker on PATH; no_claim=docker's real error output
+def test_logs_unread_never_reads_as_quiet_day(tmp_path: Path):
+    out = run_stats(tmp_path / "a", LOGS, receivers=RECEIVERS, FAKE_FAIL_LOGS="1").stdout
+    assert "(couldn't read the container's logs; only the receiver log file is counted)" in out
+    assert "1  event=listening code=-" in out  # from the file
+    empty = run_stats(tmp_path / "b", LOGS, receivers="", FAKE_FAIL_LOGS="1").stdout
+    assert "no receiver-log lines" not in empty
+
+
+# Value: protects=a set RECEIVER_LOG whose live file is missing (wrong path, unmounted volume) is reported as unread, not as an empty day; fails_when=the in-container read treats a missing live file like a missing rotated copy; why_new=new missing-file check; seam=fake docker runs the real in-container sh; no_claim=the Droplet's real mount layout
+def test_missing_receiver_log_file_is_a_failed_read(tmp_path: Path):
+    out = run_stats(tmp_path, LOGS, FAKE_RECEIVER_LOG=str(tmp_path / "missing.log")).stdout
+    assert "(couldn't read the receiver log file; only the container's logs are counted)" in out
+    assert "no receiver-log lines" not in out
+    assert "2  event=refused code=full" in out  # the container-log lines still count
+
+
+# Value: protects=a day whose only receiver lines are event=dropped notes (no code= field) still prints the rest of the report; fails_when=the event/code grep's empty result ends the script under set -e/pipefail; why_new=every other fixture has code= on each line; seam=fake docker on PATH; no_claim=how often the writer drops lines
+def test_drop_notes_only_day_keeps_reporting(tmp_path: Path):
+    out = run_stats(
+        tmp_path, LOGS_NO_EVENTS, sar=SAR, receivers="2026-11-26 09:00:00,000 event=dropped lines=5\n"
+    )
+    assert out.returncode == 0, out.stderr
+    assert "    (none)" in out.stdout.split("by event and code:")[1]
+    assert "  10:00   65.0 /  80.0" in out.stdout
 
 
 # `sar -u` as LC_ALL=C prints it: a header, 10-minute samples, then an Average line.
