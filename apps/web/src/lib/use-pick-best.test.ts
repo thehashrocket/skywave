@@ -859,6 +859,26 @@ describe("usePickBest", () => {
       expect(ends()).toHaveLength(1);
     });
 
+    // Value: protects=a Pick best run that meets Skywave's own cap sends one radio_refused at its end with how many receivers it met, not one per receiver, and a run that met none sends none (owner, final review); fails_when=the count is missing or per receiver, or a run without skywave_cap sends one; why_new=radio_refused split from radio_error; seam=none (mocked track); no_claim=Vercel ingestion
+    it("sends one radio_refused per run with the number of capped receivers", () => {
+      const refusals = () => track.mock.calls.filter(([name]) => name === "radio_refused").map(([, props]) => props);
+      const { hook, report } = setup();
+      act(() => hook.result.current.start(candidates));
+      report(fail("a", "skywave_cap"));
+      report(fail("b", "busy"));
+      report(fail("c", "skywave_cap"));
+      expect(refusals()).toEqual([]);
+      report({ state: "listening", host: "d", port: 8073 });
+      act(() => vi.advanceTimersByTime(WATCH_MS));
+      expect(refusals()).toEqual([{ code: "skywave_cap", receivers: 2, source: "pick_best" }]);
+      track.mockClear();
+      act(() => hook.result.current.start(candidates));
+      report(fail("a", "busy"));
+      report({ state: "listening", host: "b", port: 8073 });
+      act(() => vi.advanceTimersByTime(WATCH_MS));
+      expect(refusals()).toEqual([]);
+    });
+
     it("reports a run that played once its watch ends, codes and all", () => {
       const { hook, report } = setup();
       act(() => hook.result.current.start(candidates));

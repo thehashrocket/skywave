@@ -324,7 +324,6 @@ export default function ListenPage() {
   const radio = useRadio();
   const { decodeState, setDecode } = radio;
   const { status, meter, tune, refusal } = radio;
-  useListenTracking(status, radio.heardAudio, refusal);
   const sun = useSolarClock();
   // The receiver the page is tuned to (or last was): where dial retunes go.
   // Only a tune sets it; the fields edit `draft`.
@@ -669,6 +668,8 @@ export default function ListenPage() {
     }
   }, [refusal, provenance]);
   const pickBest = usePickBest(status, tuneReceiver, coversDial, provenance, refusal);
+  // While Pick best runs (or watches), its run end counts its refusals.
+  useListenTracking(status, radio.heardAudio, refusal, !pickBest.settled);
   const {
     cancel: cancelPickBest,
     stop: stopPickBest,

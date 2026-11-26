@@ -53,22 +53,30 @@ describe("useListenTracking", () => {
     ]);
   });
 
-  // Value: protects=a switch refused while the old station plays on still counts in radio_error by its code, once per refusal, so Vercel's skywave_cap counts include refused switches (#144); fails_when=refusals aren't tracked, or the same refusal is tracked again on a later render; why_new=refusals no longer arrive as error statuses; seam=mocked track; no_claim=Vercel ingestion
-  it("counts a refused switch once, by its code", () => {
+  // Value: protects=Skywave's own cap never counts as radio_error (so before/after error rates need no filter) and counts once as radio_refused per refusal outside Pick best, whether it comes as a refused switch or an error status; inside a run it's left to the run (owner, final review); fails_when=skywave_cap reaches radio_error, a refusal is tracked twice on a later render, or a run's refusals are counted per receiver here too; why_new=radio_error mixed cap refusals with receiver failures; seam=mocked track; no_claim=Vercel ingestion
+  it("counts Skywave's own cap as radio_refused, never radio_error, and leaves a run's to Pick best", () => {
     const listening: RadioStatus = { state: "listening", host: "a.example", port: 8073 };
-    const refusal: RadioRefusal = {
-      seq: 1,
+    const capped: RadioStatus = { state: "error", code: "skywave_cap", host: "b.example", port: 8073 };
+    const refusal = (seq: number): RadioRefusal => ({
+      seq,
       host: "b.example",
       port: 8073,
       code: "skywave_cap",
       message: "x",
       stillOn: { host: "a.example", port: 8073 },
-    };
-    const hook = renderHook(({ refusal }) => useListenTracking(listening, false, refusal), {
-      initialProps: { refusal: null as RadioRefusal | null },
     });
-    hook.rerender({ refusal });
-    hook.rerender({ refusal });
-    expect(track.mock.calls).toEqual([["radio_error", { code: "skywave_cap" }]]);
+    const hook = renderHook(
+      ({ status, refusal, picking }) => useListenTracking(status, false, refusal, picking),
+      { initialProps: { status: listening, refusal: null as RadioRefusal | null, picking: false } },
+    );
+    hook.rerender({ status: listening, refusal: refusal(1), picking: false });
+    hook.rerender({ status: listening, refusal: refusal(1), picking: false });
+    hook.rerender({ status: capped, refusal: refusal(1), picking: false });
+    const once = ["radio_refused", { code: "skywave_cap", receivers: 1, source: "listener" }];
+    expect(track.mock.calls).toEqual([once, once]);
+    track.mockClear();
+    hook.rerender({ status: listening, refusal: refusal(2), picking: true });
+    hook.rerender({ status: { ...capped, host: "c.example" }, refusal: refusal(2), picking: true });
+    expect(track.mock.calls).toEqual([]);
   });
 });

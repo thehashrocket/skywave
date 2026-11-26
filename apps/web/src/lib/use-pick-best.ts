@@ -262,6 +262,9 @@ export function usePickBest(
     if (!c || c.reported) return;
     c.reported = true;
     track("pick_best_end", { outcome, codes: c.codes.join(",") || null });
+    // Skywave's own cap isn't a receiver failing: one radio_refused per run, not per receiver.
+    const capped = c.codes.filter((code) => code === "skywave_cap").length;
+    if (capped) track("radio_refused", { code: "skywave_cap", receivers: capped, source: "pick_best" });
   }, []);
 
   /** How a run that the listener ended (or replaced) counts: played if it was only being watched. */
