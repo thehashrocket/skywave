@@ -90,7 +90,7 @@
 **Priority:** P2
 **Depends on:** #100 starting
 
-### GhostNet: confirm the RTTY dial on a live slot (#91 follow-up)
+### GhostNet and F06: confirm the RTTY dial on a live slot (#91 follow-up, #148)
 
 **What:** During a GhostNet RTTY slot (Thu 1900Z Europe, Thu 0800Z Australia, Fri 0200Z North America), watch a Kiwi waterfall around 7.073-7.081 MHz. If the two tones sit at 7.077 and 7.07683 MHz (mark on 7.077), keep the dial at 7.074875 USB. If they sit 1-2.5 kHz above 7.077, move the dial to 7.077 USB.
 
@@ -98,9 +98,23 @@
 
 **Context:** Owner D8 in the #91 eng review (2026-11-22) chose the mark reading, from radio RTTY-preset convention and #92's default `markHz` of 2125. RTTY goes out only in short blind bursts, so a slot can be empty. The #93 recording session (Fri 2026-11-27 0100Z) can stay on through 0200-0230Z. The dial lives in `apps/web/src/lib/ghostnet.ts`, and a test pins it.
 
+F06 (#148, owner 2026-11-25): Priyom lists its slots as RTTY ("F06a 17532kHz RTTY"), and #148 tunes them the same way, USB 2.125 kHz below the listed frequency (`RTTY_MARK_OFFSET_KHZ`), so the same question applies: is Priyom's listed frequency the mark tone or the centre? Check on a live F06 slot from Priyom's schedule, the same way. F06's baud and shift are also unknown; the decoder (45.45 baud, 170 Hz, `apps/radio/skywave_radio/rtty.py`) stays off unless the listener turns it on.
+
 **Effort:** S
 **Priority:** P2
-**Depends on:** #91 merged, or the #93 recording session
+**Depends on:** #91 merged, or the #93 recording session; for F06, #148 merged
+
+### Signal stations with several transmitter sites (#148 follow-up)
+
+**What:** Give stations that transmit from several sites either a lower transmitter confidence or support for more than one site in the catalog (`Transmitter` in `apps/web/src/lib/signal-stations.ts`), so receiver ranking for Listen uses a site the slot could really come from.
+
+**Why:** E06 and F06 (added in #148) use one point, Moscow (`approx`), as S06, E07 and M12 already do. Priyom lists E06 from Moscow, Orenburg, Smolensk and Chita, and F06 also from Havana. For a listener in the Americas, a Havana-sent F06 burst ranked as if from Moscow picks the wrong receiver. Raised by the owner at the #148 ship review; not a blocker.
+
+**Context:** Ranking measures distance to `tx` with slack per confidence (`apps/web/src/lib/signal-rank.ts`, `SLACK_KM`: approx 300 km, country 1,500 km in coarse steps). Priyom's calendar doesn't say which site a slot uses, so per-slot sites need another source; a set of sites with "nearest of them" ranking is the likely shape. The station page shows the one label (`apps/web/src/app/signals/[slug]/page.tsx`).
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** None
 
 ### GhostNet: tighten "follow the net" and the ended line (#91 follow-up)
 

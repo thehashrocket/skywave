@@ -26,6 +26,23 @@ function setup(start = Date.parse("2026-11-10T12:00:00Z")) {
 }
 
 describe("scheduleSource", () => {
+  // Value: protects=a live season file naming a numbers station the catalog doesn't know (a rename like "E11 Polish Numbers" next season) logs one warning naming it, while known names (E11 Polish Spy Numbers) and ordinary broadcasters stay quiet and the schedule is still served (#148, owner); fails_when=a renamed numbers station brings its season grid back silently, or known names warn; why_new=owner: warn on the live file, the drift test covers only the bundled season; seam=fetch; no_claim=EiBi's naming next season
+  it("warns once about numbers stations no catalog station names", async () => {
+    const { names, fetchImpl } = setup();
+    const row = (station: string) => `9580;0000-2400;;POL;${station};E;Eu;k;1;;\r\n`;
+    fetchImpl.mockImplementationOnce(
+      async () => new Response(`${HEADER}\r\n${row("E11 Polish Spy Numbers")}${row("E11 Polish Numbers")}${row("E11 Polish Numbers")}${row("BBC")}`),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await names()).toContain("E11 Polish Numbers");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toMatch(/b26 lists numbers stations .*: E11 Polish Numbers$/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   // Value: protects=the season's file is fetched from EiBi's season URL without following redirects, decoded as Latin-1, and served from cache for a day; fails_when=the wrong season is asked for, accented names come out garbled, or every page load refetches; why_new=owner decision: fetch and cache; seam=fetch; no_claim=eibispace.de's availability
   it("fetches this season's file once a day", async () => {
     const { get, fetchImpl, advance } = setup();

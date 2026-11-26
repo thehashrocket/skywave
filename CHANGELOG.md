@@ -2,7 +2,7 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
-## [0.59.0.0] - 2026-11-26 ([#144](https://github.com/thehashrocket/skywave/issues/144), [#146](https://github.com/thehashrocket/skywave/issues/146))
+## [0.61.0.0] - 2026-11-26 ([#144](https://github.com/thehashrocket/skywave/issues/144), [#146](https://github.com/thehashrocket/skywave/issues/146))
 
 ### Added
 - **The radio service keeps a log of why receivers refuse.** Every Listen that ends on an error, every refusal the service makes itself, and every receiver that starts playing writes one line: the receiver, the error, the receiver's own reason (for example "full, 4 listeners max" or "HTTP 503"), how many seconds of audio played first, and how many listeners the service had at that moment. In production it lives in a rotating file on the data volume, so a redeploy doesn't wipe it the way it wipes the container's logs, and it never holds up anyone's audio while it writes. It is how we will find out why Pick best was giving up under load (#144) and whether the service itself falls behind when busy (#146). Listener names and addresses are never written, and the page for receiver owners now says what the log keeps.
@@ -14,6 +14,25 @@ Notable changes to skywave, newest first. Versions come from `VERSION` (four par
 
 ### Fixed
 - **Pick best always finishes going back.** When a run gave up and went back to the station you were hearing, a receiver whose address has capital letters could leave the button on "checking" for good. It now says "Back on …" once that station plays, or "Couldn't get back to …" if it refuses.
+
+## [0.60.0.0] - 2026-11-26 ([#148](https://github.com/thehashrocket/skywave/issues/148))
+
+### Added
+- **E06 and F06 have their own pages.** Two more Russian numbers stations join Signal stations: E06 (a man's voice reading numbers in English) and F06 (its operator's digital data bursts). Their times and frequencies come from Priyom's schedule, like E11 and E07.
+- **F06's data bursts are tunable.** Priyom lists F06 in RTTY. skywave tunes it in USB 2.125 kHz below Priyom's frequency so you hear the bursts, and shows both numbers: "17532 kHz RTTY · dial 17529.875 USB". On a phone the panel puts the dial on a second line instead of widening the table. The RTTY decoder stays off; turn it on yourself if you want to try it.
+- **Tuned by hand, you can still be asked.** When the dial sits on a frequency where the only station on the air is one from Signal stations (WWV on 20 MHz, UVB-76, E11 during a Priyom slot), "Did you hear it?" now asks about that station, even if you didn't press Listen. A frequency several stations share asks about the broadcasts there as before.
+
+### Changed
+- **One answer to "what's on this frequency".** The frequency readout, the waterfall's labels, Strong signals, Find a station and "Did you hear it?" now read one list built from EiBi, Priyom and Signal stations, so they agree with each other and with the Signal stations panel. A numbers station is named only where and when Priyom's schedule has it, not on every frequency EiBi lists for the season. Time signals and markers use Signal stations' names and frequencies, such as "UVB-76" and "WWV"; searching "The Buzzer" or EiBi's other names still finds them.
+- **A clear mark when Priyom's schedule can't be had.** If Priyom is unreachable, numbers stations fall back to EiBi's season times and say so: "season schedule, not confirmed" on the readout and in Find a station, "(unconfirmed)" on the waterfall. They're never asked about while unconfirmed. Until Priyom's schedule first arrives, they show nothing.
+- **Every "on now" uses the same clock.** Station names, Find a station and the greyline now follow the server's corrected time, the clock the Signal stations panel uses, so a phone a few minutes off no longer names a station the panel says hasn't started.
+- **Half a kilohertz off still counts.** An answer about a Signal stations station is taken within 0.5 kHz of its frequency, so The Squeaky Wheel on 3364 kHz (how EiBi and most lists print its 3363.5) can be asked about. Answers are filed under the station's own frequency.
+- **Strong signals tunes the named station's mode.** Clicking a strong signal now tunes the mode of the station named on it, such as USB for a numbers station, instead of always AM.
+
+### Fixed
+- **The readout no longer names a numbers station on a frequency it isn't using.** For example, on Thursday at 13:00 the readout named E11 on 5371 kHz, one of EiBi's candidate frequencies for the season, while Priyom had it on 4909. Now 5371 shows nothing for E11 and 4909 names it once.
+- **One question per frequency.** A frequency listed by both EiBi and Signal stations could ask "Did you hear it?" twice, once for each. It now asks once.
+- **An old shared link no longer sends Listen into dead air.** A link naming a numbers station on last month's frequency used to rank receivers for that frequency whenever the station was on the air anywhere. Listen now checks that the station is on the air on the dial's frequency, and otherwise picks a receiver the usual way.
 
 ## [0.58.2.1] - 2026-11-25 ([#104](https://github.com/thehashrocket/skywave/issues/104))
 

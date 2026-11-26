@@ -36,13 +36,34 @@ describe("parsePriyomEvents", () => {
     expect(byStation["M14 17458"]).toMatchObject({ mode: "cw" }); // (May not always transmit)
   });
 
-  // Value: protects="Search" events (Priyom doesn't know the frequency yet) keep their time with no frequency, and data modes (RTTY) keep the frequency but have no tuned mode, so Listen is never offered on a guess; fails_when="Search" is dropped or read as a station name, or RTTY is tuned as voice; why_new=new feed (#98); seam=none; no_claim=none
-  it("keeps Search events without a frequency and data modes without a mode", () => {
+  // Value: protects="Search" events (Priyom doesn't know the frequency yet) keep their time with no frequency, and an RTTY slot gets a USB dial RTTY_MARK_OFFSET_KHZ below its listed frequency, marked data (owner, #148 R15), with the listed frequency kept in the summary; fails_when="Search" is dropped or read as a station name, or RTTY is untunable, tuned at the listed kHz or as voice; why_new=#148 replaced #98's no-mode rule for data; seam=none; no_claim=mark-vs-centre on the air (TODOS live-slot check)
+  it("keeps Search events without a frequency and tunes RTTY as USB below the mark", () => {
     const txs = parsePriyomEvents(EVENTS);
     expect(txs.find((t) => t.station === "M12" && t.khz === null)).toMatchObject({ mode: null, startMs: at("2026-11-26T04:00:00Z") });
     expect(txs.find((t) => t.station === "F03")).toMatchObject({ khz: null, mode: null });
-    expect(txs.find((t) => t.station === "F06a")).toMatchObject({ khz: 17_532, mode: null });
+    const f06 = txs.find((t) => t.station === "F06a")!;
+    expect(f06).toMatchObject({ khz: 17_529.875, mode: "usb", data: true, listedKhz: 17_532 });
+    expect(f06.summary).toContain("17532kHz");
     expect(txs).toHaveLength(10);
+  });
+
+  // Value: protects=R15's fallback beside the rules it must not swallow (owner, #148): an unknown mode ("MFSK") tunes USB at exactly the listed kHz, unmarked; RTTY next to it still tunes 2.125 kHz below, marked data; and a known mode spelled oddly by the feed (lowercase "lsb", "cw", whose fallback would wrongly be USB) stays on the known path; fails_when=the fallback drops the slot, shifts it like RTTY, catches RTTY, or a formatting quirk sends a known mode down the unknown path; why_new=plan audit: R15's unknown-mode rule had no test; seam=none; no_claim=what such a mode sounds like
+  it("tunes an unknown mode as USB at the listed kHz without touching RTTY or oddly spelled known modes", () => {
+    const at = (summary: string, iso: string) => ({ summary, start: { dateTime: iso } });
+    const txs = parsePriyomEvents({
+      items: [
+        at("E11 12345kHz MFSK", "2026-11-26T10:00:00Z"),
+        at("F06 17532kHz RTTY", "2026-11-26T10:10:00Z"),
+        at("E07 14789kHz lsb", "2026-11-26T10:20:00Z"),
+        at("M12 12135kHz cw", "2026-11-26T10:30:00Z"),
+      ],
+    });
+    expect(txs.map(({ station, khz, mode, data }) => ({ station, khz, mode, data }))).toEqual([
+      { station: "E11", khz: 12_345, mode: "usb", data: undefined },
+      { station: "F06", khz: 17_529.875, mode: "usb", data: true },
+      { station: "E07", khz: 14_789, mode: "lsb", data: undefined },
+      { station: "M12", khz: 12_135, mode: "cw", data: undefined },
+    ]);
   });
 
   // Value: protects=a response that isn't the calendar's shape throws (so the server keeps its last good copy) while single unreadable events are skipped; fails_when=an error page parses as an empty schedule and wipes "up next", or one bad event fails the whole week; why_new=new feed (#98); seam=none; no_claim=none

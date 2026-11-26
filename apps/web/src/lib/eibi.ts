@@ -27,6 +27,15 @@ export type Broadcast = {
   /** Dates it runs between, "DDMM" each, when the file gives them. */
   from?: string;
   to?: string;
+  /**
+   * Never in EiBi's own rows. A row on-air.ts builds can be bounded to moments
+   * (Unix ms, half-open): a Priyom slot to its ten minutes, a fallback row to the
+   * times Priyom's copy doesn't cover (#148).
+   */
+  validFromMs?: number;
+  validToMs?: number;
+  /** A season-schedule row standing in while Priyom's schedule can't be had (#148): shown marked, never asked about. */
+  unconfirmed?: true;
 };
 
 /**
@@ -189,6 +198,7 @@ function inDates(from: string | undefined, to: string | undefined, day: Date): b
 
 /** Whether a broadcast is scheduled at this moment. */
 export function onAirAt(b: Broadcast, ms: number): boolean {
+  if ((b.validFromMs !== undefined && ms < b.validFromMs) || (b.validToMs !== undefined && ms >= b.validToMs)) return false;
   const now = new Date(ms);
   const minute = now.getUTCHours() * 60 + now.getUTCMinutes();
   let startDay = now;
@@ -229,7 +239,7 @@ export function onAirBetween<B extends Broadcast>(
 }
 
 /** Broadcasts on one frequency. */
-export type Channel = { khz: number; broadcasts: Broadcast[] };
+export type Channel<B extends Broadcast = Broadcast> = { khz: number; broadcasts: B[] };
 
 /** Whether a broadcast is aimed at a broad region. */
 const aimedAt = (b: Broadcast, region: BroadRegion) => regionsOf(b.target).includes(region);
@@ -241,14 +251,14 @@ const aimedAt = (b: Broadcast, region: BroadRegion) => regionsOf(b.target).inclu
  * with a `region`, the row kept is one aimed there if any is (#115), so a
  * station with a site aimed elsewhere listed first still ranks as aimed.
  */
-export function scheduledBetween(
-  schedule: readonly Broadcast[],
+export function scheduledBetween<B extends Broadcast>(
+  schedule: readonly B[],
   loKhz: number,
   hiKhz: number,
   ms: number,
   region?: BroadRegion,
-): Channel[] {
-  const out: Channel[] = [];
+): Channel<B>[] {
+  const out: Channel<B>[] = [];
   for (const b of onAirBetween(schedule, loKhz, hiKhz, ms)) {
     let channel = out.at(-1);
     if (channel?.khz !== b.khz) out.push((channel = { khz: b.khz, broadcasts: [] }));
@@ -272,7 +282,7 @@ export const MATCH_KHZ = 0.5;
  * nearest first); within one, ties and every broadcast when no region is
  * known keep their order.
  */
-export function rankBroadcasts(broadcasts: readonly Broadcast[], region?: BroadRegion): Broadcast[] {
+export function rankBroadcasts<B extends Broadcast>(broadcasts: readonly B[], region?: BroadRegion): B[] {
   if (!region) return [...broadcasts];
   const firstAt = new Map<number, number>();
   broadcasts.forEach((b, i) => firstAt.has(b.khz) || firstAt.set(b.khz, i));
@@ -285,10 +295,10 @@ export function rankBroadcasts(broadcasts: readonly Broadcast[], region?: BroadR
 
 /**
  * What's scheduled on a frequency now, nearest listing first, each station in
- * EiBi's order (with `region`, a row aimed there kept for it; see
+ * the schedule's order (with `region`, a row aimed there kept for it; see
  * scheduledBetween). `scheduledOn` ranks this; `eibiTransmitter` needs both.
  */
-export function listedOn(schedule: readonly Broadcast[], khz: number, ms: number, region?: BroadRegion): Broadcast[] {
+export function listedOn<B extends Broadcast>(schedule: readonly B[], khz: number, ms: number, region?: BroadRegion): B[] {
   return scheduledBetween(schedule, khz - MATCH_KHZ, khz + MATCH_KHZ, ms, region)
     .sort((a, b) => Math.abs(a.khz - khz) - Math.abs(b.khz - khz))
     .flatMap((c) => c.broadcasts);
@@ -298,7 +308,7 @@ export function listedOn(schedule: readonly Broadcast[], khz: number, ms: number
  * What's scheduled on a frequency now, nearest listing first; on one listing,
  * those aimed at `region` (where the audio comes from) first.
  */
-export function scheduledOn(schedule: readonly Broadcast[], khz: number, ms: number, region?: BroadRegion): Broadcast[] {
+export function scheduledOn<B extends Broadcast>(schedule: readonly B[], khz: number, ms: number, region?: BroadRegion): B[] {
   return rankBroadcasts(listedOn(schedule, khz, ms, region), region);
 }
 
@@ -319,11 +329,16 @@ export function languageNames(codes: string): string {
     .join(", ");
 }
 
-/** One broadcast as "KBS World Radio · English". */
+/** The mark on a season-schedule row standing in for Priyom's (#148). */
+export const UNCONFIRMED = "season schedule, not confirmed";
+
+/** One broadcast as "KBS World Radio · English", marked when it stands in for Priyom's. */
 export function describe(b: Broadcast): string {
   const lang = languageNames(b.lang);
-  return lang ? `${b.station} · ${lang}` : b.station;
+  const text = lang ? `${b.station} · ${lang}` : b.station;
+  return b.unconfirmed ? `${text} (${UNCONFIRMED})` : text;
 }
+
 
 /**
  * A label short enough to sit over a waterfall: the first station's name and
@@ -333,7 +348,10 @@ export function describe(b: Broadcast): string {
 export function shortLabel(broadcasts: readonly Broadcast[]): string | null {
   const first = broadcasts[0];
   if (!first) return null;
-  return broadcasts.length > 1 ? `${first.station} +${broadcasts.length - 1}` : first.station;
+  // A row standing in for Priyom's: "E11 (unconfirmed)", the readout's mark shortened
+  // for the waterfall, where there's no tooltip to explain a symbol (owner, #148).
+  const name = first.unconfirmed ? `${first.station} (unconfirmed)` : first.station;
+  return broadcasts.length > 1 ? `${name} +${broadcasts.length - 1}` : name;
 }
 
 /** What's scheduled on a frequency, as a line of text and, for a tooltip, every broadcast. */

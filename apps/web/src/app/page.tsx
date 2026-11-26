@@ -19,9 +19,9 @@ import { focusGhostNetStrip, GhostNetStrip, type GhostPick } from "@/components/
 import { focusSignalStations, SignalStations } from "@/components/SignalStations";
 import { onKhz } from "@/lib/signal-panel";
 import { rankForSignal } from "@/lib/signal-rank";
-import { activeChannelAt, findStation, onAirAt, type SignalChannel, type SignalStation } from "@/lib/signal-stations";
-import { onAirTx, type PriyomTx } from "@/lib/priyom-schedule";
-import { usePriyomSchedule } from "@/lib/use-priyom-schedule";
+import { activeChannelAt, findStation, type SignalChannel, type SignalStation } from "@/lib/signal-stations";
+import { usePriyomCopy, usePriyomSchedule } from "@/lib/use-priyom-schedule";
+import { onAirSchedule, stationNamed, type OnAirRow } from "@/lib/on-air";
 import { useSignalLastHeard } from "@/lib/use-signal-last-heard";
 import { type Fold, loadFolded, saveFolded, type SectionId } from "@/lib/section-folds";
 import { eventEnd, eventStart, EVENTS, isTuned, onSlotFrequency, rankForRegion, WEEK_MS, type Occurrence, type Slot } from "@/lib/ghostnet";
@@ -39,7 +39,7 @@ import { TuningBar } from "@/components/TuningBar";
 import { UtcClock } from "@/components/UtcClock";
 import { prefersReducedMotion } from "@/lib/reduced-motion";
 import { ReceptionPrompt } from "@/components/ReceptionPrompt";
-import { rankBroadcasts, scheduledBetween, scheduledOn, shortLabel, stationLine } from "@/lib/eibi";
+import { listedOn, rankBroadcasts, scheduledBetween, scheduledOn, shortLabel, stationLine } from "@/lib/eibi";
 import { type BroadRegion, broadRegionAt } from "@/lib/eibi-targets";
 import { covers, findReceiver, placeName, rankReceivers, receiverKey, type Receiver } from "@/lib/kiwi-list";
 import {
@@ -76,15 +76,6 @@ import { bandAt, DEFAULT_SPAN, nextView, spanKhz, type SpanStep, type WideView }
 
 /** The frequencies that count as on a signal station: `khz` (what's tuned) and its catalog channels. */
 const stationKhzs = (station: SignalStation, khz: number) => [...new Set([khz, ...station.channels.map((c) => c.khz)])];
-
-/**
- * Whether `station` has something on the air at `ms` (Priyom's slots for a numbers
- * station), so header Listen on a picked station never ranks a run into silence.
- */
-function stationOnAir(station: SignalStation, ms: number, priyom: readonly PriyomTx[] | null): boolean {
-  if (station.priyom) return priyom !== null && onAirTx(priyom, station.priyom, ms) !== null;
-  return onAirAt(station, ms);
-}
 
 // The last receiver that played, however it was reached. It seeds Back on the
 // next visit; it no longer picks the receiver (Auto does, unless one is pinned).
@@ -761,6 +752,8 @@ export default function ListenPage() {
   }, [scrollToSignals]);
   // Priyom's numbers-station schedule for the panel; null while the server has none.
   const priyom = usePriyomSchedule();
+  // The same with when it was fetched, for the merged schedule (#148): undefined while loading.
+  const priyomCopy = usePriyomCopy();
   const signalHeard = useSignalLastHeard();
   // Asking skywave to choose (Pick best, blank Listen, the error link, the
   // better-receiver offer) is Auto, so a run that starts ends any pin. It's a
@@ -1355,7 +1348,23 @@ export default function ListenPage() {
   // Station names from the EiBi schedule, by the minute: nothing until the page
   // has the schedule and its own clock (the server's time isn't the viewer's).
   const scheduleQuery = useSchedule();
-  const schedule = scheduleQuery.data?.broadcasts;
+  const eibiSchedule = scheduleQuery.data?.broadcasts;
+  // The one schedule every "what's on" reads (#148): EiBi, Priyom and the catalog merged
+  // (on-air.ts), so the readout, waterfall, Strong signals, Find a station and the
+  // prompt never disagree with each other or with the Signal stations panel.
+  const schedule = useMemo(
+    () => (eibiSchedule ? onAirSchedule(eibiSchedule, priyomCopy) : undefined),
+    [eibiSchedule, priyomCopy],
+  );
+  const searchSchedule = useMemo(
+    () => (scheduleQuery.data && schedule ? { ...scheduleQuery.data, broadcasts: schedule } : undefined),
+    [scheduleQuery.data, schedule],
+  );
+  // What an EiBi question may name (#148 D12, D9): EiBi's rows less the Priyom stations',
+  // whose answers the server refuses. Catalog stations sharing a frequency keep EiBi's
+  // names there, the ones the server checks.
+  const askableEibi = useMemo(() => eibiSchedule?.filter((b) => !stationNamed(b.station)?.priyom), [eibiSchedule]);
+  // The server-corrected minute (D14), the one clock everything "on now" reads.
   const clock = sun?.at ?? null;
   // Where the audio comes from, for which of a shared frequency's stations leads (#115):
   // while a receiver plays, its listed position only (none if the list doesn't say, or
@@ -1373,6 +1382,13 @@ export default function ListenPage() {
     (khz: number) => (schedule && clock !== null ? stationLine(scheduledOn(schedule, khz, clock, audioRegion)) : null),
     [schedule, clock, audioRegion],
   );
+  // The mode the station the readout names there is tuned in, when its source says
+  // (Priyom, the catalog: a numbers station in USB, #148), for Strong signals' clicks;
+  // else the click's AM.
+  const modeAt = useCallback(
+    (khz: number) => (schedule && clock !== null ? scheduledOn(schedule, khz, clock, audioRegion)[0]?.mode : undefined),
+    [schedule, clock, audioRegion],
+  );
   const wideStations = useMemo(() => {
     if (!schedule || clock === null || !wideView) return [];
     // Twice the view's width: a receiver can show a view off-centre, near the edge of what it covers.
@@ -1385,17 +1401,29 @@ export default function ListenPage() {
 
   // "Did you hear it?" after a minute on a scheduled station (issue #60), only
   // on a listed receiver: the server keeps no report about one typed in.
-  // The signal station a Listen picked, while it's on the air on the dial's
-  // frequency (#101): what its question would be about. Worked out when the pick,
-  // the dial or Priyom's schedule changes; the prompt waits out the dwell itself.
+  // The signal station a question would be about (#101, #148): the one a Listen
+  // picked, while it's on the air on the dial's frequency; or, tuned by hand, the
+  // one catalog station on the dial (D3), when it's the only station there (D12)
+  // and not a season row standing in for Priyom's (D5). Worked out again each
+  // minute, so a slot starting while the dial waits on it is asked about; the
+  // prompt waits out the dwell itself.
   const signalQuestion = useMemo(() => {
-    const station = signalPick?.listened ? findStation(signalPick.slug) : undefined;
-    return station ? signalAsk(station, freqKhz, priyom, serverNow()) : null;
-  }, [signalPick, freqKhz, priyom]);
+    // Re-run each corrected minute (`clock`); before the first, nothing is asked.
+    if (clock === null) return null;
+    const now = serverNow();
+    const picked = signalPick?.listened ? findStation(signalPick.slug) : undefined;
+    if (picked) return signalAsk(picked, freqKhz, priyom, now);
+    const onDial = schedule ? listedOn(schedule, freqKhz, now) : [];
+    const stations = new Set(onDial.map((r) => r.slug ?? `eibi:${r.station}`));
+    const only: OnAirRow | undefined = onDial[0];
+    if (stations.size !== 1 || !only?.slug || only.unconfirmed || only.source === "eibi") return null;
+    const station = findStation(only.slug);
+    return station ? signalAsk(station, freqKhz, priyom, now) : null;
+  }, [signalPick, freqKhz, priyom, schedule, clock]);
   const reception = useReceptionPrompt(
     status,
     radio.heardAudio,
-    schedule,
+    askableEibi,
     playingListed !== undefined,
     beaconPick,
     receiverRegion,
@@ -1593,10 +1621,11 @@ export default function ListenPage() {
             // reason is in the status row; from the tuning bar, far down the page,
             // bring that row into view (D16), now or when the receiver refuses.
             else if (!draft.host.trim()) {
-              // A station a shared link named (#100), with the dial still on it: rank by its path.
+              // A station a shared link named (#100), on the air on the dial's frequency now
+              // (#148 D16: an old link's frequency may not be the one it's on): rank by its path.
               const linked = signalPick && findStation(signalPick.slug);
               const started =
-                linked?.tx && stationOnAir(linked, serverNow(), priyom)
+                linked?.tx && signalAsk(linked, latest.current.freqKhz, priyom, serverNow()) !== null
                 ? listenToSignal(linked, { khz: latest.current.freqKhz, mode: latest.current.mode })
                 : startPickBest("listen");
               if (started) barListen.current = fromBar ? acted.current : null;
@@ -1976,7 +2005,7 @@ export default function ListenPage() {
 
       <StationSearch
         fold={foldOf("station-search")}
-        schedule={scheduleQuery.data}
+        schedule={searchSchedule}
         loadFailed={scheduleQuery.isError}
         onRetry={() => void scheduleQuery.refetch()}
         clock={clock}
@@ -2021,7 +2050,7 @@ export default function ListenPage() {
         freqKhz={freqKhz}
         scanDelayMs={pickBest.settled ? AUTO_SCAN_MS : WATCH_MS + AUTO_SCAN_MS}
         checking={!pickBest.settled}
-        onTune={(khz) => changeFreq(khz, "am")}
+        onTune={(khz) => changeFreq(khz, modeAt(khz) ?? "am")}
         onScanAgain={() => startScan(true)}
         stationAt={stationAt}
       />

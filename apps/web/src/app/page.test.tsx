@@ -157,7 +157,21 @@ vi.mock("@/lib/use-beacon-status", () => ({
 const submitReport = vi.fn();
 // Priyom's numbers-station schedule (#100): none from the server unless a test sets it.
 const priyomSchedule: { current: import("@/lib/priyom-schedule").PriyomTx[] | null } = { current: null };
-vi.mock("@/lib/use-priyom-schedule", () => ({ usePriyomSchedule: () => priyomSchedule.current }));
+// The merged schedule's copy (#148): the same transmissions, fetched just now (or at
+// `priyomCopyState.fetchedAt`), one object per list; "loading" stands for the first answer
+// still on its way.
+const priyomCopyState: { loading: boolean; fetchedAt?: number } = { loading: false };
+const priyomCopies = new WeakMap<object, { transmissions: import("@/lib/priyom-schedule").PriyomTx[]; fetchedAt: number }>();
+vi.mock("@/lib/use-priyom-schedule", () => ({
+  usePriyomSchedule: () => priyomSchedule.current,
+  usePriyomCopy: () => {
+    if (priyomCopyState.loading) return undefined;
+    const txs = priyomSchedule.current;
+    if (txs === null) return null;
+    if (!priyomCopies.has(txs)) priyomCopies.set(txs, { transmissions: txs, fetchedAt: priyomCopyState.fetchedAt ?? Date.now() });
+    return priyomCopies.get(txs);
+  },
+}));
 // No listener reports (#102) unless a test sets them: the panel shows no "heard" badges.
 const signalHeard: { current: Record<string, import("@/lib/signal-heard").LastHeard> | null } = { current: null };
 vi.mock("@/lib/use-signal-last-heard", () => ({ useSignalLastHeard: () => signalHeard.current }));
@@ -687,6 +701,48 @@ describe("ListenPage", () => {
     } finally {
       priyomSchedule.current = null;
       vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=header Listen on an old link (E11 on 5371) while Priyom has E11 on the air elsewhere (4909) is plain Pick best, never a signal run ranked for the link's dead frequency (#148 D16); fails_when=the check goes back to "on the air anywhere"; why_new=D16 (Codex C4, pre-existing since #100); seam=usePriyomSchedule mocked, Date pinned; no_claim=the ranking itself
+  it("runs plain Pick best for a link whose station is on the air on another frequency", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(MIDDAY_OVER_EUROPE);
+    const sydney = { ...listed, snr: 50, lat: -33.9, lon: 151.2 };
+    const berlin = { ...backup, snr: 5, lat: 52.5, lon: 13.4 };
+    receiverList.data = { receivers: [sydney, berlin] };
+    priyomSchedule.current = [{ station: "E11", startMs: Date.now() - 60_000, khz: 4_909, mode: "usb", summary: "E11 4909kHz USB" }];
+    window.history.replaceState(null, "", "/?f=5371&m=usb&sig=e11");
+    try {
+      render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+      // Pick best by signal strength (Sydney), not by E11's path (Berlin).
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "sdr.k1vl.com", freqKhz: 5_371 }));
+    } finally {
+      priyomSchedule.current = null;
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=the F06 data slot's panel row reads "17532 kHz RTTY · dial 17529.875 USB" in two wrappable pieces, and its Listen tunes Priyom's RTTY slot on its USB dial (2.125 kHz below the listed 17,532) and leaves the RTTY decoder off, since F06's baud and shift needn't match the decoder's (#148 R15, owner: the decoder never auto-enables for these rows); fails_when=signal Listen starts calling setDecode for data rows the way GhostNet's RTTY slot does, or tunes the listed frequency; why_new=/ship coverage audit of #148: the rule was verified only by reading; seam=useRadio, the list hook and usePriyomSchedule mocked; no_claim=what the slot sounds like on the air (TODOS live-slot check)
+  it("tunes an F06 slot's USB dial from the panel without turning the decoder on", () => {
+    receiverList.data = { receivers: [listed, backup] };
+    radio.canDecode = true;
+    priyomSchedule.current = [
+      { station: "F06", designator: "F06a", startMs: Date.now() - 60_000, khz: 17_529.875, mode: "usb", data: true, listedKhz: 17_532, summary: "F06a 17532kHz RTTY" },
+    ];
+    try {
+      render(<ListenPage />);
+      // Its row shows Priyom's frequency, then the dial, in two pieces a phone cell may wrap between (owner, #148).
+      const cell = document.querySelector('tr[data-slug="f06"] .sched-freq')!;
+      expect(cell.textContent).toBe("17532 kHz RTTY · dial 17529.875 USB");
+      expect(cell.classList.contains("sched-freq-split")).toBe(true);
+      expect([...cell.querySelectorAll(".sched-freq-parts > span")].map((e) => e.textContent)).toEqual(["17532 kHz RTTY", "· dial 17529.875 USB"]);
+      act(() => fireEvent.click(screen.getByRole("button", { name: /^Listen to F06 on/ })));
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 17_529.875, mode: "usb" }));
+      expect(radio.setDecode).not.toHaveBeenCalled();
+    } finally {
+      priyomSchedule.current = null;
     }
   });
 
@@ -2265,16 +2321,21 @@ describe("ListenPage", () => {
       expect(radio.tune).not.toHaveBeenCalled();
     });
 
-    // Value: protects=a signal station is asked about only after a Listen on it (#101, the beacon prompt rule): a station named by a shared link, with audio already playing, gets no question; the Listen that follows does, after the dwell plus the stream's lag, and the answer names the station by slug with its channel; fails_when=page.tsx passes the link's pick to the prompt, or never passes the Listen's; why_new=issue #101; seam=useRadio, the list hook and useSubmitReport mocked, fake timers; no_claim=the dwell rules (use-reception-prompt.test)
-    it("asks about a signal station after its Listen, not after a link naming it", () => {
+    // Value: protects=a catalog station alone on the dial is asked about as itself whether a link or a Listen got it there (#148 D3, replacing #101's Listen-only rule), after the dwell plus the stream's lag, by slug with its channel; only the Listen's answer carries pick context; fails_when=page.tsx stops passing the hand-tuned station, or a link's answer claims a pick; why_new=#148 D3; seam=useRadio, the list hook and useSubmitReport mocked, fake timers; no_claim=the dwell rules (use-reception-prompt.test)
+    it("asks about a signal station tuned by a link, and after its Listen with the pick", () => {
       receiverList.data = { receivers: [listed, backup] };
-      // A link naming UVB-76 with audio already playing there: no Listen, so no question.
+      // A link naming UVB-76 with audio already playing there: no Listen, but UVB-76 is the one
+      // station on the dial, so it's asked about as itself after the dwell, with no pick (#148 D3).
       window.history.replaceState(null, "", "/?f=4625&m=usb&sig=uvb-76");
       radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 4_625, mode: "usb" };
       radio.heardAudio = true;
       const linked = render(<ListenPage />);
-      act(() => vi.advanceTimersByTime(3 * 60_000));
+      act(() => vi.advanceTimersByTime(61_499));
       expect(line().textContent).toBe("");
+      act(() => vi.advanceTimersByTime(1));
+      expect(line().textContent).toMatch(/^Did you hear UVB-76 on the receiver .* on 4,625 kHz\?/);
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      expect(submitReport.mock.lastCall![0].tx).toEqual({ kind: "signal", name: "uvb-76", detail: "4625", label: "UVB-76" });
       linked.unmount();
 
       // The same link, then header Listen: Pick best on the station's path, and a question after the dwell.
@@ -2344,8 +2405,95 @@ describe("ListenPage", () => {
       expect(screen.getAllByText(new RegExp(`^${station} ·`)).length).toBeGreaterThan(0);
       fireEvent.click(screen.getByRole("button", { name: "Heard" }));
       const tx = submitReport.mock.lastCall![0].tx;
-      expect(tx).toMatchObject({ name: station, askRule: 1 });
+      expect(tx).toMatchObject({ name: station, askRule: 2 });
       expect(tx.askRegion).toBe(region);
+    });
+
+    // Value: protects=with Priyom unavailable a frequency E11 shares with a broadcaster asks today's EiBi question about the broadcaster only (D12, D9), while the readout shows E11 marked unconfirmed (D4), and a frequency with only E11's fallback row asks nothing (D5); fails_when=the prompt reads the merged list, names E11 by EiBi's name, or skips the broadcaster; why_new=#148 D5/D12 on the page; seam=useRadio, useSchedule, usePriyomSchedule and useSubmitReport mocked, fake timers; no_claim=the server's refusal (reports.test)
+    // Value: protects=D12's "more than one station" rule on a time-signal frequency: hand-tuned to 10,000 kHz, where WWV and WWVH share the dial with PPE, BPM and ItalCable, the question is today's EiBi one about the first-ranked station (more than 3 names), never a signal question about WWV; fails_when=the merged dial's catalog WWV row is taken as the only station, or EiBi's question stops naming the first listing; why_new=R10 named this case; seam=useRadio, useSchedule and useSubmitReport mocked, fake timers; no_claim=region ranking (eibi/reception tests)
+    it("asks today's EiBi question on a time-signal frequency several stations share", () => {
+      const daily = (station: string, target: string) => ({ khz: 10_000, start: 0, end: 1440, days: "", station, lang: "-TS", target });
+      schedule.data!.broadcasts = [
+        daily("PPE Observatorio Nac.", "B"),
+        daily("BPM Xian", "CHN"),
+        daily("WWVH Hawaii (f.ann.)", "USA"),
+        daily("ItalCable", "SEu"),
+        daily("WWV Colorado (m.ann.)", "USA"),
+      ];
+      receiverList.data = { receivers: [{ ...listed, lat: undefined, lon: undefined }, backup] };
+      listeningOn(10_000);
+      act(() => vi.advanceTimersByTime(62_000));
+      expect(line().textContent).toContain("Did you hear PPE Observatorio Nac. on the receiver");
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      expect(submitReport.mock.lastCall![0].tx).toMatchObject({ kind: "eibi", name: "PPE Observatorio Nac.", askRule: 2 });
+    });
+
+    // Value: protects=D3 on a frequency only one catalog station uses: hand-tuned to 20,000 kHz, where EiBi lists only WWV, the question is one signal question about wwv (with its hint), never EiBi's question about "WWV Colorado (m.ann.)"; fails_when=the hand-tuned signal path is lost and the EiBi question comes back, or WWV's catalog row isn't seen as the only station; why_new=R10 named this case; seam=useRadio, useSchedule and useSubmitReport mocked, fake timers; no_claim=that WWV is on the air
+    it("asks one signal question about WWV alone on 20 MHz", () => {
+      schedule.data!.broadcasts = [{ khz: 20_000, start: 0, end: 1440, days: "", station: "WWV Colorado (m.ann.)", lang: "-TS", target: "USA" }];
+      receiverList.data = { receivers: [listed, backup] };
+      listeningOn(20_000);
+      act(() => vi.advanceTimersByTime(62_000));
+      expect(line().textContent).toMatch(/^Did you hear WWV \(a man's voice\) on the receiver/);
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      expect(submitReport.mock.lastCall![0].tx).toEqual({ kind: "signal", name: "wwv", detail: "20000", label: "WWV (a man's voice)" });
+    });
+
+    // Value: protects=the prompt in Priyom's three page states (#148 D4, D3, D13): while the first answer loads, a frequency EiBi lists only for E11 asks nothing; with E11's slot live on 4,909 a hand-tuned listener gets one signal question carrying the slot's start; with a copy 9 days old, E11's EiBi row shows marked unconfirmed and asks nothing; fails_when=loading falls back to EiBi's name, the live slot asks the EiBi question or drops slotStartMs, or a stale copy asks about an unconfirmed row; why_new=review: untested state-matrix cells; seam=useRadio, useSchedule, the Priyom hooks and useSubmitReport mocked, fake timers; no_claim=the server's slot check (reports.test)
+    it.each([
+      ["loading", () => (priyomCopyState.loading = true)],
+      ["a copy 9 days old", () => ((priyomSchedule.current = []), (priyomCopyState.fetchedAt = Date.now() - 9 * 24 * 3_600_000))],
+    ])("asks nothing about E11's EiBi frequency while Priyom's schedule is %s", (state, set) => {
+      schedule.data!.broadcasts = [{ khz: 12_200, start: 0, end: 1440, days: "", station: "E11 Polish Spy Numbers", lang: "E", target: "" }];
+      receiverList.data = { receivers: [listed, backup] };
+      set();
+      try {
+        listeningOn(12_200);
+        if (state !== "loading") expect(screen.getAllByText(/^E11 · English \(season schedule, not confirmed\)/).length).toBeGreaterThan(0);
+        else expect(document.querySelector(".readout-station")).toBeNull();
+        act(() => vi.advanceTimersByTime(3 * 60_000));
+        expect(line().textContent).toBe("");
+      } finally {
+        priyomCopyState.loading = false;
+        priyomCopyState.fetchedAt = undefined;
+        priyomSchedule.current = null;
+      }
+    });
+
+    it("asks one signal question with the slot's start when E11 is live on the dial", () => {
+      schedule.data!.broadcasts = [{ khz: 5_371, start: 0, end: 1440, days: "", station: "E11 Polish Spy Numbers", lang: "E", target: "" }];
+      receiverList.data = { receivers: [listed, backup] };
+      const slotStartMs = Date.now() - 60_000;
+      priyomSchedule.current = [{ station: "E11", startMs: slotStartMs, khz: 4_909, mode: "usb", summary: "E11 4909kHz USB" }];
+      try {
+        listeningOn(4_909);
+        act(() => vi.advanceTimersByTime(62_000));
+        expect(line().textContent).toMatch(/^Did you hear E11 on the receiver .* on 4,909 kHz\?/);
+        fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+        expect(submitReport.mock.lastCall![0].tx).toMatchObject({ kind: "signal", name: "e11", detail: "4909", slotStartMs });
+      } finally {
+        priyomSchedule.current = null;
+      }
+    });
+
+    it("asks about the broadcaster, not E11's unconfirmed row, when Priyom is unavailable", () => {
+      schedule.data!.broadcasts = [
+        { khz: 11_100, start: 0, end: 1440, days: "", station: "E11 Polish Spy Numbers", lang: "E", target: "" },
+        { khz: 11_100, start: 0, end: 1440, days: "", station: "Sound of Hope", lang: "M", target: "CHN" },
+        { khz: 12_200, start: 0, end: 1440, days: "", station: "E11 Polish Spy Numbers", lang: "E", target: "" },
+      ];
+      receiverList.data = { receivers: [listed, backup] };
+      listeningOn(11_100);
+      expect(screen.getAllByText(/^E11 · English \(season schedule, not confirmed\)/).length).toBeGreaterThan(0);
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(line().textContent).toContain("Did you hear Sound of Hope on the receiver");
+      fireEvent.click(screen.getByRole("button", { name: "Heard" }));
+      expect(submitReport.mock.lastCall![0].tx).toMatchObject({ kind: "eibi", name: "Sound of Hope", askRule: 2 });
+      cleanup();
+      sessionStorage.clear();
+      listeningOn(12_200);
+      act(() => vi.advanceTimersByTime(3 * 60_000));
+      expect(line().textContent).toBe("");
     });
 
     // Value: protects=a drawer Pick best run's answer carries its own source, not "beacon" or none (#61); fails_when=the drawer call site passes the wrong source or answerReception drops the context; why_new=only beacon source was tested; seam=useRadio, picker and useSubmitReport mocked; no_claim=the server's checks (reports.test)
@@ -3178,6 +3326,46 @@ describe("ListenPage", () => {
       ]);
     });
 
+    // Value: protects=a Strong signals click tunes the mode of the station the row names: the AM broadcaster EiBi lists first on 11,100 even while a Priyom E11 slot (USB) shares the frequency, and a numbers slot alone on its frequency in its own USB (#148); fails_when=the click takes the first mode found among all rows there, or ignores Priyom's mode; why_new=bug review of #148; seam=useRadio, useSchedule, usePriyomSchedule mocked; no_claim=what the receiver actually hears
+    it("tunes a strong signal in the named station's mode", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_650, mode: "am" }));
+      radio.canView = true;
+      radio.canScan = true;
+      radio.scan = {
+        state: "done",
+        host: listed.host,
+        port: listed.port,
+        signals: [
+          { freqKhz: 11_100, snrDb: 31, band: "25m" },
+          { freqKhz: 20_167, snrDb: 25, band: "15m" },
+        ],
+        hidden: 0,
+        bandsDone: 1,
+        bandsTotal: 1,
+        partial: false,
+      };
+      priyomSchedule.current = [
+        { station: "E11", startMs: Date.now() - 60_000, khz: 11_100, mode: "usb", summary: "E11 11100kHz USB" },
+        { station: "E11", startMs: Date.now() - 60_000, khz: 20_167, mode: "usb", summary: "E11 20167kHz USB" },
+      ];
+      try {
+        const view = render(<ListenPage />);
+        schedule.data = {
+          season: "b26",
+          bundled: false,
+          broadcasts: [{ khz: 11_100, start: 0, end: 1440, days: "", station: "Sound of Hope", lang: "M", target: "CHN" }],
+        };
+        playing(view);
+        const modeChecked = (m: string) => (screen.getByRole("radio", { name: m }) as HTMLInputElement).checked;
+        fireEvent.click(screen.getByRole("button", { name: /11,100\s*25m/ }));
+        expect(modeChecked("AM")).toBe(true);
+        fireEvent.click(screen.getByRole("button", { name: /20,167\s*15m/ }));
+        expect(modeChecked("USB")).toBe(true);
+      } finally {
+        priyomSchedule.current = null;
+      }
+    });
+
     // Value: protects=when the schedule query fails, Find a station says so and its Try again refetches the page's schedule query; fails_when=the page passes another flag as loadFailed (a failed load reads "Loading" forever) or wires Try again to nothing or the wrong query; why_new=StationSearch's own test passes these props by hand, so the page's wiring of isError and refetch was untested (/ship coverage audit); seam=useSchedule mocked; no_claim=react-query's error and retry behaviour
     it("lets Find a station retry a failed schedule load", () => {
       const refetch = vi.fn();
@@ -3240,6 +3428,29 @@ describe("ListenPage", () => {
       fireEvent.click(screen.getByRole("button", { name: /^8,957 kHz USB/ }));
       fireEvent.click(screen.getByRole("button", { name: "Pick best for 8,957 kHz" }));
       expect(screen.getByText("The receiver list is still loading. Press Pick best for 8,957 kHz again in a moment.")).toBeTruthy();
+    });
+
+    // Value: protects=Find a station on the real page searches the merged schedule (#148): "E11" finds Priyom's slot on 4,909 kHz, not EiBi's season row on 5,371, and a click tunes the slot in Priyom's USB rather than the AM the 60 m band would guess; fails_when=page.tsx passes the raw EiBi query data to StationSearch again, or StationSearch's tune ignores the row's mode; why_new=/ship coverage audit of #148: on-air.test checks findBroadcasts over the merge, not the page's wiring or the click's mode; seam=useRadio, useSchedule and usePriyomSchedule mocked; no_claim=the search rules (station-search, on-air tests)
+    it("finds a numbers station in Find a station at Priyom's slot, in its mode", () => {
+      localStorage.setItem("skywave.tuning", JSON.stringify({ freqKhz: 9_650, mode: "am" }));
+      schedule.data = {
+        season: "b26",
+        bundled: false,
+        broadcasts: [{ khz: 5_371, start: 0, end: 1440, days: "", station: "E11 Polish Spy Numbers", lang: "E", target: "" }],
+        targetNames: {},
+      };
+      priyomSchedule.current = [{ station: "E11", startMs: Date.now() - 60_000, khz: 4_909, mode: "usb", summary: "E11 4909kHz USB" }];
+      try {
+        const view = render(<ListenPage />);
+        playing(view);
+        fireEvent.change(screen.getByLabelText("Station name"), { target: { value: "E11" } });
+        expect(screen.queryByRole("button", { name: /^5,371 kHz/ })).toBeNull();
+        fireEvent.click(screen.getByRole("button", { name: /^4,909 kHz USB/ }));
+        expect((screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement).value).toBe("4,909.00");
+        expect((screen.getByRole("radio", { name: "USB" }) as HTMLInputElement).checked).toBe(true);
+      } finally {
+        priyomSchedule.current = null;
+      }
     });
 
     // Value: protects=Pick best under a row of the on-now list (nothing typed), with no receiver list yet, tells the listener to press that Pick best button again, not Listen; fails_when=the page's "still loading" text handles "search" but not the new "browse" source and names Listen; why_new=#109/#110 eng D9 added "browse" to pageMessage.from; only the "search" wording was tested; seam=useRadio and useSchedule mocked, list hook mocked; no_claim=the browse list's rules (station-search tests)

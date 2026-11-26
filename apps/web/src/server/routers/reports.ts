@@ -20,7 +20,7 @@ import {
   TX_KINDS,
   TX_NAME_SEPARATOR,
 } from "@/lib/reception";
-import { onKhz } from "@/lib/signal-panel";
+import { stationNamed } from "@/lib/on-air";
 import { findStation } from "@/lib/signal-stations";
 import { publicProcedure, router } from "../trpc";
 import { getBeaconStatus, rbnDays } from "./beacons";
@@ -29,6 +29,16 @@ import { getPriyomSchedule } from "./signals";
 import { getSchedule, getSites } from "./stations";
 
 const MINUTE = 60_000;
+
+/**
+ * Whether any station in txName ("A", or "A / B / C") is one whose times come
+ * from Priyom (#148 D9): matched on each whole name, never a part of one. The
+ * page asks about those as signal stations; an EiBi answer naming one comes
+ * from a page older than #148 and is refused.
+ */
+export function namesPriyomStation(txName: string): boolean {
+  return txName.split(TX_NAME_SEPARATOR).some((n) => stationNamed(n)?.priyom !== undefined);
+}
 
 /**
  * Whether every station in txName ("A", or "A / B / C") was scheduled on this
@@ -121,19 +131,40 @@ export function signalChecks(
   priyom: readonly PriyomTx[] | null,
   ms: number,
 ): boolean {
+  return signalChannel(slug, freqKhz, slotStartMs, priyom, ms) !== null;
+}
+
+/**
+ * The channel a signal-station answer is about, as signalChecks vouches for it,
+ * or null when it can't vouch: the catalog channel nearest the dial (within
+ * MATCH_KHZ), or the Priyom slot's frequency. Stored as txDetail, so answers
+ * about one channel group together whatever the dial; freqKhz keeps the dial
+ * (owner, #148 review: D10 widened the match to half a kHz).
+ */
+export function signalChannel(
+  slug: string,
+  freqKhz: number,
+  slotStartMs: number | undefined,
+  priyom: readonly PriyomTx[] | null,
+  ms: number,
+): number | null {
   const station = findStation(slug);
-  if (!station) return false;
+  if (!station) return null;
   if (station.priyom) {
-    if (slotStartMs === undefined || !priyom) return false;
-    const slot = priyom.some(
-      (t) => t.station === station.priyom && t.startMs === slotStartMs && t.khz !== null && onKhz(freqKhz, t.khz),
+    if (slotStartMs === undefined || !priyom) return null;
+    const slot = priyom.find(
+      (t) => t.station === station.priyom && t.startMs === slotStartMs && t.khz !== null && Math.abs(freqKhz - t.khz) <= MATCH_KHZ,
     );
-    return (
-      slot && slotStartMs <= ms + MAX_CLOCK_SKEW_MS && slotStartMs + PRIYOM_ON_AIR_MS >= ms - LISTING_GRACE_MS
-    );
+    const onTime = slotStartMs <= ms + MAX_CLOCK_SKEW_MS && slotStartMs + PRIYOM_ON_AIR_MS >= ms - LISTING_GRACE_MS;
+    return slot && onTime ? slot.khz : null;
   }
-  for (let t = ms - LISTING_GRACE_MS; t <= ms; t += MINUTE) if (signalAsk(station, freqKhz, null, t)) return true;
-  return false;
+  for (let t = ms - LISTING_GRACE_MS; t <= ms; t += MINUTE)
+    if (signalAsk(station, freqKhz, null, t)) {
+      const s = station.schedule;
+      const khzs = s.kind === "dayNight" ? [s.dayKhz, s.nightKhz] : station.channels.map((c) => c.khz);
+      return khzs.reduce((best, k) => (Math.abs(freqKhz - k) < Math.abs(freqKhz - best) ? k : best));
+    }
+  return null;
 }
 
 /** The public list as the page is served it (opted-out owners left out), or null with none to check against. */
@@ -255,9 +286,9 @@ export const PICK_IN_SLOT_MS = SLOT_MS - BEACON_MIN_HEARD_MS - STREAM_LATENCY_MS
  * and from the button that can lead to this kind of question: the page asks
  * about a beacon only after beacon Listen chose the receiver (any other run
  * clears that choice first), and beacon Listen leads to no other question.
- * A signal-station question (#101) follows only a signal Listen; that Listen
- * can still lead to a station question, when the dial is moved back onto the
- * frequency by hand after the pick has ended.
+ * Any other pick can lead to a signal-station question (#101): since #148 (D3)
+ * a listener who reached a catalog station by search, a link or Pick best is
+ * asked about it too, and keeps the pick (D15).
  */
 export function pickChecks(
   pick: PickInput,
@@ -275,7 +306,6 @@ export function pickChecks(
     named &&
     pick.freqKhz === report.freqKhz &&
     (pick.pickSource === "beacon") === (report.txKind === "beacon") &&
-    (report.txKind !== "signal" || pick.pickSource === "signal") &&
     pickedAtMs <= ms + MAX_CLOCK_SKEW_MS &&
     pickedAtMs >= ms - MAX_PICK_AGE_MS &&
     // Beacon Listen picks the beacon on the air, so the slot asked about can be
@@ -363,16 +393,30 @@ export const reportsRouter = router({
     let listed: readonly ListedBroadcast[] | undefined;
     // The slot kept with the answer: a beacon's, or a numbers station's Priyom transmission.
     let slot: number | undefined;
+    let designator: string | undefined;
+    // A signal answer's channel as the server matched it (signalChannel): stored as txDetail.
+    let channel: number | null = null;
     if (input.txKind === "beacon") {
       if (slotStartMs === undefined || !beaconSlotChecks(input.txName, freqKhz, slotStartMs, now))
         return { accepted: false };
       slot = slotStartMs;
     } else if (input.txKind === "signal") {
-      const priyomStation = findStation(input.txName)?.priyom !== undefined;
+      const designated = findStation(input.txName)?.priyom;
+      const priyomStation = designated !== undefined;
       const priyom = priyomStation ? ((await getPriyomSchedule())?.transmissions ?? null) : null;
-      if (!signalChecks(input.txName, freqKhz, slotStartMs, priyom, now)) return { accepted: false };
-      if (priyomStation) slot = slotStartMs;
+      channel = signalChannel(input.txName, freqKhz, slotStartMs, priyom, now);
+      if (channel === null) return { accepted: false };
+      if (priyomStation) {
+        slot = slotStartMs;
+        // The designator Priyom listed the slot under, when it isn't the station's own
+        // (F06a for F06, #148), kept with the answer so the two could be told apart.
+        designator = priyom?.find(
+          (t) => t.startMs === slotStartMs && t.station === designated && t.khz !== null && Math.abs(freqKhz - t.khz) <= MATCH_KHZ,
+        )?.designator;
+      }
     } else {
+      // A station Priyom drives is asked about as itself, never by EiBi's season name (#148 D9).
+      if (namesPriyomStation(input.txName)) return { accepted: false };
       ({ listed } = await getSchedule());
       if (!scheduledRecently(listed, input.txName, freqKhz, now)) return { accepted: false };
     }
@@ -388,9 +432,9 @@ export const reportsRouter = router({
           receiverHost,
           receiverPort,
           freqKhz,
-          // Each kind counts only its own answers, so an answer about a signal station
-          // after a Listen doesn't block the EiBi question about that frequency later
-          // (the page asks it), nor the other way round. A beacon frequency carries a
+          // Each kind counts only its own answers, so a signal answer doesn't block the
+          // EiBi question on a frequency the station shares (WWV with BPM on 10 MHz,
+          // #148 D12), nor the other way round. A beacon frequency carries a
           // new beacon every 10 s: each callsign is its own channel. Signal stations
           // share frequencies too (WWV and WWVH): each is its own.
           txKind: input.txKind,
@@ -426,8 +470,10 @@ export const reportsRouter = router({
     await ctx.db.receptionReport.create({
       data: {
         ...report,
-        // A signal station's detail is the channel the server checked, not the page's word.
-        ...(input.txKind === "signal" && { txDetail: String(freqKhz) }),
+        // A signal station's detail is the channel the server matched, not the page's word nor
+        // the dial (freqKhz keeps that), and the designator Priyom used when it isn't the
+        // station's own ("17529.875 F06a").
+        ...(input.txKind === "signal" && channel !== null && { txDetail: designator ? `${channel} ${designator}` : String(channel) }),
         // The slot is kept for beacons and Priyom's numbers stations only.
         ...(slot !== undefined && { slotStartMs: BigInt(slot) }),
         ...(official && { beaconStatus: official.off ? "OFF" : "OK" }),

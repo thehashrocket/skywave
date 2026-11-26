@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import type { PriyomCopy } from "@/lib/on-air";
 import type { PriyomTx } from "@/lib/priyom-schedule";
 import { useTRPC } from "@/lib/trpc";
 
@@ -24,14 +25,30 @@ export function usePriyomSchedule(): readonly PriyomTx[] | null {
  * load; null still means the server has none.
  */
 export function usePriyomScheduleState(): readonly PriyomTx[] | null | undefined {
+  const { data, isError } = usePriyomQuery();
+  return scheduleState(data, isError);
+}
+
+/**
+ * The copy with when the server fetched it, for the merged schedule (#148,
+ * on-air.ts), which needs the span it covers: undefined while the first answer
+ * is on its way (D4: nothing shown), null when there's none or the request
+ * failed. Shares the one query with the hooks above.
+ */
+export function usePriyomCopy(): PriyomCopy {
+  const { data, isError } = usePriyomQuery();
+  if (data === undefined) return isError ? null : undefined;
+  return data;
+}
+
+function usePriyomQuery() {
   const trpc = useTRPC();
-  const { data, isError } = useQuery({
+  return useQuery({
     ...trpc.signals.priyom.queryOptions(),
     staleTime: HOUR,
     refetchOnWindowFocus: false,
     refetchInterval: (query) => (query.state.data ? HOUR : 15 * MINUTE),
   });
-  return scheduleState(data, isError);
 }
 
 /**

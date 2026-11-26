@@ -23,8 +23,26 @@ const TIMEOUT_MS = 10_000;
 // A day's slice is about 20 KB.
 const MAX_BYTES = 1_000_000;
 
-/** The catalog's Priyom designators: only their transmissions go to the page. */
-const CATALOG_IDS = new Set(SIGNAL_STATIONS.flatMap((s) => (s.priyom ? [s.priyom] : [])));
+/**
+ * The catalog's Priyom designators, each to the station's main one (F06a to F06,
+ * priyomAlso): only their transmissions go to the page, filed under the main one.
+ */
+const CATALOG_IDS = new Map(
+  SIGNAL_STATIONS.flatMap((s) => (s.priyom ? [s.priyom, ...(s.priyomAlso ?? [])].map((id) => [id, s.priyom!] as const) : [])),
+);
+
+/**
+ * The catalog stations' transmissions, each under its station's main designator;
+ * one Priyom listed under another designator keeps it (`designator`), so an
+ * answer about it can say which (owner, #148).
+ */
+export function catalogTransmissions(txs: readonly PriyomTx[]): PriyomTx[] {
+  return txs.flatMap((tx) => {
+    const main = CATALOG_IDS.get(tx.station);
+    if (main === undefined) return [];
+    return [main === tx.station ? tx : { ...tx, station: main, designator: tx.station }];
+  });
+}
 
 export type PriyomSchedule = { transmissions: PriyomTx[]; fetchedAt: number };
 
@@ -67,7 +85,7 @@ export function priyomScheduleSource({ fetchImpl = (...args) => fetch(...args), 
   async function refresh(): Promise<PriyomSchedule> {
     const t = now();
     const slices = await Promise.all(priyomSliceUrls(t).map(slice));
-    const transmissions = mergeSlices(slices).filter((tx) => CATALOG_IDS.has(tx.station));
+    const transmissions = catalogTransmissions(mergeSlices(slices));
     return { transmissions, fetchedAt: t };
   }
 
