@@ -10,17 +10,20 @@
  * 2026-11-25; each entry links its own, and the panel must credit Priyom.
  * Facts only: blurbs and notes are our own words. Nothing is fetched.
  *
- * Not yet checked against Priyom (do before #100 shows the panel):
- * - The Pip's and Squeaky Wheel's modes (USB, as UVB-76's; their pages don't say).
- * - Their day/night switch times: unpublished, so `dayNight` follows the sun at
- *   the transmitter (owner's choice) and can be wrong for a while around dawn and dusk.
- * - Squeaky Wheel's channels (Wikipedia's 5367/3363.5; VE3SUN's list has 3829.18/3830.45).
+ * Checked against Priyom 2026-11-25: The Pip's 5448/3756 and Squeaky Wheel's
+ * 5367/3363.5, both USB. VE3SUN's list has Squeaky Wheel on 3829.18/3830.45;
+ * no other source has that, so it isn't used.
+ * Still unchecked: day/night switch times. They're unpublished, so `dayNight`
+ * follows the sun at the transmitter (owner's choice) and can be wrong for a
+ * while around dawn and dusk.
  *
  * Left out of #98's seed list for now, each waiting on a source:
- * - CHU is listed as defunct: Wikipedia says its last broadcast was 2023-10-09
- *   (NRC's own page refused automated fetches). The issue listed it as live.
- * - UVB-76's night channel, Swedish Rhapsody (no end date found), and
- *   VE3SUN-only entries such as HD2IOA (waiting on his OK).
+ * - CHU is listed as defunct: NRC shut it down 2026-06-22 at 14:10 UTC (Wikipedia,
+ *   citing NRC; NRC's own page refuses automated fetches). The 2023-10-09 date once
+ *   here was CBC's NRC time signal, a different service.
+ * - UVB-76's night channel and Swedish Rhapsody (no end date found).
+ * - HD2IOA (Ecuador, 3810 kHz): no reception report newer than 2011 found, and
+ *   sources disagree on its schedule, so a Listen could land in dead air.
  * - Priyom's other active stations (M01, M14, M23, V13, V28, V32...): their pages aren't read yet.
  */
 
@@ -169,7 +172,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     schedule: { kind: "dayNight", dayKhz: 5_448, nightKhz: 3_756 },
     tx: { lat: 47.24, lon: 39.71, label: "near Rostov-on-Don, Russia", confidence: "approx" },
     blurb: "A fast, steady pip from a Russian military network, with the odd voice message between the pips.",
-    sources: ["https://en.wikipedia.org/wiki/The_Pip"],
+    sources: ["https://priyom.org/military-stations/russia/the-pip", "https://en.wikipedia.org/wiki/The_Pip"],
   },
   {
     slug: "squeaky-wheel",
@@ -180,7 +183,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     schedule: { kind: "dayNight", dayKhz: 5_367, nightKhz: 3_363.5 },
     tx: { lat: 47.24, lon: 39.71, label: "thought to be near Rostov-on-Don, Russia", confidence: "approx" },
     blurb: "The Pip's partner in the same network. Its squeak gave it the name; since 2023 it sends a low-tone pip instead.",
-    sources: ["https://en.wikipedia.org/wiki/The_Squeaky_Wheel"],
+    sources: ["https://priyom.org/military-stations/russia/the-squeaky-wheel", "https://en.wikipedia.org/wiki/The_Squeaky_Wheel"],
   },
   {
     slug: "e07",
@@ -263,8 +266,8 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     aka: [],
     category: "time",
     channels: [usb(3_330), usb(7_850), usb(14_670)],
-    schedule: { kind: "defunct", ended: "2023-10" },
-    blurb: "Canada's time signal from near Ottawa, with announcements in English and French. Its last broadcast was 9 October 2023.",
+    schedule: { kind: "defunct", ended: "2026-06" },
+    blurb: "Canada's time signal from near Ottawa, with announcements in English and French. Its last broadcast was 22 June 2026, after more than a century on the air.",
     sources: ["https://en.wikipedia.org/wiki/CHU_(radio_station)"],
   },
   {
