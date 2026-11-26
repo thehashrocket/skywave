@@ -1381,7 +1381,8 @@ html:has(.tuning-bar:not([hidden])) {
 }
 
 .status-back.link-button,
-.status-pick.link-button {
+.status-pick.link-button,
+.status-resume.link-button {
   padding: 0;
   /* Receiver names run long; a wrapped button label would center. */
   text-align: left;
