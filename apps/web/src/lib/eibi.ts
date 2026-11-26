@@ -247,7 +247,7 @@ const aimedAt = (b: Broadcast, region: BroadRegion) => regionsOf(b.target).inclu
 /**
  * What's scheduled between two frequencies now, one entry per listed
  * frequency, lowest first. The same station in the same language is listed
- * once (EiBi lists each transmitter site), where it first appears in the file;
+ * once (EiBi lists each transmitter site), where it first appears in `schedule`;
  * with a `region`, the row kept is one aimed there if any is (#115), so a
  * station with a site aimed elsewhere listed first still ranks as aimed.
  */
@@ -295,8 +295,9 @@ export function rankBroadcasts<B extends Broadcast>(broadcasts: readonly B[], re
 
 /**
  * What's scheduled on a frequency now, nearest listing first, each station in
- * the schedule's order (with `region`, a row aimed there kept for it; see
- * scheduledBetween). `scheduledOn` ranks this; `eibiTransmitter` needs both.
+ * the schedule's order: EiBi's file order, or in the merged list the catalog's
+ * and Priyom's rows first (on-air.ts, #152). With `region`, a row aimed there is
+ * kept for it (see scheduledBetween). `scheduledOn` ranks this; `eibiTransmitter` needs both.
  */
 export function listedOn<B extends Broadcast>(schedule: readonly B[], khz: number, ms: number, region?: BroadRegion): B[] {
   return scheduledBetween(schedule, khz - MATCH_KHZ, khz + MATCH_KHZ, ms, region)

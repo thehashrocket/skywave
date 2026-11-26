@@ -2,12 +2,18 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
-## [0.61.1.0] - 2026-11-26 ([#155](https://github.com/thehashrocket/skywave/issues/155), [#153](https://github.com/thehashrocket/skywave/issues/153))
+## [0.61.2.0] - 2026-11-26 ([#155](https://github.com/thehashrocket/skywave/issues/155), [#153](https://github.com/thehashrocket/skywave/issues/153))
 
 ### Fixed
 - **The daily load report now shows why receivers refuse and how busy each hour was.** In production the receiver log lives in a file on the data volume, and the report only looked in the container's own logs, so every day it said there were no receiver-log lines. It now reads that file and its rotated copies, plus any receiver lines the service wrote to its own logs, and counts the last 24 hours: refusals by reason and the most listeners seen each hour.
 - **A day cut short by a deploy says so.** Sessions per hour come from the container's logs, which a deploy that replaces the container wipes. The report now notes "since <time>; earlier hours were in the previous container" on those days. A crash restart that keeps the logs gets no note. When a heavy day has made Docker, or the receiver log's own size limit, drop lines from inside the 24 hours, the report says how far back that log reaches.
 - **One failed read no longer cuts the report short or passes for a quiet day.** If Docker can't read something (the container is restarting, say), that section says it couldn't read it and the rest of the report still prints. The receiver section only says "no receiver-log lines" when it actually read both places they can be, a missing receiver log file or one that rotates while it is being read counts as a failed read, and IPv6 sockets are counted alongside IPv4.
+
+## [0.61.1.0] - 2026-11-26 ([#152](https://github.com/thehashrocket/skywave/issues/152))
+
+### Changed
+- **A frequency several stations share names the Signal stations one first.** With nothing to decide between them, 10,000 kHz now reads "WWV · Time signal +4 more" instead of naming PPE, Brazil's time signal, with WWV hidden in the list. The same goes for a numbers station during a slot Priyom confirms: E11 is named first on 11,100 kHz, not the all-day jammer beside it. Where your receiver is, or the region Find a station is set to, still comes first, so in Europe 10 MHz names ItalCable and in Latin America PPE. The waterfall's labels follow the readout, and clicking a strong signal tunes the named station's mode, so 11,100 tunes USB while E11 is on. Rows standing in for Priyom's schedule ("season schedule, not confirmed") stay behind.
+- **"Did you hear it?" asks about the same station as before.** On a frequency several stations share, the question still names the station EiBi lists first, so on 10 MHz the readout can say WWV while the question asks about PPE.
 
 ## [0.61.0.0] - 2026-11-26 ([#144](https://github.com/thehashrocket/skywave/issues/144), [#146](https://github.com/thehashrocket/skywave/issues/146))
 
