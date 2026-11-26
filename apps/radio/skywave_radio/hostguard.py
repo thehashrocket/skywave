@@ -52,12 +52,13 @@ HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0
 
 def loggable_host(host: object) -> str:
     """`host` for the receiver log (#144) if it is a hostname or IP address,
-    lowercased; anything else (it came from the browser) is `<invalid>`."""
+    lowercased; anything else (it came from the browser) is `<invalid>`. An IPv6
+    zone (after `%`) is dropped: Python keeps any text there, newlines included."""
     if not isinstance(host, str):
         return "<invalid>"
     host = host.strip().rstrip(".").lower()
     try:
-        return str(ipaddress.ip_address(host))
+        return str(ipaddress.ip_address(host.partition("%")[0] if ":" in host else host))
     except ValueError:
         return host if HOSTNAME_RE.match(host) else "<invalid>"
 

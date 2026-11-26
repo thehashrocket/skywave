@@ -107,7 +107,7 @@ async def test_our_cap_is_its_own_code_for_pages_that_know_it(lines, extra, code
     await second.close()
 
 
-# Value: protects=a host from the browser reaches the log only as a checked hostname or IP address (#144 D5); fails_when=loggable_host passes free text, newlines or non-strings; why_new=new rule; seam=none; no_claim=none beyond protects
+# Value: protects=a host from the browser reaches the log only as a checked hostname or IP address (#144 D5); fails_when=loggable_host passes free text, newlines (an IPv6 zone included) or non-strings; why_new=new rule; zone rows from the final review (owner D1); seam=none; no_claim=none beyond protects
 @pytest.mark.parametrize(
     "host,shown",
     [
@@ -116,6 +116,9 @@ async def test_our_cap_is_its_own_code_for_pages_that_know_it(lines, extra, code
         ("2001:DB8::1", "2001:db8::1"),
         ("bad host!", "<invalid>"),
         ("kiwi.example\nevent=fake", "<invalid>"),
+        ("fe80::1%x\nevent=listening host=kiwi.example", "fe80::1"),  # an IPv6 zone keeps any text
+        ("fe80::1%eth0", "fe80::1"),
+        ("192.0.2.7%x", "<invalid>"),
         ("alice@example.com", "<invalid>"),
         (None, "<invalid>"),
         (8073, "<invalid>"),
