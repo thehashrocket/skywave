@@ -66,6 +66,8 @@ case "$1" in
       # The script the real container runs, with RECEIVER_LOG set as in production.
       "sh -c")
         [ -n "${FAKE_FAIL_FILE:-}" ] && { echo "Error: container is restarting" >&2; exit 1; }
+        # Stream the file, then die, as a restart in the middle of the read does.
+        [ -n "${FAKE_FAIL_FILE_MIDREAD:-}" ] && { cat "$FAKE_DIR/receivers.log"; exit 137; }
         if [ -n "${FAKE_RECEIVER_LOG:-}" ]; then RECEIVER_LOG="$FAKE_RECEIVER_LOG" sh -c "$5"
         elif [ -f "$FAKE_DIR/receivers.log" ]; then RECEIVER_LOG="$FAKE_DIR/receivers.log" sh -c "$5"
         else sh -c "$5"; fi ;;
@@ -231,6 +233,14 @@ def test_file_read_fails_still_counts_container_lines(tmp_path: Path):
     assert "(couldn't read the receiver log file; only the container's logs are counted)" in out
     assert "2  event=refused code=full" in out  # the two container-log lines, not the file's
     assert "event=listening" not in out  # file-only line
+
+
+# Value: protects=a receiver-file read cut short mid-stream counts none of its partial lines, matching the "only the container's logs are counted" note; fails_when=lines read before the failure are merged into the counts; why_new=the other failure tests fail before any line is read; seam=fake docker on PATH; no_claim=how docker exec reports a killed container
+def test_file_read_cut_short_counts_nothing_from_the_file(tmp_path: Path):
+    out = run_stats(tmp_path, LOGS, receivers=RECEIVERS, FAKE_FAIL_FILE_MIDREAD="1").stdout
+    assert "(couldn't read the receiver log file; only the container's logs are counted)" in out
+    assert "2  event=refused code=full" in out  # container-log lines only
+    assert "event=listening" not in out and "code=busy" not in out  # file lines dropped
 
 
 # Value: protects=IPv6 browser and Kiwi sockets are added to the open-socket counts; fails_when=the tcp6 read is dropped or its output isn't appended; why_new=every other test runs without tcp6; seam=fake docker on PATH; no_claim=the kernel's tcp6 columns beyond state and local port

@@ -107,7 +107,7 @@ main() {
   file_events=$(docker exec "$radio" sh -c \
       'f=${RECEIVER_LOG:-}; [ -z "$f" ] && exit 0; [ -r "$f" ] || exit 3
        cat "$f.4" "$f.3" "$f.2" "$f.1" "$f" 2>/dev/null; exit 0' \
-    | awk -v cutoff="$cutoff" "$to_events") || file_ok=0
+    | awk -v cutoff="$cutoff" "$to_events") || { file_ok=0; file_events=; } # a cut-short read counts nothing
   events=$(printf '%s\n%s\n' "$file_events" \
     "$(awk -v cutoff="$cutoff" "$to_events" <<<"$logs")" | grep -F ' event=' || true)
   echo
