@@ -3,10 +3,14 @@
 // The radio's sample rate (around 12 kHz) rarely matches the sound card, and
 // the two clocks drift. So we keep a ring buffer, resample with linear
 // interpolation, and nudge the playback rate by up to 2% to hold the buffer
-// near a target depth. On underrun we go quiet and re-prime.
+// near a target depth. On underrun we go quiet and re-prime. More than a
+// second behind, we jump to the newest audio instead.
 
 const TARGET_SECONDS = 0.3;
 const CAPACITY_SECONDS = 4;
+// A backlog that lands at once (a phone thawing a frozen tab, #137) would take
+// minutes to drain at +2%; past this, skip to the target depth.
+const MAX_BEHIND_SECONDS = 1;
 
 class RadioPlayer extends AudioWorkletProcessor {
   constructor() {
@@ -61,6 +65,12 @@ class RadioPlayer extends AudioWorkletProcessor {
         out.fill(0);
         return true;
       }
+    }
+
+    if (this.fill > this.inputRate * MAX_BEHIND_SECONDS) {
+      const skip = this.fill - Math.ceil(target);
+      this.read = (this.read + skip) % this.capacity;
+      this.fill -= skip;
     }
 
     const base = this.inputRate / sampleRate;
