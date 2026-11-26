@@ -3,46 +3,63 @@
 # "Step 0"). Run on the Droplet as root during a moderately busy hour, not the
 # very top of a peak:
 #
-#   sudo ~/skywave/deploy/profile.sh [seconds]     # default 120, 30-300
+#   sudo ~/skywave/deploy/profile.sh [--force] [seconds]     # default 120, 30-300
 #
 # Two windows, back to back:
 #   1. baseline (60 s): host CPU incl. steal (vmstat), both containers' CPU and
 #      the listener count from /healthz, every 5 s. No profiler attached.
 #   2. profile (<seconds>): the same samples while py-spy records the radio's
-#      uvicorn process with --native at 50 Hz.
+#      uvicorn process with --native at 20 Hz.
 #
-# py-spy --native pauses the process for each sample (a few ms, 50 times a
-# second), and that process streams every listener's audio. Keep the window
-# short and listen for gaps while it runs.
+# py-spy runs on the same single core as the radio and pauses it for each
+# sample, and that process streams every listener's audio. So it isn't
+# attached when the baseline shows the host over 70% busy (--force overrides
+# that) or with under 250 MB of memory free, and the kernel is told to kill
+# py-spy, not the radio, if memory runs out. Keep the window short and listen
+# for gaps while it runs.
 #
 # Needs py-spy on the host, on root's PATH or in its own venv (Ubuntu's pip
 # won't install into the system Python):
 #
 #   sudo python3 -m venv /opt/py-spy && sudo /opt/py-spy/bin/pip install py-spy
 #
-# This script installs nothing and changes nothing on the box. Everything
-# goes to one folder ($PROFILE_OUT, default /var/tmp/skywave-profile-<UTC time>):
-# summary.txt, samples.tsv, vmstat-*.txt and radio.raw (collapsed stacks:
-# open it at https://www.speedscope.app for the flame graph).
+# This script installs nothing and changes nothing on the box. Everything goes
+# to one new folder ($PROFILE_OUT, which must not exist yet, or by default a
+# fresh /var/tmp/skywave-profile-<UTC time>-XXXXXX): summary.txt, samples.tsv,
+# vmstat-*.txt and radio.raw (collapsed stacks: open it at
+# https://www.speedscope.app for the flame graph).
 set -euo pipefail
 
 BASELINE_S=60
 INTERVAL_S=5
-RATE_HZ=50
+RATE_HZ=20
+# Host busy (us + sy + steal) above which py-spy isn't attached without --force.
+MAX_BASELINE_BUSY=70
+# Host busy during the profile at which the summary says the numbers are skewed.
+WARN_BUSY=95
+# Memory py-spy --native needs headroom for (its symbol tables), in MB.
+MIN_AVAILABLE_MB=250
 
+force=0
+if [[ "${1:-}" == --force ]]; then
+  force=1
+  shift
+fi
 seconds="${1:-120}"
 # A multiple of INTERVAL_S, so the samples cover exactly the profiled window.
-if [[ ! "$seconds" =~ ^[0-9]+$ ]] || ((seconds < 30 || seconds > 300 || seconds % INTERVAL_S)); then
-  echo "usage: $0 [seconds]   (profile window, 30-300 in steps of $INTERVAL_S; default 120)" >&2
+if [[ $# -gt 1 || ! "$seconds" =~ ^[0-9]+$ ]] || ((seconds < 30 || seconds > 300 || seconds % INTERVAL_S)); then
+  echo "usage: $0 [--force] [seconds]   (profile window, 30-300 in steps of $INTERVAL_S; default 120)" >&2
   exit 2
 fi
 
 # One row every INTERVAL_S for $2 seconds: UTC time, phase, listeners (from
 # /healthz), radio CPU %, caddy CPU %. Ticks keep to the schedule however long
-# docker stats takes.
+# docker stats takes, and a tick past the window's end isn't taken, so a slow
+# box doesn't spill one phase's rows into the next.
 sample() {
-  local phase=$1 rows=$(($2 / INTERVAL_S)) start=$SECONDS i pause listeners stats radio_cpu caddy_cpu
+  local phase=$1 window=$2 rows=$(($2 / INTERVAL_S)) start=$SECONDS i pause listeners stats radio_cpu caddy_cpu
   for ((i = 1; i <= rows; i++)); do
+    ((SECONDS - start >= window)) && break
     listeners=$(curl -s --max-time 2 "http://$radio_ip:8765/healthz" | grep -oE '"listeners": ?[0-9]+' | grep -oE '[0-9]+$' || true)
     # One call for both: {{.Container}} echoes the ID as given.
     stats=$(docker stats --no-stream --format '{{.Container}} {{.CPUPerc}}' "$radio" ${caddy:+"$caddy"} || true)
@@ -64,30 +81,61 @@ vmstat_avg() {
              else print "host: no vmstat samples" }' "$1"
 }
 
+# Average host busy (us + sy + steal) as a whole percent; 0 with no samples.
+vmstat_busy() {
+  awk 'NR == 2 { for (i = 1; i <= NF; i++) col[$i] = i; next }
+       NR > 3 { b += $col["us"] + $col["sy"] + $col["st"]; n++ }
+       END { printf "%d\n", n ? b / n + 0.5 : 0 }' "$1"
+}
+
 phase_avg() {
   awk -F'\t' -v p="$1" '$2 == p {
-      if ($3 != "-") { l += $3; nl++ } if ($4 != "-") { r += $4; nr++ } if ($5 != "-") { c += $5; nc++ } }
-    END { printf "listeners=%s  radio_cpu=%s%%  caddy_cpu=%s%%\n",
-            nl ? sprintf("%.1f", l / nl) : "-", nr ? sprintf("%.1f", r / nr) : "-", nc ? sprintf("%.1f", c / nc) : "-" }' "$out/samples.tsv"
+      rows++; if ($3 != "-") { l += $3; nl++ } if ($4 != "-") { r += $4; nr++ } if ($5 != "-") { c += $5; nc++ } }
+    END { printf "listeners=%s  radio_cpu=%s%%  caddy_cpu=%s%%  (%d rows)\n",
+            nl ? sprintf("%.1f", l / nl) : "-", nr ? sprintf("%.1f", r / nr) : "-", nc ? sprintf("%.1f", c / nc) : "-", rows }' "$out/samples.tsv"
+}
+
+# Stop here without attaching py-spy: the baseline and why, in summary.txt.
+refuse() {
+  {
+    echo "== baseline (${BASELINE_S} s, no profiler)"
+    echo "  $(phase_avg baseline)"
+    echo "  $(vmstat_avg "$out/vmstat-baseline.txt")"
+    echo
+    echo "== not profiled: $1"
+  } | tee "$out/summary.txt"
+  echo "saved in $out"
+  exit 3
+}
+
+# Free memory in MB (the "available" column), empty if it can't be read.
+available_mb() {
+  free -m 2>/dev/null | awk '/^Mem:/ { print $7 }' || true
 }
 
 # On any exit, Ctrl-C or a dropped SSH session: stop py-spy first (its pauses
 # are the only thing here that touches listeners), then the samplers. SIGINT,
-# not SIGTERM: py-spy finishes the sample it's on and lets go of the process.
-# Then SIGCONT the radio in case it was left paused; to a running process
-# that does nothing.
+# not SIGTERM: py-spy finishes the sample it's on and lets go of the process;
+# then SIGTERM, then SIGKILL (a tracer's death detaches it). The radio gets a
+# SIGCONT before and after the last wait in case it was left paused; to a
+# running process that does nothing.
 spy_pid= radio_pid=
+stop_spy() {
+  local sig
+  for sig in INT TERM; do
+    kill "-$sig" "$spy_pid" 2>/dev/null || return 0
+    for _ in {1..50}; do
+      kill -0 "$spy_pid" 2>/dev/null || return 0
+      sleep 0.1
+    done
+  done
+  [[ -n "$radio_pid" ]] && kill -CONT "$radio_pid" 2>/dev/null
+  kill -KILL "$spy_pid" 2>/dev/null
+}
 cleanup() {
   set +e
   if [[ -n "$spy_pid" ]]; then
-    # Background jobs start with SIGINT ignored; a py-spy that keeps it ignored
-    # gets SIGTERM after 5 s instead.
-    kill -INT "$spy_pid" 2>/dev/null
-    for _ in {1..50}; do
-      kill -0 "$spy_pid" 2>/dev/null || break
-      sleep 0.1
-    done
-    kill -TERM "$spy_pid" 2>/dev/null
+    stop_spy
     wait "$spy_pid" 2>/dev/null
   fi
   [[ -n "$radio_pid" ]] && kill -CONT "$radio_pid" 2>/dev/null
@@ -118,9 +166,18 @@ main() {
   radio_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$radio" | awk '{print $1}')
   [[ -z "$radio_ip" ]] && echo "warning: the radio container has no network address; listener counts will show as -" >&2
 
-  out="${PROFILE_OUT:-/var/tmp/skywave-profile-$(date -u +%Y%m%dT%H%M%SZ)}"
-  mkdir -p "$out"
-  chmod 700 "$out"
+  # A new folder only: root writing into one that already exists (in a
+  # world-writable /var/tmp) could follow a link someone planted there.
+  if [[ -n "${PROFILE_OUT:-}" ]]; then
+    out=$PROFILE_OUT
+    if [[ -e "$out" || -L "$out" ]]; then
+      echo "$out already exists: give PROFILE_OUT a new path" >&2
+      return 2
+    fi
+    mkdir -m 700 "$out"
+  else
+    out=$(mktemp -d "/var/tmp/skywave-profile-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
+  fi
   printf 'time\tphase\tlisteners\tradio_cpu\tcaddy_cpu\n' >"$out/samples.tsv"
 
   echo "baseline: ${BASELINE_S} s, no profiler"
@@ -128,20 +185,45 @@ main() {
   sample baseline "$BASELINE_S"
   wait
 
+  local busy mem
+  busy=$(vmstat_busy "$out/vmstat-baseline.txt")
+  if ((busy > MAX_BASELINE_BUSY && !force)); then
+    refuse "the host was ${busy}% busy (over ${MAX_BASELINE_BUSY}%), and py-spy on the same core could make audio choppy. Try a quieter hour, or pass --force."
+  fi
+  mem=$(available_mb)
+  if [[ ! "$mem" =~ ^[0-9]+$ ]]; then
+    refuse "couldn't read free memory (free -m), and py-spy --native needs ${MIN_AVAILABLE_MB} MB to spare."
+  elif ((mem < MIN_AVAILABLE_MB)); then
+    refuse "only ${mem} MB of memory available (under ${MIN_AVAILABLE_MB}); py-spy --native could push the radio into swap."
+  fi
+
   echo "profile: ${seconds} s, py-spy --native at ${RATE_HZ} Hz on pid $pid (listen for audio gaps)"
   vmstat -n "$INTERVAL_S" $((seconds / INTERVAL_S + 1)) >"$out/vmstat-profile.txt" &
   sample profile "$seconds" &
   local spy=0
+  # The radio is resumed by any exit from here on, and no signal lands between
+  # starting py-spy and noting its pid (cleanup needs it to stop py-spy cleanly).
+  radio_pid=$pid
+  trap '' INT TERM HUP
+  # oom_score_adj 1000: if memory runs out, the kernel kills py-spy, not the radio.
   # --function: one row per function, not per line it was on when sampled.
   # --threads: each stack starts with its thread, so the inclusive view below
   # shows the event loop apart from the noise store's and DNS lookups' threads.
-  "$spy_bin" record --pid "$pid" --native --function --threads --rate "$RATE_HZ" --duration "$seconds" --format raw \
-    --output "$out/radio.raw" >"$out/py-spy.log" 2>&1 &
-  spy_pid=$! radio_pid=$pid
+  (
+    trap - INT TERM HUP
+    echo 1000 2>/dev/null >/proc/self/oom_score_adj || echo "warning: couldn't set py-spy's oom_score_adj" >&2
+    exec "$spy_bin" record --pid "$pid" --native --function --threads --rate "$RATE_HZ" --duration "$seconds" \
+      --format raw --output "$out/radio.raw"
+  ) >"$out/py-spy.log" 2>&1 &
+  spy_pid=$!
+  trap 'exit 130' INT TERM HUP
   wait "$spy_pid" || spy=$?
   spy_pid=
+  # However py-spy ended, don't leave the radio paused while the samplers finish.
+  kill -CONT "$radio_pid" 2>/dev/null || true
   wait
 
+  busy=$(vmstat_busy "$out/vmstat-profile.txt")
   {
     echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) $(hostname)  cpus=$(nproc)  $("$spy_bin" --version)"
     echo
@@ -154,6 +236,9 @@ main() {
     echo "  py-spy runs on the host, so its own CPU is in host us/sy here, not in radio_cpu."
     echo "  $(phase_avg profile)"
     echo "  $(vmstat_avg "$out/vmstat-profile.txt")"
+    if ((busy >= WARN_BUSY)); then
+      echo "  warning: the host was ${busy}% busy with py-spy attached: audio may have stuttered and these numbers are skewed. Try a quieter hour or a shorter window."
+    fi
     echo
     if ((spy != 0)) || [[ ! -s "$out/radio.raw" ]]; then
       echo "== py-spy failed (exit $spy): see py-spy.log"

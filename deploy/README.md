@@ -155,11 +155,16 @@ sudo ~/skywave/deploy/profile.sh 120
 It samples host CPU and steal (`vmstat`), both containers' CPU and the
 `/healthz` listener count for 60 s with nothing attached, then again for the
 given window (30-300 s, in steps of 5) while `py-spy record --native` profiles
-the radio's process. `py-spy --native` pauses that process briefly for each
-sample, 50 times a second, so keep the window short and listen for audio gaps
-while it runs. Ctrl-C or a dropped SSH session stops py-spy and sends the radio
-a SIGCONT in case it was left paused.
-Output goes to `/var/tmp/skywave-profile-<time>/`: `summary.txt` (averages, the
+the radio's process. py-spy runs on the same single core and pauses that
+process briefly for each sample, 20 times a second, so keep the window short
+and listen for audio gaps while it runs. It isn't attached at all when the
+baseline shows the host over 70% busy (pass `--force` before the window to
+profile anyway; the summary then warns if the host reached 95%) or with under
+250 MB of memory available, and the kernel is told to kill py-spy, not the
+radio, if memory runs out. Ctrl-C, a dropped SSH session or py-spy dying early
+stops py-spy and sends the radio a SIGCONT in case it was left paused.
+Output goes to a new `/var/tmp/skywave-profile-<time>-XXXXXX/` (or a
+`PROFILE_OUT` that doesn't exist yet): `summary.txt` (averages, the
 top functions by self time, and by inclusive time with each thread's share: the
 event loop's share should roughly match the baseline `radio_cpu`), the raw
 samples, and `radio.raw`, collapsed

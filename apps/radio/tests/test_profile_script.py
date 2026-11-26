@@ -51,23 +51,53 @@ echo "$*" >"$FAKE_DIR/py-spy-args"
 # Rows in samples.tsv when py-spy started: the baseline must be done by then.
 wc -l <"$FAKE_DIR/out/samples.tsv" >"$FAKE_DIR/rows-at-spy-start"
 if [[ -n "${FAKE_SPY_HANG:-}" ]]; then echo $$ >"$FAKE_DIR/spy-pid"; exec /bin/sleep 30; fi
-if [[ -n "${FAKE_SPY_FAIL:-}" ]]; then echo "Permission denied (os error 13)" >&2; exit 1; fi
+# Ignores SIGINT and SIGTERM, as a py-spy stuck mid-attach might: only SIGKILL ends it.
+if [[ -n "${FAKE_SPY_STUBBORN:-}" ]]; then
+  trap '' INT TERM; echo $$ >"$FAKE_DIR/spy-pid"; while :; do /bin/sleep 1; done
+fi
+if [[ -n "${FAKE_SPY_FAIL:-}" ]]; then
+  echo "Permission denied (os error 13)" >&2; : >"$FAKE_DIR/spy-failed"; exit 1
+fi
 while [[ $# -gt 0 ]]; do [[ "$1" == --output ]] && out=$2; shift; done
 if [[ -n "${FAKE_SPY_EMPTY:-}" ]]; then : >"$out"; exit 0; fi
 cp "$FAKE_DIR/raw" "$out"
 """
 
 # vmstat -n: two header lines, then the since-boot row (steal 90, must be
-# dropped), then real samples with steal 10 and 20.
+# dropped), then real samples: busy (us + sy + steal) 40 and 60, so 50% on
+# average, under the 70% gate. FAKE_VMSTAT_BUSY: 98% busy rows instead.
 FAKE_VMSTAT = """#!/usr/bin/env bash
 echo "$*" >>"$FAKE_DIR/vmstat-args"
 cat <<'OUT'
 procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
  r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st
  1  0      0 500000  10000 300000    0    0     0     0  100  200  5  5  0  0 90
- 1  0      0 500000  10000 300000    0    0     0     0  100  200 40 20 30  0 10
- 1  0      0 500000  10000 300000    0    0     0     0  100  200 50 10 20  0 20
 OUT
+if [[ -n "${FAKE_VMSTAT_BUSY:-}" ]]; then
+  echo " 1  0      0 500000  10000 300000    0    0     0     0  100  200 90  8  2  0  0"
+  echo " 1  0      0 500000  10000 300000    0    0     0     0  100  200 90  8  2  0  0"
+else
+  echo " 1  0      0 500000  10000 300000    0    0     0     0  100  200 20 10 60  0 10"
+  echo " 1  0      0 500000  10000 300000    0    0     0     0  100  200 30 10 40  0 20"
+fi
+"""
+
+# free -m as procps prints it; "available" is column 7. FAKE_LOW_MEM: 120 MB.
+FAKE_FREE = """#!/usr/bin/env bash
+available=800
+[[ -n "${FAKE_LOW_MEM:-}" ]] && available=120
+echo "               total        used        free      shared  buff/cache   available"
+echo "Mem:            1967        1100         150          10         717  $available"
+echo "Swap:           1023         100         923"
+"""
+
+# FAKE_CURL_FAIL: the radio doesn't answer (curl's "couldn't connect").
+# FAKE_CURL_SLOW_AFTER_FAIL: once py-spy has failed, each /healthz takes 1 s,
+# so the profile's samplers outlive py-spy.
+FAKE_CURL = """#!/usr/bin/env bash
+[[ -n "${FAKE_CURL_FAIL:-}" ]] && exit 7
+[[ -n "${FAKE_CURL_SLOW_AFTER_FAIL:-}" && -e "$FAKE_DIR/spy-failed" ]] && /bin/sleep 1
+echo '{"ok":true,"listeners":7,"maxListeners":15}'
 """
 
 
@@ -81,9 +111,8 @@ def setup(tmp_path: Path, *, spy: bool = True, **fake_env: str) -> tuple[list[st
     fakes = {
         "docker": FAKE_DOCKER,
         "vmstat": FAKE_VMSTAT,
-        # FAKE_CURL_FAIL: the radio doesn't answer (curl's "couldn't connect").
-        "curl": '#!/usr/bin/env bash\n[[ -n "${FAKE_CURL_FAIL:-}" ]] && exit 7\n'
-        'echo \'{"ok":true,"listeners":7,"maxListeners":15}\'\n',
+        "free": FAKE_FREE,
+        "curl": FAKE_CURL,
         "sleep": "#!/usr/bin/env bash\nexit 0\n",
         "nproc": "#!/usr/bin/env bash\necho 1\n",
     }
@@ -115,14 +144,16 @@ def run_profile(tmp_path: Path, *args: str, spy: bool = True, **fake_env: str):
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
 
-# Value: protects=the Step 0 numbers for issue #153: steal and CPU averages per window (vmstat's since-boot row dropped), listeners from /healthz, radio/caddy CPU, busy share, self time per function and inclusive time per function and thread; fails_when=the since-boot row is averaged in, columns are misread, self time counts outer frames, a frame is split by line, or recursion is counted twice; why_new=new script; seam=fake docker/py-spy/vmstat/curl/sleep on PATH; no_claim=real py-spy attaching across the container boundary, real vmstat column order, tick timing (sleep is faked)
+# Value: protects=the Step 0 numbers for issue #153: steal and CPU averages per window (vmstat's since-boot row dropped), listeners from /healthz, radio/caddy CPU, rows per phase, busy share, self time per function and inclusive time per function and thread; fails_when=the since-boot row is averaged in, columns are misread, self time counts outer frames, a frame is split by line, or recursion is counted twice; why_new=new script; seam=fake docker/py-spy/vmstat/curl/free/sleep on PATH; no_claim=real py-spy attaching across the container boundary, real vmstat column order, tick timing (sleep is faked)
 def test_summary(tmp_path: Path):
     result, out = run_profile(tmp_path, "30")
     assert result.returncode == 0, result.stderr
     summary = (out / "summary.txt").read_text()
-    assert summary.count("listeners=7.0  radio_cpu=30.0%  caddy_cpu=10.0%") == 2
-    assert summary.count("host us=45.0%  sy=15.0%  steal=15.0%  (2 samples)") == 2
-    assert "100 non-idle samples of about 1500 per thread (7% busy, all threads)" in summary
+    assert "listeners=7.0  radio_cpu=30.0%  caddy_cpu=10.0%  (12 rows)" in summary
+    assert "listeners=7.0  radio_cpu=30.0%  caddy_cpu=10.0%  (6 rows)" in summary
+    assert summary.count("host us=25.0%  sy=10.0%  steal=15.0%  (2 samples)") == 2
+    assert "warning" not in summary
+    assert "100 non-idle samples of about 600 per thread (17% busy, all threads)" in summary
     self_time = summary.split("by self time")[1].split("== top 25")[0]
     assert "  50.0%  deflate (zlib)" in self_time
     assert "  30.0%  parse_snd (kiwi.py)" in self_time
@@ -142,26 +173,65 @@ def test_summary(tmp_path: Path):
     assert len(rows) == 1 + 60 // 5 + 30 // 5  # header, baseline, profile
 
 
-# Value: protects=the profiler settings the owner approved for production (native stacks, per function, per thread, 50 Hz, the requested window, the radio's host PID) and that py-spy starts only after the baseline window, with vmstat covering each window; fails_when=a flag is dropped, the duration stops following the argument, py-spy overlaps the baseline, or a vmstat count drifts from its window; why_new=new script; seam=fake py-spy and vmstat on PATH; no_claim=py-spy's own flag parsing
+# Value: protects=the profiler settings the owner approved for production (native stacks, per function, per thread, 20 Hz, the requested window, the radio's host PID) and that py-spy starts only after the baseline window, with vmstat covering each window; fails_when=a flag is dropped, the rate or duration drifts, py-spy overlaps the baseline, or a vmstat count drifts from its window; why_new=new script; seam=fake py-spy and vmstat on PATH; no_claim=py-spy's own flag parsing
 def test_py_spy_settings_and_windows(tmp_path: Path):
     result, _ = run_profile(tmp_path, "45")
     assert result.returncode == 0, result.stderr
     args = (tmp_path / "py-spy-args").read_text().split()
     assert args[:3] == ["record", "--pid", "4194303"]
-    for flag, value in (("--rate", "50"), ("--duration", "45"), ("--format", "raw")):
+    for flag, value in (("--rate", "20"), ("--duration", "45"), ("--format", "raw")):
         assert args[args.index(flag) + 1] == value
     assert {"--native", "--function", "--threads"} <= set(args)
     assert int((tmp_path / "rows-at-spy-start").read_text()) >= 1 + 60 // 5
     assert (tmp_path / "vmstat-args").read_text().splitlines() == ["-n 5 13", "-n 5 10"]
 
 
-# Value: protects=the cap on how long py-spy may pause the process that streams every listener's audio, and windows that line up with the 5 s samples; fails_when=the 30-300 s bounds, the step-of-5 check or the number check are removed; why_new=new script; seam=none; no_claim=that 300 s of pauses is inaudible
-@pytest.mark.parametrize("arg", ["301", "29", "33", "2m"])
-def test_rejects_bad_window(tmp_path: Path, arg: str):
-    result, out = run_profile(tmp_path, arg)
+# Value: protects=the cap on how long py-spy may pause the process that streams every listener's audio, windows that line up with the 5 s samples, and --force only as the first argument; fails_when=the 30-300 s bounds, the step-of-5 check, the number check or the argument count check are removed; why_new=new script; seam=none; no_claim=that 300 s of pauses is inaudible
+@pytest.mark.parametrize("args", [["301"], ["29"], ["33"], ["2m"], ["30", "--force"], ["--force", "30", "40"]])
+def test_rejects_bad_arguments(tmp_path: Path, args: list[str]):
+    result, out = run_profile(tmp_path, *args)
     assert result.returncode == 2
     assert not (tmp_path / "py-spy-args").exists()
     assert not out.exists()
+
+
+# Value: protects=py-spy isn't attached to a box already over 70% busy (its CPU on the same core could make every listener's audio choppy), and the baseline is still saved; fails_when=the busy gate is removed, sums the wrong columns, or counts vmstat's since-boot row; why_new=owner-approved guard from the pre-landing review; seam=fake vmstat on PATH; no_claim=that 70% is the right line for this box
+def test_busy_host_is_not_profiled(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30", FAKE_VMSTAT_BUSY="1")
+    assert result.returncode == 3
+    assert not (tmp_path / "py-spy-args").exists()
+    summary = (out / "summary.txt").read_text()
+    assert "not profiled: the host was 98% busy (over 70%)" in summary
+    assert "--force" in summary
+    assert "(12 rows)" in summary
+
+
+# Value: protects=--force profiles a busy box anyway, and the summary then says the numbers are skewed; fails_when=--force stops overriding the gate, or the 95% warning is dropped; why_new=owner-approved guard from the pre-landing review; seam=fake vmstat on PATH; no_claim=what py-spy really costs on the Droplet
+def test_force_profiles_a_busy_host_with_a_warning(tmp_path: Path):
+    result, out = run_profile(tmp_path, "--force", "30", FAKE_VMSTAT_BUSY="1")
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "py-spy-args").exists()
+    summary = (out / "summary.txt").read_text()
+    assert "warning: the host was 98% busy with py-spy attached" in summary
+    assert "by self time" in summary
+
+
+# Value: protects=py-spy --native isn't attached with under 250 MB free, where its symbol tables could push the radio into swap or the OOM killer; fails_when=the memory check is removed or reads the wrong column of free -m; why_new=owner-approved guard from the pre-landing review; seam=fake free on PATH; no_claim=py-spy's real memory use
+def test_low_memory_is_not_profiled(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30", FAKE_LOW_MEM="1")
+    assert result.returncode == 3
+    assert not (tmp_path / "py-spy-args").exists()
+    assert "not profiled: only 120 MB of memory available (under 250)" in (out / "summary.txt").read_text()
+
+
+# Value: protects=root never writes into a PROFILE_OUT that already exists (it could hold a planted symlink); fails_when=the exists check is removed or mkdir -p comes back; why_new=owner-approved fix from the pre-landing review; seam=none; no_claim=the mktemp default under /var/tmp (not exercised here)
+def test_refuses_an_existing_output_dir(tmp_path: Path):
+    (tmp_path / "out").mkdir()
+    result, out = run_profile(tmp_path, "30")
+    assert result.returncode == 2
+    assert "already exists" in result.stderr
+    assert not (tmp_path / "py-spy-args").exists()
+    assert list(out.iterdir()) == []
 
 
 # Value: protects=a failed attach (no root, wrong PID) or an empty profile still leaves the unprofiled numbers and says it failed, not a 0% or divide-by-zero summary; fails_when=set -e aborts on py-spy's exit, the error is swallowed, or the empty-radio.raw check is dropped; why_new=new script; seam=fake py-spy on PATH; no_claim=py-spy's real error text, or when real py-spy writes empty output
@@ -188,11 +258,9 @@ def test_needs_the_radio_container(tmp_path: Path):
     assert not out.exists()
 
 
-# Value: protects=one busy-hour run survives a /healthz that doesn't answer, failing docker stats, no caddy container and no radio address: those columns read "-" and the profile still finishes; fails_when=a "|| true" is dropped under set -euo pipefail or ${caddy:+} goes; why_new=test_summary only feeds healthy fakes; seam=fake docker/curl on PATH; no_claim=real /healthz or docker stats output formats
+# Value: protects=one busy-hour run survives a /healthz that doesn't answer, failing docker stats and no radio address: those columns read "-" and the profile still finishes; fails_when=a "|| true" is dropped under set -euo pipefail; why_new=test_summary only feeds healthy fakes; seam=fake docker/curl on PATH; no_claim=real /healthz or docker stats output formats
 def test_failed_samples_degrade_to_dashes(tmp_path: Path):
-    result, out = run_profile(
-        tmp_path, "30", FAKE_CURL_FAIL="1", FAKE_STATS_FAIL="1", FAKE_NO_CADDY="1", FAKE_NO_IP="1"
-    )
+    result, out = run_profile(tmp_path, "30", FAKE_CURL_FAIL="1", FAKE_STATS_FAIL="1", FAKE_NO_IP="1")
     assert result.returncode == 0, result.stderr
     assert "no network address" in result.stderr
     summary = (out / "summary.txt").read_text()
@@ -200,6 +268,13 @@ def test_failed_samples_degrade_to_dashes(tmp_path: Path):
     assert "by self time" in summary  # the profile itself still ran
     rows = (out / "samples.tsv").read_text().splitlines()
     assert len(rows) == 1 + 60 // 5 + 30 // 5
+
+
+# Value: protects=with no caddy container the radio's own CPU is still read and only caddy reads "-"; fails_when=${caddy:+} is dropped (an empty argument makes docker stats fail for both) or the caddy awk loses its empty-id guard; why_new=the degrade test fails docker stats too, so it can't see this; seam=fake docker on PATH; no_claim=real docker stats with an empty argument
+def test_no_caddy_keeps_the_radio_numbers(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30", FAKE_NO_CADDY="1")
+    assert result.returncode == 0, result.stderr
+    assert (out / "summary.txt").read_text().count("radio_cpu=30.0%  caddy_cpu=-%") == 2
 
 
 # Value: protects=the documented default window (README and usage say 120 s) when no argument is given; fails_when=the default drifts from the docs; why_new=every other test passes a window; seam=fake py-spy and vmstat on PATH; no_claim=none beyond protects
@@ -224,27 +299,76 @@ def _stopped(pid: int) -> bool:
     return state.strip().startswith("T")
 
 
-# Value: protects=listeners' audio when the owner aborts mid-profile (Ctrl-C, dropped SSH): py-spy is stopped and the radio process is resumed if left paused; fails_when=the trap is removed, py-spy is left running, or the SIGCONT is dropped; why_new=the only path where this script can leave the live radio stopped; seam=fake py-spy that hangs, a stopped sleep standing in for uvicorn; no_claim=that real py-spy leaves a process paused when interrupted
+def _wait_for(path: Path, seconds: float = 20) -> None:
+    deadline = time.monotonic() + seconds
+    while not path.exists() or not path.read_text().strip():
+        assert time.monotonic() < deadline, f"{path.name} never appeared"
+        time.sleep(0.05)
+
+
+# Value: protects=listeners' audio when the owner aborts mid-profile (Ctrl-C, dropped SSH, kill): py-spy is stopped and the radio process is resumed if left paused, for each signal the README promises; fails_when=the trap or one of its signals is removed, py-spy is left running, or the SIGCONT is dropped; why_new=the abort path is where this script can leave the live radio stopped; seam=fake py-spy that hangs, a stopped sleep standing in for uvicorn; no_claim=that real py-spy leaves a process paused when interrupted
 @pytest.mark.timeout(30)
-def test_abort_stops_py_spy_and_resumes_the_radio(tmp_path: Path):
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP, signal.SIGINT])
+def test_abort_stops_py_spy_and_resumes_the_radio(tmp_path: Path, sig: signal.Signals):
     radio = subprocess.Popen(["/bin/sleep", "60"])
     try:
         os.kill(radio.pid, signal.SIGSTOP)
         cmd, env = setup(tmp_path, FAKE_SPY_HANG="1", FAKE_RADIO_PID=str(radio.pid))
         script = subprocess.Popen([*cmd, "30"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        spy_pid_file = tmp_path / "spy-pid"
-        deadline = time.monotonic() + 20
-        while not spy_pid_file.exists() or not spy_pid_file.read_text().strip():
-            assert time.monotonic() < deadline, "py-spy never started"
-            time.sleep(0.05)
-        spy_pid = int(spy_pid_file.read_text())
+        _wait_for(tmp_path / "spy-pid")
+        spy_pid = int((tmp_path / "spy-pid").read_text())
         assert _stopped(radio.pid)
 
-        script.send_signal(signal.SIGTERM)
-        assert script.wait(timeout=10) == 130
+        script.send_signal(sig)
+        assert script.wait(timeout=15) == 130
         with pytest.raises(ProcessLookupError):
             os.kill(spy_pid, 0)
         assert not _stopped(radio.pid)
+    finally:
+        radio.kill()
+        radio.wait()
+
+
+# Value: protects=a py-spy that ignores SIGINT and SIGTERM (stuck mid-attach) is still ended and the radio resumed, so an abort can't hang with the radio paused; fails_when=the SIGKILL fallback or the SIGCONT before it is removed; why_new=owner-approved fix from the pre-landing review; seam=fake py-spy that ignores INT and TERM; no_claim=how long real py-spy takes to let go
+@pytest.mark.timeout(40)
+def test_abort_kills_a_stubborn_py_spy(tmp_path: Path):
+    radio = subprocess.Popen(["/bin/sleep", "60"])
+    try:
+        os.kill(radio.pid, signal.SIGSTOP)
+        cmd, env = setup(tmp_path, FAKE_SPY_STUBBORN="1", FAKE_RADIO_PID=str(radio.pid))
+        script = subprocess.Popen([*cmd, "30"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _wait_for(tmp_path / "spy-pid")
+        spy_pid = int((tmp_path / "spy-pid").read_text())
+
+        script.send_signal(signal.SIGTERM)
+        assert script.wait(timeout=25) == 130
+        with pytest.raises(ProcessLookupError):
+            os.kill(spy_pid, 0)
+        assert not _stopped(radio.pid)
+    finally:
+        radio.kill()
+        radio.wait()
+
+
+# Value: protects=when py-spy dies early, the radio is resumed at once, not after the samplers finish the window (up to 300 s of no audio); fails_when=the SIGCONT right after py-spy's exit is removed, leaving only the one in the exit trap; why_new=red-team finding in the pre-landing review; seam=fake py-spy that fails, fake curl that slows the samplers, a stopped sleep standing in for uvicorn; no_claim=that real py-spy leaves a process paused when it dies
+@pytest.mark.timeout(30)
+def test_failed_py_spy_resumes_the_radio_before_the_samplers_finish(tmp_path: Path):
+    radio = subprocess.Popen(["/bin/sleep", "60"])
+    try:
+        os.kill(radio.pid, signal.SIGSTOP)
+        cmd, env = setup(tmp_path, FAKE_SPY_FAIL="1", FAKE_CURL_SLOW_AFTER_FAIL="1", FAKE_RADIO_PID=str(radio.pid))
+        script = subprocess.Popen([*cmd, "30"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + 20
+        while not (tmp_path / "spy-failed").exists():
+            assert time.monotonic() < deadline, "py-spy never ran"
+            time.sleep(0.05)
+        deadline = time.monotonic() + 3
+        while _stopped(radio.pid):
+            assert script.poll() is None, "the radio was only resumed at exit"
+            assert time.monotonic() < deadline, "the radio stayed paused after py-spy failed"
+            time.sleep(0.05)
+        assert script.poll() is None  # the samplers are still running
+        assert script.wait(timeout=20) == 0
     finally:
         radio.kill()
         radio.wait()
