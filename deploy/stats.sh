@@ -50,9 +50,10 @@ main() {
   echo "== open now"
   # The container's TCP table, established only (st 01). Local port 8765
   # (0x223D) is a browser socket through Caddy; anything else it dialed out is a
-  # Kiwi socket (audio, waterfall, scans and noise measurements). A failed exec
-  # (container restarting) skips this section, not the rest of the report, and
-  # a kernel without IPv6 has no tcp6.
+  # Kiwi socket (audio, waterfall and band scans; noise levels come from those
+  # waterfall frames, never from a socket of their own, see noise.py). A failed
+  # exec (container restarting) skips this section, not the rest of the report,
+  # and a kernel without IPv6 has no tcp6.
   local tcp
   if tcp=$(docker exec "$radio" cat /proc/net/tcp 2>/dev/null); then
     tcp+=$'\n'$(docker exec "$radio" cat /proc/net/tcp6 2>/dev/null || true)

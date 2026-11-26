@@ -17,6 +17,7 @@ copies, which the README's "One process" rule forbids).
 | `forced-command.sh` | The only command the GitHub Actions key may run on the box |
 | `../.github/workflows/radio-stats.yml` | Posts `stats.sh` output daily to the `radio-load` issue |
 | `stats.sh` | Read-only load numbers (CPU, memory, open sockets, sessions per hour, refusals); also the only command the monitoring key may run |
+| `profile.sh` | Where the radio service spends its CPU: steal, CPU and listeners over a window, plus a py-spy profile of the live process (issue #153); run by hand as root |
 | `../.github/workflows/deploy-radio.yml` | Deploys `main` after CI passes, or any branch by hand |
 
 ## First deploy
@@ -143,6 +144,69 @@ or the receiver log's (5 MB x 5), has already dropped lines from inside the
 container is restarting) says so and the rest of the report still prints.
 Counts only: it never prints log lines, addresses, the token or anything else
 from `.env`. Changes nothing.
+
+### Where the CPU goes (profile.sh)
+
+To see which code a busy box spends its CPU on (issue #153), as root during a
+moderately busy hour, not the very top of a peak:
+
+```sh
+# once (stock Ubuntu has no venv module):
+sudo apt install -y python3-venv && sudo python3 -m venv /opt/py-spy && sudo /opt/py-spy/bin/pip install py-spy
+# A quick check that py-spy (0.4.x or newer, for Python 3.13) can read the
+# radio from the host, before spending a busy hour on it. --nonblocking never
+# pauses the radio; the timeout only stops a stuck py-spy:
+cd ~/skywave && pid=$(docker inspect -f '{{.State.Pid}}' "$(docker compose -f docker-compose.prod.yml ps -q radio)")
+sudo timeout -s INT -k 2 10 /opt/py-spy/bin/py-spy dump --nonblocking --pid "$pid"
+# In tmux, so a dropped SSH session doesn't lose the summary (written at the end):
+tmux new -s prof
+sudo ~/skywave/deploy/profile.sh 120
+```
+
+It samples host CPU and steal (`vmstat`), both containers' CPU and the
+`/healthz` listener count for 60 s with nothing attached, then again for the
+given window (30-300 s, in steps of 5) while `py-spy record --nonblocking`
+profiles the radio's process at 20 Hz. `--nonblocking` reads the radio's
+memory without ever pausing it, so nothing py-spy does, or fails to do, can
+freeze listeners' audio. Two costs. Stacks are Python-level, so time spent
+inside C code (NumPy, zlib, websockets' speedups) shows under the Python line
+that called it. And because the radio keeps running while py-spy reads a
+sample, some samples come out garbled or charged to the wrong function
+(py-spy's help: it "may lead to inaccurate results"). Over a 2-minute run the
+overall shape holds, but small gaps between the top functions don't: pick a
+hot spot only if it clearly leads, and if two entries are close, run the
+profile again to confirm. A `--native` run, which has to pause the radio for every
+sample, is a separate, deliberate step if C code turns out to dominate.
+
+py-spy still uses CPU on the radio's single core, so it isn't attached at all
+when the baseline shows the host over 70% busy or couldn't measure it (pass
+`--force` before the window to profile anyway; the summary then warns if the
+host reached 95%), with under 250 MB of memory available, if the radio's
+container restarted during the baseline, or if the radio has no network
+address for the watchdog to probe (`--force` again), and the kernel is told to
+kill py-spy, not the radio, if memory runs out. From the moment py-spy starts,
+a watchdog probes `/healthz` every second and stops py-spy within about 6 s of
+the radio going quiet or answering with errors (even a py-spy that ignores
+SIGINT and SIGTERM: 1 s each before the next signal; a core starved badly
+enough can stretch that), inside the ~10 s after which
+the radio drops its Kiwi streams. It also stops py-spy when py-spy keeps
+saying it is behind in sampling, or if it is still attached 30 s past its
+window (the summary says "aborted" and why). Ctrl-C or a dropped SSH session
+stops py-spy too, and a second Ctrl-C while it's stopping doesn't cut that
+short. The script never sends the radio a signal. The output folder is
+printed first thing.
+
+Output goes to a new `/var/tmp/skywave-profile-<time>-XXXXXX/` (or a
+`PROFILE_OUT` that doesn't exist yet): `summary.txt` (averages, py-spy's own
+warnings if it fell behind, the top functions by self time, and by inclusive
+time with each thread's share), the raw samples, and `radio.raw`, collapsed
+stacks you can open at https://www.speedscope.app for the flame graph. Shares
+are of py-spy's non-idle samples: a thread's share times the summary's
+"% busy" is its share of one core, which for the event loop should roughly
+match the baseline `radio_cpu`. High steal means a shared-CPU plan is taking
+time from the box: try a dedicated-CPU plan before changing code. Unlike
+`stats.sh` it needs root and is not for the monitoring key; it changes nothing
+and installs nothing.
 
 ### Daily load log
 

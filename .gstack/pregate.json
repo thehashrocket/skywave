@@ -33,6 +33,7 @@
     "docker-compose.prod.yml": ["apps/radio/tests/test_noise.py"],
     "deploy/Caddyfile": ["apps/radio/tests/test_noise.py"],
     "deploy/stats.sh": ["apps/radio/tests/test_stats_script.py"],
+    "deploy/profile.sh": ["apps/radio/tests/test_profile_script.py"],
     "scripts/pregate-run.sh": [
       "apps/radio/tests/test_error_codes.py",
       "apps/radio/tests/test_pregate_run.py",
