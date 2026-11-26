@@ -4,6 +4,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import textwrap
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -99,7 +100,13 @@ def run_stats(
     )
 
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+# stats.sh runs only on the Droplet: it calls GNU date -d, free and
+# /proc/loadavg for real (only docker and sar are faked), so off Linux it
+# can't run at all. CI runs on Ubuntu.
+pytestmark = [
+    pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash"),
+    pytest.mark.skipif(not sys.platform.startswith("linux"), reason="stats.sh is Linux-only (date -d, free, /proc)"),
+]
 
 
 # Value: protects=stats.sh's promise that its output is counts only: the radio token, listener addresses and Kiwi hosts in the logs and .env never appear, and only MAX_* limits are read from .env; fails_when=the script echoes raw log lines, prints the .env, or a refactor greps a wider pattern; why_new=the script is the only thing a monitoring SSH key may run, so its output is what that key can see; seam=fake docker on PATH; no_claim=real docker output formats
