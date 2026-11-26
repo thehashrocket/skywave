@@ -142,11 +142,14 @@ To see which code a busy box spends its CPU on (issue #153), as root during a
 moderately busy hour, not the very top of a peak:
 
 ```sh
-sudo python3 -m venv /opt/py-spy && sudo /opt/py-spy/bin/pip install py-spy   # once
+# once (stock Ubuntu has no venv module):
+sudo apt install -y python3-venv && sudo python3 -m venv /opt/py-spy && sudo /opt/py-spy/bin/pip install py-spy
 # A one-second check that py-spy (0.4.x or newer, for Python 3.13) can attach
-# from the host, before spending a busy hour on it:
-cd ~/skywave && sudo /opt/py-spy/bin/py-spy dump --native \
-  --pid "$(docker inspect -f '{{.State.Pid}}' "$(docker compose -f docker-compose.prod.yml ps -q radio)")"
+# from the host, before spending a busy hour on it. It pauses the radio
+# briefly, so it's capped at 10 s and the radio gets a SIGCONT afterwards in
+# case a stuck attach left it paused (to a running process that does nothing):
+cd ~/skywave && pid=$(docker inspect -f '{{.State.Pid}}' "$(docker compose -f docker-compose.prod.yml ps -q radio)")
+sudo timeout -s INT -k 2 10 /opt/py-spy/bin/py-spy dump --native --pid "$pid"; sudo kill -CONT "$pid"
 # In tmux, so a dropped SSH session doesn't lose the summary (written at the end):
 tmux new -s prof
 sudo ~/skywave/deploy/profile.sh 120
@@ -158,18 +161,22 @@ given window (30-300 s, in steps of 5) while `py-spy record --native` profiles
 the radio's process. py-spy runs on the same single core and pauses that
 process briefly for each sample, 20 times a second, so keep the window short
 and listen for audio gaps while it runs. It isn't attached at all when the
-baseline shows the host over 70% busy (pass `--force` before the window to
-profile anyway; the summary then warns if the host reached 95%) or with under
-250 MB of memory available, and the kernel is told to kill py-spy, not the
-radio, if memory runs out. Ctrl-C, a dropped SSH session or py-spy dying early
-stops py-spy and sends the radio a SIGCONT in case it was left paused.
+baseline shows the host over 70% busy or couldn't measure it (pass `--force`
+before the window to profile anyway; the summary then warns if the host
+reached 95%), with under 250 MB of memory available, or if the radio's
+container restarted during the baseline, and the kernel is told to kill
+py-spy, not the radio, if memory runs out. Once attached, py-spy is stopped as
+soon as the radio misses two `/healthz` answers in a row (the summary says
+"aborted"). Ctrl-C, a dropped SSH session or py-spy dying early stops py-spy
+and sends the radio a SIGCONT in case it was left paused.
 Output goes to a new `/var/tmp/skywave-profile-<time>-XXXXXX/` (or a
-`PROFILE_OUT` that doesn't exist yet): `summary.txt` (averages, the
-top functions by self time, and by inclusive time with each thread's share: the
-event loop's share should roughly match the baseline `radio_cpu`), the raw
-samples, and `radio.raw`, collapsed
-stacks you can open at https://www.speedscope.app for the flame graph. High
-steal means a shared-CPU plan is taking time from the box: try a dedicated-CPU
+`PROFILE_OUT` that doesn't exist yet): `summary.txt` (averages, py-spy's own
+warnings if it fell behind, the top functions by self time, and by inclusive
+time with each thread's share), the raw samples, and `radio.raw`, collapsed
+stacks you can open at https://www.speedscope.app for the flame graph. Shares
+are of py-spy's non-idle samples: a thread's share times the summary's
+"% busy" is its share of one core, which for the event loop should roughly
+match the baseline `radio_cpu`. High steal means a shared-CPU plan is taking time from the box: try a dedicated-CPU
 plan before changing code. Unlike `stats.sh` it needs root and is not for the
 monitoring key; it changes nothing and installs nothing.
 

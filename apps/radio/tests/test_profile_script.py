@@ -18,6 +18,8 @@ SCRIPT = REPO / "deploy" / "profile.sh"
 # FAKE_NO_RADIO / FAKE_NO_CADDY: that compose service isn't running.
 # FAKE_NO_IP: the radio container has no network address.
 # FAKE_STATS_FAIL: every docker stats call fails.
+# FAKE_PID_CHANGES: the radio's pid is different from the second lookup on,
+# as after a container restart.
 FAKE_DOCKER = """#!/usr/bin/env bash
 case "$1 $2" in
   "compose -f") case "$6" in
@@ -25,7 +27,10 @@ case "$1 $2" in
       caddy) [[ -n "${FAKE_NO_CADDY:-}" ]] || echo caddyid;;
     esac ;;
   "inspect -f") case "$3" in
-      *Pid*) echo "${FAKE_RADIO_PID:-4194303}";;
+      *Pid*)
+        if [[ -n "${FAKE_PID_CHANGES:-}" && -e "$FAKE_DIR/pid-read" ]]; then echo 4194302; exit 0; fi
+        : >"$FAKE_DIR/pid-read"
+        echo "${FAKE_RADIO_PID:-4194303}";;
       *IPAddress*) [[ -n "${FAKE_NO_IP:-}" ]] && echo " " || echo "172.30.0.3 ";;
     esac ;;
   "stats --no-stream") [[ -n "${FAKE_STATS_FAIL:-}" ]] && exit 1; echo "radioid 30.00%"; echo "caddyid 10.00%" ;;
@@ -46,21 +51,27 @@ RAW = textwrap.dedent(
     """
 )
 
+# Prints py-spy's "Sampling process" line once it starts sampling, like the
+# real one. FAKE_SPY_WARN: also says it fell behind, as the real one does on stderr.
 FAKE_PY_SPY = """#!/usr/bin/env bash
 if [[ "$1" == --version ]]; then echo "py-spy 0.4.1"; exit 0; fi
 echo "$*" >"$FAKE_DIR/py-spy-args"
-# The signal dispositions py-spy starts with (Linux only).
+# The signal dispositions and OOM score py-spy starts with (Linux only).
 [[ -r /proc/$$/status ]] && grep '^SigIgn:' /proc/$$/status >"$FAKE_DIR/py-spy-sigign"
+[[ -r /proc/$$/oom_score_adj ]] && cat /proc/$$/oom_score_adj >"$FAKE_DIR/py-spy-oom"
 # Rows in samples.tsv when py-spy started: the baseline must be done by then.
 wc -l <"$FAKE_DIR/out/samples.tsv" >"$FAKE_DIR/rows-at-spy-start"
+if [[ -n "${FAKE_SPY_FAIL:-}" ]]; then
+  echo "Permission denied (os error 13)" >&2; : >"$FAKE_DIR/spy-failed"; exit 1
+fi
+echo "py-spy> Sampling process 20 times a second. Press Control-C to exit."
+: >"$FAKE_DIR/spy-started"
 if [[ -n "${FAKE_SPY_HANG:-}" ]]; then echo $$ >"$FAKE_DIR/spy-pid"; exec /bin/sleep 30; fi
 # Ignores SIGINT and SIGTERM, as a py-spy stuck mid-attach might: only SIGKILL ends it.
 if [[ -n "${FAKE_SPY_STUBBORN:-}" ]]; then
   trap '' INT TERM; echo $$ >"$FAKE_DIR/spy-pid"; while :; do /bin/sleep 1; done
 fi
-if [[ -n "${FAKE_SPY_FAIL:-}" ]]; then
-  echo "Permission denied (os error 13)" >&2; : >"$FAKE_DIR/spy-failed"; exit 1
-fi
+[[ -n "${FAKE_SPY_WARN:-}" ]] && echo "py-spy> 1.20s behind in sampling, results may be inaccurate. Try reducing the sampling rate" >&2
 while [[ $# -gt 0 ]]; do [[ "$1" == --output ]] && out=$2; shift; done
 if [[ -n "${FAKE_SPY_EMPTY:-}" ]]; then : >"$out"; exit 0; fi
 cp "$FAKE_DIR/raw" "$out"
@@ -88,7 +99,9 @@ fi
 """
 
 # free -m as procps prints it; "available" is column 7. FAKE_LOW_MEM: 120 MB.
+# FAKE_FREE_FAIL: prints nothing and fails.
 FAKE_FREE = """#!/usr/bin/env bash
+[[ -n "${FAKE_FREE_FAIL:-}" ]] && exit 1
 available=800
 [[ -n "${FAKE_LOW_MEM:-}" ]] && available=120
 echo "               total        used        free      shared  buff/cache   available"
@@ -99,8 +112,10 @@ echo "Swap:           1023         100         923"
 # FAKE_CURL_FAIL: the radio doesn't answer (curl's "couldn't connect").
 # FAKE_CURL_SLOW_AFTER_FAIL: once py-spy has failed, each /healthz takes 1 s,
 # so the profile's samplers outlive py-spy.
+# FAKE_CURL_FAIL_ONCE_SAMPLING: the radio stops answering once py-spy samples.
 FAKE_CURL = """#!/usr/bin/env bash
 [[ -n "${FAKE_CURL_FAIL:-}" ]] && exit 7
+[[ -n "${FAKE_CURL_FAIL_ONCE_SAMPLING:-}" && -e "$FAKE_DIR/spy-started" ]] && exit 28
 [[ -n "${FAKE_CURL_SLOW_AFTER_FAIL:-}" && -e "$FAKE_DIR/spy-failed" ]] && /bin/sleep 1
 echo '{"ok":true,"listeners":7,"maxListeners":15}'
 """
@@ -157,7 +172,9 @@ def test_summary(tmp_path: Path):
     assert "listeners=7.0  radio_cpu=30.0%  caddy_cpu=10.0%  (12 rows)" in summary
     assert "listeners=7.0  radio_cpu=30.0%  caddy_cpu=10.0%  (6 rows)" in summary
     assert summary.count("host us=25.0%  sy=10.0%  steal=15.0%  (2 samples)") == 2
-    assert "warning" not in summary
+    assert "the host was" not in summary
+    assert "aborted" not in summary
+    assert "py-spy warnings" not in summary
     assert "100 non-idle samples of about 600 per thread (17% busy, all threads)" in summary
     self_time = summary.split("by self time")[1].split("== top 25")[0]
     assert "  50.0%  deflate (zlib)" in self_time
@@ -191,8 +208,10 @@ def test_py_spy_settings_and_windows(tmp_path: Path):
     assert (tmp_path / "vmstat-args").read_text().splitlines() == ["-n 5 13", "-n 5 10"]
 
 
-# Value: protects=the cap on how long py-spy may pause the process that streams every listener's audio, windows that line up with the 5 s samples, and --force only as the first argument; fails_when=the 30-300 s bounds, the step-of-5 check, the number check or the argument count check are removed; why_new=new script; seam=none; no_claim=that 300 s of pauses is inaudible
-@pytest.mark.parametrize("args", [["301"], ["29"], ["33"], ["2m"], ["30", "--force"], ["--force", "30", "40"]])
+# Value: protects=the cap on how long py-spy may pause the process that streams every listener's audio, windows that line up with the 5 s samples, and --force only as the first argument; fails_when=the 30-300 s bounds, the step-of-5 check, the number check (incl. no leading zero, which bash reads as octal while py-spy reads decimal) or the argument count check are removed; why_new=new script; seam=none; no_claim=that 300 s of pauses is inaudible
+@pytest.mark.parametrize(
+    "args", [["301"], ["29"], ["33"], ["2m"], ["0454"], ["060"], ["30", "--force"], ["--force", "30", "40"]]
+)
 def test_rejects_bad_arguments(tmp_path: Path, args: list[str]):
     result, out = run_profile(tmp_path, *args)
     assert result.returncode == 2
@@ -394,6 +413,64 @@ def test_failed_py_spy_resumes_the_radio_before_the_samplers_finish(tmp_path: Pa
             time.sleep(0.05)
         assert script.poll() is None  # the samplers are still running
         assert script.wait(timeout=20) == 0
+    finally:
+        radio.kill()
+        radio.wait()
+
+
+# Value: protects=py-spy never attaches to a pid that stopped being the radio's (a container restart during the 60 s baseline can hand the old pid to any process, which root would then pause); fails_when=the pid re-check before attaching is removed; why_new=Codex finding in the final review; seam=fake docker on PATH; no_claim=how fast the kernel reuses a pid
+def test_radio_restart_during_the_baseline_is_not_profiled(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30", FAKE_PID_CHANGES="1")
+    assert result.returncode == 3
+    assert not (tmp_path / "py-spy-args").exists()
+    assert "not profiled: the radio container restarted during the baseline" in (out / "summary.txt").read_text()
+
+
+# Value: protects=the memory gate fails closed: unreadable free -m doesn't count as enough memory for py-spy --native; fails_when=a non-numeric or empty reading is let through; why_new=specialist finding in the final review; seam=fake free on PATH; no_claim=why a real free -m would fail
+def test_unreadable_memory_is_not_profiled(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30", FAKE_FREE_FAIL="1")
+    assert result.returncode == 3
+    assert not (tmp_path / "py-spy-args").exists()
+    assert "not profiled: couldn't read free memory" in (out / "summary.txt").read_text()
+
+
+# Value: protects=py-spy is the OOM killer's first choice (oom_score_adj 1000), not the radio and everyone's audio; fails_when=the oom_score_adj write is removed or its redirect breaks; why_new=specialist finding in the final review; seam=fake py-spy reads /proc/self/oom_score_adj; no_claim=macOS (no /proc; skipped)
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/<pid>/oom_score_adj")
+def test_py_spy_is_the_oom_killers_first_choice(tmp_path: Path):
+    result, _ = run_profile(tmp_path, "30")
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "py-spy-oom").read_text().strip() == "1000"
+
+
+# Value: protects=py-spy's own "behind in sampling" warning reaches the summary on a run that otherwise succeeds, so numbers that read low are flagged; fails_when=the warnings block is removed or its pattern stops matching; why_new=red team and adversarial findings in the final review; seam=fake py-spy on PATH; no_claim=py-spy's exact wording in every version
+def test_py_spy_warnings_reach_the_summary(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30", FAKE_SPY_WARN="1")
+    assert result.returncode == 0, result.stderr
+    summary = (out / "summary.txt").read_text()
+    assert "== py-spy warnings" in summary
+    assert "behind in sampling" in summary
+    assert "by self time" in summary
+
+
+# Value: protects=listeners' audio when py-spy starves the radio: two /healthz probes in a row without an answer stop py-spy and resume the radio, without anyone at the keyboard; fails_when=the watchdog is removed, needs more misses, or stops py-spy without the SIGCONT; why_new=owner-approved watchdog from the final review; seam=fake py-spy that hangs, fake curl that fails once sampling starts, a stopped sleep standing in for uvicorn; no_claim=that real /healthz misses mean py-spy is the cause
+@pytest.mark.timeout(30)
+def test_watchdog_stops_py_spy_when_the_radio_stops_answering(tmp_path: Path):
+    radio = subprocess.Popen(["/bin/sleep", "60"])
+    try:
+        os.kill(radio.pid, signal.SIGSTOP)
+        cmd, env = setup(
+            tmp_path, FAKE_SPY_HANG="1", FAKE_CURL_FAIL_ONCE_SAMPLING="1", FAKE_RADIO_PID=str(radio.pid)
+        )
+        result = subprocess.run([*cmd, "30"], capture_output=True, text=True, env=env, timeout=25)
+        assert result.returncode == 0, result.stderr
+        spy_pid = int((tmp_path / "spy-pid").read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(spy_pid, 0)
+        assert not _stopped(radio.pid)
+        summary = (tmp_path / "out" / "summary.txt").read_text()
+        assert "== aborted: the radio stopped answering /healthz" in summary
+        # Two missed probes, then nothing more.
+        assert summary.count("listeners=-") == 1 and "(2 rows)" in summary
     finally:
         radio.kill()
         radio.wait()
