@@ -29,4 +29,13 @@ describe("/owners", () => {
     const lede = container.querySelector(".owners-lede")?.textContent?.replace(/\s+/g, " ");
     expect(lede).toContain("shows as skywave followed by it, like “skywave N0CALL”");
   });
+
+  // Value: protects=owners are told what the radio service's receiver log keeps about their receiver, that nothing about listeners is written, and its size bound (#144, owner D8); fails_when=the bullet is dropped or loses the no-listener or 25 MB statements; why_new=the receiver log is new in this release; seam=none; no_claim=that the log's contents match (radio tests)
+  it("tells owners what the receiver log keeps", () => {
+    const { container } = render(<OwnersPage />);
+    const text = container.querySelector("#owners-what")?.parentElement?.textContent?.replace(/\s+/g, " ");
+    expect(text).toContain("keeps a short log of each receiver’s answers");
+    expect(text).toContain("Nothing about who was listening is written.");
+    expect(text).toContain("25 MB at most");
+  });
 });
