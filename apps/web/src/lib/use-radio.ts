@@ -361,14 +361,18 @@ export function useRadio() {
     nodeRef.current = node;
     gainRef.current = gain;
     analyserRef.current = analyser;
-    ctx.onstatechange = () => {
+    const onState = () => {
       if (ctxRef.current !== ctx) return;
       const running = ctx.state === "running";
-      // Samples kept coming while it was stopped: drop them, or the sound
-      // would play seconds late from then on.
+      // What the player held when it stopped is stale now: drop it, or the
+      // sound would play late from then on.
       if (running) node.port.postMessage({ type: "reset" });
       setAudioSuspended(!running && ctx.state !== "closed");
     };
+    ctx.onstatechange = onState;
+    // A pause while the worklet loaded (a call, a tab switch) fired before
+    // anything listened for it.
+    onState();
     await ctx.resume();
   }, []);
 
@@ -570,7 +574,11 @@ export function useRadio() {
         console.warn(`The radio service sent ${what}. Try reloading.`);
       }
       if (audio) {
-        nodeRef.current?.port.postMessage({ type: "samples", data: audio }, [audio.buffer]);
+        // Nothing plays while the browser has the sound stopped (a phone's
+        // hidden tab): queued, it would make the sound run late on resume (#137).
+        if (ctxRef.current?.state === "running") {
+          nodeRef.current?.port.postMessage({ type: "samples", data: audio }, [audio.buffer]);
+        }
         if (!heardAudioRef.current && !tuningRef.current) setHeardAudioBoth(true);
       }
       if (row) for (const fn of listenersRef.current) fn(row, rateRef.current);

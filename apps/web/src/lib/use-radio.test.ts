@@ -1642,6 +1642,45 @@ describe("coming back to a tab the phone paused (#137)", () => {
     expect(resets()).toBe(1);
   });
 
+  // Value: protects=audio that arrives while the phone has the sound stopped never reaches the player, so the sound is live on return whatever order iOS delivers things in; fails_when=handleBinary posts samples while the context isn't running; why_new=#137 adversarial review: a backlog landing after the reset left sound seconds late; seam=Web Audio faked; no_claim=real iOS event order
+  it("plays nothing that arrives while the sound is stopped", async () => {
+    const { ctx } = await listening();
+    const ws = FakeSocket.instances[0]!;
+    const posted = () => workletMessages.mock.calls.filter(([msg]) => msg?.type === "samples").length;
+
+    act(() => ws.frame(3, new Int16Array([1, 2])));
+    expect(posted()).toBe(0);
+
+    await act(async () => setVisibility("visible"));
+    expect(ctx.state).toBe("running");
+    act(() => ws.frame(3, new Int16Array([1, 2])));
+    expect(posted()).toBe(1);
+  });
+
+  // Value: protects=a pause while the first Listen's worklet loads still shows the tap prompt once the receiver plays; fails_when=ensureAudio doesn't read the context's state when it starts listening for changes; why_new=#137 adversarial review; seam=a stalled worklet load and a resume that settles while still interrupted; no_claim=whether real iOS settles resume() that way
+  it("notices a pause that came while the player was still loading", async () => {
+    let finishAudio!: () => void;
+    workletReady = new Promise((resolve) => (finishAudio = resolve));
+    const { result, unmount } = renderHook(() => useRadio());
+    let pending!: Promise<void>;
+    act(() => {
+      pending = result.current.tune(tuning);
+    });
+    const ctx = FakeAudioContext.instances[0]!;
+    ctx.setState("interrupted"); // a call comes in; nothing is listening for it yet
+    vi.spyOn(ctx, "resume").mockResolvedValueOnce(undefined); // settles, still interrupted
+
+    await act(async () => {
+      finishAudio();
+      await pending;
+    });
+    act(() => FakeSocket.instances[0]!.status("listening", { host: tuning.host, port: tuning.port }));
+
+    expect(result.current.audioSuspended).toBe(true);
+    // Its context stays interrupted; a later test's visibilitychange must not reach it.
+    unmount();
+  });
+
   // Value: protects=an iPhone's "interrupted" state (a call, a backgrounded tab) counts as paused and resumes on return like "suspended"; fails_when=the checks narrow to state === "suspended"; why_new=#137 review: only "suspended" was driven; seam=Web Audio faked; no_claim=when real iOS reports interrupted vs suspended
   it("resumes after an iOS interruption too", async () => {
     const { result, ctx } = await listening("interrupted");
