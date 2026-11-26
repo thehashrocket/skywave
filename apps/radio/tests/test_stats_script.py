@@ -42,7 +42,8 @@ PROC_TCP = textwrap.dedent(
 )
 
 # A fake docker: each subcommand the script runs, plus switches to make the
-# exec or logs calls fail. tcp6 is absent (exit 1), as on a kernel without IPv6.
+# exec or logs calls fail. Without a proc_tcp6 file, tcp6 is absent (exit 1), as
+# on a kernel without IPv6.
 FAKE_DOCKER = """#!/usr/bin/env bash
 case "$1" in
   compose) case "$6" in radio) echo radioid;; caddy) echo caddyid;; esac ;;
@@ -50,15 +51,18 @@ case "$1" in
   inspect)
     case "$3" in
       *Created*) echo "${FAKE_CREATED:-2026-11-20T00:00:00.000000000Z}" ;;
-      *) echo "  radio started=2026-11-25T06:00:00Z  health=healthy" ;;
+      *Health*) echo "  radio started=${FAKE_STARTED:-2026-11-25T06:00:00Z}  health=healthy" ;;
+      *StartedAt*) echo "${FAKE_STARTED:-2026-11-25T06:00:00Z}" ;;
+      *) echo "unexpected docker inspect: $*" >&2; exit 9 ;;
     esac ;;
   exec)
     [ -n "${FAKE_FAIL_EXEC:-}" ] && { echo "Error: container is restarting" >&2; exit 1; }
     case "$3 $4" in
       "cat /proc/net/tcp") cat "$FAKE_DIR/proc_tcp" ;;
-      "cat /proc/net/tcp6") exit 1 ;;
+      "cat /proc/net/tcp6") [ -f "$FAKE_DIR/proc_tcp6" ] || exit 1; cat "$FAKE_DIR/proc_tcp6" ;;
       # The script the real container runs, with RECEIVER_LOG set as in production.
       "sh -c")
+        [ -n "${FAKE_FAIL_FILE:-}" ] && { echo "Error: container is restarting" >&2; exit 1; }
         if [ -f "$FAKE_DIR/receivers.log" ]; then RECEIVER_LOG="$FAKE_DIR/receivers.log" sh -c "$5"
         else sh -c "$5"; fi ;;
       *) echo "unexpected docker exec: $*" >&2; exit 9 ;;
@@ -82,6 +86,7 @@ def run_stats(
     logs: str,
     sar: str | None = None,
     receivers: str | None = None,
+    files: dict[str, str] | None = None,
     **env_extra: str,
 ) -> subprocess.CompletedProcess[str]:
     # A copy of the repo's layout: the script cds to its parent's parent and
@@ -109,6 +114,8 @@ def run_stats(
         lines = receivers.splitlines(keepends=True)
         (tmp_path / "receivers.log.1").write_text("".join(lines[:2]))
         (tmp_path / "receivers.log").write_text("".join(lines[2:]))
+    for name, text in (files or {}).items():
+        (tmp_path / name).write_text(text)
     if sar is not None:
         fake_sar = bin_dir / "sar"
         fake_sar.write_text(f"#!/usr/bin/env bash\ncat <<'OUT'\n{sar}OUT\n")
@@ -190,20 +197,59 @@ def test_merges_file_and_container_lines(tmp_path: Path):
 def test_label_after_recreate(tmp_path: Path):
     recreated = run_stats(tmp_path / "a", LOGS, FAKE_CREATED="2026-11-26T10:00:01.123456789Z").stdout
     assert "(since 2026-11-26T10:00:01Z; earlier hours were in the previous container)" in recreated
-    # started 2026-11-25T06:00Z per the fake inspect; created long before: logs kept, no label
-    kept = run_stats(tmp_path / "b", LOGS).stdout
+    # A crash restart inside the window keeps the container (created long before)
+    # and its logs: no label.
+    kept = run_stats(tmp_path / "b", LOGS, FAKE_STARTED="2026-11-26T12:00:00Z").stdout
     assert "previous container" not in kept
 
 
-# Value: protects=a failed docker exec or docker logs skips only its own section, so the rest of the daily report still posts; fails_when=any exec or logs call loses its fallback under set -euo pipefail; why_new=stats.sh:46 ended the script on a failed exec (D5); seam=fake docker on PATH; no_claim=docker's real error behaviour while a container restarts
+# Value: protects=a failed docker exec or docker logs skips only its own section, so the rest of the daily report still posts, and a receiver section that read nothing says so instead of "no lines"; fails_when=any exec or logs call loses its fallback under set -euo pipefail, or both reads failing prints the quiet-day message; why_new=stats.sh:46 ended the script on a failed exec (D5); seam=fake docker on PATH; no_claim=docker's real error behaviour while a container restarts
 def test_failed_exec_and_logs_keep_reporting(tmp_path: Path):
     out = run_stats(tmp_path, LOGS, sar=SAR, receivers=RECEIVERS, FAKE_FAIL_EXEC="1", FAKE_FAIL_LOGS="1")
     assert out.returncode == 0, out.stderr
     assert "(couldn't read the container's sockets)" in out.stdout
     assert "(couldn't read the container's logs)" in out.stdout
-    assert "(couldn't read the receiver log file" in out.stdout
-    assert "(no receiver-log lines in the last 24 h)" in out.stdout
+    # Nothing was read, so it must not read as a quiet day.
+    assert "(couldn't read the receiver log file or the container's logs)" in out.stdout
+    assert "no receiver-log lines" not in out.stdout
     assert "  10:00   65.0 /  80.0" in out.stdout
+
+
+# Value: protects=when only the receiver log file can't be read, the container-log receiver lines are still counted, as the message promises; fails_when=a failed file read discards or blanks the container-log events; why_new=the failure test fails both reads at once, so it can't see this; seam=fake docker on PATH; no_claim=docker's real error output
+def test_file_read_fails_still_counts_container_lines(tmp_path: Path):
+    out = run_stats(tmp_path, LOGS, receivers=RECEIVERS, FAKE_FAIL_FILE="1").stdout
+    assert "(couldn't read the receiver log file; only the container's logs are counted)" in out
+    assert "2  event=refused code=full" in out  # the two container-log lines, not the file's
+    assert "event=listening" not in out  # file-only line
+
+
+# Value: protects=IPv6 browser and Kiwi sockets are added to the open-socket counts; fails_when=the tcp6 read is dropped or its output isn't appended; why_new=every other test runs without tcp6; seam=fake docker on PATH; no_claim=the kernel's tcp6 columns beyond state and local port
+def test_counts_tcp6_sockets(tmp_path: Path):
+    tcp6 = textwrap.dedent(
+        """\
+          sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+           0: 00000000000000000000000001000000:223D 00000000000000000000000002000000:D433 01 00000000:00000000 00:00000000 00000000     0        0 5
+           1: 00000000000000000000000001000000:9C41 00000000000000000000000003000000:1F99 01 00000000:00000000 00:00000000 00000000     0        0 6
+        """
+    )
+    out = run_stats(tmp_path, LOGS, files={"proc_tcp6": tcp6}).stdout
+    assert "browser_sockets=3  kiwi_sockets=2" in out
+
+
+# Value: protects=the older rotated copies (.2 to .4) inside the window are counted too; fails_when=the cat list drops .2, .3 or .4; why_new=the other tests only fill the live file and .1; seam=fake docker runs the real in-container sh against these files; no_claim=the Droplet's real rotation timing
+def test_reads_older_rotated_copies(tmp_path: Path):
+    out = run_stats(
+        tmp_path,
+        LOGS_NO_EVENTS,
+        files={
+            "receivers.log.4": f"2026-11-26 08:00:00,000 event=refused host={KIWI_HOST} port=8073 code=skywave_cap detail=- audio_s=0.0 listeners=15\n",
+            "receivers.log.3": f"2026-11-26 08:30:00,000 event=error host={KIWI_HOST} port=8073 code=timeout detail=- audio_s=0.0 listeners=14\n",
+            "receivers.log.2": f"2026-11-26 09:00:00,000 event=error host={KIWI_HOST} port=8073 code=busy detail=- audio_s=0.0 listeners=13\n",
+            "receivers.log": f"2026-11-26 10:00:00,000 event=listening host={KIWI_HOST} port=8073 code=- detail=- audio_s=0.0 listeners=12\n",
+        },
+    ).stdout
+    for counted in ("event=refused code=skywave_cap", "event=error code=timeout", "event=error code=busy", "event=listening code=-"):
+        assert f"1  {counted}" in out
 
 
 # `sar -u` as LC_ALL=C prints it: a header, 10-minute samples, then an Average line.

@@ -107,9 +107,15 @@ main() {
   echo
   echo "== receiver log, last 24 h"
   if (( ! file_ok )); then
-    echo "  (couldn't read the receiver log file; only the container's logs are counted)"
+    if (( logs_ok )); then
+      echo "  (couldn't read the receiver log file; only the container's logs are counted)"
+    else
+      echo "  (couldn't read the receiver log file or the container's logs)"
+    fi
   fi
-  if [[ -z "$events" ]]; then
+  if (( ! file_ok && ! logs_ok )); then
+    : # nothing was read: "no lines" would read as a quiet day
+  elif [[ -z "$events" ]]; then
     echo "  (no receiver-log lines in the last 24 h)"
   else
     echo "  by event and code:"
