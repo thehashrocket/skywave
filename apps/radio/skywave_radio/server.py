@@ -6,13 +6,17 @@ Run with:  uvicorn skywave_radio.server:app --port 8765
 from __future__ import annotations
 
 import asyncio
+import atexit
 import collections
 import contextlib
 import hmac
 import ipaddress
 import json
 import logging
+import os
+import queue
 import time
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from typing import Any
 
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, status
@@ -21,7 +25,7 @@ from fastapi.responses import JSONResponse
 from .config import Settings, is_local_origin, origin_allowed
 from .hostguard import is_public_address
 from .noise import BAND_IDS, WINDOW_DAYS, NoiseSampler, NoiseStore, utc_slot
-from .session import ClientGone, ListenSession, ScanCache, Slots, SweepTimes
+from .session import ClientGone, ListenSession, ScanCache, Slots, SweepTimes, receiver_log
 from .session import scan_stragglers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -56,6 +60,89 @@ NOISE_CACHE_S = 300
 NOISE_PAIR_MAX = 260
 # How long GET /noise waits on the store's thread before answering 503.
 NOISE_READ_TIMEOUT_S = 5.0
+# RECEIVER_LOG's size: rotated at this many bytes, keeping this many old files
+# (25 MB in all; a line is about 120 bytes).
+RECEIVER_LOG_BYTES = 5 * 1024 * 1024
+RECEIVER_LOG_BACKUPS = 4
+# Lines waiting for the writer thread, at most. Past this (the disk under the
+# file stalled) new lines are dropped and counted, so the log can't grow the
+# service's memory until it is killed (owner D2): about 2 MB of records.
+RECEIVER_LOG_QUEUE = 10_000
+
+
+class _DroppingQueueHandler(QueueHandler):
+    """Queues receiver-log lines for the writer thread; drops and counts them
+    when the queue is full, and says how many on the next line that fits."""
+
+    def __init__(self, lines: queue.Queue[logging.LogRecord]):
+        super().__init__(lines)
+        self.dropped = 0
+
+    def enqueue(self, record: logging.LogRecord) -> None:
+        lines = self.queue
+        assert isinstance(lines, queue.Queue)
+        if self.dropped and not lines.full():
+            note = logging.makeLogRecord(
+                {"name": record.name, "levelno": logging.WARNING, "levelname": "WARNING",
+                 "msg": f"event=dropped lines={self.dropped}"}
+            )
+            try:
+                lines.put_nowait(self.prepare(note))
+                self.dropped = 0
+            except queue.Full:
+                pass
+        try:
+            lines.put_nowait(record)
+        except queue.Full:
+            self.dropped += 1
+
+
+# Each RECEIVER_LOG file: its handler, the queue handler on receiver_log, and the writer thread.
+_receiver_files: dict[str, tuple[RotatingFileHandler, _DroppingQueueHandler, QueueListener]] = {}
+
+
+def attach_receiver_log(path: str | None) -> RotatingFileHandler | None:
+    """Also write receiver_log to `path` (rotated), once per path.
+
+    The event loop only queues each line; a writer thread does the file write and
+    any rotation, so a slow or full disk never holds up anyone's audio (owner D4).
+    A file that can't be opened never stops the service: it says so and the
+    lines still go to stdout.
+    """
+    if not path:
+        return None
+    full = os.path.abspath(path)
+    if full in _receiver_files:
+        return _receiver_files[full][0]
+    try:
+        handler = RotatingFileHandler(full, maxBytes=RECEIVER_LOG_BYTES, backupCount=RECEIVER_LOG_BACKUPS, encoding="utf-8")
+    except OSError as e:
+        log.warning("can't write the receiver log to %s (%r); it goes to stdout only", full, e)
+        return None
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    lines: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=RECEIVER_LOG_QUEUE)
+    writer = QueueListener(lines, handler)
+    writer.start()
+    queued = _DroppingQueueHandler(lines)
+    receiver_log.addHandler(queued)
+    # The file is the copy that matters: off stdout too, whose writes happen on
+    # the event loop like any other log line (owner D1). Unset, they stay on stdout.
+    receiver_log.propagate = False
+    _receiver_files[full] = (handler, queued, writer)
+    return handler
+
+
+def close_receiver_logs() -> None:
+    """Stop each RECEIVER_LOG writer thread once it has written what's queued (at exit)."""
+    while _receiver_files:
+        _, (handler, queued, writer) = _receiver_files.popitem()
+        receiver_log.removeHandler(queued)
+        writer.stop()
+        handler.close()
+    receiver_log.propagate = True
+
+
+atexit.register(close_receiver_logs)
 
 
 async def _close_bounded(ws: WebSocket, code: int, reason: str) -> None:
@@ -149,6 +236,7 @@ def check_settings(settings: Settings) -> None:
 def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
     settings = settings or Settings.from_env()
     check_settings(settings)
+    attach_receiver_log(settings.receiver_log)
     # Every socket cleanup, from creation until it finishes (track_cleanup):
     # held so it isn't garbage-collected mid-run, and so shutdown can wait on it.
     cleanups: set[asyncio.Task[None]] = set()

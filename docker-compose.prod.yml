@@ -15,6 +15,9 @@ services:
       # Caddy's fixed address on the network below, and nothing else: only it
       # may set X-Forwarded-For, so per-IP limits see real users.
       FORWARDED_ALLOW_IPS: 172.30.0.2
+      # The receiver log (#144) on the volume below, so a rebuild keeps it:
+      #   docker compose -f docker-compose.prod.yml exec radio cat /data/receivers.log
+      RECEIVER_LOG: /data/receivers.log
     # No ports: the service is reachable only through Caddy on this network.
     expose:
       - "8765"

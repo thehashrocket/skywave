@@ -20,11 +20,14 @@ export type Tuning = {
 
 /**
  * Every `code` the radio service puts on an error status: KiwiError codes
- * (apps/radio/skywave_radio/kiwi.py) and HostRejected codes (hostguard.py).
+ * (apps/radio/skywave_radio/kiwi.py), HostRejected codes (hostguard.py) and
+ * the service's own coded refusals (BadRequest in session.py).
  * apps/radio/tests/test_error_codes.py fails if the two sides drift.
  */
 export const RADIO_ERROR_CODES = [
   "busy",
+  // The service already has its most listeners on that receiver (MAX_SESSIONS_PER_RECEIVER).
+  "skywave_cap",
   "no_apps",
   "down",
   "unreachable",
@@ -41,6 +44,11 @@ export const RADIO_ERROR_CODES = [
 export type RadioErrorCode = (typeof RADIO_ERROR_CODES)[number];
 
 const KNOWN_CODES: ReadonlySet<string> = new Set(RADIO_ERROR_CODES);
+/**
+ * Codes the service sends only to a page that lists them on its tune: a page
+ * built before one would read it as the service's own failure (#144).
+ */
+const NEW_CODES: readonly RadioErrorCode[] = ["skywave_cap"];
 // How long a new connection to the radio service may take to open.
 const CONNECT_TIMEOUT_MS = 10_000;
 // The service closes a socket left idle (nothing playing, no messages) with
@@ -67,6 +75,21 @@ export type RadioStatus = {
   /** Where the receiver is tuned, as the service has it (it keeps the old one after a refused retune). */
   freqKhz?: number;
   mode?: Mode;
+};
+
+/**
+ * A switch the service refused before anything stopped (#144, owner D5/D8): the
+ * receiver asked for (`host`/`port`, refused with `code`) never started, and
+ * the one in `stillOn` plays on. Its own state, not a status, so a status
+ * arriving with it can't overwrite it; `seq` tells one refusal from the next.
+ */
+export type RadioRefusal = {
+  seq: number;
+  host: string;
+  port: number;
+  code: RadioErrorCode;
+  message: string;
+  stillOn: { host: string; port: number };
 };
 
 /** The service's tuning once it has answered every tune sent while it played. */
@@ -260,6 +283,8 @@ export function useRadio() {
     refusedRef.current = false;
   }, []);
   const [settled, setSettled] = useState<Settled | null>(null);
+  const [refusal, setRefusal] = useState<RadioRefusal | null>(null);
+  const refusalSeq = useRef(0);
   // retune: a dial move, which the service applies only to a session still
   // playing; one that arrives after its session ended opens no Kiwi channel.
   const sendTune = useCallback((ws: WebSocket, t: Tuning, retune = false) => {
@@ -269,7 +294,9 @@ export function useRadio() {
     const ident = retune ? undefined : loadIdent();
     ws.send(
       JSON.stringify(
-        retune ? { type: "tune", ...t, retune: true } : { type: "tune", ...t, ...(ident ? { ident } : {}) },
+        retune
+          ? { type: "tune", ...t, retune: true, codes: NEW_CODES }
+          : { type: "tune", ...t, codes: NEW_CODES, ...(ident ? { ident } : {}) },
       ),
     );
   }, []);
@@ -471,6 +498,34 @@ export function useRadio() {
           port,
           freqKhz,
           mode,
+        });
+      } else if (msg.type === "refused") {
+        // A switch refused before anything stopped: the receiver in stillOn
+        // plays on, and the service's own status for it follows (which settles
+        // the tune's owed answer as usual). Malformed ones are ignored.
+        const host = typeof msg.host === "string" ? msg.host : undefined;
+        const port = typeof msg.port === "number" ? msg.port : undefined;
+        const code =
+          typeof msg.code === "string" && KNOWN_CODES.has(msg.code) ? (msg.code as RadioErrorCode) : undefined;
+        const still = msg.stillOn as { host?: unknown; port?: unknown } | undefined;
+        if (
+          host === undefined ||
+          port === undefined ||
+          !code ||
+          !still ||
+          typeof still.host !== "string" ||
+          typeof still.port !== "number"
+        )
+          return;
+        const pending = pendingRef.current;
+        if (pending && pending.host.toLowerCase() === host.toLowerCase() && pending.port === port) setTuningBoth(false);
+        setRefusal({
+          seq: ++refusalSeq.current,
+          host,
+          port,
+          code,
+          message: typeof msg.message === "string" ? msg.message : "",
+          stillOn: { host: still.host, port: still.port },
         });
       } else if (msg.type === "view") {
         // Only about the view asked for now: an older one's error is moot.
@@ -899,6 +954,7 @@ export function useRadio() {
 
   return {
     status,
+    refusal,
     settled,
     meter,
     tuning,

@@ -1,6 +1,6 @@
 import { track } from "@vercel/analytics";
 import { useEffect, useRef } from "react";
-import type { RadioStatus } from "./use-radio";
+import type { RadioRefusal, RadioStatus } from "./use-radio";
 
 /**
  * Vercel Analytics custom events for the two things page views can't show:
@@ -12,8 +12,19 @@ import type { RadioStatus } from "./use-radio";
  * - radio_error: each error status, with its code ("service" for our own,
  *   uncoded ones: the listener limit, a lost connection). Pick best hunting past
  *   full Kiwis sends several "busy"; unique visitors per code is the useful view.
+ *   Skywave's own cap (skywave_cap) isn't a receiver failing, so it never counts
+ *   here: before/after comparisons of radio_error need no filter (#144).
+ * - radio_refused: Skywave turned down a receiver for its own cap (skywave_cap),
+ *   as an error status or as a refused switch with the old station playing on.
+ *   Once per listener action: `picking` (a Pick best run or its watch) leaves it
+ *   to the run, which sends one at its end with how many receivers it met.
  */
-export function useListenTracking(status: RadioStatus, heardAudio: boolean): void {
+export function useListenTracking(
+  status: RadioStatus,
+  heardAudio: boolean,
+  refusal: RadioRefusal | null = null,
+  picking = false,
+): void {
   const countedRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -28,7 +39,20 @@ export function useListenTracking(status: RadioStatus, heardAudio: boolean): voi
     });
   }, [status, heardAudio]);
 
+  // `picking` is read when a status or refusal arrives, not as a trigger.
+  const pickingRef = useRef(picking);
+  pickingRef.current = picking;
+
   useEffect(() => {
-    if (status.state === "error") track("radio_error", { code: status.code ?? "service" });
+    if (status.state !== "error") return;
+    if (status.code !== "skywave_cap") track("radio_error", { code: status.code ?? "service" });
+    else if (!pickingRef.current) track("radio_refused", { code: status.code, receivers: 1, source: "listener" });
   }, [status]);
+
+  const lastRefusal = useRef(0);
+  useEffect(() => {
+    if (!refusal || refusal.seq === lastRefusal.current) return;
+    lastRefusal.current = refusal.seq;
+    if (!pickingRef.current) track("radio_refused", { code: refusal.code, receivers: 1, source: "listener" });
+  }, [refusal]);
 }

@@ -81,7 +81,7 @@ from typing import Any
 
 from .config import Settings
 from .dsp import CW_PITCH_HZ, MODES, PASSBANDS, Demodulator, Spectrum, encode_audio, encode_spectrum
-from .hostguard import HostRejected, is_public_address, resolve_receiver
+from .hostguard import HostRejected, is_public_address, loggable_host, resolve_receiver
 from .kiwi import CLOSE_TIMEOUT_S, DEFAULT_PORT, KiwiClient, KiwiError
 from .noise import OVERFLOW_HOLD_S, NoiseSampler
 from .rtty import RttyDecoder
@@ -89,6 +89,15 @@ from .scan import ScanResult, sweep
 from .waterfall import MAX_ZOOM, View, WaterfallClient, WaterfallFrame
 
 log = logging.getLogger(__name__)
+# One line per receiver outcome (#144): every error a Listen ends on, every
+# coded refusal of ours, and every receiver that starts playing, so failures can
+# be read as rates per receiver. `listeners` is the service's load at the time
+# (#146): a timeout under load may be us falling behind, not the Kiwi. Only
+# shaped values: a checked host, codes, KiwiError.detail and numbers; never a
+# listener's name or address. server.py can also send it to a file (RECEIVER_LOG).
+receiver_log = logging.getLogger("skywave_radio.receivers")
+# Always on, whatever level the root logger runs at.
+receiver_log.setLevel(logging.INFO)
 
 AUDIO_TAG = b"\x03"
 SPECTRUM_TAG = b"\x04"
@@ -101,6 +110,16 @@ METER_INTERVAL_S = 0.25
 # this we give up on it so it stops holding a slot and a volunteer's channel.
 # Long enough to ride out a Wi-Fi roam or a laptop waking up.
 SEND_TIMEOUT_S = 15.0
+# A session writes at most one receiver-log line per refusal of ours (receiver,
+# code) this often, so a page looping refused tunes, which dial nothing, can't
+# rotate the receiver log's history out (#144). The next line says how many it dropped.
+REFUSED_LOG_INTERVAL_S = 10.0
+# Receivers that throttle remembers per session, at most: past this, refusals of
+# the same code share one "host=<many>" key, so a page tuning ever-new dead
+# names can't grow a session's memory without limit (owner D4, run 2).
+REFUSED_LOG_KEYS = 256
+# The host the shared key logs as.
+MANY_RECEIVERS = "<many>"
 
 # Statuses list what this service can do, so a newer web app knows whether to ask.
 FEATURES = ["scan", "view", "decode"]
@@ -222,9 +241,19 @@ class BadRequest(Exception):
     `host`/`port` (like a KiwiError's), so the browser can move on to another
     one; uncoded means the request or this service, and Pick best stops."""
 
-    def __init__(self, message: str, *, code: str | None = None, host: str | None = None, port: int | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        host: str | None = None,
+        port: int | None = None,
+        detail: str | None = None,
+    ):
         super().__init__(message)
         self.code = code
+        # For the receiver log only, like KiwiError.detail.
+        self.detail = detail
         self.host = host
         self.port = port
 
@@ -470,6 +499,8 @@ class ListenSession:
         self._slot_holder: asyncio.Task[None] | None = None
         # The slot that holder's end releases.
         self._lease: Lease | None = None
+        # Refusal lines written to the receiver log: (host, port, code) -> (when, dropped since).
+        self._refused_logged: dict[tuple[str, object, str, str], tuple[float, int]] = {}
         self._demod: Demodulator | None = None
         self._spectrum: Spectrum | None = None
         self._mode = "am"
@@ -573,6 +604,9 @@ class ListenSession:
                 shown = f" {kind[:40]!r}" if isinstance(kind, str) else ""
                 raise BadRequest(f"Unknown message type{shown}.")
         except BadRequest as e:
+            if e.code is not None:
+                # Ours, about one receiver (our per-receiver cap, an owner's opt-out).
+                self._log_refused(e.host, e.port, e.code, detail=e.detail)
             await self._status("error", message=str(e), code=e.code, host=e.host, port=e.port)
             if self._pump_owns_receiver():
                 # Refused before anything changed: the session still plays. The
@@ -664,6 +698,10 @@ class ListenSession:
 
         public_only = msg.get("source") == "list"
         secure = msg.get("secure") is True
+        # A page that lists "skywave_cap" in `codes` knows that code; an older
+        # one (a tab left open) gets "busy" for our cap, as before (#144).
+        codes = msg.get("codes")
+        knows_cap = isinstance(codes, list) and "skywave_cap" in codes
         # Same receiver means same address dialed under the same rule: a list
         # tune of an address a typed tune reached privately must restart, but
         # with private hosts off (production) the two are one receiver.
@@ -731,13 +769,30 @@ class ListenSession:
                     await self._decode_reply()
             return
 
+        receiver = (host, port)
+        current = self._lease
+        if (
+            knows_cap
+            and self._pump_owns_receiver()
+            and self._slots.receiver_full(receiver)
+            and not (current is not None and current.receiver == receiver)
+        ):
+            # A switch onto a receiver at our own cap, from a page that knows
+            # skywave_cap: refused before anything changes, so the station
+            # playing keeps playing on its frequency (owner D5, #144). One
+            # "refused" message says so, then the session's own status answers
+            # the tune as usual. An error status followed by that status would
+            # be merged into one render on the page and lost (owner D8). An
+            # older page gets the old order below: stop, then "busy".
+            await self._refuse_switch(self._receiver_full(host, port, knows_cap))
+            return
+
         if self._freq_khz and freq != self._freq_khz:
             # Another receiver on another frequency: same rule as a retune. (A
             # mark set before the first Listen is for that Listen: kept.)
             self._forget_mark()
         self._freq_khz = freq
 
-        receiver = (host, port)
         # Keep the slot the old pump holds: its done callback then releases nothing.
         old_holder = self._slot_holder
         lease = self._lease
@@ -772,11 +827,11 @@ class ListenSession:
         if handing_over:
             if not self._slots.move(lease, receiver):
                 self._slots.release(lease)
-                raise self._receiver_full(host, port)
+                raise self._receiver_full(host, port, knows_cap)
         else:
             taken = self._slots.acquire(receiver, self._owner)
             if taken == "receiver":
-                raise self._receiver_full(host, port)
+                raise self._receiver_full(host, port, knows_cap)
             if taken == "owner":
                 n = self._slots.per_owner
                 raise BadRequest(
@@ -803,15 +858,89 @@ class ListenSession:
         self._pump.add_done_callback(self._pump_done)
         self._pump.add_done_callback(self._mark_idle)
 
-    def _receiver_full(self, host: str, port: int) -> BadRequest:
-        # Coded "busy", like a full Kiwi: another receiver may well have room.
+    def _log_receiver(
+        self,
+        event: str,
+        host: object,
+        port: object,
+        *,
+        code: str | None = None,
+        detail: str | None = None,
+        audio_s: float = 0.0,
+        suppressed: int = 0,
+    ) -> None:
+        """One receiver_log line (see there); `suppressed` adds how many like it were dropped."""
+        receiver_log.info(
+            "event=%s host=%s port=%s code=%s detail=%s audio_s=%.1f listeners=%d%s",
+            event,
+            MANY_RECEIVERS if host is MANY_RECEIVERS else loggable_host(host),
+            port if isinstance(port, int) and not isinstance(port, bool) else "-",
+            code or "-",
+            detail or "-",
+            audio_s,
+            self._slots.active,
+            f" suppressed={suppressed}" if suppressed else "",
+        )
+
+    def _log_refused(
+        self, host: object, port: object, code: str, *, detail: str | None = None, event: str = "refused"
+    ) -> None:
+        """A receiver_log line for a refusal that dialed no Kiwi (ours, or a
+        lookup's), at most once per REFUSED_LOG_INTERVAL_S for the same
+        receiver, code and event; flush_refused_counts() writes what's left at close."""
+        which = (loggable_host(host), port, code, event)
+        if which not in self._refused_logged and len(self._refused_logged) >= REFUSED_LOG_KEYS:
+            which = (MANY_RECEIVERS, None, code, event)
+            host, port = MANY_RECEIVERS, None
+        now = time.monotonic()
+        last = self._refused_logged.get(which)
+        if last is not None and now - last[0] < REFUSED_LOG_INTERVAL_S:
+            self._refused_logged[which] = (last[0], last[1] + 1)
+            return
+        dropped = last[1] if last is not None else 0
+        self._refused_logged[which] = (now, 0)
+        self._log_receiver(event, host, port, code=code, detail=detail, suppressed=dropped)
+
+    def flush_refused_counts(self) -> None:
+        """Write the refusals still held back by the throttle, so a session
+        that ends mid-burst doesn't lose them from the receiver log."""
+        for (host, port, code, event), (_, dropped) in self._refused_logged.items():
+            if dropped:
+                self._log_receiver(event, host, port, code=code, detail="throttled", suppressed=dropped)
+        self._refused_logged.clear()
+
+    async def _refuse_switch(self, e: BadRequest) -> None:
+        """Refuse a switch while this session's receiver keeps playing: a
+        "refused" message naming both receivers, then the session's own status."""
+        assert self._target is not None
+        still_host, still_port = self._target[0], self._target[1]
+        assert e.code is not None
+        self._log_refused(e.host, e.port, e.code, detail=e.detail)
+        await self._send_text(
+            {
+                "type": "refused",
+                "host": e.host,
+                "port": e.port,
+                "code": e.code,
+                "message": str(e),
+                "stillOn": {"host": still_host, "port": still_port},
+            }
+        )
+        await self._status("listening" if self._listening else "connecting")
+
+    def _receiver_full(self, host: str, port: int, knows_cap: bool) -> BadRequest:
+        # Its own code, not "busy" (#144): the receiver itself may have room, and
+        # Pick best moves on without spending one of its tries. A page from
+        # before that code would read it as our own failure and stop Pick best,
+        # so it gets "busy" (one try spent, as before); the log says which.
         n = self._slots.per_receiver
         return BadRequest(
             f"{host} already has {n} Skywave listener{'' if n == 1 else 's'}, the most Skywave puts on "
             "one volunteer's receiver. Try another receiver.",
-            code="busy",
+            code="skywave_cap" if knows_cap else "busy",
             host=host,
             port=port,
+            detail=f"skywave_cap={n}",
         )
 
     def _pump_done(self, pump: asyncio.Task[None]) -> None:
@@ -853,6 +982,8 @@ class ListenSession:
         # are closed and its slot is free, so a reconnect on "Stopped" or an
         # error finds the slot available.
         ending: dict[str, Any] | None = None
+        # Seconds of the receiver's audio sent to the browser, for the receiver log.
+        audio_s = 0.0
         # Cancelled (a Stop, a switch): a teardown error is logged, never raised
         # in place of the cancel, which would turn a switch into "Something broke".
         cancelled = False
@@ -878,6 +1009,7 @@ class ListenSession:
             self._listening = True
             self._start_decoder()
             await self._status("listening")
+            self._log_receiver("listening", host, port)
             if self._decode is not None or self._decode_error is not None:
                 await self._decode_reply()
 
@@ -907,6 +1039,7 @@ class ListenSession:
                             self._overflow_at = time.monotonic()
                         audio = self._demod.process(block.samples)
                         await self._send_bytes(AUDIO_TAG + encode_audio(audio))
+                        audio_s += block.samples.size / info.sample_rate
                         if self._decoder is not None:
                             await self._feed_decoder(block.samples)
                         for frame in self._spectrum.process(block.samples):
@@ -937,6 +1070,9 @@ class ListenSession:
                 log.info("looking up %s ended as the session was cancelled: %r", host, e)
                 cancelled = True
                 raise asyncio.CancelledError from e
+            # Throttled like our own refusals: a lookup dials no Kiwi, so a page
+            # looping dead names could otherwise flood the receiver log.
+            self._log_refused(host, port, e.code or "service", event="error")
             ending = self._status_payload("error", message=str(e), code=e.code, retryAfterMs=e.retry_after_ms)
         except KiwiError as e:
             if (current := asyncio.current_task()) is not None and current.cancelling():
@@ -946,6 +1082,7 @@ class ListenSession:
                 # not the receiver failing, so no error goes to the listener.
                 cancelled = True
                 raise asyncio.CancelledError from e
+            self._log_receiver("error", host, port, code=e.code, detail=e.detail, audio_s=audio_s)
             ending = self._status_payload("error", message=str(e), code=e.code)
         except asyncio.CancelledError:
             cancelled = True
@@ -958,6 +1095,8 @@ class ListenSession:
                 cancelled = True
                 raise asyncio.CancelledError from e
             log.exception("listen session crashed")
+            # The listener gets "Something broke"; the receiver log names the class only.
+            self._log_receiver("error", host, port, code="service", detail=type(e).__name__, audio_s=audio_s)
             ending = self._status_payload("error", message="Something broke in the radio service. Check its logs.")
         finally:
             self._listening = False
@@ -1091,6 +1230,7 @@ class ListenSession:
 
     async def close(self) -> None:
         await self.stop(None)
+        self.flush_refused_counts()
 
     async def _set_decode(self, msg: dict[str, Any]) -> None:
         mode, mark, reverse = msg.get("mode"), msg.get("markHz"), msg.get("reverse", False)

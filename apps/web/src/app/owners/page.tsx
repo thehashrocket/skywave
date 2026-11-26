@@ -50,6 +50,13 @@ export default function OwnersPage() {
               The connection comes from skywave&rsquo;s server, not the listener&rsquo;s browser, so your Kiwi
               sees the server&rsquo;s address rather than the listener&rsquo;s.
             </li>
+            <li>
+              <strong>skywave&rsquo;s server keeps a short log of each receiver&rsquo;s answers:</strong> your
+              receiver&rsquo;s address and port, whether it played or how it refused (full, a password, no apps,
+              unreachable), how long audio played, and how many skywave listeners there were in all. Nothing about
+              who was listening is written. The log is replaced as it grows (25 MB at most) and is used only to
+              find out why receivers refuse, so skywave can ask less of them.
+            </li>
           </ul>
         </section>
 

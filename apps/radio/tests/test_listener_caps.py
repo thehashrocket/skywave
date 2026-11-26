@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from skywave_radio.kiwi import KiwiInfo
 from skywave_radio.session import ListenSession, Slots
 
@@ -112,7 +114,8 @@ async def test_a_second_listener_on_a_full_receiver_gets_a_coded_busy():
     assert slots.active == 0
 
 
-async def test_switching_onto_a_full_receiver_frees_the_slot():
+# Value: protects=an older page (no `codes`) switching a playing session onto a receiver at our cap keeps the old order: the current receiver stops, its slot frees, and the answer is busy (#144); fails_when=old pages get the refused event they can't read, or the slot leaks; why_new=the switch path used to be tested only with busy; seam=none; no_claim=production MAX_SESSIONS_PER_RECEIVER
+async def test_an_old_page_switching_onto_a_full_receiver_frees_the_slot():
     slots = Slots(10, per_receiver=1)
     first, _ = session(slots)
     second, sent = session(slots)
@@ -125,6 +128,31 @@ async def test_switching_onto_a_full_receiver_frees_the_slot():
     assert slots.active == 1
     assert slots.on_receiver(("free.example", 8073)) == 0
     await first.close()
+
+
+# Value: protects=a page that knows skywave_cap switching onto a receiver at our cap is refused before anything stops: one "refused" message naming both receivers, then the session's own listening status, and the current receiver plays on with its slot and frequency (owner D5/D8, #144); fails_when=the cap is checked only after the old pump stops, the refusal goes out as an error status, or a refused switch changes the session; why_new=D5 reopened with the one-message design; seam=none; no_claim=how the page and Pick best read the message (web tests)
+async def test_switching_onto_a_full_receiver_keeps_the_current_one():
+    slots = Slots(10, per_receiver=1)
+    first, _ = session(slots)
+    second, sent = session(slots)
+    await first.handle(tune("busy.example"))
+    await second.handle(tune("free.example"))
+    await listening(first)
+    await listening(second)
+    before = len(sent)
+    await second.handle({**tune("busy.example", codes=["skywave_cap"]), "freqKhz": 9535})
+    answers = sent[before:]
+    assert [p.get("type", "status") for p in answers] == ["refused", "status"]
+    refused, status = answers
+    assert (refused["host"], refused["port"], refused["code"]) == ("busy.example", 8073, "skywave_cap")
+    assert refused["stillOn"] == {"host": "free.example", "port": 8073}
+    assert status["state"] == "listening" and status["host"] == "free.example"
+    assert not any(p.get("state") == "error" for p in answers)
+    assert second._listening and second._freq_khz == 7200
+    assert slots.active == 2
+    assert slots.on_receiver(("free.example", 8073)) == 1
+    await first.close()
+    await second.close()
 
 
 async def test_one_address_cant_hold_more_than_its_share():

@@ -10,7 +10,7 @@ import websockets.asyncio.client
 from websockets.asyncio.server import serve
 
 from skywave_radio import kiwi as kiwi_module
-from skywave_radio.kiwi import KiwiClient, KiwiError, parse_msg
+from skywave_radio.kiwi import KiwiClient, KiwiError, parse_msg, refusal_detail
 from skywave_radio.waterfall import WaterfallClient
 
 from .fakekiwi import FakeKiwi
@@ -50,34 +50,56 @@ async def test_handshake_and_iq_stream():
     assert abs(freq - 1500) < 30
 
 
+# Value: protects=each refusal keeps its code for the browser and its raw Kiwi value in detail for the receiver log (#144); fails_when=a code changes or detail drops the badp value; why_new=detail is new, the codes were covered; seam=none; no_claim=real Kiwi badp meanings (FakeKiwi)
 @pytest.mark.parametrize(
-    "reject,code",
+    "reject,code,detail",
     [
-        (b"MSG badp=1", "password"),
+        (b"MSG badp=1", "password", "badp=1"),
         # A second stream under another timestamp: refused, not a password problem.
-        (b"MSG badp=5", "busy"),
-        (b"MSG down", "down"),
-        (b"MSG redirect=http%3A%2F%2Fother.example%3A8073", "redirect"),
+        (b"MSG badp=5", "busy", "badp=5"),
+        (b"MSG down", "down", None),
+        # The redirect's URL is the Kiwi's text: it stays out of detail.
+        (b"MSG redirect=http%3A%2F%2Fother.example%3A8073", "redirect", None),
     ],
 )
-async def test_kiwi_refusals_raise_coded_errors(reject, code):
+async def test_kiwi_refusals_raise_coded_errors(reject, code, detail):
     async with FakeKiwi(reject=reject) as kiwi:
         client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=3)
         with pytest.raises(KiwiError) as e:
             await client.connect()
         assert e.value.code == code
+        assert e.value.detail == detail
         await client.close()
 
 
+# Value: protects=only digits from a Kiwi's refusal value reach the receiver log; anything else is "other" (#144 D5); fails_when=refusal_detail passes free text, unicode digits or long numbers through; why_new=new rule; seam=none; no_claim=none beyond protects
 @pytest.mark.parametrize(
-    "reject,code,says",
+    "name,value,detail",
     [
-        (b"MSG too_busy=4", "busy", "is full (4 listeners max)"),
-        (b"MSG too_busy", "busy", "is full. Try"),
-        (b"MSG too_busy=0", "no_apps", "only lets listeners in through its own web page"),
+        ("badp", "5", "badp=5"),
+        ("too_busy", "123456", "too_busy=123456"),
+        ("too_busy", None, "too_busy"),
+        ("badp", "1234567", "badp=other"),
+        ("badp", "", "badp=other"),
+        ("badp", "5 extra", "badp=other"),
+        ("badp", "\u00b2", "badp=other"),
+        ("badp", "alice@example.com", "badp=other"),
+        ("badp", "5\nevent=fake", "badp=other"),
     ],
 )
-async def test_too_busy_message_matches_the_reason(reject, code, says):
+def test_refusal_detail_keeps_only_short_digit_values(name, value, detail):
+    assert refusal_detail(name, value) == detail
+
+
+@pytest.mark.parametrize(
+    "reject,code,says,detail",
+    [
+        (b"MSG too_busy=4", "busy", "is full (4 listeners max)", "too_busy=4"),
+        (b"MSG too_busy", "busy", "is full. Try", "too_busy"),
+        (b"MSG too_busy=0", "no_apps", "only lets listeners in through its own web page", "too_busy=0"),
+    ],
+)
+async def test_too_busy_message_matches_the_reason(reject, code, says, detail):
     # too_busy=0 is a Kiwi that refuses apps (ext_api=0), not a full one.
     async with FakeKiwi(reject=reject) as kiwi:
         client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=3)
@@ -85,6 +107,37 @@ async def test_too_busy_message_matches_the_reason(reject, code, says):
             await client.connect()
         assert e.value.code == code
         assert says in str(e.value)
+        assert e.value.detail == detail
+        await client.close()
+
+
+# Value: protects=a Kiwi that closes the stream is logged with the close code it sent (#144); fails_when=_closed_detail stops reading the received close frame or "closed" loses its detail; why_new=no test asserted the close detail; seam=none; no_claim=close=none (a TCP drop with no close frame) and the codes real Kiwis send
+async def test_a_kiwi_closing_the_stream_keeps_its_close_code():
+    async with FakeKiwi(drop_after=5) as kiwi:
+        client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=3)
+        await client.tune(9535)
+        await client.connect()
+        with pytest.raises(KiwiError) as e:
+            async for _ in client.blocks():
+                pass
+        assert e.value.code == "closed"
+        assert e.value.detail == "close=1000"
+        await client.close()
+
+
+# Value: protects=a Kiwi whose TCP connection drops with no close frame still ends as a coded "closed" with detail close=none (#144); fails_when=_closed_detail reads the missing close frame and raises, turning a receiver drop into a crash; why_new=only a clean close (close=1000) was tested; seam=none; no_claim=how real Kiwis or NATs drop connections
+async def test_a_kiwi_dropping_with_no_close_frame_logs_close_none():
+    async with FakeKiwi(stall=True) as kiwi:
+        client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=3)
+        await client.tune(9535)
+        await client.connect()
+        (server_ws,) = kiwi._snd.values()
+        server_ws.transport.abort()
+        with pytest.raises(KiwiError) as e:
+            async for _ in client.blocks():
+                pass
+        assert e.value.code == "closed"
+        assert e.value.detail == "close=none"
         await client.close()
 
 
@@ -115,19 +168,20 @@ async def test_unsupported_sample_rate_refused(rate):
 
 
 @pytest.mark.parametrize(
-    "fake,message",
+    "fake,message,detail",
     [
-        (FakeKiwi(silent=True), "connected but never answered"),
-        (FakeKiwi(no_rate=True), "never sent its sample rate"),
+        (FakeKiwi(silent=True), "connected but never answered", "no_answer"),
+        (FakeKiwi(no_rate=True), "never sent its sample rate", "no_setup"),
     ],
 )
-async def test_handshake_timeout_says_whether_the_kiwi_answered(fake, message):
+async def test_handshake_timeout_says_whether_the_kiwi_answered(fake, message, detail):
     async with fake as kiwi:
         client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=0.5)
         with pytest.raises(KiwiError) as e:
             await client.connect()
         assert e.value.code == "timeout"
         assert message in str(e.value)
+        assert e.value.detail == detail
         # The audio stream is closed either way: only a paired waterfall stays open.
         assert client._ws is None or client._ws.state.name == "CLOSED"
 
@@ -141,6 +195,7 @@ async def test_stalled_stream_times_out():
             async for _ in client.blocks():
                 pass
         assert e.value.code == "timeout"
+        assert e.value.detail == "audio_stalled"
         await client.close()
 
 
@@ -528,6 +583,7 @@ async def test_a_retune_the_kiwi_stops_reading_ends_the_connection():
     with pytest.raises(KiwiError) as read:
         await asyncio.wait_for(client._recv(), 5)
     assert read.value.code == "timeout" and "stopped reading" in str(read.value)
+    assert read.value.detail == "send_stalled"  # the given-up connection's detail rides along (#144)
     assert read.value is not client._broken  # a fresh error: the stored one keeps its own cause
     assert read.value.__cause__ is client._broken  # and the traceback still shows why it was given up
     assert any("connection closed" in note for note in getattr(read.value, "__notes__", []))  # and the close that followed (normally our own abort)
@@ -758,6 +814,26 @@ async def test_unreachable_kiwi_raises(client_cls):
     with pytest.raises(KiwiError) as e:
         await client.connect()
     assert e.value.code == "unreachable"
+    assert e.value.detail == "ConnectionRefusedError"
+
+
+# Value: protects=a receiver (or the kiwisdr.com proxy) that answers the upgrade with an HTTP error is logged with its status (#144 question 1); fails_when=_unreachable stops setting http=<status>; why_new=no test had a non-redirect status; seam=none; no_claim=which statuses the proxy really sends
+async def test_an_http_error_on_the_upgrade_keeps_its_status(client_cls):
+    async def answer(reader, writer):
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        with pytest.raises(KiwiError) as e:
+            await client_cls("127.0.0.1", port, timeout_s=2).connect()
+        assert e.value.code == "unreachable"
+        assert e.value.detail == "http=503"
+    finally:
+        server.close()
 
 
 async def test_silent_port_gives_a_reason(client_cls):
