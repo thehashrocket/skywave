@@ -10,6 +10,7 @@ import { ASK_RULE_VERSION } from "@/lib/reception";
 import type { createContext } from "@/server/trpc";
 import {
   candidateKeyOk,
+  namesPriyomStation,
   sitesHeard,
   PICK_IN_SLOT_MS,
   RECEIVER_REPORTS_PER_HOUR,
@@ -408,13 +409,13 @@ describe("reports.submit checks what it's told", () => {
   // Value: protects=a station answer stores the question's rule and region as sent, a malformed one is dropped (logged) while the answer is kept, a region never stands without a rule, and an answer from an older page stores neither; fails_when=a bad marker rejects the answer, a forged value is stored, or old pages get a default rule; why_new=#115 review D1/D2 (askRule, askRegion); seam=in-memory db; no_claim=Postgres column types (prisma-migrations.test checks the columns exist)
   it.each<[string, Record<string, unknown>, Record<string, unknown>, boolean]>([
     ["rule and region", { askRule: ASK_RULE_VERSION, askRegion: "na" }, { askRule: ASK_RULE_VERSION, askRegion: "na" }, false],
-    ["a rule with no region", { askRule: 1 }, { askRule: 1, askRegion: undefined }, false],
+    ["a rule with no region", { askRule: 1 }, { askRule: 1, askRegion: undefined }, false], // pregate-literal: ASK_RULE_VERSION=1 answers from pages before #148 still carry rule 1 and stay valid
     ["an older page", {}, { askRule: undefined, askRegion: undefined }, false],
     ["rule 0", { askRule: 0, askRegion: "na" }, { askRule: undefined, askRegion: undefined }, true],
-    ["a rule past the current one", { askRule: ASK_RULE_VERSION + 1 }, { askRule: undefined }, true],
+    ["a rule past the current one", { askRule: ASK_RULE_VERSION + 1 }, { askRule: undefined }, true], // pregate-literal: ASK_RULE_VERSION=1 the "+ 1" is an offset past the current rule, not the old value
     ["a fractional rule", { askRule: 1.5 }, { askRule: undefined }, true],
-    ["an unknown region", { askRule: 1, askRegion: "xx" }, { askRule: 1, askRegion: undefined }, true],
-    ["a region that isn't text", { askRule: 1, askRegion: 7 }, { askRule: 1, askRegion: undefined }, true],
+    ["an unknown region", { askRule: ASK_RULE_VERSION, askRegion: "xx" }, { askRule: ASK_RULE_VERSION, askRegion: undefined }, true],
+    ["a region that isn't text", { askRule: ASK_RULE_VERSION, askRegion: 7 }, { askRule: ASK_RULE_VERSION, askRegion: undefined }, true],
     // superjson can deliver a BigInt; logging it must not fail the report.
     ["a BigInt rule", { askRule: BigInt(1) }, { askRule: undefined }, true],
   ])("stores the question's rule and region: %s", async (_, sent, stored, warned) => {
@@ -852,14 +853,27 @@ describe("a signal-station report (#101)", () => {
     await expect(caller.reports.submit({ ...wwv, txName: "wwvh" })).resolves.toEqual({ accepted: true });
   });
 
+  // Value: protects=a tab from before #148 asking EiBi's question about E11 (alone or sharing a frequency) has its answer refused even though EiBi lists E11 there, while a broadcaster's on the same frequency still lands (D9); fails_when=the refusal isn't wired into submit, so old tabs keep filing season-grid answers; why_new=D9; seam=in-memory db, getSchedule mocked; no_claim=the analysis CTE
+  it("refuses an EiBi answer naming a Priyom station", async () => {
+    cache.broadcasts = [
+      { khz: 11_100, start: 0, end: 1440, days: "", station: "E11 Polish Spy Numbers", lang: "E", target: "", country: "POL" },
+      { khz: 11_100, start: 0, end: 1440, days: "", station: "Sound of Hope", lang: "M", target: "CHN", country: "TWN" },
+    ];
+    const { caller } = setup();
+    const at = { ...valid, freqKhz: 11_100 };
+    await expect(caller.reports.submit({ ...at, txName: "E11 Polish Spy Numbers" })).resolves.toEqual({ accepted: false });
+    await expect(caller.reports.submit({ ...at, txName: "Sound of Hope / E11 Polish Spy Numbers" })).resolves.toEqual({ accepted: false });
+    await expect(caller.reports.submit({ ...at, txName: "Sound of Hope" })).resolves.toEqual({ accepted: true });
+  });
+
   // Value: protects=a signal row's txDetail is the channel the server checked, whatever text the page sends; fails_when=a script stores any text there, contradicting the schema's "channel in kHz"; why_new=#101 review (nit); seam=in-memory db; no_claim=none
   it("stores the checked channel as the detail, not the page's text", async () => {
     const { data } = await submit({ ...wwv, txDetail: "anything" });
     expect(data).toMatchObject({ txDetail: "10000" });
   });
 
-  // Value: protects=a signal answer keeps Pick best's context only when a signal Listen made the pick (the only run the page asks after); fails_when=context from another button is stored on a signal row and #61 credits the wrong ranking; why_new=issue #101; seam=in-memory db; no_claim=none
-  it("keeps pick context only from a signal Listen", async () => {
+  // Value: protects=a signal answer keeps Pick best's context from any run except a beacon's (#148 D15: since D3 a search, link or Listen run can lead to a signal question too), and a beacon pick is still dropped from it; fails_when=search/browse picks on signal stations vanish from #61, or a beacon pick is stored on a signal row; why_new=D15 replaced #101's signal-only rule; seam=in-memory db; no_claim=none
+  it("keeps pick context from any non-beacon run", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const pick = {
       version: 10,
@@ -872,9 +886,11 @@ describe("a signal-station report (#101)", () => {
     };
     const signal = await submit({ ...wwv, pick: { ...pick, pickSource: "signal" } });
     expect(signal.data).toMatchObject({ pickSource: "signal" });
-    const listen = await submit({ ...wwv, pick: { ...pick, pickSource: "listen" } });
-    expect(listen.result).toEqual({ accepted: true });
-    expect(listen.data).not.toHaveProperty("pickSource");
+    const search = await submit({ ...wwv, pick: { ...pick, pickSource: "search" } });
+    expect(search.data).toMatchObject({ pickSource: "search" });
+    const beacon = await submit({ ...wwv, pick: { ...pick, pickSource: "beacon" } });
+    expect(beacon.result).toEqual({ accepted: true });
+    expect(beacon.data).not.toHaveProperty("pickSource");
   });
 
   // Value: protects=a day/night station is taken on either of its channels (its switch times are only the sun's guess), and an always-on one on any of its catalog channels; fails_when=a correct report is refused around dawn or dusk; why_new=issue #101; seam=catalog as shipped; no_claim=when The Pip really switches
@@ -885,6 +901,25 @@ describe("a signal-station report (#101)", () => {
     expect(signalChecks("wwv", 20_000, undefined, null, NOON)).toBe(true);
   });
 
+  // Value: protects=the server takes a catalog station's answer within MATCH_KHZ of its frequency, as the page asks it (#148 D10 for every catalog station): The Squeaky Wheel at 3364, UVB-76 at 4625.3, E11 0.4 kHz off its Priyom slot; nothing past 0.5; fails_when=the server refuses answers the page asks for, or takes ones further off; why_new=D10; seam=catalog as shipped; no_claim=audio heard
+  it("takes a catalog station within half a kHz", () => {
+    expect(signalChecks("squeaky-wheel", 3_364, undefined, null, NOON)).toBe(true);
+    expect(signalChecks("squeaky-wheel", 3_364.6, undefined, null, NOON)).toBe(false);
+    expect(signalChecks("uvb-76", 4_625.3, undefined, null, NOON)).toBe(true);
+    expect(signalChecks("wwv", 10_000.6, undefined, null, NOON)).toBe(false);
+    expect(signalChecks("e11", 20_167.4, SLOT, [e11Tx], NOON)).toBe(true);
+    expect(signalChecks("e11", 20_167.6, SLOT, [e11Tx], NOON)).toBe(false);
+  });
+
+  // Value: protects=an EiBi answer naming a station Priyom drives is refused (#148 D9), matched on each whole " / " part (a Priyom station as the second part of a joint name too), while broadcasters and catalog time stations' EiBi names still pass; fails_when=old tabs' season-grid answers land, or a substring match catches an unrelated name; why_new=D9; seam=catalog as shipped; no_claim=the analysis CTE (61-exclude-priyom-eibi.sql)
+  it("knows which EiBi names are Priyom stations", () => {
+    expect(namesPriyomStation("E11 Polish Spy Numbers")).toBe(true);
+    expect(namesPriyomStation("Sound of Hope / E11 Polish Spy Numbers")).toBe(true);
+    expect(namesPriyomStation("E11 Polish Spy Numbers Relay")).toBe(false);
+    expect(namesPriyomStation("WWV Colorado (m.ann.) / WWVH Hawaii (f.ann.)")).toBe(false);
+    expect(namesPriyomStation("BBC")).toBe(false);
+  });
+
   // Value: protects=an answer about a numbers-station transmission that ended within the last LISTING_GRACE_MS is kept (the prompt may sit up to 4 minutes after asking); fails_when=the grace is dropped from the on-air bound, so the listener is thanked and the answer silently refused; why_new=only the refusal just past the grace was tested; seam=getPriyomSchedule mocked; no_claim=none
   it("keeps a numbers-station answer given within the grace after the transmission ended", async () => {
     const ended = NOON - PRIYOM_ON_AIR_MS - 4 * 60_000;
@@ -892,6 +927,25 @@ describe("a signal-station report (#101)", () => {
     const { result, data } = await submit({ ...e11, slotStartMs: ended });
     expect(result).toEqual({ accepted: true });
     expect(data).toMatchObject({ slotStartMs: BigInt(ended) });
+  });
+
+  // Value: protects=a signal answer's txDetail is the channel the server matched, not the dial the listener sat on (owner, #148 review): WWV answered on 10000.4 stores "10000", E11 answered 0.3 kHz off its Priyom slot stores the slot's 20167, while freqKhz keeps each dial; fails_when=txDetail stores the dial again, so #61 grouping by channel splits one channel into many; why_new=D10 widened the match to half a kHz; seam=getPriyomSchedule mocked, in-memory db; no_claim=which signal the listener heard
+  it("stores the matched channel as txDetail and the dial as freqKhz", async () => {
+    const off = await submit({ ...wwv, freqKhz: 10_000.4, txDetail: "10000.4" });
+    expect(off.data).toMatchObject({ freqKhz: 10_000.4, txDetail: "10000" });
+    cache.priyom = [e11Tx];
+    const e11Off = await submit({ ...e11, freqKhz: 20_167.3, txDetail: "20167.3" });
+    expect(e11Off.data).toMatchObject({ freqKhz: 20_167.3, txDetail: "20167", slotStartMs: BigInt(SLOT) });
+  });
+
+  // Value: protects=an answer about an F06 slot Priyom listed as F06a keeps that designator beside the checked channel in txDetail (owner, #148), and one listed under the station's own designator keeps the channel alone; fails_when=the designator is lost (a later F06/F06a split becomes guesswork) or leaks onto own-designator slots; why_new=F06a decision; seam=getPriyomSchedule mocked, in-memory db; no_claim=Priyom's meaning of F06a
+  it("records the designator Priyom used when it isn't the station's own", async () => {
+    const f06Tx: PriyomTx = { station: "F06", designator: "F06a", startMs: SLOT, khz: 17_529.875, mode: "usb", data: true, listedKhz: 17_532, summary: "F06a 17532kHz RTTY" };
+    cache.priyom = [f06Tx];
+    const f06 = { ...e11, freqKhz: 17_529.875, txName: "f06", txDetail: "17529.875" };
+    expect((await submit(f06)).data).toMatchObject({ txDetail: "17529.875 F06a", slotStartMs: BigInt(SLOT) });
+    cache.priyom = [e11Tx];
+    expect((await submit(e11)).data).toMatchObject({ txDetail: "20167" });
   });
 
   // Value: protects=a signal Listen's pick made after the Priyom transmission began keeps its context, since only a beacon's slot bounds when the pick was made; fails_when=the Priyom slot is passed to pickChecks, PICK_IN_SLOT_MS drops every real numbers-station pick and #61 loses its signal rows; why_new=the other pick test uses WWV, which has no slot; seam=getPriyomSchedule mocked, in-memory db; no_claim=none
