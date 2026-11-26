@@ -142,3 +142,55 @@ def test_the_receiver_log_file(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         assert attach_receiver_log(str(tmp_path / "missing" / "receivers.log")) is None
     assert "stdout only" in caplog.text
+
+
+class FailsWhenCancelled(QuietClient):
+    """Plays silence until cancelled, then turns the cancel into a KiwiError, as a send to a closing Kiwi does."""
+
+    async def blocks(self):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise KiwiError("closed", "kiwi.example closed the connection", detail="close=1000") from None
+        yield
+
+
+# Value: protects=a Stop whose cancel lands inside a Kiwi call (and so arrives as a KiwiError) is not logged as the receiver failing; fails_when=_run writes the error line before checking that the task is being cancelled; why_new=test_a_stop_logs_no_error only covers a plain cancel; seam=none (stand-in Kiwi client); no_claim=which real calls convert cancels
+async def test_a_stop_turned_into_a_kiwi_error_logs_no_error(lines):
+    slots = Slots(10, per_receiver=1)
+    s, _ = session(slots)
+    s._client_factory = FailsWhenCancelled
+    await s.handle(tune("kiwi.example"))
+    await listening(s)
+    await s.handle({"type": "stop"})
+    await until(lambda: slots.active == 0)
+    assert [line.split()[0] for line in lines()] == ["event=listening"]
+    await s.close()
+
+
+# Value: protects=RECEIVER_LOG reaches Settings, create_app attaches the file from it, and production points it at the radio_data volume so a rebuild keeps it (#144 D4); fails_when=the env name drifts, create_app stops calling attach_receiver_log, or compose moves the file off /data; why_new=test_the_receiver_log_file calls attach directly; seam=none; no_claim=Docker volume permissions on the Droplet
+def test_receiver_log_setting_reaches_the_file_and_the_volume(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from skywave_radio.config import Settings
+    from skywave_radio.server import create_app
+
+    from .test_server import settings
+
+    monkeypatch.setenv("RECEIVER_LOG", "")
+    assert Settings.from_env().receiver_log is None
+    path = str(tmp_path / "receivers.log")
+    monkeypatch.setenv("RECEIVER_LOG", path)
+    assert Settings.from_env().receiver_log == path
+    before = list(receiver_log.handlers)
+    create_app(settings(receiver_log=path))
+    added = [h for h in receiver_log.handlers if h not in before]
+    try:
+        assert [h.baseFilename for h in added] == [path]
+    finally:
+        for h in added:
+            receiver_log.removeHandler(h)
+            h.close()
+    compose = (Path(__file__).resolve().parents[3] / "docker-compose.prod.yml").read_text()
+    assert "RECEIVER_LOG: /data/receivers.log" in compose
+    assert "- radio_data:/data" in compose

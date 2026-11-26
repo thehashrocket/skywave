@@ -823,6 +823,29 @@ describe("usePickBest", () => {
       ]);
     });
 
+    // Value: protects=during the watch, a late refusal is not reported as played (the run goes on and reports once at its real end), while a drop or a Stop reports played; fails_when=the watch's refusal path reports played early, or its other-status or Stop paths report nothing or stopped; why_new=pick_best_end tests covered the watch only via its timer and cancel; seam=none (mocked track); no_claim=Vercel ingestion
+    it.each([
+      ["a late refusal, then the run gives up", "refusal", { outcome: "gave_up", codes: "no_apps,busy,busy" }],
+      ["a drop", "drop", { outcome: "played", codes: null }],
+      ["Stop picking", "stop", { outcome: "played", codes: null }],
+    ] as const)("reports a watch ended by %s", (_, how, end) => {
+      const { hook, report } = setup();
+      act(() => hook.result.current.start(candidates));
+      report({ state: "listening", host: "a", port: 8073 });
+      if (how === "refusal") {
+        report(fail("a", "no_apps"));
+        expect(ends()).toEqual([]);
+        for (const host of ["b", "c"]) report(fail(host, "busy"));
+      } else if (how === "drop") {
+        report({ state: "error", message: "Lost the connection to the radio service." });
+      } else {
+        act(() => {
+          hook.result.current.stop();
+        });
+      }
+      expect(ends()).toEqual([end]);
+    });
+
     it("reports the old run when Pick best starts again", () => {
       const { hook, report } = setup();
       act(() => hook.result.current.start(candidates));

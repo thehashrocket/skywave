@@ -111,6 +111,20 @@ async def test_too_busy_message_matches_the_reason(reject, code, says, detail):
         await client.close()
 
 
+# Value: protects=a Kiwi that closes the stream is logged with the close code it sent (#144); fails_when=_closed_detail stops reading the received close frame or "closed" loses its detail; why_new=no test asserted the close detail; seam=none; no_claim=close=none (a TCP drop with no close frame) and the codes real Kiwis send
+async def test_a_kiwi_closing_the_stream_keeps_its_close_code():
+    async with FakeKiwi(drop_after=5) as kiwi:
+        client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=3)
+        await client.tune(9535)
+        await client.connect()
+        with pytest.raises(KiwiError) as e:
+            async for _ in client.blocks():
+                pass
+        assert e.value.code == "closed"
+        assert e.value.detail == "close=1000"
+        await client.close()
+
+
 async def test_too_busy_while_streaming_ends_with_its_reason():
     # Real ext_api=0 Kiwis send audio for about 10 s before too_busy=0.
     async with FakeKiwi(drop_after=20, last_words=b"MSG too_busy=0") as kiwi:
