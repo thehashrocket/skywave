@@ -144,7 +144,8 @@ echo 'command="/home/deploy/skywave/deploy/stats.sh",restrict <their public key>
 
 `restrict` turns off port, agent and X11 forwarding and the pty. Any command
 they send is ignored; they always get `stats.sh`'s output:
-`ssh deploy@<droplet>`. Remove the line to revoke it.
+`ssh -o IdentitiesOnly=yes -i <key> deploy@<droplet> stats` (send any word as
+the command: with none, sshd prints the login banner first). Remove the line to revoke it.
 
 `deploy` is in the `docker` group, so the key's safety rests on `stats.sh`
 staying read-only. `apps/radio/tests/test_stats_script.py` checks its output

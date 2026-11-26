@@ -43,9 +43,11 @@ jobs:
         env:
           HOST: ${{ vars.DROPLET_HOST }}
         run: |
-          # The key's forced command is stats.sh; whatever we send is ignored.
+          # The key's forced command is stats.sh, so the word sent is ignored, but
+          # sending a command matters: without one sshd opens a login session and
+          # prints the Ubuntu banner (MOTD) ahead of the stats.
           # Output goes to a file, not the job log.
-          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes "deploy@${HOST}" > stats.txt
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -o IdentitiesOnly=yes "deploy@${HOST}" stats > stats.txt
           test -s stats.txt
 
       - name: Post to the load log
