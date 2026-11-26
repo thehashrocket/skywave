@@ -68,7 +68,17 @@ kept, so a rebuild doesn't lose it the way it loses `docker compose logs`. A
 writer thread does the file writes, and the lines stay out of stdout, so a slow
 disk never holds up anyone's audio; if the disk stalls long enough to back up
 10,000 lines, newer ones are dropped and an `event=dropped lines=N` line says
-how many. Without `RECEIVER_LOG` (local development) the lines go to stdout.
+how many. Without `RECEIVER_LOG` (local development), or if the file can't be
+opened (the service logs a warning and keeps running), the lines go to stdout.
+
+A refusal that dials no Kiwi (one of Skywave's own, or an address lookup that
+fails, written as `event=error`) is written at most once every 10 seconds per
+receiver and code on each browser connection, so a page retrying in a loop
+can't rotate the history out. The next line written for it adds
+`suppressed=N`, and a connection that closes writes what it still held back
+(`detail=throttled`). Past 256 receivers on one connection, the rest share one
+`host=<many>` line per code. Counting lines undercounts these bursts; add up
+`suppressed` to get them all.
 
 ```sh
 docker compose -f docker-compose.prod.yml exec radio sh -c 'cat /data/receivers.log*' \
