@@ -129,6 +129,11 @@ function draftOf(r: Heard): Draft {
 }
 
 /** The newest receiver in the history that isn't the one with this key. */
+/** The same receiver, whatever the case of its host (the service answers lowercased). */
+function sameReceiver(a: { host: string; port: number | string }, b: { host: string; port: number | string }) {
+  return a.host.toLowerCase() === b.host.toLowerCase() && Number(a.port) === Number(b.port);
+}
+
 function otherThan(h: History, key: string | undefined): Heard | null {
   return [h.last, h.previous].find((r) => r && receiverKey(r) !== key) ?? null;
 }
@@ -598,8 +603,19 @@ export default function ListenPage() {
   }, [settled]);
   // List names by host:port, so Back can say where it goes.
   const names = useRef(new Map<string, string>());
+  /**
+   * What a listener's own switch (pinTo) replaced: the pin and Receiver field,
+   * for the receiver it switched to. Put back if the service refuses that
+   * receiver while the station before it plays on (owner D7); dropped once the
+   * switch is answered or another receiver is tuned (owner D2).
+   */
+  const switchUndo = useRef<{ to: Target; pin: Heard | null; draft: Draft } | null>(null);
+  /** The tuning the last switch replaced, with its list tag and scheme: what a refused switch restores (owner D2). */
+  const replaced = useRef<typeof tuning.current | null>(null);
   const tuneReceiver = useCallback(
     (r: Target, fromList: boolean) => {
+      if (switchUndo.current && !sameReceiver(switchUndo.current.to, r)) switchUndo.current = null;
+      if (!sameReceiver(tuning.current, r)) replaced.current = { ...tuning.current };
       // A dial retune still waiting on its timer would otherwise go to the old
       // receiver after this tune and switch the service back.
       if (timer.current) clearTimeout(timer.current);
@@ -636,12 +652,6 @@ export default function ListenPage() {
     },
     [isTarget],
   );
-  /**
-   * What a listener's own switch (pinTo) replaced: the pin and Receiver field,
-   * keyed by the receiver it switched to. Put back if the service refuses that
-   * receiver while the station before it plays on (owner D7).
-   */
-  const switchUndo = useRef<{ to: string; pin: Heard | null; draft: Draft } | null>(null);
   // A switch the service refused before anything stopped (#144, owner D5-D8;
   // TODO "Restore the receiver after a refused switch"): the station in
   // stillOn plays on. Put the dial target back on it, or every dial move goes
@@ -650,10 +660,13 @@ export default function ListenPage() {
   // run moves on by itself (it reads the same refusal), retargeting the page.
   useEffect(() => {
     if (!refusal) return;
-    const t = tuning.current;
-    if (receiverKey({ host: t.host, port: Number(t.port) }) !== receiverKey(refusal)) return;
+    if (!sameReceiver(tuning.current, refusal)) return;
     const { host: stillHost, port: stillPort } = refusal.stillOn;
-    const { fromList: playingFromList, secure: playingSecure } = provenance(stillHost, stillPort);
+    // The tuning the switch replaced knows the playing station's scheme even
+    // while it was still connecting (it isn't in the heard history yet).
+    const was = replaced.current;
+    const { fromList: playingFromList, secure: playingSecure } =
+      was && sameReceiver(was, refusal.stillOn) ? was : provenance(stillHost, stillPort);
     tuning.current = { host: stillHost, port: String(stillPort), fromList: playingFromList, secure: playingSecure };
     setHost(stillHost);
     setPort(String(stillPort));
@@ -661,12 +674,18 @@ export default function ListenPage() {
     setSecure(playingSecure);
     const undo = switchUndo.current;
     switchUndo.current = null;
-    if (undo && undo.to === receiverKey(refusal)) {
+    if (undo && sameReceiver(undo.to, refusal)) {
       setPin(undo.pin);
       setDraft(undo.draft);
       setRefusedNote(refusal.message || null);
     }
   }, [refusal, provenance]);
+  // The switch was answered (it plays, or the receiver itself refused): nothing to put back later.
+  useEffect(() => {
+    const undo = switchUndo.current;
+    if (!undo || !status.host || (status.state !== "listening" && status.state !== "error")) return;
+    if (sameReceiver(undo.to, { host: status.host, port: status.port ?? DEFAULT_KIWI_PORT })) switchUndo.current = null;
+  }, [status]);
   const pickBest = usePickBest(status, tuneReceiver, coversDial, provenance, refusal);
   // While Pick best runs (or watches), its run end counts its refusals.
   useListenTracking(status, radio.heardAudio, refusal, !pickBest.settled);
@@ -986,7 +1005,7 @@ export default function ListenPage() {
       // The field as the page last set it (the pin, or blank in Auto): for a
       // typed switch draftRef already holds the address just typed.
       const before = pinRef.current;
-      switchUndo.current = { to: receiverKey(r), pin: before, draft: before ? draftOf(before) : BLANK_DRAFT };
+      switchUndo.current = { to: r, pin: before, draft: before ? draftOf(before) : BLANK_DRAFT };
       setPin(p);
       setDraft(draftOf(p));
       switchTo(r, fromList);

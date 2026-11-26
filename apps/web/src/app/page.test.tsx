@@ -430,6 +430,59 @@ describe("ListenPage", () => {
     expect(screen.getByText("kiwi.example already has 1 Skywave listener.")).toBeTruthy();
   });
 
+  // Value: protects=a switch refused while the station before it is still connecting restores that station's scheme (wss) and list tag from the tuning the switch replaced, and matches the refusal whatever the host's case, so dial retunes keep reaching it and it is never saved without https (owner D2); fails_when=the restore looks the station up only in the heard history (empty while connecting) or compares hosts case-sensitively; why_new=final review (native adversarial) found the https flag lost; seam=mocked radio hook; no_claim=the service's stillOn contents (radio tests)
+  it("keeps the scheme of a station still connecting when a switch is refused", () => {
+    vi.useFakeTimers();
+    try {
+      const view = render(<ListenPage />);
+      const field = screen.getByLabelText("Receiver") as HTMLInputElement;
+      fireEvent.change(field, { target: { value: "https://wss.example:8073/" } });
+      fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+      expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "wss.example", secure: true }));
+      radio.status = { state: "connecting", host: "wss.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+      radio.refusal = {
+        seq: 1,
+        host: "SDR.K1VL.COM",
+        port: 8076,
+        code: "skywave_cap",
+        message: "full of skywave",
+        stillOn: { host: "wss.example", port: 8073 },
+      };
+      view.rerender(<ListenPage />);
+      expect(screen.getByText("full of skywave")).toBeTruthy();
+      radio.retune.mockClear();
+      fireEvent.keyDown(screen.getByRole("slider", { name: "Tuning dial" }), { key: "ArrowUp" });
+      act(() => vi.advanceTimersByTime(500));
+      expect(radio.retune).toHaveBeenCalledWith(expect.objectContaining({ host: "wss.example", port: 8073, secure: true }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=once a listener's switch is answered, a later refusal of that receiver (by Pick best, while another station plays) doesn't put back the pin and Receiver field from before that old click (owner D2); fails_when=the saved click survives the switch playing and another receiver being tuned; why_new=every review round since run 2 raised it; seam=mocked radio hook, real Pick best; no_claim=Pick best's own choice of candidates
+  it("forgets a switch's saved click once the switch plays", () => {
+    savePin({ host: "f4kiy.ddns.net", port: 8073 });
+    radio.status = { state: "listening", host: "f4kiy.ddns.net", port: 8073 };
+    const view = render(<ListenPage />);
+    fireEvent.click(screen.getByRole("button", { name: "choose listed" }));
+    radio.status = { state: "listening", host: listed.host, port: listed.port };
+    view.rerender(<ListenPage />);
+    // A later refusal naming that receiver (as if another route tuned it) finds no click to undo.
+    radio.refusal = {
+      seq: 7,
+      host: listed.host,
+      port: listed.port,
+      code: "skywave_cap",
+      message: "taken",
+      stillOn: { host: "f4kiy.ddns.net", port: 8073 },
+    };
+    view.rerender(<ListenPage />);
+    expect((screen.getByLabelText("Receiver") as HTMLInputElement).value).toBe(listed.host);
+    expect(screen.queryByText("taken")).toBeNull();
+  });
+
   // Value: protects=a failed Pick best run leaves no dead receiver saved; fails_when=tuneReceiver saves before the receiver plays; why_new=no test covered a chain that fails; seam=none; no_claim=real browser storage
   it("doesn't save receivers that Pick best tried and abandoned", () => {
     const view = render(<ListenPage />);
