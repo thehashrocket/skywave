@@ -132,9 +132,18 @@ On the box, as `deploy` or root:
 It prints the host's CPU count, load and memory, whether a reboot is pending,
 the `MAX_*` limits from `apps/radio/.env`, both containers' CPU and memory, the
 browser and Kiwi sockets open right now, `/ws` sessions opened per UTC hour over
-the last 24 h, and, on builds with the receiver log (#144), refusals by code and
-the most listeners seen per hour. Counts only: it never prints log lines,
-addresses, the token or anything else from `.env`. Changes nothing.
+the last 24 h, and refusals by code and the most listeners seen per hour from the
+receiver log (#144). It reads that log from the `RECEIVER_LOG` file and its
+rotated copies inside the container, plus any receiver lines in the container's
+own logs (where they go if the file can't be opened), and keeps the last 24 h.
+Session counts come from the container's own logs, which a deploy that recreates
+the container deletes; on such a day the report says "since <time>; earlier
+hours were in the previous container". When Docker's own log cap (10 MB x 5),
+or the receiver log's (5 MB x 5), has already dropped lines from inside the
+24 h, it says how far back that log reaches. A section it can't read (say the
+container is restarting) says so and the rest of the report still prints.
+Counts only: it never prints log lines, addresses, the token or anything else
+from `.env`. Changes nothing.
 
 ### Where the CPU goes (profile.sh)
 
