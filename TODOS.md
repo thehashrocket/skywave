@@ -34,6 +34,8 @@
 
 **Context:** `apps/web/src/app/page.tsx` (`tuneReceiver`, `pinTo`, `tuning`, `pin`, `draft`), `apps/web/src/lib/use-radio.ts` (uncoded error handling).
 
+**Owner decisions (feat/144-receiver-log, 2026-11-26):** done for a switch onto a receiver at Skywave's own cap, from a page that knows `skywave_cap`: the service refuses it before anything stops with one `{"type":"refused", host, port, code, message, stillOn}` message (an error status followed by a listening one was merged into one render and hung Pick best, owner D8), and the page points its dial, pin and Receiver field back at `stillOn` with the reason (owner D7). Still open: the same for other refused switches (an uncoded refusal such as a bad list entry, an owner opt-out), and the review notes from that PR: compare hosts lowercased in the page's restore, restore the playing receiver's `fromList`/`secure` from the tuning the switch replaced rather than `provenance()`, and clear the switch's saved pin and field once the switch resolves.
+
 **Effort:** S
 **Priority:** P3
 **Depends on:** None
