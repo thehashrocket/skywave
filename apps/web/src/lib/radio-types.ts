@@ -27,6 +27,16 @@ export function guessMode(freqKhz: number): Mode {
   return freqKhz < 10_000 ? "lsb" : "usb";
 }
 
+/**
+ * An RTTY frequency is read as the mark tone, as a radio's RTTY preset shows it
+ * (owner D8, #91): the USB dial sits 2.125 kHz below, so the mark lands at 2125 Hz
+ * and a 170 Hz space at 1955 Hz, inside the 300-2700 Hz passband (dsp.py
+ * PASSBANDS) and where #92's decoder looks. Used for GhostNet's RTTY row and
+ * Priyom's RTTY slots (#148). Unconfirmed on the air; see TODOS.md "GhostNet and
+ * F06: confirm the RTTY dial on a live slot".
+ */
+export const RTTY_MARK_OFFSET_KHZ = 2.125;
+
 export type Band = { name: string; startKhz: number; endKhz: number };
 
 /** HF broadcast bands (ITU, approximate edges). */

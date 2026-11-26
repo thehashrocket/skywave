@@ -7,7 +7,7 @@ import { formatWait } from "@/lib/ghostnet";
 import { PRIYOM_ON_AIR_MS, PRIYOM_SCHEDULE_PAGE, type PriyomTx } from "@/lib/priyom-schedule";
 import type { Mode } from "@/lib/radio-types";
 import { heardText, type LastHeard } from "@/lib/signal-heard";
-import { channelText } from "@/lib/signal-page";
+import { channelParts, channelText } from "@/lib/signal-page";
 import { onKhz, panelGroups, type PanelGroups, type PanelRow } from "@/lib/signal-panel";
 import type { SignalCategory, SignalChannel, SignalStation } from "@/lib/signal-stations";
 import { localLabel, utcLabel } from "@/lib/utc-time";
@@ -170,6 +170,21 @@ function Group({
 }
 
 /** What a row's time cell says. */
+/**
+ * A row's channel. A Priyom RTTY slot's text is two pieces ("17532 kHz RTTY",
+ * "· dial 17529.875 USB"), each kept whole, so a narrow phone cell breaks only
+ * between them (owner, #148).
+ */
+function ChannelCell({ ch }: { ch: SignalChannel }) {
+  const [first, second] = channelParts(ch);
+  if (second === undefined) return <>{first}</>;
+  return (
+    <span className="sched-freq-parts">
+      <span>{first}</span> <span>{second}</span>
+    </span>
+  );
+}
+
 function timeText(r: PanelRow, now: number, priyom: readonly PriyomTx[] | null): { text: string; checkPriyom: boolean } {
   const { schedule } = r.station;
   if (schedule.kind === "defunct")
@@ -206,8 +221,8 @@ function Row({
   return (
     // Explicit roles: on phones the rows are laid out as a grid, as in the GhostNet strip.
     <tr role="row" data-current={tuned || undefined} data-picked={isPicked || undefined} data-slug={station.slug}>
-      <th scope="row" role="rowheader" className="sched-freq">
-        {ch ? channelText(ch) : "—"}
+      <th scope="row" role="rowheader" className={ch?.listedKhz !== undefined ? "sched-freq sched-freq-split" : "sched-freq"}>
+        {ch ? <ChannelCell ch={ch} /> : "—"}
       </th>
       <td role="cell">
         <span className="signals-name">

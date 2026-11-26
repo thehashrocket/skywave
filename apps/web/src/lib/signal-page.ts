@@ -18,10 +18,24 @@ export const CATEGORY_HEADINGS: readonly (readonly [SignalCategory, string])[] =
   ["other", "Other"],
 ];
 
-/** "4.625 USB" for a channel; more digits for a frequency like 3363.5 kHz. */
+/**
+ * "4.625 USB" for a channel, with as many more digits as the kHz has decimals (up
+ * to three), so 3363.5 kHz reads 3.3635. A Priyom RTTY slot leads with the
+ * frequency Priyom and every log list it, then the dial (owner, #148):
+ * "17532 kHz RTTY · dial 17529.875 USB".
+ */
 export function channelText(ch: SignalChannel): string {
-  const digits = Number.isInteger(ch.khz) ? 3 : 4;
-  return `${mhz(ch.khz, digits)} ${MODE_LABELS[ch.mode]}`;
+  return channelParts(ch).join(" ");
+}
+
+/**
+ * channelText in its pieces: one for an ordinary channel; for a Priyom RTTY slot
+ * the listed frequency and "· dial ...", which a narrow cell may put on two lines.
+ */
+export function channelParts(ch: SignalChannel): [string] | [string, string] {
+  if (ch.listedKhz !== undefined) return [`${ch.listedKhz} kHz RTTY`, `· dial ${ch.khz} ${MODE_LABELS[ch.mode]}`];
+  const decimals = Number.isInteger(ch.khz) ? 0 : Math.min(3, (String(ch.khz).split(".")[1] ?? "").length);
+  return [`${mhz(ch.khz, 3 + decimals)} ${MODE_LABELS[ch.mode]}`];
 }
 
 /**

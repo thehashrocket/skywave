@@ -2,14 +2,14 @@
 
 import Link from "next/link";
 import { formatWait } from "@/lib/ghostnet";
-import { nextTx, onAirTx, PRIYOM_ON_AIR_MS, PRIYOM_SCHEDULE_PAGE, type PriyomTx } from "@/lib/priyom-schedule";
+import { nextTx, onAirTx, PRIYOM_ON_AIR_MS, PRIYOM_SCHEDULE_PAGE } from "@/lib/priyom-schedule";
+import { txChannel } from "@/lib/signal-panel";
 import { channelText, listenHref } from "@/lib/signal-page";
 import {
   activeChannelAt,
   findStation,
   nextStartAfter,
   windowSpanAt,
-  type SignalChannel,
 } from "@/lib/signal-stations";
 import { usePriyomScheduleState } from "@/lib/use-priyom-schedule";
 import { useServerTick } from "@/lib/use-server-tick";
@@ -19,10 +19,6 @@ import { localLabel, utcLabel } from "@/lib/utc-time";
 
 const MINUTE = 60_000;
 
-/** A Priyom slot's frequency as a channel, when it has one Skywave can tune. */
-function txChannel(tx: PriyomTx | null): SignalChannel | null {
-  return tx && tx.khz !== null && tx.mode !== null ? { khz: tx.khz, mode: tx.mode } : null;
-}
 
 /**
  * The live half of a signal station's page (#103): whether it's on the air

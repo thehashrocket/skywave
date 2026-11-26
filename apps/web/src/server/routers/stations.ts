@@ -1,5 +1,6 @@
 import { after } from "next/server";
 import { forPage, parseEibi, scheduleUrl, seasonFor, type Broadcast, type ListedBroadcast } from "@/lib/eibi";
+import { unmappedNumbers } from "@/lib/on-air";
 import { parseSites, SITES_URL, sitesFromJson, type SiteTable } from "@/lib/eibi-sites";
 import { targetName, type TargetTable } from "@/lib/eibi-targets";
 import snapshot from "../eibi-snapshot.json";
@@ -103,7 +104,15 @@ export function scheduleSource({
   async function refresh(): Promise<Cached> {
     const season = seasonFor(now());
     const csv = await fetchLatin1(fetchImpl, scheduleUrl(season), "EiBi schedule");
-    return { ...fromCsv(csv, season, targets), bundled: false, fetchedAt: now() };
+    const schedule = fromCsv(csv, season, targets);
+    // A numbers station EiBi lists under a name the catalog doesn't know: its season
+    // grid would show as plain EiBi rows (#148). Said once per fetch, nothing changed.
+    const unmapped = unmappedNumbers(schedule.listed);
+    if (unmapped.length)
+      console.warn(
+        `stations.schedule: ${season} lists numbers stations no catalog station names (add them to an eibi field in signal-stations.ts): ${unmapped.join("; ")}`,
+      );
+    return { ...schedule, bundled: false, fetchedAt: now() };
   }
 
   function startRefresh(): Promise<Cached> {

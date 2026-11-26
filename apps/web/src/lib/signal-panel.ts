@@ -52,9 +52,10 @@ function upcoming(station: SignalStation, ms: number, atMs: number | null, shown
   return { station, group: soon ? "upNext" : "later", listen: null, shown, atMs };
 }
 
-/** A Priyom slot's frequency as a channel, when it has one Skywave can tune. */
-function txChannel(tx: PriyomTx | null): SignalChannel | null {
-  return tx && tx.khz !== null && tx.mode !== null ? { khz: tx.khz, mode: tx.mode } : null;
+/** A Priyom slot's frequency as a channel, when it has one Skywave can tune, with Priyom's listed frequency when the dial differs. */
+export function txChannel(tx: PriyomTx | null): SignalChannel | null {
+  if (!tx || tx.khz === null || tx.mode === null) return null;
+  return { khz: tx.khz, mode: tx.mode, ...(tx.listedKhz !== undefined && { listedKhz: tx.listedKhz }) };
 }
 
 /**

@@ -38,7 +38,7 @@ describe("eibiTransmitter", () => {
       name: "KBS World Radio",
       detail: "E/NAm",
       label: "KBS World Radio",
-      askRule: 1,
+      askRule: 2,
     });
   });
 
@@ -46,7 +46,7 @@ describe("eibiTransmitter", () => {
     [["A", "B"], "anything from A or B", "A / B"],
     [["A", "B", "C"], "anything from A, B or C", "A / B / C"],
   ])("asks about %j together", (stations, label, name) => {
-    expect(eibiTransmitter(stations.map((s) => b(s)))).toEqual({ kind: "eibi", name, label, askRule: 1 });
+    expect(eibiTransmitter(stations.map((s) => b(s)))).toEqual({ kind: "eibi", name, label, askRule: 2 });
   });
 
   it("names only the nearest listing when more than three share it", () => {
@@ -67,10 +67,10 @@ describe("eibiTransmitter", () => {
     expect(ask(two, "na")?.label).toBe("anything from WWCR 2 or Xizang RTV");
     expect(ask(two)?.label).toBe("anything from Xizang RTV or WWCR 2");
     const four = [...two, b("C", "E", "Eu", 5_935), b("D", "E", "Eu", 5_935)];
-    expect(ask(four, "na")).toMatchObject({ name: "WWCR 2", detail: "E/NAm", askRule: 1, askRegion: "na" });
-    expect(ask(four)).toMatchObject({ name: "Xizang RTV", askRule: 1 });
+    expect(ask(four, "na")).toMatchObject({ name: "WWCR 2", detail: "E/NAm", askRule: 2, askRegion: "na" });
+    expect(ask(four)).toMatchObject({ name: "Xizang RTV", askRule: 2 });
     expect(ask(four)).not.toHaveProperty("askRegion");
-    expect(ask(two, "as")).toMatchObject({ askRule: 1, askRegion: "as" });
+    expect(ask(two, "as")).toMatchObject({ askRule: 2, askRegion: "as" });
   });
 });
 
@@ -233,6 +233,17 @@ describe("signalAsk (#101)", () => {
     expect(signalAsk(station("the-pip"), 5_448, null, NOON)?.untilMs).toBe(Infinity);
     expect(signalAsk(station("wwv"), 9_580, null, NOON)).toBeNull();
     expect(signalAsk(station("chu"), 7_850, null, NOON)).toBeNull();
+  });
+
+  // Value: protects=every catalog station is asked about within MATCH_KHZ of its frequency, the tolerance the dial names it at (#148 D10, widened by the owner to all catalog stations): The Squeaky Wheel on 3364 (EiBi's print of 3363.5), UVB-76 at 4625.3, E11 0.4 kHz off its Priyom slot; nothing past 0.5; fails_when=the dial names a station the question refuses, or the match widens past MATCH_KHZ; why_new=D10; seam=catalog as shipped; no_claim=audio heard
+  it("asks about a catalog station within half a kHz of its frequency", () => {
+    expect(signalAsk(station("squeaky-wheel"), 3_364, null, NOON)).toMatchObject({ slug: "squeaky-wheel", khz: 3_364 });
+    expect(signalAsk(station("squeaky-wheel"), 3_364.6, null, NOON)).toBeNull();
+    expect(signalAsk(station("uvb-76"), 4_625.3, null, NOON)).toMatchObject({ slug: "uvb-76" });
+    expect(signalAsk(station("wwv"), 10_000.6, null, NOON)).toBeNull();
+    const tx: PriyomTx = { station: "E11", startMs: NOON - 60_000, khz: 20_167, mode: "usb", summary: "E11 20167kHz USB" };
+    expect(signalAsk(station("e11"), 20_167.4, [tx], NOON)).toMatchObject({ slotStartMs: tx.startMs });
+    expect(signalAsk(station("e11"), 20_167.6, [tx], NOON)).toBeNull();
   });
 
   // Value: protects=a numbers station is offered only while Priyom lists it on the air on that frequency, carrying the transmission's start and ending PRIYOM_ON_AIR_MS after it; with no schedule, nothing; fails_when=a question is planned without a slot for the server to check, past the estimated end, or on last month's frequency; why_new=issue #101 (exact-slot check); seam=none; no_claim=Priyom's accuracy

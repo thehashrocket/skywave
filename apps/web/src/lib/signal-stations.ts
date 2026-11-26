@@ -25,6 +25,8 @@
  * - HD2IOA (Ecuador, 3810 kHz): no reception report newer than 2011 found, and
  *   sources disagree on its schedule, so a Listen could land in dead air.
  * - Priyom's other active stations (M01, M14, M23, V13, V28, V32...): their pages aren't read yet.
+ *   E06 and F06 were read 2026-11-25 (#148): EiBi lists both, so they're here to take
+ *   EiBi's season grid off the dial; F06's feed also uses F06a (priyomAlso).
  */
 
 import { onDay } from "./eibi";
@@ -38,7 +40,11 @@ const LOOKAHEAD_DAYS = 7;
 
 export type SignalCategory = "numbers" | "time" | "marker" | "military" | "other";
 
-export type SignalChannel = { khz: number; mode: Mode };
+/**
+ * A frequency to tune and its mode. `listedKhz`: the frequency the source lists
+ * when the dial differs from it (a Priyom RTTY slot, #148), shown first.
+ */
+export type SignalChannel = { khz: number; mode: Mode; listedKhz?: number };
 
 /**
  * A daily slot in UTC minutes since midnight, half-open [start, end). An end
@@ -82,6 +88,18 @@ export type SignalStation = {
   /** Priyom's designator, when the station's transmissions come from Priyom's schedule (priyom-schedule.ts). */
   priyom?: string;
   /**
+   * Other designators Priyom's calendar uses for the same station, filed under
+   * `priyom` when the server reads the feed (F06a under F06, owner #148); the
+   * one used is kept on the transmission and on answers about it.
+   */
+  priyomAlso?: readonly string[];
+  /**
+   * The station's names in EiBi's schedule, exactly as EiBi spells them (matched
+   * after fold()): how a schedule row is known to be this station (on-air.ts, #148).
+   * With `priyom`, every such row is replaced by Priyom's transmissions.
+   */
+  eibi?: readonly string[];
+  /**
    * How to tell it from another station on the same frequencies, added to the
    * reception question (#101): "Did you hear WWV (a man's voice) …?". Without
    * it, an answer about WWV could be about WWVH, heard on 2.5–15 MHz alike.
@@ -103,6 +121,8 @@ const MOSCOW: Transmitter = { lat: 55.75, lon: 37.62, label: "Moscow, Russia", c
 const WARSAW: Transmitter = { lat: 52.4294, lon: 20.8814, label: "near Warsaw, Poland", confidence: "known" };
 const RUSSIAN_7_NOTE =
   "Usually twice a week, three transmissions 20 minutes apart on different frequencies, which change monthly.";
+const RUSSIAN_6_NOTE =
+  "Two identical transmissions an hour apart, the second 1-3 MHz away, repeated the next day when there was traffic.";
 const POLISH_11_NOTE =
   "Twice a week on year-round UTC times, on a frequency that changes with the season.";
 
@@ -119,6 +139,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     askHint: "a man's voice",
     blurb:
       "The US time standard on shortwave: a tick every second and a voice announcing the time each minute, around the clock.",
+    eibi: ["WWV Colorado (m.ann.)"],
     sources: [
       "https://www.nist.gov/pml/time-and-frequency-division/time-distribution/radio-station-wwv",
       "https://en.wikipedia.org/wiki/WWV_(radio_station)",
@@ -135,6 +156,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     askHint: "a woman's voice",
     blurb:
       "WWV's sister station in Hawaii, on the same frequencies with a woman's voice, so where both are heard you can tell them apart.",
+    eibi: ["WWVH Hawaii (f.ann.)"],
     sources: [
       "https://www.nist.gov/pml/time-and-frequency-division/time-distribution/radio-station-wwvh",
       "https://en.wikipedia.org/wiki/WWVH",
@@ -149,6 +171,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     schedule: { kind: "always" },
     tx: { lat: 55.7269, lon: 38.2082, label: "near Moscow, Russia", confidence: "known" },
     blurb: "Russia's shortwave time and frequency standard: keyed carrier pulses, no voice.",
+    eibi: ["RWM Moscow"],
     sources: ["https://en.wikipedia.org/wiki/RWM"],
   },
   {
@@ -161,6 +184,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     tx: { lat: 55.38, lon: 36.73, label: "Naro-Fominsk, Russia", confidence: "approx" },
     blurb:
       "A short buzz repeated around the clock since at least 1982, broken now and then by a voice reading Russian code words.",
+    eibi: ["The Buzzer"],
     sources: ["https://en.wikipedia.org/wiki/UVB-76"],
   },
   {
@@ -172,6 +196,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     schedule: { kind: "dayNight", dayKhz: 5_448, nightKhz: 3_756 },
     tx: { lat: 47.24, lon: 39.71, label: "near Rostov-on-Don, Russia", confidence: "approx" },
     blurb: "A fast, steady pip from a Russian military network, with the odd voice message between the pips.",
+    eibi: ["The Pip (Kaplya) Rostov"],
     sources: ["https://priyom.org/military-stations/russia/the-pip", "https://en.wikipedia.org/wiki/The_Pip"],
   },
   {
@@ -183,6 +208,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     schedule: { kind: "dayNight", dayKhz: 5_367, nightKhz: 3_363.5 },
     tx: { lat: 47.24, lon: 39.71, label: "thought to be near Rostov-on-Don, Russia", confidence: "approx" },
     blurb: "The Pip's partner in the same network. Its squeak gave it the name; since 2023 it sends a low-tone pip instead.",
+    eibi: ["The Squeaky Wheel"],
     sources: ["https://priyom.org/military-stations/russia/the-squeaky-wheel", "https://en.wikipedia.org/wiki/The_Squeaky_Wheel"],
   },
   {
@@ -195,6 +221,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     schedule: { kind: "irregular", note: RUSSIAN_7_NOTE },
     tx: MOSCOW,
     blurb: "A man's voice reading groups of numbers in English, from the Russian operator Priyom calls \"7\".",
+    eibi: ["E07 Russian Spy Numbers"],
     sources: ["https://priyom.org/number-stations/english/e07"],
   },
   {
@@ -207,7 +234,21 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     schedule: { kind: "irregular", note: POLISH_11_NOTE },
     tx: WARSAW,
     blurb: "A woman's voice reading numbers in English, from the Polish operator Priyom calls \"11\".",
+    eibi: ["E11 Polish Spy Numbers"],
     sources: ["https://priyom.org/number-stations/english/e11"],
+  },
+  {
+    slug: "e06",
+    name: "E06",
+    priyom: "E06",
+    aka: [],
+    category: "numbers",
+    channels: [],
+    schedule: { kind: "irregular", note: RUSSIAN_6_NOTE },
+    tx: MOSCOW,
+    blurb: "A man's voice reading groups of numbers in English, from the Russian operator Priyom calls \"6\" (S06's operator).",
+    eibi: ["E06 Russian Spy Numbers"],
+    sources: ["https://priyom.org/number-stations/english/e06"],
   },
   {
     slug: "s06",
@@ -222,6 +263,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     },
     tx: MOSCOW,
     blurb: "A man's voice reading groups of numbers in Russian, sent from several sites across Russia.",
+    eibi: ["S06 Russian Spy Numbers"],
     sources: ["https://priyom.org/number-stations/slavic/s06"],
   },
   {
@@ -234,6 +276,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     schedule: { kind: "irregular", note: POLISH_11_NOTE },
     tx: WARSAW,
     blurb: "E11's Russian-language counterpart: a woman's voice reading numbers in Russian, from Poland.",
+    eibi: ["S11a Polish Spy Numbers"],
     sources: ["https://priyom.org/number-stations/slavic/s11a"],
   },
   {
@@ -246,7 +289,26 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     schedule: { kind: "irregular", note: RUSSIAN_7_NOTE },
     tx: { lat: 48.48, lon: 135.07, label: "Khabarovsk, Russia", confidence: "approx" },
     blurb: "E07's Spanish-language counterpart: a woman's voice reading numbers in Spanish, sent from Russia's Far East.",
+    eibi: ["V07 Russian Spy Numbers"],
     sources: ["https://priyom.org/number-stations/other/v07"],
+  },
+  {
+    slug: "f06",
+    name: "F06",
+    priyom: "F06",
+    priyomAlso: ["F06a"],
+    aka: [],
+    category: "numbers",
+    channels: [],
+    schedule: {
+      kind: "irregular",
+      note: "Three identical data bursts 10 or 15 minutes apart, each on a new frequency, repeated the next day when there was traffic.",
+    },
+    tx: MOSCOW,
+    blurb:
+      "The data mode of the Russian operator Priyom calls \"6\" (E06 and S06's): short, fast bursts of two-tone digital data, sent from Russia and Cuba.",
+    eibi: ["F06 Russian Spy Numbers"],
+    sources: ["https://priyom.org/number-stations/digital/f06"],
   },
   {
     slug: "m12",

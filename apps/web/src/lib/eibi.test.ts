@@ -229,6 +229,14 @@ describe("EiBi schedule", () => {
     expect(scheduledBetween(schedule, 5_935, 5_935, t, "na")[0]!.broadcasts.map((x) => x.target)).toEqual(["NAm", "NAm"]);
   });
 
+  // Value: protects=a season row standing in for Priyom's says so in words on both surfaces (owner, #148): "E11 (unconfirmed)" on the waterfall, "(season schedule, not confirmed)" on the readout line; fails_when=the mark is dropped or turned into a bare symbol nothing explains; why_new=owner's waterfall wording; seam=none; no_claim=how the canvas fits the longer label
+  it("marks an unconfirmed row in words", () => {
+    const e11 = b({ station: "E11", lang: "E", unconfirmed: true });
+    expect(shortLabel([e11])).toBe("E11 (unconfirmed)");
+    expect(shortLabel([e11, b({ station: "BBC" })])).toBe("E11 (unconfirmed) +1");
+    expect(stationLine([e11])!.text).toBe("E11 · English (season schedule, not confirmed)");
+  });
+
   // Value: protects=a line names the first broadcast and its languages, counts the rest, lists all for the tooltip, and leaves out language codes it doesn't know; the waterfall's short label is the name and a count only; fails_when=a shared frequency hides that others share it, or a raw code like "M" shows; why_new=plan: "9,580 · Radio Australia · English"; seam=none; no_claim=none
   it("words a frequency's line", () => {
     expect(shortLabel([])).toBeNull();
@@ -282,5 +290,13 @@ describe("EiBi schedule", () => {
       ["toString", "string", true],
     ]);
     expect(languageNames("constructor,E")).toBe("English");
+  });
+});
+
+describe("onAirAt with bounds (#148)", () => {
+  // Value: protects=a bounded row (a Priyom slot, a fallback row) is on only inside [validFromMs, validToMs); fails_when=the bounds are ignored, inclusive at the end, or applied to EiBi's own rows; why_new=bounds added for #148; seam=none; no_claim=none beyond protects
+  it("is on only inside the bounds", () => {
+    const b: Broadcast = { khz: 1, start: 0, end: 1440, days: "", station: "x", lang: "", target: "", validFromMs: 1_000, validToMs: 2_000 };
+    expect([999, 1_000, 1_999, 2_000].map((ms) => onAirAt(b, ms))).toEqual([false, true, true, false]);
   });
 });

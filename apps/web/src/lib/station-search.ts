@@ -3,9 +3,10 @@ import { type BroadRegion, regionsOf } from "./eibi-targets";
 import { BROADCAST_BANDS, guessMode, HAM_BANDS, type Mode } from "./radio-types";
 
 /**
- * Find a station by name in the EiBi schedule (a listener's request; station
- * search eng review D1-D11, design review, re-check). Pure: the page passes
- * the schedule and its own clock, the same one the station names use (D6).
+ * Find a station by name in the schedule (a listener's request; station search
+ * eng review D1-D11, design review, re-check): EiBi's, or since #148 the merged
+ * one (on-air.ts), whose rows can carry a mode and other names. Pure: the page
+ * passes the schedule and its own clock, the same one the station names use (D6).
  */
 
 const MINUTE = 60_000;
@@ -22,7 +23,20 @@ export type FoundBroadcast = {
   onNow: boolean;
   /** When it next starts, ms, within the coming 24 h and this season (D1, D7); absent when on now. */
   startsAt?: number;
+  /** The mode to tune, when the merged schedule's row gives one (Priyom, the catalog, #148). */
+  mode?: Mode;
+  /** A season-schedule row standing in for Priyom's (#148): shown marked. */
+  unconfirmed?: true;
+  /** Priyom's listed frequency for an RTTY slot (#148), shown before the dial. */
+  listedKhz?: number;
 };
+
+/**
+ * A row as search reads it: an EiBi broadcast, or a row of the merged schedule
+ * (on-air.ts, #148) with its source, the mode it tunes and the station's other
+ * names, which search finds it by too ("The Buzzer" finds UVB-76).
+ */
+export type SearchRow = Broadcast & { source?: "eibi" | "priyom" | "catalog"; mode?: Mode; aka?: readonly string[]; listedKhz?: number };
 
 export type SearchResult = {
   /**
@@ -88,13 +102,19 @@ function searchText(name: string): string {
   return long === name ? fold(name) : `${fold(name)} ${fold(long)}`;
 }
 
-// One search text per station name, kept per schedule (8,973 rows, 548 names in b26).
-const textsBySchedule = new WeakMap<readonly Broadcast[], Map<string, string>>();
-function textFor(schedule: readonly Broadcast[], name: string): string {
+/** A row's search text: its name's, and each of its other names'. */
+function rowText(b: SearchRow): string {
+  return [b.station, ...(b.aka ?? [])].map(searchText).join(" | ");
+}
+
+// One search text per station name (and its other names), kept per schedule (8,973 rows, 548 names in b26).
+const textsBySchedule = new WeakMap<readonly SearchRow[], Map<string, string>>();
+function textFor(schedule: readonly SearchRow[], b: SearchRow): string {
   let texts = textsBySchedule.get(schedule);
   if (!texts) textsBySchedule.set(schedule, (texts = new Map()));
-  let text = texts.get(name);
-  if (text === undefined) texts.set(name, (text = searchText(name)));
+  const key = b.aka?.length ? `${b.station}\u0000${b.aka.join("\u0000")}` : b.station;
+  let text = texts.get(key);
+  if (text === undefined) texts.set(key, (text = rowText(b)));
   return text;
 }
 
@@ -127,7 +147,7 @@ function nextStart(b: Broadcast, ms: number, season: string | null): number | un
  * weekday row (eng D10). The filters apply last, to whole rows.
  */
 export function findBroadcasts(
-  schedule: readonly Broadcast[],
+  schedule: readonly SearchRow[],
   query: string,
   ms: number,
   season: string,
@@ -141,19 +161,35 @@ export function findBroadcasts(
   const names = new Set<string>();
   // Listings alike but for days, dates or target, each with when it's on.
   type Listing = { target: string; onNow: boolean; startsAt?: number };
-  const merged = new Map<string, { khz: number; station: string; lang: string; listings: Listing[] }>();
+  type Merged = { khz: number; station: string; lang: string; mode?: Mode; unconfirmed?: true; listedKhz?: number; listings: Listing[] };
+  const merged = new Map<string, Merged>();
   for (const b of schedule) {
     if (!browsing) {
-      const text = textFor(schedule, b.station);
+      const text = textFor(schedule, b);
       if (!words.every((w) => text.includes(w))) continue;
       names.add(b.station);
     }
     const onNow = onAirAt(b, ms);
-    const startsAt = onNow || browsing ? undefined : nextStart(b, ms, cutAt);
+    // A Priyom slot's time is its own, not the EiBi season's (#148); every other row's
+    // hours come from this season's file (EiBi's, the day/night stations' retagged ones)
+    // or run all day (the catalog's), so the season cut applies.
+    const startsAt = onNow || browsing ? undefined : nextStart(b, ms, b.source === "priyom" ? null : cutAt);
     if (!onNow && startsAt === undefined) continue;
-    const key = `${b.khz}|${b.start}|${b.end}|${b.station}|${b.lang}`;
+    const key = `${b.khz}|${b.start}|${b.end}|${b.station}|${b.lang}|${b.unconfirmed ? "?" : ""}`;
     let m = merged.get(key);
-    if (!m) merged.set(key, (m = { khz: b.khz, station: b.station, lang: b.lang, listings: [] }));
+    if (!m)
+      merged.set(
+        key,
+        (m = {
+          khz: b.khz,
+          station: b.station,
+          lang: b.lang,
+          listings: [],
+          ...(b.mode && { mode: b.mode }),
+          ...(b.unconfirmed && { unconfirmed: true as const }),
+          ...(b.listedKhz !== undefined && { listedKhz: b.listedKhz }),
+        }),
+      );
     m.listings.push({ target: b.target.trim(), onNow, startsAt });
   }
   // One row per frequency, station, language and "on now" or start time, as the
@@ -163,10 +199,13 @@ export function findBroadcasts(
     const onNow = m.listings.some((l) => l.onNow);
     const startsAt = onNow ? undefined : Math.min(...m.listings.map((l) => l.startsAt!));
     const atThen = m.listings.filter((l) => (onNow ? l.onNow : l.startsAt === startsAt));
-    const key = `${m.khz}|${m.station}|${m.lang}|${startsAt ?? "now"}`;
+    const key = `${m.khz}|${m.station}|${m.lang}|${startsAt ?? "now"}|${m.unconfirmed ? "?" : ""}`;
     let row = rows.get(key);
     if (!row) {
       row = { khz: m.khz, station: m.station, lang: m.lang, targets: [], onNow };
+      if (m.mode) row.mode = m.mode;
+      if (m.unconfirmed) row.unconfirmed = true;
+      if (m.listedKhz !== undefined) row.listedKhz = m.listedKhz;
       if (startsAt !== undefined) row.startsAt = startsAt;
       rows.set(key, row);
     }

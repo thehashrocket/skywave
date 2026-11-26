@@ -13,7 +13,7 @@
 
 import { byRank, covers, isFull, type Receiver } from "./kiwi-list";
 import { formatCountdown } from "./reception";
-import type { Mode } from "./radio-types";
+import { RTTY_MARK_OFFSET_KHZ, type Mode } from "./radio-types";
 import { utcHhmm } from "./utc-time";
 
 const MINUTE = 60_000;
@@ -61,14 +61,8 @@ export const KIND_LABELS: Record<SlotKind, string> = {
 /** The ten USB channels an Ion2G ALE window hops across, kHz: no single Listen frequency. */
 export const ALE_CHANNELS_KHZ = [3598.5, 7104.5, 7106.5, 7108.5, 10128.5, 14111.5, 14113.5, 14115.5, 18108.5, 28108.5];
 
-/**
- * RTTY's 7.077 MHz is read as the mark tone, as a radio's RTTY preset shows it
- * (owner D8): the USB dial sits 2.125 kHz below, so the mark lands at 2125 Hz
- * and the space, 170 Hz lower, at 1955 Hz, inside the 300-2700 Hz passband
- * (dsp.py PASSBANDS) and where #92's decoder looks. Unconfirmed on the air;
- * see TODOS.md "GhostNet: confirm the RTTY dial on a live slot".
- */
-export const RTTY_MARK_OFFSET_KHZ = 2.125;
+/** RTTY's 7.077 MHz is read as the mark tone: the dial sits RTTY_MARK_OFFSET_KHZ below (radio-types.ts). */
+export { RTTY_MARK_OFFSET_KHZ };
 
 export type Slot = {
   kind: SlotKind;
