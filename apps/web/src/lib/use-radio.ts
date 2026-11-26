@@ -204,6 +204,9 @@ export function useRadio() {
   // Per tune, so it drops on every switch; anything that should stay once
   // sound has played (the map, once mounted) must latch it.
   const [heardAudio, setHeardAudio] = useState(false);
+  // The browser has stopped playing (a phone hid the tab, or a call came in)
+  // and won't start again without a tap (#137).
+  const [audioSuspended, setAudioSuspended] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
@@ -358,7 +361,24 @@ export function useRadio() {
     nodeRef.current = node;
     gainRef.current = gain;
     analyserRef.current = analyser;
+    const onState = () => {
+      if (ctxRef.current !== ctx) return;
+      const running = ctx.state === "running";
+      // What the player held when it stopped is stale now: drop it, or the
+      // sound would play late from then on.
+      if (running) node.port.postMessage({ type: "reset" });
+      setAudioSuspended(!running && ctx.state !== "closed");
+    };
+    ctx.onstatechange = onState;
+    // A pause while the worklet loaded (a call, a tab switch) fired before
+    // anything listened for it.
+    onState();
     await ctx.resume();
+  }, []);
+
+  /** Start the sound again after the browser stopped it. Call from a tap: iOS may refuse otherwise. */
+  const resumeAudio = useCallback(() => {
+    ctxRef.current?.resume().catch(() => {});
   }, []);
 
   const handleText = useCallback(
@@ -554,7 +574,11 @@ export function useRadio() {
         console.warn(`The radio service sent ${what}. Try reloading.`);
       }
       if (audio) {
-        nodeRef.current?.port.postMessage({ type: "samples", data: audio }, [audio.buffer]);
+        // Nothing plays while the browser has the sound stopped (a phone's
+        // hidden tab): queued, it would make the sound run late on resume (#137).
+        if (ctxRef.current?.state === "running") {
+          nodeRef.current?.port.postMessage({ type: "samples", data: audio }, [audio.buffer]);
+        }
         if (!heardAudioRef.current && !tuningRef.current) setHeardAudioBoth(true);
       }
       if (row) for (const fn of listenersRef.current) fn(row, rateRef.current);
@@ -837,6 +861,20 @@ export function useRadio() {
     };
   }, []);
 
+  // A phone (iOS Safari especially) stops the audio when the listener switches
+  // tabs, say to a station's page. Start it again on the way back while a
+  // session is live; if the browser wants a tap, audioSuspended stays true (#137).
+  useEffect(() => {
+    const onVisibility = () => {
+      const ctx = ctxRef.current;
+      if (document.visibilityState !== "visible" || !ctx || !wsRef.current) return;
+      if (ctx.state === "running" || ctx.state === "closed") return;
+      ctx.resume().catch(() => {});
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
   useEffect(() => {
     // Set here too: React's dev double mount runs this cleanup once before the
     // real mount.
@@ -852,6 +890,7 @@ export function useRadio() {
       ctxRef.current?.close().catch(() => {});
       // A closed context can't resume; a remount (dev double mount) builds a new one.
       ctxRef.current = null;
+      setAudioSuspended(false);
       nodeRef.current = null;
       gainRef.current = null;
       analyserRef.current = null;
@@ -864,6 +903,8 @@ export function useRadio() {
     meter,
     tuning,
     heardAudio,
+    audioSuspended,
+    resumeAudio,
     canScan,
     scan,
     canView,

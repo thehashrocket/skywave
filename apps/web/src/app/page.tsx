@@ -492,6 +492,8 @@ export default function ListenPage() {
   const busy = live || starting;
   // Audio from the receiver playing is reaching the speakers (not just a connection).
   const playingAudio = status.state === "listening" && radio.heardAudio;
+  // Shown only while a receiver plays: a Listen press resumes the sound itself.
+  const soundPaused = status.state === "listening" && radio.audioSuspended;
   const shownState = starting ? "connecting" : status.state;
   const busyRef = useRef(busy);
   busyRef.current = busy;
@@ -1772,6 +1774,7 @@ export default function ListenPage() {
           <span className="status-state">{STATE_TEXT[shownState]}</span>
           {/* The strip shows where; this live region says it too, so a switch is heard. */}
           {playingNow && <span className="visually-hidden"> via {playingPlace}</span>}
+          {soundPaused && <span className="visually-hidden"> Sound paused.</span>}
           {message && (
             <span className="status-message" data-tone={messageTone ? "danger" : undefined}>
               {message}
@@ -1792,6 +1795,12 @@ export default function ListenPage() {
             }}
           >
             Back to {backTo.label}
+          </button>
+        )}
+        {/* The phone stopped the sound while the tab was hidden and wants a tap to start it again (#137). */}
+        {soundPaused && (
+          <button type="button" className="link-button status-resume" onClick={radio.resumeAudio}>
+            Tap to resume audio
           </button>
         )}
         {/* Only once nothing else is handling the error: not during a run, nor its watch for a late refusal. */}

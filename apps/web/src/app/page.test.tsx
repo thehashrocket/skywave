@@ -14,6 +14,8 @@ const radio = {
   meter: null,
   tuning: false,
   heardAudio: false,
+  audioSuspended: false,
+  resumeAudio: vi.fn(),
   canScan: false,
   scan: null as ScanState | null,
   startScan: vi.fn(),
@@ -228,6 +230,8 @@ beforeEach(() => {
   radio.settled = null;
   radio.tuning = false;
   radio.heardAudio = false;
+  radio.audioSuspended = false;
+  radio.resumeAudio.mockClear();
   radio.canScan = false;
   radio.scan = null;
   radio.canView = false;
@@ -1073,6 +1077,30 @@ describe("ListenPage", () => {
     expect(radio.tune).toHaveBeenLastCalledWith(
       expect.objectContaining({ host: listed.host, port: listed.port, source: "list" }),
     );
+  });
+
+  // Value: protects=when the phone stopped the sound, a playing page says so in the live region and offers a tap that resumes it; a stopped page doesn't; fails_when=the button or "Sound paused." drops, the tap isn't wired to resumeAudio, or soundPaused stops gating on listening; why_new=#137 hook tests don't render the page; seam=useRadio mocked; no_claim=whether iOS honours the tap (hook tests and real device)
+  it("offers a tap to resume only while a receiver plays and the phone stopped the sound (#137)", () => {
+    const tap = { name: "Tap to resume audio" };
+    radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
+    const view = render(<ListenPage />);
+    expect(screen.queryByRole("button", tap)).toBeNull();
+
+    radio.audioSuspended = true;
+    view.rerender(<ListenPage />);
+    const live = document.querySelector('div.status[role="status"]')!;
+    expect(live.textContent).toContain("Sound paused.");
+    const resume = screen.getByRole("button", tap);
+    // Outside the live region, like Back, so the button itself isn't announced.
+    expect(resume.closest('[role="status"]')).toBeNull();
+    fireEvent.click(resume);
+    expect(radio.resumeAudio).toHaveBeenCalledTimes(1);
+
+    // Stopped, then the phone suspends the idle context: Listen resumes it, not a tap.
+    radio.status = { state: "idle" };
+    view.rerender(<ListenPage />);
+    expect(screen.queryByRole("button", tap)).toBeNull();
+    expect(live.textContent).not.toContain("Sound paused.");
   });
 
   describe("Back to the previous receiver", () => {

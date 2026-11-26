@@ -54,10 +54,22 @@ describe("radio-player worklet", () => {
     expect(out[1]).toBeCloseTo(2, 1);
   });
 
-  it("drops the oldest samples when the ring overflows", () => {
+  // Value: protects=a burst bigger than the ring (a thawed phone tab's backlog) plays from its newest 0.3 s, not seconds late; fails_when=overflow keeps old samples or the skip-ahead is removed; why_new=#137 D9: replaces the overflow-only check, which a skip now hides; seam=none; no_claim=real iOS backlog sizes
+  it("plays a burst past the ring from its newest 0.3 s", () => {
     const p = player();
-    send(p, ramp(5000)); // 4000-slot ring keeps the newest 3998
-    expect(render(p)[0]).toBe(5000 - 3998 + 1);
+    send(p, ramp(5000)); // the 4000-slot ring keeps the newest 3998; the skip keeps the newest 300
+    expect(render(p)[0]).toBe(5000 - 300 + 1);
+  });
+
+  // Value: protects=more than 1 s behind, playback jumps to the newest 0.3 s; up to 1 s it keeps every sample; fails_when=the skip is removed, fires at or under 1 s, or lands on the wrong sample; why_new=#137 D9 skip-ahead; seam=none; no_claim=how a listener hears the jump
+  it("jumps to the newest audio only when more than 1 s behind", () => {
+    const atLimit = player();
+    send(atLimit, ramp(1000));
+    expect(render(atLimit)[0]).toBe(1);
+
+    const behind = player();
+    send(behind, ramp(1200));
+    expect(render(behind)[0]).toBe(1200 - 300 + 1);
   });
 
   it("fades out on underrun instead of clicking, then waits to re-prime", () => {
@@ -78,7 +90,7 @@ describe("radio-player worklet", () => {
 
   it("speeds up by at most 2% when the buffer runs deep", () => {
     const p = player();
-    send(p, ramp(3000)); // 10x the target depth
+    send(p, ramp(900)); // 3x the target depth, under the 1 s skip
     const out = render(p);
     // Ramp values equal read position + 1, so the slope is the playback step.
     expect((out[127]! - out[0]!) / 127).toBeCloseTo(1.02, 6);
