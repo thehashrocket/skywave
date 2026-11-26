@@ -125,6 +125,22 @@ async def test_a_kiwi_closing_the_stream_keeps_its_close_code():
         await client.close()
 
 
+# Value: protects=a Kiwi whose TCP connection drops with no close frame still ends as a coded "closed" with detail close=none (#144); fails_when=_closed_detail reads the missing close frame and raises, turning a receiver drop into a crash; why_new=only a clean close (close=1000) was tested; seam=none; no_claim=how real Kiwis or NATs drop connections
+async def test_a_kiwi_dropping_with_no_close_frame_logs_close_none():
+    async with FakeKiwi(stall=True) as kiwi:
+        client = KiwiClient("127.0.0.1", kiwi.port, timeout_s=3)
+        await client.tune(9535)
+        await client.connect()
+        (server_ws,) = kiwi._snd.values()
+        server_ws.transport.abort()
+        with pytest.raises(KiwiError) as e:
+            async for _ in client.blocks():
+                pass
+        assert e.value.code == "closed"
+        assert e.value.detail == "close=none"
+        await client.close()
+
+
 async def test_too_busy_while_streaming_ends_with_its_reason():
     # Real ext_api=0 Kiwis send audio for about 10 s before too_busy=0.
     async with FakeKiwi(drop_after=20, last_words=b"MSG too_busy=0") as kiwi:

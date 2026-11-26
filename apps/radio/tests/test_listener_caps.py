@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from skywave_radio.kiwi import KiwiInfo
 from skywave_radio.session import ListenSession, Slots
 
@@ -112,7 +114,9 @@ async def test_a_second_listener_on_a_full_receiver_gets_a_coded_busy():
     assert slots.active == 0
 
 
-async def test_switching_onto_a_full_receiver_frees_the_slot():
+# Value: protects=switching a playing session onto a receiver at our cap frees its slot and answers skywave_cap to a page listing that code, busy to an older one (#144); fails_when=the handover path drops knows_cap or the slot leaks; why_new=skywave_cap was only tested on a fresh tune, not the slot-move path Pick best switches use; seam=none; no_claim=production MAX_SESSIONS_PER_RECEIVER
+@pytest.mark.parametrize("extra,code", [({}, "busy"), ({"codes": ["skywave_cap"]}, "skywave_cap")])
+async def test_switching_onto_a_full_receiver_frees_the_slot(extra, code):
     slots = Slots(10, per_receiver=1)
     first, _ = session(slots)
     second, sent = session(slots)
@@ -120,8 +124,8 @@ async def test_switching_onto_a_full_receiver_frees_the_slot():
     await second.handle(tune("free.example"))
     await listening(first)
     await listening(second)
-    await second.handle(tune("busy.example"))
-    assert sent[-1]["code"] == "busy"
+    await second.handle(tune("busy.example", **extra))
+    assert sent[-1]["code"] == code
     assert slots.active == 1
     assert slots.on_receiver(("free.example", 8073)) == 0
     await first.close()
