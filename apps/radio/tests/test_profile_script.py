@@ -64,6 +64,8 @@ wc -l <"$FAKE_DIR/out/samples.tsv" >"$FAKE_DIR/rows-at-spy-start"
 if [[ -n "${FAKE_SPY_FAIL:-}" ]]; then
   echo "Permission denied (os error 13)" >&2; : >"$FAKE_DIR/spy-failed"; exit 1
 fi
+# Stuck while attaching: never starts sampling.
+if [[ -n "${FAKE_SPY_HANG_ATTACH:-}" ]]; then echo $$ >"$FAKE_DIR/spy-pid"; exec /bin/sleep 60; fi
 echo "py-spy> Sampling process 20 times a second. Press Control-C to exit."
 : >"$FAKE_DIR/spy-started"
 if [[ -n "${FAKE_SPY_HANG:-}" ]]; then echo $$ >"$FAKE_DIR/spy-pid"; exec /bin/sleep 30; fi
@@ -75,6 +77,8 @@ fi
 while [[ $# -gt 0 ]]; do [[ "$1" == --output ]] && out=$2; shift; done
 if [[ -n "${FAKE_SPY_EMPTY:-}" ]]; then : >"$out"; exit 0; fi
 cp "$FAKE_DIR/raw" "$out"
+# The real py-spy's last line on every successful record; not a warning.
+echo "py-spy> Wrote raw flamegraph data to '$out'. Samples: 100 Errors: 0"
 """
 
 # vmstat -n: two header lines, then the since-boot row (steal 90, must be
@@ -133,7 +137,10 @@ def setup(tmp_path: Path, *, spy: bool = True, **fake_env: str) -> tuple[list[st
         "vmstat": FAKE_VMSTAT,
         "free": FAKE_FREE,
         "curl": FAKE_CURL,
-        "sleep": "#!/usr/bin/env bash\nexit 0\n",
+        # Instant, except the 0.1 s steps of the wait for py-spy to start
+        # sampling and of stopping it, which are real so timing there shows.
+        "sleep": '#!/usr/bin/env bash\n[[ "$1" == 0.1 ]] && exec /bin/sleep 0.1\nexit 0\n',
+        "timeout": '#!/usr/bin/env bash\nshift\nexec "$@"\n',
         "nproc": "#!/usr/bin/env bash\necho 1\n",
     }
     if spy:
@@ -250,7 +257,7 @@ def test_unmeasured_cpu_is_not_profiled_without_force(tmp_path: Path, args: list
         assert "not profiled: couldn't measure host CPU" in (out / "summary.txt").read_text()
 
 
-# Value: protects=py-spy starts with TERM and HUP not ignored, so an abort's SIGTERM stops it at once instead of waiting for SIGKILL while it may hold the radio stopped; fails_when=the subshell's trap - INT TERM HUP is removed and py-spy inherits the launch window's ignores; why_new=specialist finding in the pre-landing review (pass 2); seam=fake py-spy reads /proc/self/status; no_claim=macOS (no /proc; skipped) or py-spy's own SIGINT handler
+# Value: protects=py-spy starts with TERM and HUP not ignored, so an abort's SIGTERM stops it at once instead of waiting for SIGKILL while it may hold the radio stopped; fails_when=the launch window's trap becomes an ignore (trap '' INT TERM HUP), so py-spy inherits ignored TERM and HUP; why_new=specialist finding in the pre-landing review (pass 2); seam=fake py-spy reads /proc/self/status; no_claim=macOS (no /proc; skipped) or py-spy's own SIGINT handler
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/<pid>/status")
 def test_py_spy_starts_with_term_and_hup_not_ignored(tmp_path: Path):
     result, _ = run_profile(tmp_path, "30")
@@ -302,13 +309,22 @@ def test_needs_the_radio_container(tmp_path: Path):
     assert not out.exists()
 
 
-# Value: protects=one busy-hour run survives a /healthz that doesn't answer, failing docker stats and no radio address: those columns read "-" and the profile still finishes; fails_when=a "|| true" is dropped under set -euo pipefail; why_new=test_summary only feeds healthy fakes; seam=fake docker/curl on PATH; no_claim=real /healthz or docker stats output formats
+# Value: protects=py-spy isn't attached when the radio has no address, since the /healthz watchdog can't run then; fails_when=the no-address refusal is removed and the watchdog is silently off; why_new=red team, adversarial and Codex findings in the final review; seam=fake docker on PATH; no_claim=why docker would report no address
+def test_no_address_is_not_profiled_without_force(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30", FAKE_NO_IP="1")
+    assert result.returncode == 3
+    assert not (tmp_path / "py-spy-args").exists()
+    assert "the /healthz watchdog that stops py-spy" in (out / "summary.txt").read_text()
+
+
+# Value: protects=a forced run survives a /healthz that doesn't answer, failing docker stats and no radio address: those columns read "-", the profile still finishes, and the summary says the run had no watchdog; fails_when=a "|| true" is dropped under set -euo pipefail, or the unguarded note goes; why_new=test_summary only feeds healthy fakes; seam=fake docker/curl on PATH; no_claim=real /healthz or docker stats output formats
 def test_failed_samples_degrade_to_dashes(tmp_path: Path):
-    result, out = run_profile(tmp_path, "30", FAKE_CURL_FAIL="1", FAKE_STATS_FAIL="1", FAKE_NO_IP="1")
+    result, out = run_profile(tmp_path, "--force", "30", FAKE_CURL_FAIL="1", FAKE_STATS_FAIL="1", FAKE_NO_IP="1")
     assert result.returncode == 0, result.stderr
     assert "no network address" in result.stderr
     summary = (out / "summary.txt").read_text()
     assert summary.count("listeners=-  radio_cpu=-%  caddy_cpu=-%") == 2
+    assert "unguarded run" in summary
     assert "by self time" in summary  # the profile itself still ran
     rows = (out / "samples.tsv").read_text().splitlines()
     assert len(rows) == 1 + 60 // 5 + 30 // 5
@@ -469,8 +485,52 @@ def test_watchdog_stops_py_spy_when_the_radio_stops_answering(tmp_path: Path):
         assert not _stopped(radio.pid)
         summary = (tmp_path / "out" / "summary.txt").read_text()
         assert "== aborted: the radio stopped answering /healthz" in summary
-        # Two missed probes, then nothing more.
-        assert summary.count("listeners=-") == 1 and "(2 rows)" in summary
+        assert "reads low" in summary
+    finally:
+        radio.kill()
+        radio.wait()
+
+
+# Value: protects=the watchdog guards py-spy's attach too: a py-spy stuck before it starts sampling, with the radio not answering, is stopped within seconds, not after the 30 s wait for sampling to start; fails_when=the watchdog starts only once py-spy reports sampling; why_new=red team and Codex findings in the final review; seam=fake py-spy that never starts sampling, fake curl that fails, real 0.1 s sleeps in the wait loop, a stopped sleep standing in for uvicorn; no_claim=how long a real py-spy attach takes
+@pytest.mark.timeout(40)
+def test_watchdog_guards_a_stuck_attach(tmp_path: Path):
+    radio = subprocess.Popen(["/bin/sleep", "60"])
+    try:
+        os.kill(radio.pid, signal.SIGSTOP)
+        cmd, env = setup(tmp_path, FAKE_SPY_HANG_ATTACH="1", FAKE_CURL_FAIL="1", FAKE_RADIO_PID=str(radio.pid))
+        started = time.monotonic()
+        result = subprocess.run([*cmd, "30"], capture_output=True, text=True, env=env, timeout=35)
+        assert result.returncode == 0, result.stderr
+        assert time.monotonic() - started < 15  # the attach wait alone is 30 s
+        spy_pid = int((tmp_path / "spy-pid").read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(spy_pid, 0)
+        assert not _stopped(radio.pid)
+        assert "== aborted: the radio stopped answering /healthz" in (tmp_path / "out" / "summary.txt").read_text()
+    finally:
+        radio.kill()
+        radio.wait()
+
+
+# Value: protects=listeners' audio when the owner presses Ctrl-C again while a stuck py-spy is being stopped: cleanup still kills py-spy and resumes the radio; fails_when=cleanup stops ignoring INT/TERM/HUP, so the second signal ends it before its SIGKILL and SIGCONT; why_new=red-team finding in the final review (reproduced); seam=fake py-spy that ignores INT and TERM, a stopped sleep standing in for uvicorn; no_claim=bash versions other than the runner's
+@pytest.mark.timeout(40)
+def test_second_signal_does_not_cut_cleanup_short(tmp_path: Path):
+    radio = subprocess.Popen(["/bin/sleep", "60"])
+    try:
+        os.kill(radio.pid, signal.SIGSTOP)
+        cmd, env = setup(tmp_path, FAKE_SPY_STUBBORN="1", FAKE_RADIO_PID=str(radio.pid))
+        script = subprocess.Popen([*cmd, "30"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _wait_for(tmp_path / "spy-pid")
+        spy_pid = int((tmp_path / "spy-pid").read_text())
+        # Re-stop the stand-in: cleanup's first SIGCONT may already have run.
+        script.send_signal(signal.SIGTERM)
+        time.sleep(0.5)  # inside stop_spy's 3 s escalation
+        os.kill(radio.pid, signal.SIGSTOP)
+        script.send_signal(signal.SIGTERM)
+        assert script.wait(timeout=20) == 130
+        with pytest.raises(ProcessLookupError):
+            os.kill(spy_pid, 0)
+        assert not _stopped(radio.pid)
     finally:
         radio.kill()
         radio.wait()

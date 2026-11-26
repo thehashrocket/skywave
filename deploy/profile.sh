@@ -14,10 +14,11 @@
 # py-spy runs on the same single core as the radio and pauses it for each
 # sample, and that process streams every listener's audio. So it isn't
 # attached when the baseline shows the host over 70% busy (--force overrides
-# that), with under 250 MB of memory free, or if the radio restarted during
-# the baseline; the kernel is told to kill py-spy, not the radio, if memory
-# runs out; and py-spy is stopped as soon as the radio misses two /healthz
-# answers in a row. Keep the window short and listen for gaps while it runs.
+# that and the next one), with no radio address for the /healthz watchdog,
+# with under 250 MB of memory free, or if the radio restarted during the
+# baseline; the kernel is told to kill py-spy, not the radio, if memory runs
+# out; and from its launch py-spy is stopped as soon as the radio misses two
+# /healthz answers in a row. Keep the window short and listen for gaps.
 #
 # Needs py-spy on the host, on root's PATH or in its own venv (Ubuntu's pip
 # won't install into the system Python, and stock Ubuntu lacks venv):
@@ -57,32 +58,48 @@ fi
 # One row every INTERVAL_S for $2 seconds: UTC time, phase, listeners (from
 # /healthz), radio CPU %, caddy CPU %. Ticks keep to the schedule however long
 # docker stats takes, and a tick past the window's end isn't taken, so a slow
-# box doesn't spill one phase's rows into the next. In the profile phase it is
-# also the watchdog: two /healthz probes in a row the radio doesn't answer
-# within 2 s mean py-spy is starving it, so py-spy is stopped (stop_spy also
-# resumes the radio) and the reason goes in $out/aborted.
+# box doesn't spill one phase's rows into the next. docker stats gets 4 s at
+# most, so a stalled Docker daemon can't stop the rows.
 sample() {
-  local phase=$1 window=$2 rows=$(($2 / INTERVAL_S)) start=$SECONDS i pause listeners stats radio_cpu caddy_cpu misses=0
+  local phase=$1 window=$2 rows=$(($2 / INTERVAL_S)) start=$SECONDS i pause listeners stats radio_cpu caddy_cpu
   for ((i = 1; i <= rows; i++)); do
     ((SECONDS - start >= window)) && break
     listeners=$(curl -s --max-time 2 "http://$radio_ip:8765/healthz" | grep -oE '"listeners": ?[0-9]+' | grep -oE '[0-9]+$' || true)
     # One call for both: {{.Container}} echoes the ID as given.
-    stats=$(docker stats --no-stream --format '{{.Container}} {{.CPUPerc}}' "$radio" ${caddy:+"$caddy"} || true)
+    stats=$(timeout 4 docker stats --no-stream --format '{{.Container}} {{.CPUPerc}}' "$radio" ${caddy:+"$caddy"} || true)
     radio_cpu=$(awk -v id="$radio" '$1 == id { sub(/%/, "", $2); print $2 }' <<<"$stats")
     caddy_cpu=$(awk -v id="$caddy" 'id != "" && $1 == id { sub(/%/, "", $2); print $2 }' <<<"$stats")
     printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%H:%M:%S)" "$phase" "${listeners:--}" "${radio_cpu:--}" "${caddy_cpu:--}" >>"$out/samples.tsv"
-    # Without an address there is nothing to judge the radio by.
-    if [[ $phase == profile && -n "$radio_ip" && -n "$spy_pid" ]]; then
-      if [[ -z "$listeners" ]]; then misses=$((misses + 1)); else misses=0; fi
-      if ((misses >= 2)); then
-        echo "the radio stopped answering /healthz (twice in a row) with py-spy attached, so py-spy was stopped" >"$out/aborted"
-        stop_spy
-        [[ -n "$radio_pid" ]] && kill -CONT "$radio_pid" 2>/dev/null
-        break
-      fi
-    fi
     pause=$((start + i * INTERVAL_S - SECONDS))
     ((pause > 0)) && sleep "$pause"
+  done
+  return 0
+}
+
+# Still our py-spy: running and not yet reaped. A zombie answers kill -0 but
+# has already let go of the radio; once main has reaped it ($out/spy-done),
+# its pid could belong to anything.
+spy_alive() {
+  [[ ! -e "$out/spy-done" ]] && kill -0 "$spy_pid" 2>/dev/null &&
+    [[ "$(awk '{ print $3 }' "/proc/$spy_pid/stat" 2>/dev/null)" != Z ]]
+}
+
+# From py-spy's launch until it's gone: /healthz every INTERVAL_S, on its own
+# so nothing else (docker stats, the wait for py-spy to start sampling) can
+# hold it up. Two probes in a row the radio doesn't answer within 2 s mean
+# py-spy is starving it: py-spy is stopped (stop_spy resumes the radio) and the
+# reason goes in $out/aborted.
+watchdog() {
+  local misses=0
+  while spy_alive; do
+    if curl -s --max-time 2 -o /dev/null "http://$radio_ip:8765/healthz"; then misses=0; else misses=$((misses + 1)); fi
+    if ((misses >= 2)) && spy_alive; then
+      echo "the radio stopped answering /healthz (twice in a row) with py-spy attached, so py-spy was stopped" >"$out/aborted"
+      stop_spy
+      kill -CONT "$radio_pid" 2>/dev/null || true
+      break
+    fi
+    sleep "$INTERVAL_S"
   done
   return 0
 }
@@ -141,22 +158,29 @@ spy_pid= radio_pid=
 stop_spy() {
   local sig ticks t
   for sig in INT TERM; do
+    spy_alive || return 0
     kill "-$sig" "$spy_pid" 2>/dev/null || return 0
     ticks=20 # tenths of a second: 2 s after SIGINT, 1 s after SIGTERM
     [[ $sig == TERM ]] && ticks=10
     for ((t = 0; t < ticks; t++)); do
-      kill -0 "$spy_pid" 2>/dev/null || return 0
+      spy_alive || return 0
       sleep 0.1
     done
   done
-  [[ -n "$radio_pid" ]] && kill -CONT "$radio_pid" 2>/dev/null
-  kill -KILL "$spy_pid" 2>/dev/null
+  # Neither failure may skip the SIGKILL (stop_spy also runs under set -e).
+  if [[ -n "$radio_pid" ]]; then kill -CONT "$radio_pid" 2>/dev/null || true; fi
+  kill -KILL "$spy_pid" 2>/dev/null || true
 }
 cleanup() {
+  # A second Ctrl-C (likely while a stuck py-spy is being stopped) mustn't cut
+  # this short and leave the radio paused, so signals are ignored from here.
+  trap '' INT TERM HUP
   set +e
+  [[ -n "$radio_pid" ]] && kill -CONT "$radio_pid" 2>/dev/null
   if [[ -n "$spy_pid" ]]; then
     stop_spy
     wait "$spy_pid" 2>/dev/null
+    : >"$out/spy-done"
   fi
   [[ -n "$radio_pid" ]] && kill -CONT "$radio_pid" 2>/dev/null
   # shellcheck disable=SC2046
@@ -184,7 +208,7 @@ main() {
   local pid
   pid=$(docker inspect -f '{{.State.Pid}}' "$radio")
   radio_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$radio" | awk '{print $1}')
-  [[ -z "$radio_ip" ]] && echo "warning: the radio container has no network address; listener counts will show as -" >&2
+  [[ -z "$radio_ip" ]] && echo "warning: the radio container has no network address: no listener counts and no /healthz watchdog (it won't profile without --force)" >&2
 
   # A new folder only: root writing into one that already exists (in a
   # world-writable /var/tmp) could follow a link someone planted there.
@@ -212,6 +236,9 @@ main() {
     ((force)) || refuse "couldn't measure host CPU (no vmstat samples), so py-spy could land on a busy core. Pass --force to profile anyway."
   elif ((busy > MAX_BASELINE_BUSY && !force)); then
     refuse "the host was ${busy}% busy (over ${MAX_BASELINE_BUSY}%), and py-spy on the same core could make audio choppy. Try a quieter hour, or pass --force."
+  fi
+  if [[ -z "$radio_ip" ]] && ((!force)); then
+    refuse "the radio container has no network address, so the /healthz watchdog that stops py-spy if the radio stops answering can't run. Pass --force to profile without it."
   fi
   mem=$(available_mb)
   if [[ ! "$mem" =~ ^[0-9]+$ ]]; then
@@ -249,17 +276,21 @@ main() {
   spy_pid=$!
   trap 'exit 130' INT TERM HUP
   [[ -z "$pending" ]] || exit 130
+  # The watchdog runs from now, while py-spy is still attaching.
+  [[ -n "$radio_ip" ]] && watchdog &
   # Sample from when py-spy starts sampling (its --duration starts then too,
   # after it has loaded the radio's symbols), so both windows match. Up to
   # 30 s for that; if py-spy ends first, sample anyway for the record.
   for ((t = 0; t < 300; t++)); do
     grep -q "Sampling process" "$out/py-spy.log" 2>/dev/null && break
-    kill -0 "$spy_pid" 2>/dev/null || break
+    spy_alive || break
     sleep 0.1
   done
   vmstat -n "$INTERVAL_S" $((seconds / INTERVAL_S + 1)) >"$out/vmstat-profile.txt" &
   sample profile "$seconds" &
   wait "$spy_pid" || spy=$?
+  # Reaped: from here its pid may be reused, so the watchdog stops using it.
+  : >"$out/spy-done"
   spy_pid=
   # However py-spy ended, don't leave the radio paused while the samplers finish.
   kill -CONT "$radio_pid" 2>/dev/null || true
@@ -284,9 +315,13 @@ main() {
     if ((busy >= WARN_BUSY)); then
       echo "  warning: the host was ${busy}% busy with py-spy attached: audio may have stuttered and these numbers are skewed. Try a quieter hour or a shorter window."
     fi
+    if [[ -z "$radio_ip" ]]; then
+      echo "  warning: unguarded run: no radio address, so the /healthz watchdog didn't run (--force)."
+    fi
     echo
     if [[ -s "$out/aborted" ]]; then
       echo "== aborted: $(cat "$out/aborted")"
+      echo "  The busy % below is against the whole window, so it reads low."
       echo
     fi
     if ((spy != 0)) || [[ ! -s "$out/radio.raw" ]]; then
@@ -294,10 +329,12 @@ main() {
       sed 's/^/  /' "$out/py-spy.log"
     else
       # py-spy says on stderr when it fell behind or hit errors; a run like
-      # that still finishes, with numbers that read too low.
-      if grep -v "^warning: couldn't set" "$out/py-spy.log" | grep -qiE 'behind|inaccurate|error|warn'; then
+      # that still finishes, with numbers that read too low. Its normal last
+      # line ("... Samples: N Errors: 0") isn't one of those.
+      local warn_re='behind|inaccurate|errors: [1-9]|error:|warn'
+      if grep -v "^warning: couldn't set" "$out/py-spy.log" | grep -qiE "$warn_re"; then
         echo "== py-spy warnings (its numbers may read low):"
-        grep -v "^warning: couldn't set" "$out/py-spy.log" | grep -iE 'behind|inaccurate|error|warn' | sed 's/^/  /'
+        grep -v "^warning: couldn't set" "$out/py-spy.log" | grep -iE "$warn_re" | sed 's/^/  /'
       fi
       # Collapsed stacks: "frame;frame;...;leaf count". Frames are keyed
       # without their line number. py-spy leaves out idle samples, so the count

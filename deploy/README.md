@@ -163,11 +163,13 @@ process briefly for each sample, 20 times a second, so keep the window short
 and listen for audio gaps while it runs. It isn't attached at all when the
 baseline shows the host over 70% busy or couldn't measure it (pass `--force`
 before the window to profile anyway; the summary then warns if the host
-reached 95%), with under 250 MB of memory available, or if the radio's
-container restarted during the baseline, and the kernel is told to kill
-py-spy, not the radio, if memory runs out. Once attached, py-spy is stopped as
-soon as the radio misses two `/healthz` answers in a row (the summary says
-"aborted"). Ctrl-C, a dropped SSH session or py-spy dying early stops py-spy
+reached 95%), with under 250 MB of memory available, if the radio's
+container restarted during the baseline, or if the radio has no network
+address for the watchdog to probe (`--force` again), and the kernel is told to
+kill py-spy, not the radio, if memory runs out. From the moment py-spy starts,
+it is stopped as soon as the radio misses two `/healthz` answers in a row (the
+summary says "aborted"). A second Ctrl-C while it's stopping doesn't cut that
+short. Ctrl-C, a dropped SSH session or py-spy dying early stops py-spy
 and sends the radio a SIGCONT in case it was left paused.
 Output goes to a new `/var/tmp/skywave-profile-<time>-XXXXXX/` (or a
 `PROFILE_OUT` that doesn't exist yet): `summary.txt` (averages, py-spy's own
