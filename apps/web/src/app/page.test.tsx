@@ -408,6 +408,28 @@ describe("ListenPage", () => {
     }
   });
 
+  // Value: protects=a refused switch to a typed address puts the Receiver field back to the pinned station, not the address just typed (owner D7, final review D1); fails_when=pinTo saves the field after typing (draftRef), so the refused address stays in the field and Enter retries it; why_new=final review found the typed path restored the typed text; seam=mocked radio hook; no_claim=the list-choice path (test above)
+  it("puts the Receiver field back after a refused typed switch", () => {
+    savePin({ host: "f4kiy.ddns.net", port: 8073 });
+    radio.status = { state: "listening", host: "f4kiy.ddns.net", port: 8073 };
+    const view = render(<ListenPage />);
+    const field = screen.getByLabelText("Receiver") as HTMLInputElement;
+    fireEvent.change(field, { target: { value: "kiwi.example" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "kiwi.example" }));
+    radio.refusal = {
+      seq: 1,
+      host: "kiwi.example",
+      port: 8073,
+      code: "skywave_cap",
+      message: "kiwi.example already has 1 Skywave listener.",
+      stillOn: { host: "f4kiy.ddns.net", port: 8073 },
+    };
+    view.rerender(<ListenPage />);
+    expect((screen.getByLabelText("Receiver") as HTMLInputElement).value).toBe("f4kiy.ddns.net");
+    expect(screen.getByText("kiwi.example already has 1 Skywave listener.")).toBeTruthy();
+  });
+
   // Value: protects=a failed Pick best run leaves no dead receiver saved; fails_when=tuneReceiver saves before the receiver plays; why_new=no test covered a chain that fails; seam=none; no_claim=real browser storage
   it("doesn't save receivers that Pick best tried and abandoned", () => {
     const view = render(<ListenPage />);

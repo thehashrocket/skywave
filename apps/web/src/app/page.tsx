@@ -982,7 +982,10 @@ export default function ListenPage() {
         secure: r.secure === true,
         label: r.name ?? names.current.get(receiverKey(r)) ?? r.host,
       };
-      switchUndo.current = { to: receiverKey(r), pin: pinRef.current, draft: draftRef.current };
+      // The field as the page last set it (the pin, or blank in Auto): for a
+      // typed switch draftRef already holds the address just typed.
+      const before = pinRef.current;
+      switchUndo.current = { to: receiverKey(r), pin: before, draft: before ? draftOf(before) : BLANK_DRAFT };
       setPin(p);
       setDraft(draftOf(p));
       switchTo(r, fromList);
