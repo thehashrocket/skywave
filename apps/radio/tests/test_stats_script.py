@@ -5,6 +5,7 @@ import shutil
 import stat
 import subprocess
 import textwrap
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -45,15 +46,28 @@ FAKE_DOCKER = """#!/usr/bin/env bash
 case "$1 $2" in
   "compose -f") case "$6" in radio) echo radioid;; caddy) echo caddyid;; esac ;;
   "stats --no-stream") echo "  skywave-radio-1  cpu=21.73%  mem=125.9MiB / 1.922GiB" ;;
-  "inspect -f") echo "  radio started=2026-11-25T06:00:00Z  health=healthy" ;;
-  "exec radioid") cat "$FAKE_DIR/proc_tcp" ;;
+  "inspect -f") case "$3" in
+      *Health*) echo "  radio started=2026-11-25T06:00:00Z  health=healthy" ;;
+      *) cat "$FAKE_DIR/started" ;;
+    esac ;;
+  "exec radioid") case "$3" in
+      cat) cat "$FAKE_DIR/proc_tcp" ;;
+      sh) [ -f "$FAKE_DIR/receivers" ] && cat "$FAKE_DIR/receivers"; exit 0 ;;
+      *) echo "unexpected exec: $*" >&2; exit 9 ;;
+    esac ;;
   "logs -t") cat "$FAKE_DIR/logs" ;;
   *) echo "unexpected docker call: $*" >&2; exit 9 ;;
 esac
 """
 
 
-def run_stats(tmp_path: Path, logs: str, sar: str | None = None) -> subprocess.CompletedProcess[str]:
+def run_stats(
+    tmp_path: Path,
+    logs: str,
+    sar: str | None = None,
+    receivers: str | None = None,
+    started: str = "2026-11-01T00:00:00.000000000Z",
+) -> subprocess.CompletedProcess[str]:
     # A copy of the repo's layout: the script cds to its parent's parent and
     # reads apps/radio/.env there.
     root = tmp_path / "repo"
@@ -71,6 +85,9 @@ def run_stats(tmp_path: Path, logs: str, sar: str | None = None) -> subprocess.C
     docker.chmod(docker.stat().st_mode | stat.S_IEXEC)
     (tmp_path / "proc_tcp").write_text(PROC_TCP)
     (tmp_path / "logs").write_text(logs)
+    (tmp_path / "started").write_text(started + "\n")
+    if receivers is not None:
+        (tmp_path / "receivers").write_text(receivers)
     if sar is not None:
         fake_sar = bin_dir / "sar"
         fake_sar.write_text(f"#!/usr/bin/env bash\ncat <<'OUT'\n{sar}OUT\n")
@@ -110,7 +127,7 @@ def test_without_receiver_log(tmp_path: Path):
     logs = "\n".join(line for line in LOGS.splitlines() if " event=" not in line) + "\n"
     out = run_stats(tmp_path, logs)
     assert out.returncode == 0, out.stderr
-    assert "no receiver-log lines" in out.stdout
+    assert "no receiver-log lines in the last 24 h" in out.stdout
 
 
 # `sar -u` as LC_ALL=C prints it: a header, 10-minute samples, then an Average line.
@@ -134,3 +151,33 @@ def test_hourly_cpu_from_sar(tmp_path: Path):
     assert "  00:00   22.5 /  30.0" in out
     assert "  10:00   65.0 /  80.0" in out
     assert "Average" not in out.split("== host CPU")[1]
+
+
+def receiver_line(at: datetime, rest: str) -> str:
+    """A RECEIVER_LOG file line: logging's asctime ("2026-11-26 10:00:56,411"), then the message."""
+    return at.strftime("%Y-%m-%d %H:%M:%S,000 ") + rest + "\n"
+
+
+# Value: protects=production's receiver log is read from RECEIVER_LOG in the container (/data/receivers.log and its rotated .1-.4, oldest first), with only the last 24 h counted and its "date time," stamp bucketed by UTC hour like docker's; fails_when=the script reads only docker logs (where production writes none of these lines), the 24 h cutoff is wrong, rotated lines are dropped, or the hour key is built from the wrong field; why_new=the first live run found the section empty because RECEIVER_LOG keeps these lines off stdout (#144 owner D1); seam=fake docker on PATH; no_claim=that the live file is complete (the writer can drop lines under a stalled disk and says so with event=dropped)
+def test_receiver_log_file(tmp_path: Path):
+    now = datetime.now(timezone.utc).replace(minute=30, second=0, microsecond=0)
+    hour = now.strftime("%Y-%m-%dT%H")
+    receivers = (
+        receiver_line(now - timedelta(hours=30), "event=refused host=old port=8073 code=full detail=- audio_s=0.0 listeners=15")
+        + receiver_line(now - timedelta(minutes=10), "event=refused host=h port=8073 code=skywave_cap detail=- audio_s=0.0 listeners=11")
+        + receiver_line(now - timedelta(minutes=5), "event=listening host=h port=8073 code=- detail=- audio_s=0.0 listeners=12")
+    )
+    logs = "\n".join(line for line in LOGS.splitlines() if " event=" not in line) + "\n"
+    out = run_stats(tmp_path, logs, receivers=receivers).stdout
+    section = out.split("== receiver log")[1].split("== host CPU")[0]
+    assert "1  event=refused code=skywave_cap" in section
+    assert "1  event=listening code=-" in section
+    assert "code=full" not in section  # 30 h old
+    assert f"{hour}  12" in section
+
+
+# Value: protects=the sessions-per-hour count says when it only covers time since a restart, so a deploy isn't read as traffic falling off; fails_when=the note is missing after a recent start or shown for a container up more than a day; why_new=a deploy (#157) restarted the container minutes before the first live run; seam=fake docker on PATH; no_claim=none
+def test_restart_note(tmp_path: Path):
+    recent = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
+    assert "only since the container started" in run_stats(tmp_path, LOGS, started=recent).stdout
+    assert "only since the container started" not in run_stats(tmp_path / "old", LOGS).stdout
