@@ -15,6 +15,7 @@ copies, which the README's "One process" rule forbids).
 | `setup-droplet.sh` | One-time box setup: updates + unattended-upgrades, Docker, log rotation, 1 GB swap, ufw, a `deploy` user |
 | `deploy.sh` | Pull, rebuild, restart, wait for healthy |
 | `forced-command.sh` | The only command the GitHub Actions key may run on the box |
+| `../.github/workflows/radio-stats.yml` | Posts `stats.sh` output daily to the `radio-load` issue |
 | `stats.sh` | Read-only load numbers (CPU, memory, open sockets, sessions per hour, refusals); also the only command the monitoring key may run |
 | `../.github/workflows/deploy-radio.yml` | Deploys `main` after CI passes, or any branch by hand |
 
@@ -134,6 +135,34 @@ the last 24 h, and, on builds with the receiver log (#144), refusals by code and
 the most listeners seen per hour. Counts only: it never prints log lines,
 addresses, the token or anything else from `.env`. Changes nothing.
 
+### Daily load log
+
+`.github/workflows/radio-stats.yml` runs `stats.sh` every day at 17:07 UTC
+(after the 10:00-16:00 UTC peak) and posts the output as a comment on the open
+issue labelled `radio-load`. A Claude scheduled task reads that issue each
+morning and only raises something when it changes: peaks near `MAX_SESSIONS`,
+`full` refusals, sessions per hour climbing, hourly CPU near 100%, a pending
+reboot. The repo is public, so that issue is too: it holds counts and limits,
+nothing else from the box.
+
+It needs, once:
+
+1. **The key.** On your own machine:
+   ```sh
+   ssh-keygen -t ed25519 -N "" -C skywave-stats-gha -f ~/skywave-stats-key
+   gh secret set DROPLET_STATS_KEY --env production -R <owner>/skywave < ~/skywave-stats-key
+   cat ~/skywave-stats-key.pub
+   rm ~/skywave-stats-key ~/skywave-stats-key.pub   # after the next step
+   ```
+2. **On the box, as `deploy`,** add the public key with the forced command (see
+   "A monitoring key" below for what `restrict` does).
+3. **Hourly CPU (optional).** As root: `apt-get install -y sysstat`, set
+   `ENABLED="true"` in `/etc/default/sysstat`, then
+   `systemctl enable --now sysstat`. It samples every 10 minutes; `stats.sh`
+   shows each hour's average and maximum. Without it that section says
+   "(sysstat not installed)".
+4. **Try it:** Actions → Radio stats → Run workflow.
+
 ### A monitoring key (optional)
 
 To let a tool or another person read these numbers without a shell on the box,
@@ -147,7 +176,8 @@ echo 'command="/home/deploy/skywave/deploy/stats.sh",restrict <their public key>
 
 `restrict` turns off port, agent and X11 forwarding and the pty. Any command
 they send is ignored; they always get `stats.sh`'s output:
-`ssh deploy@<droplet>`. Remove the line to revoke it.
+`ssh -o IdentitiesOnly=yes -i <key> deploy@<droplet> stats` (send any word as
+the command: with none, sshd prints the login banner first). Remove the line to revoke it.
 
 `deploy` is in the `docker` group, so the key's safety rests on `stats.sh`
 staying read-only. `apps/radio/tests/test_stats_script.py` checks its output
