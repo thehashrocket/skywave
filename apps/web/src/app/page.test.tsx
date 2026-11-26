@@ -209,6 +209,12 @@ vi.mock("@/components/ReceiverPicker", () => ({
 
 const { default: ListenPage } = await import("./page");
 
+/**
+ * 11:00 UTC on 2026-11-25: midday over Poland and Berlin, so a path between them
+ * is sunlit, which a 20 MHz signal ranking needs (#139).
+ */
+const MIDDAY_OVER_EUROPE = Date.UTC(2026, 10, 25, 11, 0);
+
 /** A receiver the listener pinned on an earlier visit, as the page saves it. */
 function savePin(p: { host: string; port: number; fromList?: boolean; secure?: boolean; label?: string }) {
   localStorage.setItem("skywave.pin", JSON.stringify({ label: p.host, ...p }));
@@ -548,11 +554,13 @@ describe("ListenPage", () => {
     expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: berlin.host, freqKhz: 4_625, mode: "usb" }));
   });
 
-  // Value: protects=header Listen on a picked numbers station ranks by its path only while Priyom lists it on the air; once its slot is over it's plain Pick best, so no "signal" run goes into silence; fails_when=the pick outlives the schedule; why_new=/ship review of #100; seam=usePriyomSchedule mocked, real clock; no_claim=the 10-minute on-air estimate
+  // Value: protects=header Listen on a picked numbers station ranks by its path only while Priyom lists it on the air; once its slot is over it's plain Pick best, so no "signal" run goes into silence; fails_when=the pick outlives the schedule; why_new=/ship review of #100, clock pinned in #139; seam=usePriyomSchedule mocked, Date pinned to midday over the Berlin path (20 MHz ranks by daylight, so the real clock made it fail at night); no_claim=the 10-minute on-air estimate, the daylight rule itself (signal-rank tests)
   it.each([
     ["on the air", 60_000, "backup.example"],
     ["over", 20 * 60_000, "sdr.k1vl.com"],
   ])("ranks header Listen by path only while the picked slot is %s", (_, agoMs, host) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(MIDDAY_OVER_EUROPE);
     const sydney = { ...listed, snr: 50, lat: -33.9, lon: 151.2 };
     const berlin = { ...backup, snr: 5, lat: 52.5, lon: 13.4 };
     receiverList.data = { receivers: [sydney, berlin] };
@@ -566,6 +574,7 @@ describe("ListenPage", () => {
       expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host, freqKhz: 20_167 }));
     } finally {
       priyomSchedule.current = null;
+      vi.useRealTimers();
     }
   });
 

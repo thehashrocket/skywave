@@ -2,6 +2,11 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.58.1.1] - 2026-11-25 ([#139](https://github.com/thehashrocket/skywave/issues/139))
+
+### Fixed
+- **Radio service updates reach the live service again, whatever the time of day.** One of skywave's automatic checks read the real clock and asked whether a 20 MHz numbers station's path was in daylight, so it failed at some hours of the day and passed at others. While it failed, changes to the radio service merged but were never put live, with no warning. The check now runs at a fixed midday time, so it gives the same answer at any hour. Nothing changes on the site itself.
+
 ## [0.58.1.0] - 2026-11-25 ([#133](https://github.com/thehashrocket/skywave/issues/133))
 
 ### Fixed
