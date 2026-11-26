@@ -302,3 +302,25 @@ def test_rejected_settings_attach_no_receiver_log(tmp_path):
     with pytest.raises(Exception):
         create_app(settings(allowed_origins=("https://skywave.example",), token=None, receiver_log=path))
     assert path not in _receiver_files
+
+
+# Value: protects=a page tuning ever-new dead names on one socket can't grow the throttle without limit: past the cap, refusals share one host=<many> key that is logged and counted like any other (owner D4, run 2); fails_when=every new host or port adds a key, or overflow refusals go unlogged or uncounted; why_new=the throttle keyed on browser-chosen hosts with no cap; seam=none (cap lowered via the module constant; stub resolver); no_claim=real DNS timing
+async def test_the_refusal_throttle_is_capped_per_session(lines, monkeypatch):
+    import skywave_radio.session as session_module
+
+    monkeypatch.setattr(session_module, "REFUSED_LOG_KEYS", 3)
+
+    async def refuse(host, port, *, allow_private, owner):
+        raise HostRejected("dns", "nope")
+
+    s, _ = session(Slots(10, per_receiver=1))
+    s._resolver = refuse
+    for name in ["a", "b", "c", "d", "e"]:
+        await s.handle(tune(f"{name}.example"))
+        await until(lambda: s._pump is None or s._pump.done())
+    assert len(s._refused_logged) == 4  # three receivers and the shared key
+    hosts = [line.split()[1] for line in lines() if line.startswith("event=error")]
+    assert hosts == ["host=a.example", "host=b.example", "host=c.example", "host=<many>"]
+    await s.close()
+    assert lines()[-1].startswith("event=error host=<many> port=- code=dns detail=throttled")
+    assert lines()[-1].endswith("suppressed=1")

@@ -114,6 +114,12 @@ SEND_TIMEOUT_S = 15.0
 # code) this often, so a page looping refused tunes, which dial nothing, can't
 # rotate the receiver log's history out (#144). The next line says how many it dropped.
 REFUSED_LOG_INTERVAL_S = 10.0
+# Receivers that throttle remembers per session, at most: past this, refusals of
+# the same code share one "host=<many>" key, so a page tuning ever-new dead
+# names can't grow a session's memory without limit (owner D4, run 2).
+REFUSED_LOG_KEYS = 256
+# The host the shared key logs as.
+MANY_RECEIVERS = "<many>"
 
 # Statuses list what this service can do, so a newer web app knows whether to ask.
 FEATURES = ["scan", "view", "decode"]
@@ -867,7 +873,7 @@ class ListenSession:
         receiver_log.info(
             "event=%s host=%s port=%s code=%s detail=%s audio_s=%.1f listeners=%d%s",
             event,
-            loggable_host(host),
+            MANY_RECEIVERS if host is MANY_RECEIVERS else loggable_host(host),
             port if isinstance(port, int) and not isinstance(port, bool) else "-",
             code or "-",
             detail or "-",
@@ -883,6 +889,9 @@ class ListenSession:
         lookup's), at most once per REFUSED_LOG_INTERVAL_S for the same
         receiver, code and event; flush_refused_counts() writes what's left at close."""
         which = (loggable_host(host), port, code, event)
+        if which not in self._refused_logged and len(self._refused_logged) >= REFUSED_LOG_KEYS:
+            which = (MANY_RECEIVERS, None, code, event)
+            host, port = MANY_RECEIVERS, None
         now = time.monotonic()
         last = self._refused_logged.get(which)
         if last is not None and now - last[0] < REFUSED_LOG_INTERVAL_S:
