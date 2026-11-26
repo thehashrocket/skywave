@@ -77,15 +77,17 @@ main() {
     echo "  (since ${created}Z; earlier hours were in the previous container)"
   fi
   # Docker keeps 10 MB x 5 of the container's log (docker-compose.prod.yml), so
-  # a heavy day can push lines from inside the window out. A container started
-  # before the window whose first kept line is inside it has lost the rest.
-  local started first
-  started=$(docker inspect -f '{{.State.StartedAt}}' "$radio" 2>/dev/null || true)
+  # a heavy day can push lines from inside the window out. The log runs from the
+  # container's creation (a restart keeps it), so a complete one starts before
+  # the window, or within a couple of minutes of a creation inside it. A first
+  # kept line later than that means the rest was dropped.
+  local first expected=$cutoff
   first=$(docker logs -t "$radio" 2>&1 | head -n 1) || true
-  started=${started:0:19}
   first=${first:0:19}
-  if (( logs_ok )) && [[ $first =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T && -n "$started" \
-        && "$started" < "$cutoff" && ! "$first" < "$cutoff" ]]; then
+  if [[ -n "$created" && "$created" > "$cutoff" ]]; then
+    expected=$(date -u -d "${created}Z + 2 minutes" +%Y-%m-%dT%H:%M:%S 2>/dev/null || echo "$created")
+  fi
+  if (( logs_ok )) && [[ $first =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T && ! "$first" < "$expected" ]]; then
     echo "  (container logs only reach back to ${first}Z; older lines were rotated out)"
   fi
   if (( ! logs_ok )); then
@@ -119,13 +121,23 @@ main() {
   # A set RECEIVER_LOG whose live file is missing (wrong path, volume not
   # mounted) is a failed read, not an empty day; missing rotated copies are normal.
   # A rotation while the copies are read (the live file gets a new inode) can
-  # skip one file's lines, so that read counts as failed too.
+  # skip one file's lines, so that read counts as failed too, and so does an
+  # inode that can't be read: a check that can't run doesn't pass.
   file_events=$(docker exec "$radio" sh -c \
       'f=${RECEIVER_LOG:-}; [ -z "$f" ] && exit 0; [ -r "$f" ] || exit 3
-       i=$(stat -c %i "$f")
+       i=$(stat -c %i "$f" 2>/dev/null); [ -n "$i" ] || exit 4
        cat "$f.4" "$f.3" "$f.2" "$f.1" "$f" 2>/dev/null
-       [ "$(stat -c %i "$f" 2>/dev/null)" = "$i" ] || exit 4; exit 0' 2>/dev/null \
+       j=$(stat -c %i "$f" 2>/dev/null); [ -n "$j" ] && [ "$j" = "$i" ] || exit 4; exit 0' 2>/dev/null \
     | awk -v cutoff="$cutoff" "$to_events") || { file_ok=0; file_events=; } # a cut-short read counts nothing
+  # The file keeps 5 MB x 5 (server.py), so a heavy day can delete lines from
+  # inside the window too: the oldest copy (.4) starting inside it means so.
+  local oldest=""
+  if (( file_ok )); then
+    # shellcheck disable=SC2016  # $RECEIVER_LOG expands inside the container
+    oldest=$(docker exec "$radio" sh -c \
+        'f=${RECEIVER_LOG:-}; [ -n "$f" ] && [ -r "$f.4" ] && head -n 1 "$f.4"' 2>/dev/null) || true
+    oldest=$(awk 'NR == 1 && length($1) == 10 { print $1 "T" substr($2, 1, 8) }' <<<"$oldest")
+  fi
   events=$(printf '%s\n%s\n' "$file_events" \
     "$(awk -v cutoff="$cutoff" "$to_events" <<<"$logs")" | grep -F ' event=' || true)
   echo
@@ -136,6 +148,9 @@ main() {
     echo "  (couldn't read the receiver log file; only the container's logs are counted)"
   elif (( ! logs_ok )); then
     echo "  (couldn't read the container's logs; only the receiver log file is counted)"
+  fi
+  if [[ $oldest =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T && ! "$oldest" < "$cutoff" ]]; then
+    echo "  (receiver log file only reaches back to ${oldest}Z; older lines were rotated out)"
   fi
   if [[ -z "$events" ]]; then
     # "No lines" only when both places were read: otherwise the lines may be

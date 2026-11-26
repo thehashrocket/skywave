@@ -68,6 +68,13 @@ case "$1" in
         [ -n "${FAKE_FAIL_FILE:-}" ] && { echo "Error: container is restarting" >&2; exit 1; }
         # Stream the file, then die, as a restart in the middle of the read does.
         [ -n "${FAKE_FAIL_FILE_MIDREAD:-}" ] && { cat "$FAKE_DIR/receivers.log"; exit 137; }
+        # An image whose stat can't read the inode.
+        if [ -n "${FAKE_STAT_FAILS:-}" ]; then
+          mkdir -p "$FAKE_DIR/statbin"
+          printf '#!/bin/sh\nexit 1\n' > "$FAKE_DIR/statbin/stat"
+          chmod +x "$FAKE_DIR/statbin/stat"
+          PATH="$FAKE_DIR/statbin:$PATH" RECEIVER_LOG="$FAKE_DIR/receivers.log" sh -c "$5"; exit $?
+        fi
         # RotatingFileHandler rotating mid-read: a cat that renames the live file
         # and opens a fresh one once it has read it.
         if [ -n "${FAKE_ROTATE_MIDREAD:-}" ]; then
@@ -96,7 +103,8 @@ esac
 
 # A fixed "now" (17:07 UTC, when the workflow runs), so the 24 h cut is stable.
 FAKE_DATE = """#!/usr/bin/env bash
-for a in "$@"; do [ "$a" = -d ] && { echo 2026-11-25T17:07:00; exit 0; }; done
+for a in "$@"; do [ "$a" = "24 hours ago" ] && { echo 2026-11-25T17:07:00; exit 0; }; done
+for a in "$@"; do [ "$a" = -d ] && exec /bin/date "$@"; done
 echo 2026-11-26T17:07:00Z
 """
 
@@ -361,6 +369,37 @@ def test_docker_log_cap_is_noted(tmp_path: Path):
     ).stdout
     assert "(since 2026-11-26T08:00:00Z; earlier hours were in the previous container)" in fresh
     assert "older lines were rotated out" not in fresh
+    # A crash restart inside the window keeps the log back to creation, so a
+    # trimmed one is still noted.
+    restarted = run_stats(tmp_path / "d", LOGS, FAKE_LOGS_TRIMMED="1", FAKE_STARTED="2026-11-26T12:00:00Z").stdout
+    assert "(container logs only reach back to 2026-11-26T08:01:02Z; older lines were rotated out)" in restarted
+    # Created inside the window, then trimmed hours past creation: the deploy
+    # note alone would claim full coverage since creation.
+    late = "\n".join(LOGS.splitlines()[2:]) + "\n"
+    recreated = run_stats(
+        tmp_path / "e", late, FAKE_LOGS_TRIMMED="1", FAKE_CREATED="2026-11-26T08:00:00.000000000Z"
+    ).stdout
+    assert "(container logs only reach back to 2026-11-26T09:20:00Z; older lines were rotated out)" in recreated
+
+
+# Value: protects=a rotation check that can't read the inode counts the file as unread instead of passing; fails_when=empty inode reads compare equal and the read counts as complete; why_new=fail-closed check; seam=fake docker runs the real in-container sh with a failing stat; no_claim=which images lack GNU stat
+def test_unreadable_inode_is_a_failed_read(tmp_path: Path):
+    out = run_stats(tmp_path, LOGS, receivers=RECEIVERS, FAKE_STAT_FAILS="1").stdout
+    assert "(couldn't read the receiver log file; only the container's logs are counted)" in out
+    assert "event=listening" not in out
+
+
+# Value: protects=when the receiver log's own 25 MB cap has deleted lines from inside the 24 h window, the receiver section says how far back the file reaches; fails_when=the oldest-copy check is dropped or misreads its timestamp; why_new=new note; seam=fake docker runs the real in-container sh; no_claim=the writer's real rotation timing
+def test_receiver_file_cap_is_noted(tmp_path: Path):
+    files = {
+        "receivers.log.4": f"2026-11-26 08:00:00,000 event=refused host={KIWI_HOST} port=8073 code=full detail=- audio_s=0.0 listeners=15\n",
+        "receivers.log": f"2026-11-26 10:00:00,000 event=listening host={KIWI_HOST} port=8073 code=- detail=- audio_s=0.0 listeners=12\n",
+    }
+    out = run_stats(tmp_path / "a", LOGS_NO_EVENTS, files=files).stdout
+    assert "(receiver log file only reaches back to 2026-11-26T08:00:00Z; older lines were rotated out)" in out
+    # Without a .4 copy, or with one that starts before the window, nothing is missing.
+    complete = run_stats(tmp_path / "b", LOGS_NO_EVENTS, receivers=RECEIVERS).stdout
+    assert "receiver log file only reaches back" not in complete
 
 
 # `sar -u` as LC_ALL=C prints it: a header, 10-minute samples, then an Average line.

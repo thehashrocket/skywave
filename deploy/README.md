@@ -137,9 +137,9 @@ rotated copies inside the container, plus any receiver lines in the container's
 own logs (where they go if the file can't be opened), and keeps the last 24 h.
 Session counts come from the container's own logs, which a deploy that recreates
 the container deletes; on such a day the report says "since <time>; earlier
-hours were in the previous container". When Docker's own log cap (10 MB x 5)
-has already dropped lines from inside the 24 h, it says how far back the logs
-reach instead. A section it can't read (say the
+hours were in the previous container". When Docker's own log cap (10 MB x 5),
+or the receiver log's (5 MB x 5), has already dropped lines from inside the
+24 h, it says how far back that log reaches. A section it can't read (say the
 container is restarting) says so and the rest of the report still prints.
 Counts only: it never prints log lines, addresses, the token or anything else
 from `.env`. Changes nothing.
