@@ -5,6 +5,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import textwrap
 import time
 from pathlib import Path
@@ -48,6 +49,8 @@ RAW = textwrap.dedent(
 FAKE_PY_SPY = """#!/usr/bin/env bash
 if [[ "$1" == --version ]]; then echo "py-spy 0.4.1"; exit 0; fi
 echo "$*" >"$FAKE_DIR/py-spy-args"
+# The signal dispositions py-spy starts with (Linux only).
+[[ -r /proc/$$/status ]] && grep '^SigIgn:' /proc/$$/status >"$FAKE_DIR/py-spy-sigign"
 # Rows in samples.tsv when py-spy started: the baseline must be done by then.
 wc -l <"$FAKE_DIR/out/samples.tsv" >"$FAKE_DIR/rows-at-spy-start"
 if [[ -n "${FAKE_SPY_HANG:-}" ]]; then echo $$ >"$FAKE_DIR/spy-pid"; exec /bin/sleep 30; fi
@@ -73,7 +76,9 @@ procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
  r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st
  1  0      0 500000  10000 300000    0    0     0     0  100  200  5  5  0  0 90
 OUT
-if [[ -n "${FAKE_VMSTAT_BUSY:-}" ]]; then
+if [[ -n "${FAKE_VMSTAT_EMPTY:-}" ]]; then
+  :  # headers and the since-boot row only: no samples
+elif [[ -n "${FAKE_VMSTAT_BUSY:-}" ]]; then
   echo " 1  0      0 500000  10000 300000    0    0     0     0  100  200 90  8  2  0  0"
   echo " 1  0      0 500000  10000 300000    0    0     0     0  100  200 90  8  2  0  0"
 else
@@ -214,6 +219,26 @@ def test_force_profiles_a_busy_host_with_a_warning(tmp_path: Path):
     summary = (out / "summary.txt").read_text()
     assert "warning: the host was 98% busy with py-spy attached" in summary
     assert "by self time" in summary
+
+
+# Value: protects=the busy gate fails closed: with no vmstat samples py-spy isn't attached unless --force; fails_when=no samples read as 0% busy again; why_new=red-team finding in the pre-landing review (pass 2); seam=fake vmstat on PATH; no_claim=why a real vmstat would print nothing
+@pytest.mark.parametrize(("args", "code"), [(["30"], 3), (["--force", "30"], 0)])
+def test_unmeasured_cpu_is_not_profiled_without_force(tmp_path: Path, args: list[str], code: int):
+    result, out = run_profile(tmp_path, *args, FAKE_VMSTAT_EMPTY="1")
+    assert result.returncode == code, result.stderr
+    assert (tmp_path / "py-spy-args").exists() == bool(code == 0)
+    if code:
+        assert "not profiled: couldn't measure host CPU" in (out / "summary.txt").read_text()
+
+
+# Value: protects=py-spy starts with TERM and HUP not ignored, so an abort's SIGTERM stops it at once instead of waiting for SIGKILL while it may hold the radio stopped; fails_when=the subshell's trap - INT TERM HUP is removed and py-spy inherits the launch window's ignores; why_new=specialist finding in the pre-landing review (pass 2); seam=fake py-spy reads /proc/self/status; no_claim=macOS (no /proc; skipped) or py-spy's own SIGINT handler
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/<pid>/status")
+def test_py_spy_starts_with_term_and_hup_not_ignored(tmp_path: Path):
+    result, _ = run_profile(tmp_path, "30")
+    assert result.returncode == 0, result.stderr
+    ignored = int((tmp_path / "py-spy-sigign").read_text().split()[1], 16)
+    assert ignored & (1 << (signal.SIGTERM - 1)) == 0
+    assert ignored & (1 << (signal.SIGHUP - 1)) == 0
 
 
 # Value: protects=py-spy --native isn't attached with under 250 MB free, where its symbol tables could push the radio into swap or the OOM killer; fails_when=the memory check is removed or reads the wrong column of free -m; why_new=owner-approved guard from the pre-landing review; seam=fake free on PATH; no_claim=py-spy's real memory use

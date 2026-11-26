@@ -81,11 +81,11 @@ vmstat_avg() {
              else print "host: no vmstat samples" }' "$1"
 }
 
-# Average host busy (us + sy + steal) as a whole percent; 0 with no samples.
+# Average host busy (us + sy + steal) as a whole percent; empty with no samples.
 vmstat_busy() {
   awk 'NR == 2 { for (i = 1; i <= NF; i++) col[$i] = i; next }
        NR > 3 { b += $col["us"] + $col["sy"] + $col["st"]; n++ }
-       END { printf "%d\n", n ? b / n + 0.5 : 0 }' "$1"
+       END { if (n) printf "%d\n", b / n + 0.5 }' "$1"
 }
 
 phase_avg() {
@@ -115,16 +115,21 @@ available_mb() {
 
 # On any exit, Ctrl-C or a dropped SSH session: stop py-spy first (its pauses
 # are the only thing here that touches listeners), then the samplers. SIGINT,
-# not SIGTERM: py-spy finishes the sample it's on and lets go of the process;
-# then SIGTERM, then SIGKILL (a tracer's death detaches it). The radio gets a
+# not SIGTERM: py-spy finishes the sample it's on and lets go of the process.
+# It starts with SIGINT ignored (bash ignores it for background jobs), so
+# that relies on py-spy's own Ctrl-C handler. Then SIGTERM, then SIGKILL (a
+# tracer's death detaches it), after 2 s and 1 s: a py-spy stuck while holding
+# the radio stopped freezes everyone's audio until then. The radio gets a
 # SIGCONT before and after the last wait in case it was left paused; to a
 # running process that does nothing.
 spy_pid= radio_pid=
 stop_spy() {
-  local sig
+  local sig ticks t
   for sig in INT TERM; do
     kill "-$sig" "$spy_pid" 2>/dev/null || return 0
-    for _ in {1..50}; do
+    ticks=20 # tenths of a second: 2 s after SIGINT, 1 s after SIGTERM
+    [[ $sig == TERM ]] && ticks=10
+    for ((t = 0; t < ticks; t++)); do
       kill -0 "$spy_pid" 2>/dev/null || return 0
       sleep 0.1
     done
@@ -187,7 +192,10 @@ main() {
 
   local busy mem
   busy=$(vmstat_busy "$out/vmstat-baseline.txt")
-  if ((busy > MAX_BASELINE_BUSY && !force)); then
+  if [[ -z "$busy" ]]; then
+    # Not measured is refused like too busy: the gate fails closed.
+    ((force)) || refuse "couldn't measure host CPU (no vmstat samples), so py-spy could land on a busy core. Pass --force to profile anyway."
+  elif ((busy > MAX_BASELINE_BUSY && !force)); then
     refuse "the host was ${busy}% busy (over ${MAX_BASELINE_BUSY}%), and py-spy on the same core could make audio choppy. Try a quieter hour, or pass --force."
   fi
   mem=$(available_mb)
@@ -201,8 +209,11 @@ main() {
   vmstat -n "$INTERVAL_S" $((seconds / INTERVAL_S + 1)) >"$out/vmstat-profile.txt" &
   sample profile "$seconds" &
   local spy=0
-  # The radio is resumed by any exit from here on, and no signal lands between
-  # starting py-spy and noting its pid (cleanup needs it to stop py-spy cleanly).
+  # The radio is resumed by any exit from here on. Signals are ignored from
+  # starting py-spy until its pid is noted (cleanup needs it to stop py-spy
+  # cleanly), so a Ctrl-C in those few instructions is dropped, not delayed.
+  # The subshell un-ignores TERM and HUP for py-spy; INT stays ignored in a
+  # background job, which py-spy's own Ctrl-C handler overrides.
   radio_pid=$pid
   trap '' INT TERM HUP
   # oom_score_adj 1000: if memory runs out, the kernel kills py-spy, not the radio.
