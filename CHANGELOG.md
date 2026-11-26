@@ -2,6 +2,11 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.61.3.0] - 2026-11-26 ([#153](https://github.com/thehashrocket/skywave/issues/153))
+
+### Added
+- **See where the radio service spends its CPU on the live server.** `deploy/profile.sh`, run as root on the Droplet during a moderately busy hour, measures host CPU (including steal, the time a shared plan takes away), both containers' CPU and the listener count for a minute, then profiles the running radio service with py-spy for 30 to 300 seconds while measuring the same things again. It writes a summary with the functions that use the most time and a file you can open as a flame graph. py-spy reads the service without ever pausing it, so listeners' audio isn't frozen. It isn't started at all when the box is already busy, short on memory or can't be checked, and it is stopped within seconds if the service stops answering its health check. The summary also says how far to trust close results. A function needs to clearly lead before it is worth fixing. Setup and reading the output are in `deploy/README.md`.
+
 ## [0.61.2.0] - 2026-11-26 ([#155](https://github.com/thehashrocket/skywave/issues/155), [#153](https://github.com/thehashrocket/skywave/issues/153))
 
 ### Fixed
