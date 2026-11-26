@@ -283,10 +283,22 @@ def test_logs_unread_never_reads_as_quiet_day(tmp_path: Path):
 
 # Value: protects=a set RECEIVER_LOG whose live file is missing (wrong path, unmounted volume) is reported as unread, not as an empty day; fails_when=the in-container read treats a missing live file like a missing rotated copy; why_new=new missing-file check; seam=fake docker runs the real in-container sh; no_claim=the Droplet's real mount layout
 def test_missing_receiver_log_file_is_a_failed_read(tmp_path: Path):
-    out = run_stats(tmp_path, LOGS, FAKE_RECEIVER_LOG=str(tmp_path / "missing.log")).stdout
+    out = run_stats(tmp_path / "a", LOGS, FAKE_RECEIVER_LOG=str(tmp_path / "missing.log")).stdout
     assert "(couldn't read the receiver log file; only the container's logs are counted)" in out
     assert "no receiver-log lines" not in out
     assert "2  event=refused code=full" in out  # the container-log lines still count
+    # The same unreadable file on a day the container logs hold no receiver lines:
+    # nothing was counted from where production writes, so no quiet-day message.
+    quiet = run_stats(tmp_path / "b", LOGS_NO_EVENTS, FAKE_RECEIVER_LOG=str(tmp_path / "missing.log")).stdout
+    assert "(couldn't read the receiver log file; only the container's logs are counted)" in quiet
+    assert "no receiver-log lines" not in quiet
+
+
+# Value: protects=without RECEIVER_LOG (dev, or local runs) an empty day reads as empty, not as a failed file read; fails_when=the in-container read exits non-zero when RECEIVER_LOG is unset; why_new=no test checked the unset path's notes; seam=fake docker runs the real in-container sh; no_claim=production's environment
+def test_unset_receiver_log_is_a_clean_read(tmp_path: Path):
+    out = run_stats(tmp_path, LOGS_NO_EVENTS).stdout
+    assert "(no receiver-log lines in the last 24 h)" in out
+    assert "couldn't read the receiver log file" not in out
 
 
 # Value: protects=a day whose only receiver lines are event=dropped notes (no code= field) still prints the rest of the report; fails_when=the event/code grep's empty result ends the script under set -e/pipefail; why_new=every other fixture has code= on each line; seam=fake docker on PATH; no_claim=how often the writer drops lines
