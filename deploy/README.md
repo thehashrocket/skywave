@@ -15,6 +15,7 @@ copies, which the README's "One process" rule forbids).
 | `setup-droplet.sh` | One-time box setup: updates + unattended-upgrades, Docker, log rotation, 1 GB swap, ufw, a `deploy` user |
 | `deploy.sh` | Pull, rebuild, restart, wait for healthy |
 | `forced-command.sh` | The only command the GitHub Actions key may run on the box |
+| `stats.sh` | Read-only load numbers (CPU, memory, open sockets, sessions per hour, refusals); also the only command the monitoring key may run |
 | `../.github/workflows/deploy-radio.yml` | Deploys `main` after CI passes, or any branch by hand |
 
 ## First deploy
@@ -85,6 +86,40 @@ Then in GitHub → Settings → Secrets and variables → Actions:
 - variable `DROPLET_HOST`: `143.198.70.26`
 
 By hand, on the box: `~/skywave/deploy/deploy.sh [branch]`.
+
+## Load numbers
+
+On the box, as `deploy` or root:
+
+```sh
+~/skywave/deploy/stats.sh
+```
+
+It prints the host's CPU count, load and memory, whether a reboot is pending,
+the `MAX_*` limits from `apps/radio/.env`, both containers' CPU and memory, the
+browser and Kiwi sockets open right now, `/ws` sessions opened per UTC hour over
+the last 24 h, and, on builds with the receiver log (#144), refusals by code and
+the most listeners seen per hour. Counts only: it never prints log lines,
+addresses, the token or anything else from `.env`. Changes nothing.
+
+### A monitoring key (optional)
+
+To let a tool or another person read these numbers without a shell on the box,
+give them a key that can run `stats.sh` and nothing else, the same way the
+GitHub Actions key can only deploy. Have them generate a key pair and send you
+the public half, then as `deploy`:
+
+```sh
+echo 'command="/home/deploy/skywave/deploy/stats.sh",restrict <their public key> skywave-stats' >> ~/.ssh/authorized_keys
+```
+
+`restrict` turns off port, agent and X11 forwarding and the pty. Any command
+they send is ignored; they always get `stats.sh`'s output:
+`ssh deploy@<droplet>`. Remove the line to revoke it.
+
+`deploy` is in the `docker` group, so the key's safety rests on `stats.sh`
+staying read-only. `apps/radio/tests/test_stats_script.py` checks its output
+holds no token or addresses; review any change to the script with that in mind.
 
 ## Changing the config
 
