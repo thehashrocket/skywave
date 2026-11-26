@@ -68,6 +68,14 @@ case "$1" in
         [ -n "${FAKE_FAIL_FILE:-}" ] && { echo "Error: container is restarting" >&2; exit 1; }
         # Stream the file, then die, as a restart in the middle of the read does.
         [ -n "${FAKE_FAIL_FILE_MIDREAD:-}" ] && { cat "$FAKE_DIR/receivers.log"; exit 137; }
+        # RotatingFileHandler rotating mid-read: a cat that renames the live file
+        # and opens a fresh one once it has read it.
+        if [ -n "${FAKE_ROTATE_MIDREAD:-}" ]; then
+          mkdir -p "$FAKE_DIR/rotbin"
+          printf '#!/bin/sh\n/bin/cat "$@"\nmv "$RECEIVER_LOG" "$RECEIVER_LOG.1"; : > "$RECEIVER_LOG"\n' > "$FAKE_DIR/rotbin/cat"
+          chmod +x "$FAKE_DIR/rotbin/cat"
+          PATH="$FAKE_DIR/rotbin:$PATH" RECEIVER_LOG="$FAKE_DIR/receivers.log" sh -c "$5"; exit $?
+        fi
         if [ -n "${FAKE_RECEIVER_LOG:-}" ]; then RECEIVER_LOG="$FAKE_RECEIVER_LOG" sh -c "$5"
         elif [ -f "$FAKE_DIR/receivers.log" ]; then RECEIVER_LOG="$FAKE_DIR/receivers.log" sh -c "$5"
         else sh -c "$5"; fi ;;
@@ -75,6 +83,12 @@ case "$1" in
     esac ;;
   logs)
     [ -n "${FAKE_FAIL_LOGS:-}" ] && { echo "Error: no such container" >&2; exit 1; }
+    # The full log (no --since) starts with the server's start-up line unless
+    # docker's own size cap has already rotated it out.
+    case "$*" in
+      *--since*) ;;
+      *) [ -n "${FAKE_LOGS_TRIMMED:-}" ] || echo "2026-11-25T06:00:01.000000000Z INFO:     Started server process [1]" ;;
+    esac
     cat "$FAKE_DIR/logs" ;;
   *) echo "unexpected docker call: $*" >&2; exit 9 ;;
 esac
@@ -309,6 +323,44 @@ def test_drop_notes_only_day_keeps_reporting(tmp_path: Path):
     assert out.returncode == 0, out.stderr
     assert "    (none)" in out.stdout.split("by event and code:")[1]
     assert "  10:00   65.0 /  80.0" in out.stdout
+
+
+# Value: protects=a failed receiver-file read keeps docker's daemon error (with the container id) out of the output the monitoring key sees; fails_when=the receiver-file docker exec loses its own 2>/dev/null; why_new=other tests check stdout only; seam=fake docker on PATH; no_claim=docker's real daemon wording
+def test_failed_file_read_keeps_docker_errors_out(tmp_path: Path):
+    out = run_stats(tmp_path, LOGS, receivers=RECEIVERS, FAKE_FAIL_FILE="1")
+    assert "(couldn't read the receiver log file" in out.stdout
+    assert "container is restarting" not in out.stderr
+
+
+# Value: protects=only a receiver line that starts with a timestamp is dated and counted; fails_when=an undated " event=" line (a wrapped or continuation line) falls through and sorts above the cutoff as text; why_new=every fixture line starts with a timestamp; seam=fake docker on PATH; no_claim=that the writer ever emits such a line
+def test_undated_receiver_lines_are_not_counted(tmp_path: Path):
+    stale = "  continuation event=refused host=x port=8073 code=stale detail=- audio_s=0.0 listeners=99\n"
+    out = run_stats(tmp_path, LOGS_NO_EVENTS, receivers=RECEIVERS + stale).stdout
+    assert "code=stale" not in out
+    assert "1  event=listening code=-" in out
+
+
+# Value: protects=a receiver log that rotates while it is being read counts as a failed read, not a quiet undercount; fails_when=the in-container read stops comparing the live file's inode before and after; why_new=new rotation check; seam=fake docker runs the real in-container sh with a cat that rotates; no_claim=the real handler's rename timing
+def test_rotation_during_read_is_a_failed_read(tmp_path: Path):
+    out = run_stats(tmp_path, LOGS, receivers=RECEIVERS, FAKE_ROTATE_MIDREAD="1").stdout
+    assert "(couldn't read the receiver log file; only the container's logs are counted)" in out
+    assert "event=listening" not in out  # nothing from the file
+
+
+# Value: protects=when docker's own log cap has already dropped lines from inside the 24 h window, sessions per hour says how far back it reaches; fails_when=the note is missing on a trimmed log or shows on a complete one; why_new=new note; seam=fake docker serves a full or trimmed log; no_claim=docker's real rotation timing
+def test_docker_log_cap_is_noted(tmp_path: Path):
+    trimmed = run_stats(tmp_path / "a", LOGS, FAKE_LOGS_TRIMMED="1").stdout
+    assert "(container logs only reach back to 2026-11-26T08:01:02Z; older lines were rotated out)" in trimmed
+    complete = run_stats(tmp_path / "b", LOGS).stdout
+    assert "older lines were rotated out" not in complete
+    # A container deployed inside the window has a log that starts there anyway:
+    # only the deploy note, not the cap note.
+    fresh = run_stats(
+        tmp_path / "c", LOGS, FAKE_LOGS_TRIMMED="1",
+        FAKE_CREATED="2026-11-26T08:00:00.000000000Z", FAKE_STARTED="2026-11-26T08:00:00Z",
+    ).stdout
+    assert "(since 2026-11-26T08:00:00Z; earlier hours were in the previous container)" in fresh
+    assert "older lines were rotated out" not in fresh
 
 
 # `sar -u` as LC_ALL=C prints it: a header, 10-minute samples, then an Average line.

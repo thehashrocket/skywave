@@ -76,6 +76,18 @@ main() {
   if [[ -n "$created" && ! "$created" < "$cutoff" ]]; then
     echo "  (since ${created}Z; earlier hours were in the previous container)"
   fi
+  # Docker keeps 10 MB x 5 of the container's log (docker-compose.prod.yml), so
+  # a heavy day can push lines from inside the window out. A container started
+  # before the window whose first kept line is inside it has lost the rest.
+  local started first
+  started=$(docker inspect -f '{{.State.StartedAt}}' "$radio" 2>/dev/null || true)
+  first=$(docker logs -t "$radio" 2>&1 | head -n 1) || true
+  started=${started:0:19}
+  first=${first:0:19}
+  if (( logs_ok )) && [[ $first =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T && -n "$started" \
+        && "$started" < "$cutoff" && ! "$first" < "$cutoff" ]]; then
+    echo "  (container logs only reach back to ${first}Z; older lines were rotated out)"
+  fi
   if (( ! logs_ok )); then
     echo "  (couldn't read the container's logs)"
   else
@@ -99,14 +111,20 @@ main() {
     { i = index($0, " event="); if (!i) next
       if (length($1) == 10 && substr($1, 5, 1) == "-") ts = $1 "T" substr($2, 1, 8)
       else ts = substr($1, 1, 19)
+      # Only a line that starts with a timestamp can be dated against the cutoff.
+      if (ts !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/) next
       if (ts >= cutoff) print ts substr($0, i) }'
   local file_events file_ok=1 events
   # shellcheck disable=SC2016  # $RECEIVER_LOG expands inside the container
   # A set RECEIVER_LOG whose live file is missing (wrong path, volume not
   # mounted) is a failed read, not an empty day; missing rotated copies are normal.
+  # A rotation while the copies are read (the live file gets a new inode) can
+  # skip one file's lines, so that read counts as failed too.
   file_events=$(docker exec "$radio" sh -c \
       'f=${RECEIVER_LOG:-}; [ -z "$f" ] && exit 0; [ -r "$f" ] || exit 3
-       cat "$f.4" "$f.3" "$f.2" "$f.1" "$f" 2>/dev/null; exit 0' \
+       i=$(stat -c %i "$f")
+       cat "$f.4" "$f.3" "$f.2" "$f.1" "$f" 2>/dev/null
+       [ "$(stat -c %i "$f" 2>/dev/null)" = "$i" ] || exit 4; exit 0' 2>/dev/null \
     | awk -v cutoff="$cutoff" "$to_events") || { file_ok=0; file_events=; } # a cut-short read counts nothing
   events=$(printf '%s\n%s\n' "$file_events" \
     "$(awk -v cutoff="$cutoff" "$to_events" <<<"$logs")" | grep -F ' event=' || true)
