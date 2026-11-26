@@ -168,10 +168,13 @@ container restarted during the baseline, or if the radio has no network
 address for the watchdog to probe (`--force` again), and the kernel is told to
 kill py-spy, not the radio, if memory runs out. From the moment py-spy starts,
 a watchdog probes `/healthz` every second and stops it (resuming the radio
-first) within about 4.5 s of the radio going quiet, well before the radio
-drops its Kiwi streams at ~10 s; it also stops py-spy when py-spy says it fell
-behind in sampling, or if it is still attached 30 s past its window (the
-summary says "aborted" and why). A second Ctrl-C while it's stopping doesn't
+first) within about 4.5 s of the radio going quiet or answering with errors,
+well before the radio drops its Kiwi streams at ~10 s. It also stops py-spy,
+giving it 2 s to write its output, when py-spy keeps saying it is behind in
+sampling, or if it is still attached 30 s past its window (the summary says
+"aborted" and why). It does not catch a radio that py-spy pauses for most of
+each sample but that still answers `/healthz`: choppy-but-playing audio is
+caught only by listening. A second Ctrl-C while it's stopping doesn't
 cut that short. The output folder is printed first thing. Ctrl-C, a dropped SSH session or py-spy dying early stops py-spy
 and sends the radio a SIGCONT in case it was left paused.
 Output goes to a new `/var/tmp/skywave-profile-<time>-XXXXXX/` (or a

@@ -42,18 +42,24 @@ WARN_BUSY=95
 # Memory py-spy --native needs headroom for (its symbol tables), in MB.
 MIN_AVAILABLE_MB=250
 # The watchdog: a /healthz probe every WATCH_S, each given WATCH_TIMEOUT_S, and
-# WATCH_MISSES misses in a row stop py-spy, with WATCH_GRACE_S after SIGINT
-# before SIGKILL. The radio ends every listener's Kiwi stream once audio is
-# ~10 s late (KiwiClient's timeout_s, apps/radio/skywave_radio/kiwi.py), so
-# WATCH_MISSES * (WATCH_S + WATCH_TIMEOUT_S) + WATCH_GRACE_S must stay well
-# under that: 4.5 s here. The tests check it against kiwi.py.
+# WATCH_MISSES misses in a row stop py-spy, with WATCH_GRACE_TENTHS tenths of a
+# second after SIGINT before SIGKILL. The radio ends every listener's Kiwi
+# stream once audio is ~10 s late (timeout_s in apps/radio/skywave_radio/kiwi.py),
+# so WATCH_MISSES * (WATCH_S + WATCH_TIMEOUT_S) + the grace must stay well under
+# that: 4.5 s here, plus a little process start-up. The tests check it against
+# kiwi.py, and time a real watchdog stop.
 WATCH_S=1
 WATCH_TIMEOUT_S=1
 WATCH_MISSES=2
-WATCH_GRACE_S=0.5
-# py-spy may take this long past its window (attaching, writing out) before
-# the watchdog stops it anyway.
+WATCH_GRACE_TENTHS=5
+# How long py-spy may take to start sampling (loading the radio's symbols);
+# the profile's samplers start then, or after this anyway.
+ATTACH_WAIT_S=30
+# py-spy may run this long past its window (writing out) before the watchdog
+# stops it anyway.
 SPY_OVERRUN_S=30
+# New "behind in sampling" warnings on this many probes in a row stop py-spy.
+BEHIND_PROBES=3
 
 force=0
 if [[ "${1:-}" == --force ]]; then
@@ -99,33 +105,52 @@ spy_alive() {
 
 # From py-spy's launch until it's gone, on its own so nothing else (docker
 # stats, the wait for py-spy to start sampling) can hold it up. It stops py-spy
-# (resuming the radio first) and writes why to $out/aborted when:
+# (resuming the radio first) and then writes why to $out/aborted when:
 #   - the radio misses WATCH_MISSES /healthz probes in a row (no answer, or
-#     an HTTP error, within WATCH_TIMEOUT_S): py-spy is starving it;
-#   - py-spy says it fell behind in sampling: it is pausing the radio for
-#     longer than it samples, even if /healthz still gets through;
-#   - py-spy is still attached SPY_OVERRUN_S past its window.
+#     an HTTP error, within WATCH_TIMEOUT_S): py-spy is starving it, so this
+#     one uses the fast stop;
+#   - py-spy keeps saying it is behind in sampling (new warnings on
+#     BEHIND_PROBES probes in a row; its lag only adds up, so one hiccup
+#     prints it once and is ignored): its numbers are going bad;
+#   - py-spy is still attached SPY_OVERRUN_S past its window, counted from
+#     when it started sampling (or from launch plus ATTACH_WAIT_S if it never
+#     said so).
+# The last two use the normal stop, so py-spy gets 2 s to write radio.raw.
+# None of these catch a radio that py-spy pauses for most of each sample but
+# that still answers /healthz: choppy audio there is caught only by listening.
+# set +e: a failed fork or write mustn't end the watchdog with py-spy attached.
 watchdog() {
-  local misses=0 started=$SECONDS reason
+  set +e
+  local misses=0 launched=$SECONDS started= behind=0 last_behind=0 n reason fast limit
   while spy_alive; do
     if curl -sf --max-time "$WATCH_TIMEOUT_S" -o /dev/null "http://$radio_ip:8765/healthz"; then
       misses=0
     else
       misses=$((misses + 1))
     fi
-    reason=
+    [[ -z "$started" && -e "$out/sampling" ]] && started=$SECONDS
+    n=$(grep -ci 'behind in sampling' "$out/py-spy.log" 2>/dev/null)
+    if ((${n:-0} > last_behind)); then behind=$((behind + 1)); else behind=0; fi
+    last_behind=${n:-0}
+    if [[ -n "$started" ]]; then
+      limit=$((SECONDS - started > seconds + SPY_OVERRUN_S))
+    else
+      limit=$((SECONDS - launched > ATTACH_WAIT_S + seconds + SPY_OVERRUN_S))
+    fi
+    reason= fast=
     if ((misses >= WATCH_MISSES)); then
       reason="the radio stopped answering /healthz ($WATCH_MISSES times in a row) with py-spy attached"
-    elif grep -qi 'behind in sampling' "$out/py-spy.log" 2>/dev/null; then
-      reason="py-spy fell behind in sampling, so it was pausing the radio too long"
-    elif ((SECONDS - started > seconds + SPY_OVERRUN_S)); then
-      reason="py-spy was still attached $((seconds + SPY_OVERRUN_S)) s after it started"
+      fast=fast
+    elif ((behind >= BEHIND_PROBES)); then
+      reason="py-spy kept falling behind in sampling ($BEHIND_PROBES probes in a row)"
+    elif ((limit)); then
+      reason="py-spy was still attached $SPY_OVERRUN_S s past its window"
     fi
     if [[ -n "$reason" ]] && spy_alive; then
-      echo "$reason, so py-spy was stopped" >"$out/aborted"
-      kill -CONT "$radio_pid" 2>/dev/null || true
-      stop_spy fast
-      kill -CONT "$radio_pid" 2>/dev/null || true
+      kill -CONT "$radio_pid" 2>/dev/null
+      stop_spy $fast
+      kill -CONT "$radio_pid" 2>/dev/null
+      echo "$reason, so py-spy was stopped" >"$out/aborted" 2>/dev/null
       break
     fi
     sleep "$WATCH_S"
@@ -182,7 +207,7 @@ available_mb() {
 # tracer's death detaches it), after 2 s and 1 s: a py-spy stuck while holding
 # the radio stopped freezes everyone's audio until then. `stop_spy fast` (the
 # watchdog: the radio is already known to be starved) gives SIGINT only
-# WATCH_GRACE_S, then goes straight to SIGKILL. The radio gets a SIGCONT
+# WATCH_GRACE_TENTHS, then goes straight to SIGKILL. The radio gets a SIGCONT
 # before and after the last wait in case it was left paused; to a running
 # process that does nothing.
 spy_pid= radio_pid=
@@ -194,7 +219,7 @@ stop_spy() {
     kill "-$sig" "$spy_pid" 2>/dev/null || return 0
     ticks=20 # tenths of a second: 2 s after SIGINT, 1 s after SIGTERM
     [[ $sig == TERM ]] && ticks=10
-    [[ "${1:-}" == fast ]] && ticks=$(awk -v g="$WATCH_GRACE_S" 'BEGIN { print int(g * 10 + 0.5) }')
+    [[ "${1:-}" == fast ]] && ticks=$WATCH_GRACE_TENTHS
     for ((t = 0; t < ticks; t++)); do
       spy_alive || return 0
       sleep 0.1
@@ -315,10 +340,12 @@ main() {
   [[ -n "$radio_ip" ]] && watchdog &
   # Sample from when py-spy starts sampling (its --duration starts then too,
   # after it has loaded the radio's symbols), so both windows match. Up to
-  # 30 s for that; if py-spy ends first, sample anyway for the record.
-  for ((t = 0; t < 300; t++)); do
+  # ATTACH_WAIT_S for that; if py-spy ends first, sample anyway for the
+  # record. $out/sampling tells the watchdog when its overrun clock starts.
+  for ((t = 0; t < ATTACH_WAIT_S * 10; t++)); do
     if grep -q "Sampling process" "$out/py-spy.log" 2>/dev/null; then
       sampling=1
+      : >"$out/sampling"
       break
     fi
     spy_alive || break

@@ -80,9 +80,17 @@ fi
 [[ -n "${FAKE_SPY_QUIET:-}" ]] || echo "py-spy> Sampling process 20 times a second. Press Control-C to exit."
 : >"$FAKE_DIR/spy-started"
 if [[ -n "${FAKE_SPY_HANG:-}" ]]; then echo $$ >"$FAKE_DIR/spy-pid"; exec /bin/sleep 120; fi
-# Falls behind and keeps going, holding the radio paused too long.
+# FAKE_SPY_BEHIND_HANG: keeps falling further behind, saying so again and again.
 if [[ -n "${FAKE_SPY_BEHIND_HANG:-}" ]]; then
-  echo "py-spy> 3.10s behind in sampling, results may be inaccurate. Try reducing the sampling rate" >&2
+  echo $$ >"$FAKE_DIR/spy-pid"
+  while :; do
+    echo "py-spy> 3.10s behind in sampling, results may be inaccurate. Try reducing the sampling rate" >&2
+    /bin/sleep 0.3
+  done
+fi
+# FAKE_SPY_BEHIND_ONCE_HANG: one hiccup, said once, then keeps sampling.
+if [[ -n "${FAKE_SPY_BEHIND_ONCE_HANG:-}" ]]; then
+  echo "py-spy> 1.05s behind in sampling, results may be inaccurate. Try reducing the sampling rate" >&2
   echo $$ >"$FAKE_DIR/spy-pid"; exec /bin/sleep 60
 fi
 # Ignores SIGINT and SIGTERM, as a py-spy stuck mid-attach might: only SIGKILL ends it.
@@ -93,6 +101,11 @@ while [[ $# -gt 0 ]]; do [[ "$1" == --output ]] && out=$2; shift; done
 if [[ -n "${FAKE_SPY_EMPTY:-}" ]]; then : >"$out"; exit 0; fi
 cp "$FAKE_DIR/raw" "$out"
 [[ -n "${FAKE_SPY_WARN:-}" ]] && echo "py-spy> 1.20s behind in sampling, results may be inaccurate. Try reducing the sampling rate" >&2
+# FAKE_SPY_BIG_LOG: one warning, then 100k lines of chatter, as a struggling run writes.
+if [[ -n "${FAKE_SPY_BIG_LOG:-}" ]]; then
+  echo "py-spy> Error: failed to unwind 3 samples" >&2
+  /usr/bin/awk 'BEGIN { for (i = 0; i < 100000; i++) print "py-spy> sampled thread 0x1 ok" }'
+fi
 # The real py-spy's last line on every successful record; not a warning.
 echo "py-spy> Wrote raw flamegraph data to '$out'. Samples: 100 Errors: 0"
 """
@@ -137,7 +150,8 @@ echo "Swap:           1023         100         923"
 # Each failed watchdog probe (the -o /dev/null ones) is logged to probes-failed.
 FAKE_CURL = """#!/usr/bin/env bash
 watchdog=; [[ " $* " == *" -o /dev/null "* ]] && watchdog=1
-failed() { [[ -n "$watchdog" ]] && echo x >>"$FAKE_DIR/probes-failed"; exit "$1"; }
+failed() { [[ -n "$watchdog" ]] && echo "$*" "args: ${ARGS}" >>"$FAKE_DIR/probes-failed"; exit "$1"; }
+ARGS="$*"
 [[ -n "${FAKE_CURL_FAIL:-}" ]] && failed 7
 [[ -n "${FAKE_CURL_FAIL_ONCE_SAMPLING:-}" && -e "$FAKE_DIR/spy-started" ]] && failed 28
 if [[ -n "${FAKE_CURL_5XX_ONCE_SAMPLING:-}" && -e "$FAKE_DIR/spy-started" ]]; then
@@ -518,7 +532,7 @@ def test_watchdog_stops_py_spy_when_the_radio_stops_answering(tmp_path: Path):
         assert "== aborted: the radio stopped answering /healthz" in summary
         assert "reads low" in summary
         # Exactly two failed probes, then it acted; probes 1 s apart.
-        assert len((tmp_path / "probes-failed").read_text().split()) == 2
+        assert len((tmp_path / "probes-failed").read_text().splitlines()) == 2
         assert "1" in (tmp_path / "sleeps").read_text().split()
     finally:
         radio.kill()
@@ -574,7 +588,7 @@ def _watch_constants() -> dict[str, float]:
     text = SCRIPT.read_text()
     return {
         name: float(re.search(rf"^{name}=([0-9.]+)$", text, re.M).group(1))
-        for name in ("WATCH_S", "WATCH_TIMEOUT_S", "WATCH_MISSES", "WATCH_GRACE_S")
+        for name in ("WATCH_S", "WATCH_TIMEOUT_S", "WATCH_MISSES", "WATCH_GRACE_TENTHS")
     }
 
 
@@ -586,7 +600,7 @@ def test_watchdog_acts_inside_the_kiwi_audio_deadline():
     assert issubclass(KiwiClient, KiwiConnection)
     kiwi_timeout = inspect.signature(KiwiConnection.__init__).parameters["timeout_s"].default
     c = _watch_constants()
-    worst = c["WATCH_MISSES"] * (c["WATCH_S"] + c["WATCH_TIMEOUT_S"]) + c["WATCH_GRACE_S"]
+    worst = c["WATCH_MISSES"] * (c["WATCH_S"] + c["WATCH_TIMEOUT_S"]) + c["WATCH_GRACE_TENTHS"] / 10
     assert worst * 2 <= kiwi_timeout, (worst, kiwi_timeout)
 
 
@@ -616,23 +630,38 @@ def test_watchdog_counts_http_errors_as_misses(tmp_path: Path):
     assert "== aborted: the radio stopped answering /healthz" in summary
 
 
-# Value: protects=a py-spy that falls behind in sampling (pausing the radio longer than it samples, while /healthz may still get through) is stopped at once; fails_when=the watchdog stops reading py-spy's log; why_new=red-team finding in this run's review; seam=fake py-spy that says it fell behind and keeps going, a stopped sleep standing in for uvicorn; no_claim=py-spy's exact wording in every version
+# Value: protects=a py-spy that keeps falling behind in sampling (new warnings on 3 probes in a row) is stopped, with the normal stop so it can still write its output; fails_when=the watchdog stops reading py-spy's log or stops counting new warnings; why_new=red-team findings in this run's review; seam=fake py-spy that keeps saying it fell behind, a stopped sleep standing in for uvicorn; no_claim=py-spy's exact wording in every version
 @pytest.mark.timeout(60)
-def test_watchdog_stops_a_py_spy_that_falls_behind(tmp_path: Path):
+def test_watchdog_stops_a_py_spy_that_keeps_falling_behind(tmp_path: Path):
     result, stopped, summary = _with_stopped_radio(tmp_path, ["30"], 40, FAKE_SPY_BEHIND_HANG="1")
     assert result.returncode == 0, result.stderr
     assert not stopped
-    assert "== aborted: py-spy fell behind in sampling" in summary
+    assert "== aborted: py-spy kept falling behind in sampling (3 probes in a row)" in summary
 
 
-# Value: protects=a py-spy that never finishes (stuck while /healthz still answers) is stopped once its window plus SPY_OVERRUN_S has passed, not left attached until someone notices; fails_when=the overrun cap is removed or no longer counts from launch; why_new=adversarial finding in this run's review; seam=fake py-spy that hangs, a stopped sleep standing in for uvicorn; no_claim=how long a real py-spy can take to write its output (takes about 60 s of wall time)
+# Value: protects=one hiccup (py-spy's lag adds up, so it says "behind" once and never un-says it) doesn't end the run and throw away the profile; fails_when=the watchdog stops on any "behind" line again; why_new=red-team finding in this run's review; seam=fake py-spy that says it fell behind once and keeps sampling; no_claim=how often a real py-spy repeats the warning
+@pytest.mark.timeout(60)
+def test_one_behind_warning_does_not_stop_the_run(tmp_path: Path):
+    cmd, env = setup(tmp_path, FAKE_SPY_BEHIND_ONCE_HANG="1")
+    script = subprocess.Popen([*cmd, "30"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        _wait_for(tmp_path / "spy-pid")
+        time.sleep(5)  # five watchdog probes (1 s apart, real)
+        assert not (tmp_path / "out" / "aborted").exists()
+        assert script.poll() is None
+    finally:
+        script.send_signal(signal.SIGTERM)
+        script.wait(timeout=20)
+
+
+# Value: protects=a py-spy that never finishes (stuck while /healthz still answers) is stopped once its window plus SPY_OVERRUN_S has passed since it started sampling, not left attached until someone notices; fails_when=the overrun cap is removed; why_new=adversarial finding in this run's review; seam=fake py-spy that hangs, a stopped sleep standing in for uvicorn; no_claim=how long a real py-spy can take to write its output (takes about 60 s of wall time)
 @pytest.mark.timeout(150)
 def test_watchdog_caps_how_long_py_spy_stays_attached(tmp_path: Path):
     started = time.monotonic()
     result, stopped, summary = _with_stopped_radio(tmp_path, ["30"], 120, FAKE_SPY_HANG="1")
     assert result.returncode == 0, result.stderr
     assert not stopped
-    assert "== aborted: py-spy was still attached 60 s after it started" in summary
+    assert "== aborted: py-spy was still attached 30 s past its window" in summary
     assert time.monotonic() - started < 100
 
 
@@ -678,3 +707,43 @@ def test_a_big_profile_gets_its_whole_summary(tmp_path: Path):
     assert len(rows) == 25
     assert "saved in" in result.stdout
     assert "output: " in result.stdout.splitlines()[0]
+
+
+# Value: protects=the watchdog's real stop time, not just its constants: probes use --max-time WATCH_TIMEOUT_S, and a py-spy that ignores SIGINT is SIGKILLed within about the 0.5 s grace (plus start-up) of the second failed probe, with the radio resumed; fails_when=the probe timeout goes back to a literal 2, or the watchdog uses the slow stop (2 s + 1 s) instead of the fast one; why_new=specialist finding in this run's pass 2: only the constants were checked; seam=fake py-spy that ignores INT and TERM, fake curl that fails once sampling starts and logs its arguments, a stopped sleep standing in for uvicorn; no_claim=start-up costs on a loaded 1-vCPU box
+@pytest.mark.timeout(60)
+def test_watchdog_kills_a_stuck_py_spy_within_its_grace(tmp_path: Path):
+    radio = subprocess.Popen(["/bin/sleep", "300"])
+    try:
+        os.kill(radio.pid, signal.SIGSTOP)
+        cmd, env = setup(tmp_path, FAKE_SPY_STUBBORN="1", FAKE_CURL_FAIL_ONCE_SAMPLING="1", FAKE_RADIO_PID=str(radio.pid))
+        script = subprocess.Popen([*cmd, "30"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _wait_for(tmp_path / "spy-pid")
+        spy_pid = int((tmp_path / "spy-pid").read_text())
+        probes = tmp_path / "probes-failed"
+        deadline = time.monotonic() + 20
+        while not probes.exists() or len(probes.read_text().splitlines()) < 2:
+            assert time.monotonic() < deadline, "the watchdog never missed twice"
+            time.sleep(0.02)
+        second_miss = time.monotonic()
+        while True:
+            try:
+                os.kill(spy_pid, 0)
+            except ProcessLookupError:
+                break
+            assert time.monotonic() - second_miss < 1.5, "py-spy outlived the fast stop's grace"
+            time.sleep(0.02)
+        assert script.wait(timeout=20) == 0
+        assert not _stopped(radio.pid)
+        assert all("--max-time 1 " in line for line in probes.read_text().splitlines())
+    finally:
+        radio.kill()
+        radio.wait()
+
+
+# Value: protects=a long py-spy.log (a struggling run warns a lot) still gets its warnings into the summary: no grep -q in that pipeline SIGPIPEs the grep before it under pipefail; fails_when=grep -q comes back into the warnings pipeline; why_new=specialist finding in this run's pass 2: the big-profile test only covers head; seam=fake py-spy writing a 100k-line log; no_claim=py-spy's real log size
+def test_a_long_py_spy_log_keeps_its_warnings(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30", FAKE_SPY_BIG_LOG="1")
+    assert result.returncode == 0, result.stderr
+    summary = (out / "summary.txt").read_text()
+    assert "== py-spy warnings" in summary
+    assert "by self time" in summary
