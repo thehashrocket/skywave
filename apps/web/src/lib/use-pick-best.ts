@@ -430,7 +430,9 @@ export function usePickBest(
     if (status === c.before) return;
     if (c.returning) {
       const { receiver: back, why } = c.returning;
-      if (status.host !== undefined && (status.host !== back.host || status.port !== back.port)) return;
+      // The service answers with the host lowercased.
+      if (status.host !== undefined && (status.host.toLowerCase() !== back.host.toLowerCase() || status.port !== back.port))
+        return;
       if (status.state === "listening") return finish(`${why} Back on ${back.name}.`);
       if (status.state === "error") return finish(`${why} Couldn't get back to ${back.name}.`);
       return;
@@ -497,11 +499,17 @@ export function usePickBest(
     if (!refusal || refusal.seq === lastRefusal.current) return;
     lastRefusal.current = refusal.seq;
     const c = chain.current;
-    if (!c || c.returning || c.watchTimer) return;
+    if (!c || c.watchTimer) return;
+    const about = (r: Receiver) => refusal.host.toLowerCase() === r.host.toLowerCase() && refusal.port === r.port;
+    if (c.returning) {
+      // The way back refused while something else plays on: the run is over.
+      const { receiver: back, why } = c.returning;
+      if (about(back)) finish(`${why} Couldn't get back to ${back.name}.`);
+      return;
+    }
     const current = c.tried[c.tried.length - 1]!;
-    if (refusal.host.toLowerCase() !== current.host.toLowerCase() || refusal.port !== current.port) return;
-    moveOn(c, current, refusal.code);
-  }, [refusal, moveOn]);
+    if (about(current)) moveOn(c, current, refusal.code);
+  }, [refusal, moveOn, finish]);
 
   /** How many choices have been dropped so far (see `drops`). */
   const dropCount = useCallback(() => drops.current, []);

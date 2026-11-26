@@ -792,6 +792,44 @@ describe("usePickBest", () => {
     expect(tune).toHaveBeenCalledTimes(2);
   });
 
+  // Value: protects=a Pick best run going back to where it started always ends: a way back refused while another station plays on (a "refused" message) says it couldn't get back, and a way back whose host came back lowercased reads as back; fails_when=the refusal handler ignores refusals while returning, or the way-back match is case-sensitive, so settled never turns true and the button reads checking for good; why_new=Codex outside review of 710d4a9 (owner D6); seam=none (mocked track); no_claim=whether the service can refuse the way back today
+  it("ends the way back on a refusal or a lowercased host", () => {
+    const tune = vi.fn();
+    const hook = renderHook(
+      ({ status, refusal }) => usePickBest(status, tune, undefined, undefined, refusal),
+      {
+        initialProps: {
+          status: { state: "listening", host: "Home.Example", port: 8073 } as RadioStatus,
+          refusal: null as RadioRefusal | null,
+        },
+      },
+    );
+    act(() => hook.result.current.start([rx("a")]));
+    hook.rerender({ status: fail("a", "busy"), refusal: null });
+    expect(hook.result.current.note).toMatch(/Going back to Home\.Example/);
+    hook.rerender({
+      status: { state: "listening", host: "other.example", port: 8073 },
+      refusal: {
+        seq: 1,
+        host: "home.example",
+        port: 8073,
+        code: "skywave_cap",
+        message: "x",
+        stillOn: { host: "other.example", port: 8073 },
+      },
+    });
+    expect(hook.result.current.note).toBe("Tried 1 receiver and it didn't work. Couldn't get back to Home.Example.");
+    expect(hook.result.current.settled).toBe(true);
+
+    // A way back answered with the host lowercased reads as back.
+    hook.rerender({ status: { state: "listening", host: "Other.Example", port: 8073 }, refusal: null });
+    act(() => hook.result.current.start([rx("b")]));
+    hook.rerender({ status: fail("b", "busy"), refusal: null });
+    hook.rerender({ status: { state: "listening", host: "other.example", port: 8073 }, refusal: null });
+    expect(hook.result.current.note).toBe("Tried 1 receiver and it didn't work. Back on Other.Example.");
+    expect(hook.result.current.settled).toBe(true);
+  });
+
   // Value: protects=our cap isn't remembered as the receiver refusing, so it isn't hidden from runs for 15 minutes; fails_when=skywave_cap joins REFUSALS; why_new=new code; seam=none; no_claim=none beyond protects
   it("doesn't mark a receiver refused for Skywave's own cap", () => {
     const { hook, report } = setup();
