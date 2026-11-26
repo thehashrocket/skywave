@@ -34,7 +34,26 @@
 
 **Context:** `apps/web/src/app/page.tsx` (`tuneReceiver`, `pinTo`, `tuning`, `pin`, `draft`), `apps/web/src/lib/use-radio.ts` (uncoded error handling).
 
-**Owner decisions (feat/144-receiver-log, 2026-11-26):** done for a switch onto a receiver at Skywave's own cap, from a page that knows `skywave_cap`: the service refuses it before anything stops with one `{"type":"refused", host, port, code, message, stillOn}` message (an error status followed by a listening one was merged into one render and hung Pick best, owner D8), and the page points its dial, pin and Receiver field back at `stillOn` with the reason (owner D7). Still open: the same for other refused switches (an uncoded refusal such as a bad list entry, an owner opt-out), and the review notes from that PR: compare hosts lowercased in the page's restore, restore the playing receiver's `fromList`/`secure` from the tuning the switch replaced rather than `provenance()`, and clear the switch's saved pin and field once the switch resolves.
+**Owner decisions (feat/144-receiver-log, 2026-11-26):** done for a switch onto a receiver at Skywave's own cap, from a page that knows `skywave_cap`: the service refuses it before anything stops with one `{"type":"refused", host, port, code, message, stillOn}` message (an error status followed by a listening one was merged into one render and hung Pick best, owner D8). The page points its dial back at `stillOn` from the tuning the switch replaced (keeping its scheme and list tag), puts the pin and Receiver field back to how the page last set them, with the reason (owner D7, D1, D2), matches hosts whatever their case, and forgets the saved click once the switch is answered. Still open: the same for other refused switches (an uncoded refusal such as a bad list entry, an owner opt-out).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+### Receiver log: review notes from #144
+
+**What:** Notes the #144 reviews left open, all about the log or analytics, none about audio:
+- Kiwi errors (a fast `unreachable`) and `listening` lines aren't throttled, and the refusal throttle is per connection, so a page looping tunes or reconnecting can rotate the 25 MB history out. A service-wide limit per (host, port, code) would close it.
+- `close()` skips `flush_refused_counts()` if `stop()` raises: wrap it in `try`/`finally`.
+- Once the file is attached, a failing disk prints a traceback per line from the writer thread and the lines go nowhere; shutdown can wait on a stalled disk while the queue drains.
+- A `skywave_cap` met on Pick best's way back isn't counted in `radio_refused`; a run restored from the back-forward cache never reports its real end (pagehide already reported it).
+- `page.tsx`: `draftRef` is now unused, and `otherThan`'s doc comment sits on `sameReceiver`.
+- `hostguard.py:195`: the resolver's `HOSTNAME_RE.match` should be `fullmatch` like the log's (a trailing newline only fails the lookup today).
+- `config.py`'s `receiver_log` comment and `server.py`'s `attach_receiver_log` docstring still say the file is written "also" and stdout is used "only" when unset; the file replaces stdout once attached.
+
+**Why:** The log exists to tell the causes of `busy`/`unreachable` apart (#144); history a client can wash out, or counts that miss a path, weaken that.
+
+**Context:** `apps/radio/skywave_radio/session.py` (`_log_refused`, `close`), `apps/radio/skywave_radio/server.py` (`attach_receiver_log`, `close_receiver_logs`), `apps/web/src/lib/use-pick-best.ts`, `apps/web/src/app/page.tsx`, `apps/radio/skywave_radio/hostguard.py`.
 
 **Effort:** S
 **Priority:** P3
