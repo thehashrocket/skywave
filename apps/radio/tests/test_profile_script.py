@@ -62,6 +62,7 @@ RAW = textwrap.dedent(
 FAKE_PY_SPY = """#!/usr/bin/env bash
 if [[ "$1" == --version ]]; then echo "py-spy 0.4.1"; exit 0; fi
 echo "$*" >"$FAKE_DIR/py-spy-args"
+/bin/ps -o nice= -p $$ >"$FAKE_DIR/py-spy-nice"
 # The signal dispositions and OOM score py-spy starts with (Linux only).
 [[ -r /proc/$$/status ]] && grep '^SigIgn:' /proc/$$/status >"$FAKE_DIR/py-spy-sigign"
 [[ -r /proc/$$/oom_score_adj ]] && cat /proc/$$/oom_score_adj >"$FAKE_DIR/py-spy-oom"
@@ -107,7 +108,8 @@ if [[ -n "${FAKE_SPY_BIG_LOG:-}" ]]; then
   /usr/bin/awk 'BEGIN { for (i = 0; i < 100000; i++) print "py-spy> sampled thread 0x1 ok" }'
 fi
 # The real py-spy's last line on every successful record; not a warning.
-echo "py-spy> Wrote raw flamegraph data to '$out'. Samples: 100 Errors: 0"
+# FAKE_SPY_ERRORS: samples it couldn't read, reported only on this line.
+echo "py-spy> Wrote raw flamegraph data to '$out'. Samples: 100 Errors: ${FAKE_SPY_ERRORS:-0}"
 """
 
 # vmstat -n: two header lines, then the since-boot row (steal 90, must be
@@ -216,7 +218,7 @@ def run_profile(tmp_path: Path, *args: str, spy: bool = True, **fake_env: str):
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
 
-# Value: protects=the Step 0 numbers for issue #153: steal and CPU averages per window (vmstat's since-boot row dropped), listeners from /healthz, radio/caddy CPU, rows per phase, busy share, self time per function and inclusive time per function and thread, and the --nonblocking accuracy caveat; fails_when=the caveat is dropped,the since-boot row is averaged in, columns are misread, self time counts outer frames, a frame is split by line, or recursion is counted twice; why_new=new script; seam=fake docker/py-spy/vmstat/curl/free/sleep on PATH; no_claim=real py-spy attaching across the container boundary, real vmstat column order, tick timing (sleep is faked)
+# Value: protects=the Step 0 numbers for issue #153: steal and CPU averages per window (vmstat's since-boot row dropped), listeners from /healthz, radio/caddy CPU, rows per phase, busy share, self time per function and inclusive time per function and thread, and the --nonblocking accuracy caveat; fails_when=the caveat is dropped, the since-boot row is averaged in, columns are misread, self time counts outer frames, a frame is split by line, or recursion is counted twice; why_new=new script; seam=fake docker/py-spy/vmstat/curl/free/sleep on PATH; no_claim=real py-spy attaching across the container boundary, real vmstat column order, tick timing (sleep is faked)
 def test_summary(tmp_path: Path):
     result, out = run_profile(tmp_path, "30")
     assert result.returncode == 0, result.stderr
@@ -249,7 +251,7 @@ def test_summary(tmp_path: Path):
     assert len(rows) == 1 + 60 // 5 + 30 // 5  # header, baseline, profile
 
 
-# Value: protects=the profiler settings the owner approved for production (--nonblocking and never --native, so the radio is never paused; per function, per thread, 20 Hz, the requested window, the radio's host PID) and that py-spy starts only after the baseline window, with vmstat covering each window; fails_when=a flag is dropped, the rate or duration drifts, py-spy overlaps the baseline, or a vmstat count drifts from its window; why_new=new script; seam=fake py-spy and vmstat on PATH; no_claim=py-spy's own flag parsing
+# Value: protects=the profiler settings the owner approved for production (--nonblocking and never --native, so the radio is never paused; nice 19, so the radio gets the core first; per function, per thread, 20 Hz, the requested window, the radio's host PID) and that py-spy starts only after the baseline window, with vmstat covering each window; fails_when=a flag or the nice prefix is dropped, the rate or duration drifts, py-spy overlaps the baseline, or a vmstat count drifts from its window; why_new=new script; seam=fake py-spy and vmstat on PATH; no_claim=py-spy's own flag parsing
 def test_py_spy_settings_and_windows(tmp_path: Path):
     result, _ = run_profile(tmp_path, "45")
     assert result.returncode == 0, result.stderr
@@ -259,11 +261,12 @@ def test_py_spy_settings_and_windows(tmp_path: Path):
         assert args[args.index(flag) + 1] == value
     assert {"--nonblocking", "--function", "--threads"} <= set(args)
     assert "--native" not in args
+    assert (tmp_path / "py-spy-nice").read_text().strip() == "19"
     assert int((tmp_path / "rows-at-spy-start").read_text()) >= 1 + 60 // 5
     assert (tmp_path / "vmstat-args").read_text().splitlines() == ["-n 5 13", "-n 5 10"]
 
 
-# Value: protects=the cap on how long py-spy may pause the process that streams every listener's audio, windows that line up with the 5 s samples, and --force only as the first argument; fails_when=the 30-300 s bounds, the step-of-5 check, the number check (incl. no leading zero, which bash reads as octal while py-spy reads decimal) or the argument count check are removed; why_new=new script; seam=none; no_claim=that 300 s of pauses is inaudible
+# Value: protects=the cap on how long py-spy competes with the radio for its one core, windows that line up with the 5 s samples, and --force only as the first argument; fails_when=the 30-300 s bounds, the step-of-5 check, the number check (incl. no leading zero, which bash reads as octal while py-spy reads decimal) or the argument count check are removed; why_new=new script; seam=none; no_claim=that 300 s of py-spy beside the radio is inaudible
 @pytest.mark.parametrize(
     "args", [["301"], ["29"], ["33"], ["2m"], ["0454"], ["060"], ["30", "--force"], ["--force", "30", "40"]]
 )
@@ -305,7 +308,7 @@ def test_unmeasured_cpu_is_not_profiled_without_force(tmp_path: Path, args: list
         assert "not profiled: couldn't measure host CPU" in (out / "summary.txt").read_text()
 
 
-# Value: protects=py-spy starts with TERM and HUP not ignored, so an abort's SIGTERM stops it at once instead of waiting for SIGKILL while it may hold the radio stopped; fails_when=the launch window's trap becomes an ignore (trap '' INT TERM HUP), so py-spy inherits ignored TERM and HUP; why_new=specialist finding in the pre-landing review (pass 2); seam=fake py-spy reads /proc/self/status; no_claim=macOS (no /proc; skipped) or py-spy's own SIGINT handler
+# Value: protects=py-spy starts with TERM and HUP not ignored, so an abort's SIGTERM stops it at once instead of using the radio's core until SIGKILL; fails_when=the launch window's trap becomes an ignore (trap '' INT TERM HUP), so py-spy inherits ignored TERM and HUP; why_new=specialist finding in the pre-landing review (pass 2); seam=fake py-spy reads /proc/self/status; no_claim=macOS (no /proc; skipped) or py-spy's own SIGINT handler
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/<pid>/status")
 def test_py_spy_starts_with_term_and_hup_not_ignored(tmp_path: Path):
     result, _ = run_profile(tmp_path, "30")
@@ -442,7 +445,7 @@ def test_abort_stops_py_spy(tmp_path: Path, sig: signal.Signals):
     assert _gone(int((tmp_path / "spy-pid").read_text()))
 
 
-# Value: protects=a py-spy that ignores SIGINT and SIGTERM is still ended (SIGKILL after 2 s + 1 s), so an abort can't leave it running; fails_when=the SIGKILL fallback is removed; why_new=pre-landing review; seam=fake py-spy that ignores INT and TERM; no_claim=how long real py-spy takes to let go
+# Value: protects=a py-spy that ignores SIGINT and SIGTERM is still ended (SIGKILL after 1 s + 1 s), so an abort can't leave it running; fails_when=the SIGKILL fallback is removed; why_new=pre-landing review; seam=fake py-spy that ignores INT and TERM; no_claim=how long real py-spy takes to let go
 @pytest.mark.timeout(40)
 def test_abort_kills_a_stubborn_py_spy(tmp_path: Path):
     cmd, env = setup(tmp_path, FAKE_SPY_STUBBORN="1")
@@ -516,11 +519,11 @@ def _watch_constants() -> dict[str, float]:
     text = SCRIPT.read_text()
     return {
         name: float(re.search(rf"^{name}=([0-9.]+)$", text, re.M).group(1))
-        for name in ("WATCH_S", "WATCH_TIMEOUT_S", "WATCH_MISSES")
+        for name in ("WATCH_S", "WATCH_TIMEOUT_S", "WATCH_MISSES", "STOP_INT_TENTHS", "STOP_TERM_TENTHS")
     }
 
 
-# Value: protects=a radio starved of CPU by py-spy gets it back well inside the radio's own deadline: the radio ends every listener's Kiwi stream once audio is timeout_s late (KiwiConnection, kiwi.py), so the worst-case detect-and-stop time (misses x (interval + probe timeout) + the 2 s SIGINT wait) must be at most 60% of it; fails_when=the probe interval, probe timeout or miss count grows, or the Kiwi timeout shrinks, past that budget; why_new=adversarial finding: the first cadence took 9-17 s against a 10 s deadline; seam=none (reads the script's constants and KiwiConnection's default); no_claim=real /healthz latency under load
+# Value: protects=a radio starved of CPU by py-spy gets it back well inside the radio's own deadline: the radio ends every listener's Kiwi stream once audio is timeout_s late (KiwiConnection, kiwi.py), so the worst-case detect-and-stop time (misses x (interval + probe timeout) + stop_spy's SIGINT and SIGTERM waits, for a py-spy that ignores both) must be at most 60% of it; fails_when=the probe interval, probe timeout, miss count or either stop wait grows, or the Kiwi timeout shrinks, past that budget; why_new=adversarial finding: the first cadence took 9-17 s against a 10 s deadline; seam=none (reads the script's constants and KiwiConnection's default); no_claim=real /healthz latency under load
 def test_watchdog_acts_inside_the_kiwi_audio_deadline():
     # KiwiClient takes timeout_s from KiwiConnection, the base of every Kiwi stream.
     from skywave_radio.kiwi import KiwiClient, KiwiConnection
@@ -528,11 +531,12 @@ def test_watchdog_acts_inside_the_kiwi_audio_deadline():
     assert issubclass(KiwiClient, KiwiConnection)
     kiwi_timeout = inspect.signature(KiwiConnection.__init__).parameters["timeout_s"].default
     c = _watch_constants()
-    worst = c["WATCH_MISSES"] * (c["WATCH_S"] + c["WATCH_TIMEOUT_S"]) + 2
+    escalation = (c["STOP_INT_TENTHS"] + c["STOP_TERM_TENTHS"]) / 10
+    worst = c["WATCH_MISSES"] * (c["WATCH_S"] + c["WATCH_TIMEOUT_S"]) + escalation
     assert worst <= 0.6 * kiwi_timeout, (worst, kiwi_timeout)
 
 
-# Value: protects=the watchdog's real stop time, not just its constants: probes use --max-time WATCH_TIMEOUT_S, and a py-spy that ignores SIGINT and SIGTERM is SIGKILLed within the 2 s + 1 s escalation (plus start-up) of the second failed probe; fails_when=the probe timeout goes back to a literal 2, or the escalation grows; why_new=specialist finding: only the constants were checked; seam=fake py-spy that ignores INT and TERM, fake curl that fails once sampling starts and logs its arguments; no_claim=start-up costs on a loaded 1-vCPU box
+# Value: protects=the watchdog's real stop time, not just its constants: probes use --max-time WATCH_TIMEOUT_S, and a py-spy that ignores SIGINT and SIGTERM is SIGKILLed within the 1 s + 1 s escalation (plus start-up) of the second failed probe; fails_when=the probe timeout goes back to a literal 2, or the escalation grows; why_new=specialist finding: only the constants were checked; seam=fake py-spy that ignores INT and TERM, fake curl that fails once sampling starts and logs its arguments; no_claim=start-up costs on a loaded 1-vCPU box
 @pytest.mark.timeout(60)
 def test_watchdog_kills_a_stuck_py_spy_within_its_escalation(tmp_path: Path):
     cmd, env = setup(tmp_path, FAKE_SPY_STUBBORN="1", FAKE_CURL_FAIL_ONCE_SAMPLING="1")
@@ -546,7 +550,7 @@ def test_watchdog_kills_a_stuck_py_spy_within_its_escalation(tmp_path: Path):
         time.sleep(0.02)
     second_miss = time.monotonic()
     while not _gone(spy_pid):
-        assert time.monotonic() - second_miss < 4.5, "py-spy outlived the stop's escalation"
+        assert time.monotonic() - second_miss < 3.5, "py-spy outlived the stop's escalation"
         time.sleep(0.02)
     assert script.wait(timeout=20) == 0
     assert all("--max-time 1 " in line for line in probes.read_text().splitlines())
@@ -699,3 +703,13 @@ def test_summary_says_when_the_oom_score_was_not_set(tmp_path: Path):
     summary = (out / "summary.txt").read_text()
     assert "warning: py-spy's OOM score couldn't be set" in summary
     assert "py-spy warnings" not in summary  # its own log line isn't one of py-spy's warnings
+
+
+# Value: protects=samples py-spy couldn't read reach the summary as a warning: its error count rides only on the "Wrote raw flamegraph data ... Errors: N" line, which the warnings filter leaves out for its path; fails_when=the error count is no longer read from that line, or Errors: 0 is reported; why_new=specialist and QA finding in the ship review (reproduced: Errors: 250 gave no warnings block); seam=fake py-spy on PATH; no_claim=py-spy's exact wording in every version
+def test_py_spy_errors_reach_the_summary(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30", FAKE_SPY_ERRORS="250")
+    assert result.returncode == 0, result.stderr
+    summary = (out / "summary.txt").read_text()
+    assert "== py-spy warnings" in summary
+    assert "py-spy couldn't read some samples (Errors: 250)" in summary
+    assert "by self time" in summary
