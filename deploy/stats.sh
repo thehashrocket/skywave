@@ -47,22 +47,39 @@ main() {
     $4 == "01" { split($2, a, ":"); if (a[2] == "223D") ws++; else kiwi++ }
     END { printf "  browser_sockets=%d  kiwi_sockets=%d\n", ws, kiwi }'
 
-  local logs
+  local logs started
   logs=$(docker logs -t --since 24h "$radio" 2>&1 || true)
+  started=$(docker inspect -f '{{.State.StartedAt}}' "$radio" | cut -c1-16)
 
   echo
   echo "== /ws sessions opened per hour, last 24 h (UTC)"
+  # docker logs only reach back to the container's start: a deploy that
+  # rebuilds the image starts the count over.
+  if [[ "$started" > "$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M)" ]]; then
+    echo "  (only since the container started at ${started}Z)"
+  fi
   grep 'WebSocket /ws' <<<"$logs" | cut -c1-13 | sort | uniq -c | awk '{printf "  %s  %s\n", $2, $1}' \
     || echo "  (none)"
 
-  # Receiver-log lines (#144) when the deployed build writes them: refusals by
-  # code and the most listeners seen per hour.
-  local events
-  events=$(grep -F ' event=' <<<"$logs" || true)
+  # Receiver-log lines (#144): in production they go to RECEIVER_LOG inside the
+  # container (/data/receivers.log on the volume, rotated .1 to .4, so they
+  # outlive deploys), with "YYYY-MM-DD HH:MM:SS,mmm " in front. Without
+  # RECEIVER_LOG they're in docker logs instead. Refusals by code and the most
+  # listeners seen per hour, last 24 h.
+  local events cutoff
+  cutoff=$(date -u -d '24 hours ago' '+%Y-%m-%d %H:%M')
+  # Oldest file first; the path is the container's own RECEIVER_LOG.
+  # shellcheck disable=SC2016
+  events=$(docker exec "$radio" sh -c 'f="$RECEIVER_LOG"; [ -n "$f" ] || exit 0
+      for i in 4 3 2 1; do [ -f "$f.$i" ] && cat "$f.$i"; done; [ -f "$f" ] && cat "$f"; exit 0' 2>/dev/null \
+    | awk -v cutoff="$cutoff" 'substr($0, 1, 16) >= cutoff && / event=/ { sub(/ /, "T"); print }' || true)
+  if [[ -z "$events" ]]; then
+    events=$(grep -F ' event=' <<<"$logs" || true)
+  fi
   echo
   echo "== receiver log, last 24 h"
   if [[ -z "$events" ]]; then
-    echo "  (no receiver-log lines: this build doesn't write them)"
+    echo "  (no receiver-log lines in the last 24 h)"
   else
     echo "  by event and code:"
     grep -oE 'event=[a-z_]+ .* code=[A-Za-z0-9_-]+' <<<"$events" \
