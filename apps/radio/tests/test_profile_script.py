@@ -1,6 +1,8 @@
 """deploy/profile.sh, run against fake docker, py-spy, vmstat, curl and sleep on PATH."""
 
+import inspect
 import os
+import re
 import shutil
 import signal
 import stat
@@ -33,7 +35,11 @@ case "$1 $2" in
         echo "${FAKE_RADIO_PID:-4194303}";;
       *IPAddress*) [[ -n "${FAKE_NO_IP:-}" ]] && echo " " || echo "172.30.0.3 ";;
     esac ;;
-  "stats --no-stream") [[ -n "${FAKE_STATS_FAIL:-}" ]] && exit 1; echo "radioid 30.00%"; echo "caddyid 10.00%" ;;
+  "stats --no-stream")
+    [[ -n "${FAKE_STATS_FAIL:-}" ]] && exit 1
+    # FAKE_STATS_HANG_SAMPLING: a stalled Docker daemon once py-spy samples.
+    [[ -n "${FAKE_STATS_HANG_SAMPLING:-}" && -e "$FAKE_DIR/spy-started" ]] && exec /bin/sleep 30
+    echo "radioid 30.00%"; echo "caddyid 10.00%" ;;
   *) echo "unexpected docker call: $*" >&2; exit 9 ;;
 esac
 """
@@ -66,17 +72,27 @@ if [[ -n "${FAKE_SPY_FAIL:-}" ]]; then
 fi
 # Stuck while attaching: never starts sampling.
 if [[ -n "${FAKE_SPY_HANG_ATTACH:-}" ]]; then echo $$ >"$FAKE_DIR/spy-pid"; exec /bin/sleep 60; fi
-echo "py-spy> Sampling process 20 times a second. Press Control-C to exit."
+# FAKE_SPY_LATE: takes 1 s to attach; the profile rows written by then are counted.
+if [[ -n "${FAKE_SPY_LATE:-}" ]]; then
+  /bin/sleep 1; grep -c $'\\tprofile\\t' "$FAKE_DIR/out/samples.tsv" >"$FAKE_DIR/rows-at-sampling"
+fi
+# FAKE_SPY_QUIET: never prints the "Sampling process" line (a py-spy whose output changed).
+[[ -n "${FAKE_SPY_QUIET:-}" ]] || echo "py-spy> Sampling process 20 times a second. Press Control-C to exit."
 : >"$FAKE_DIR/spy-started"
-if [[ -n "${FAKE_SPY_HANG:-}" ]]; then echo $$ >"$FAKE_DIR/spy-pid"; exec /bin/sleep 30; fi
+if [[ -n "${FAKE_SPY_HANG:-}" ]]; then echo $$ >"$FAKE_DIR/spy-pid"; exec /bin/sleep 120; fi
+# Falls behind and keeps going, holding the radio paused too long.
+if [[ -n "${FAKE_SPY_BEHIND_HANG:-}" ]]; then
+  echo "py-spy> 3.10s behind in sampling, results may be inaccurate. Try reducing the sampling rate" >&2
+  echo $$ >"$FAKE_DIR/spy-pid"; exec /bin/sleep 60
+fi
 # Ignores SIGINT and SIGTERM, as a py-spy stuck mid-attach might: only SIGKILL ends it.
 if [[ -n "${FAKE_SPY_STUBBORN:-}" ]]; then
   trap '' INT TERM; echo $$ >"$FAKE_DIR/spy-pid"; while :; do /bin/sleep 1; done
 fi
-[[ -n "${FAKE_SPY_WARN:-}" ]] && echo "py-spy> 1.20s behind in sampling, results may be inaccurate. Try reducing the sampling rate" >&2
 while [[ $# -gt 0 ]]; do [[ "$1" == --output ]] && out=$2; shift; done
 if [[ -n "${FAKE_SPY_EMPTY:-}" ]]; then : >"$out"; exit 0; fi
 cp "$FAKE_DIR/raw" "$out"
+[[ -n "${FAKE_SPY_WARN:-}" ]] && echo "py-spy> 1.20s behind in sampling, results may be inaccurate. Try reducing the sampling rate" >&2
 # The real py-spy's last line on every successful record; not a warning.
 echo "py-spy> Wrote raw flamegraph data to '$out'. Samples: 100 Errors: 0"
 """
@@ -117,9 +133,17 @@ echo "Swap:           1023         100         923"
 # FAKE_CURL_SLOW_AFTER_FAIL: once py-spy has failed, each /healthz takes 1 s,
 # so the profile's samplers outlive py-spy.
 # FAKE_CURL_FAIL_ONCE_SAMPLING: the radio stops answering once py-spy samples.
+# FAKE_CURL_5XX_ONCE_SAMPLING: it answers HTTP 500 instead (curl -f: exit 22).
+# Each failed watchdog probe (the -o /dev/null ones) is logged to probes-failed.
 FAKE_CURL = """#!/usr/bin/env bash
-[[ -n "${FAKE_CURL_FAIL:-}" ]] && exit 7
-[[ -n "${FAKE_CURL_FAIL_ONCE_SAMPLING:-}" && -e "$FAKE_DIR/spy-started" ]] && exit 28
+watchdog=; [[ " $* " == *" -o /dev/null "* ]] && watchdog=1
+failed() { [[ -n "$watchdog" ]] && echo x >>"$FAKE_DIR/probes-failed"; exit "$1"; }
+[[ -n "${FAKE_CURL_FAIL:-}" ]] && failed 7
+[[ -n "${FAKE_CURL_FAIL_ONCE_SAMPLING:-}" && -e "$FAKE_DIR/spy-started" ]] && failed 28
+if [[ -n "${FAKE_CURL_5XX_ONCE_SAMPLING:-}" && -e "$FAKE_DIR/spy-started" ]]; then
+  [[ " $* " == *" -sf "* ]] && failed 22
+  echo '{"detail":"Internal Server Error"}'; exit 0
+fi
 [[ -n "${FAKE_CURL_SLOW_AFTER_FAIL:-}" && -e "$FAKE_DIR/spy-failed" ]] && /bin/sleep 1
 echo '{"ok":true,"listeners":7,"maxListeners":15}'
 """
@@ -137,10 +161,17 @@ def setup(tmp_path: Path, *, spy: bool = True, **fake_env: str) -> tuple[list[st
         "vmstat": FAKE_VMSTAT,
         "free": FAKE_FREE,
         "curl": FAKE_CURL,
-        # Instant, except the 0.1 s steps of the wait for py-spy to start
-        # sampling and of stopping it, which are real so timing there shows.
-        "sleep": '#!/usr/bin/env bash\n[[ "$1" == 0.1 ]] && exec /bin/sleep 0.1\nexit 0\n',
-        "timeout": '#!/usr/bin/env bash\nshift\nexec "$@"\n',
+        # Instant, except the 0.1 s steps (waiting for py-spy to start
+        # sampling, stopping it) and the watchdog's 1 s, which are real so
+        # timing there shows. Every call is logged to sleeps.
+        "sleep": '#!/usr/bin/env bash\necho "$1" >>"$FAKE_DIR/sleeps"\n'
+        '[[ "$1" == 0.1 || "$1" == 1 ]] && exec /bin/sleep "$1"\nexit 0\n',
+        # A real timeout (macOS has none): kill the command after $1 seconds.
+        # (The killer's output goes to /dev/null: if it held the caller's
+        # pipe, every $(timeout ...) would wait the full $1 seconds.)
+        "timeout": '#!/usr/bin/env bash\nt=$1; shift\n"$@" & p=$!\n'
+        '( /bin/sleep "$t"; kill "$p" ) >/dev/null 2>&1 & w=$!\n'
+        'wait "$p"; rc=$?; kill "$w" 2>/dev/null; exit "$rc"\n',
         "nproc": "#!/usr/bin/env bash\necho 1\n",
     }
     if spy:
@@ -468,7 +499,7 @@ def test_py_spy_warnings_reach_the_summary(tmp_path: Path):
     assert "by self time" in summary
 
 
-# Value: protects=listeners' audio when py-spy starves the radio: two /healthz probes in a row without an answer stop py-spy and resume the radio, without anyone at the keyboard; fails_when=the watchdog is removed, needs more misses, or stops py-spy without the SIGCONT; why_new=owner-approved watchdog from the final review; seam=fake py-spy that hangs, fake curl that fails once sampling starts, a stopped sleep standing in for uvicorn; no_claim=that real /healthz misses mean py-spy is the cause
+# Value: protects=listeners' audio when py-spy starves the radio: exactly two /healthz probes in a row without an answer, 1 s apart, stop py-spy and resume the radio, without anyone at the keyboard; fails_when=the watchdog is removed, needs more misses, probes less often, or stops py-spy without resuming the radio; why_new=owner-approved watchdog; trigger and cadence pinned after the specialist showed 6 misses still passed; seam=fake py-spy that hangs, fake curl that fails once sampling starts and logs failed probes, a stopped sleep standing in for uvicorn; no_claim=that real /healthz misses mean py-spy is the cause
 @pytest.mark.timeout(30)
 def test_watchdog_stops_py_spy_when_the_radio_stops_answering(tmp_path: Path):
     radio = subprocess.Popen(["/bin/sleep", "60"])
@@ -486,6 +517,9 @@ def test_watchdog_stops_py_spy_when_the_radio_stops_answering(tmp_path: Path):
         summary = (tmp_path / "out" / "summary.txt").read_text()
         assert "== aborted: the radio stopped answering /healthz" in summary
         assert "reads low" in summary
+        # Exactly two failed probes, then it acted; probes 1 s apart.
+        assert len((tmp_path / "probes-failed").read_text().split()) == 2
+        assert "1" in (tmp_path / "sleeps").read_text().split()
     finally:
         radio.kill()
         radio.wait()
@@ -534,3 +568,113 @@ def test_second_signal_does_not_cut_cleanup_short(tmp_path: Path):
     finally:
         radio.kill()
         radio.wait()
+
+
+def _watch_constants() -> dict[str, float]:
+    text = SCRIPT.read_text()
+    return {
+        name: float(re.search(rf"^{name}=([0-9.]+)$", text, re.M).group(1))
+        for name in ("WATCH_S", "WATCH_TIMEOUT_S", "WATCH_MISSES", "WATCH_GRACE_S")
+    }
+
+
+# Value: protects=the watchdog stops py-spy well inside the radio's own deadline: the radio ends every listener's Kiwi stream once audio is timeout_s late (KiwiClient, kiwi.py), so the worst-case detect-and-stop time must be at most half of it; fails_when=the probe interval, probe timeout, miss count or SIGINT grace grows, or the Kiwi timeout shrinks, past that budget; why_new=adversarial finding: the old cadence took 9-17 s against a 10 s deadline; seam=none (reads the script's constants and KiwiClient's default); no_claim=real /healthz latency under py-spy
+def test_watchdog_acts_inside_the_kiwi_audio_deadline():
+    # KiwiClient takes timeout_s from KiwiConnection, the base of every Kiwi stream.
+    from skywave_radio.kiwi import KiwiClient, KiwiConnection
+
+    assert issubclass(KiwiClient, KiwiConnection)
+    kiwi_timeout = inspect.signature(KiwiConnection.__init__).parameters["timeout_s"].default
+    c = _watch_constants()
+    worst = c["WATCH_MISSES"] * (c["WATCH_S"] + c["WATCH_TIMEOUT_S"]) + c["WATCH_GRACE_S"]
+    assert worst * 2 <= kiwi_timeout, (worst, kiwi_timeout)
+
+
+def _with_stopped_radio(tmp_path: Path, args: list[str], timeout: float, **fake_env: str):
+    radio = subprocess.Popen(["/bin/sleep", "300"])
+    try:
+        os.kill(radio.pid, signal.SIGSTOP)
+        cmd, env = setup(tmp_path, FAKE_RADIO_PID=str(radio.pid), **fake_env)
+        result = subprocess.run([*cmd, *args], capture_output=True, text=True, env=env, timeout=timeout)
+        spy_pid = int((tmp_path / "spy-pid").read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(spy_pid, 0)
+        return result, _stopped(radio.pid), (tmp_path / "out" / "summary.txt").read_text()
+    finally:
+        radio.kill()
+        radio.wait()
+
+
+# Value: protects=an HTTP error from /healthz counts as a miss, so a radio answering 500s under py-spy still trips the watchdog; fails_when=curl loses -f and any HTTP response reads as healthy; why_new=Codex P1 in this run's review; seam=fake curl answering 500 once sampling starts, fake py-spy that hangs, a stopped sleep standing in for uvicorn; no_claim=which errors a real starved radio returns
+@pytest.mark.timeout(60)
+def test_watchdog_counts_http_errors_as_misses(tmp_path: Path):
+    result, stopped, summary = _with_stopped_radio(
+        tmp_path, ["30"], 40, FAKE_SPY_HANG="1", FAKE_CURL_5XX_ONCE_SAMPLING="1"
+    )
+    assert result.returncode == 0, result.stderr
+    assert not stopped
+    assert "== aborted: the radio stopped answering /healthz" in summary
+
+
+# Value: protects=a py-spy that falls behind in sampling (pausing the radio longer than it samples, while /healthz may still get through) is stopped at once; fails_when=the watchdog stops reading py-spy's log; why_new=red-team finding in this run's review; seam=fake py-spy that says it fell behind and keeps going, a stopped sleep standing in for uvicorn; no_claim=py-spy's exact wording in every version
+@pytest.mark.timeout(60)
+def test_watchdog_stops_a_py_spy_that_falls_behind(tmp_path: Path):
+    result, stopped, summary = _with_stopped_radio(tmp_path, ["30"], 40, FAKE_SPY_BEHIND_HANG="1")
+    assert result.returncode == 0, result.stderr
+    assert not stopped
+    assert "== aborted: py-spy fell behind in sampling" in summary
+
+
+# Value: protects=a py-spy that never finishes (stuck while /healthz still answers) is stopped once its window plus SPY_OVERRUN_S has passed, not left attached until someone notices; fails_when=the overrun cap is removed or no longer counts from launch; why_new=adversarial finding in this run's review; seam=fake py-spy that hangs, a stopped sleep standing in for uvicorn; no_claim=how long a real py-spy can take to write its output (takes about 60 s of wall time)
+@pytest.mark.timeout(150)
+def test_watchdog_caps_how_long_py_spy_stays_attached(tmp_path: Path):
+    started = time.monotonic()
+    result, stopped, summary = _with_stopped_radio(tmp_path, ["30"], 120, FAKE_SPY_HANG="1")
+    assert result.returncode == 0, result.stderr
+    assert not stopped
+    assert "== aborted: py-spy was still attached 60 s after it started" in summary
+    assert time.monotonic() - started < 100
+
+
+# Value: protects=the profile window's rows start when py-spy starts sampling (after it has loaded the radio's symbols), so they describe the same period as its samples; fails_when=the wait for "Sampling process" is removed; why_new=plan audit: nothing delayed that line, so removing the wait failed no test; seam=fake py-spy that takes 1 s to start sampling; no_claim=how long a real attach takes
+def test_profile_rows_wait_for_py_spy_to_start_sampling(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30", FAKE_SPY_LATE="1")
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "rows-at-sampling").read_text().strip() == "0"
+    assert "(6 rows)" in (out / "summary.txt").read_text()
+
+
+# Value: protects=if py-spy never says it started sampling (its output changed in a new version), the summary says the windows may not line up instead of reporting them as matched; fails_when=the warning or its condition is removed; why_new=Codex finding in this run's review; seam=fake py-spy that never prints the line; no_claim=what a future py-spy prints
+def test_summary_flags_a_window_py_spy_never_confirmed(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30", FAKE_SPY_QUIET="1")
+    assert result.returncode == 0, result.stderr
+    assert "never said it started sampling" in (out / "summary.txt").read_text()
+
+
+# Value: protects=a stalled Docker daemon can't stop the sample rows: each docker stats gets 4 s, its columns read "-", and the run finishes; fails_when=the timeout around docker stats is removed; why_new=plan audit: nothing made docker stats hang; seam=fake docker that hangs once sampling starts, a fake timeout that really kills; no_claim=real docker behaviour under load (takes about 25 s of wall time)
+@pytest.mark.timeout(90)
+def test_a_hanging_docker_stats_cannot_stall_the_rows(tmp_path: Path):
+    cmd, env = setup(tmp_path, FAKE_STATS_HANG_SAMPLING="1")
+    result = subprocess.run([*cmd, "30"], capture_output=True, text=True, env=env, timeout=75)
+    assert result.returncode == 0, result.stderr
+    profile = [r for r in (tmp_path / "out" / "samples.tsv").read_text().splitlines() if "\tprofile\t" in r]
+    # With the 4 s timeout the ticks keep their 5 s schedule; without it one
+    # 30 s hang uses up the whole window.
+    assert 5 <= len(profile) <= 6
+    assert all(r.split("\t")[3] == "-" for r in profile)
+
+
+# Value: protects=a big profile (thousands of distinct frames, normal with --native) still gets its whole summary: no early exit in the summary pipelines SIGPIPEs the stage before it under pipefail; fails_when=head or grep -q comes back into a summary pipeline; why_new=red-team finding in this run's review (reproduced); seam=fake py-spy writing a 3000-frame profile; no_claim=py-spy's real output size
+def test_a_big_profile_gets_its_whole_summary(tmp_path: Path):
+    cmd, env = setup(tmp_path)
+    (tmp_path / "raw").write_text(
+        "".join(f"thread (0x1);main (server.py:1);f{i} (mod{i}.py:{i}) 1\n" for i in range(3000))
+    )
+    result = subprocess.run([*cmd, "30"], capture_output=True, text=True, env=env, timeout=60)
+    assert result.returncode == 0, result.stderr
+    summary = (tmp_path / "out" / "summary.txt").read_text()
+    assert "by inclusive time" in summary
+    rows = [line for line in summary.split("by inclusive time")[1].splitlines() if re.match(r"\s+[0-9.]+%", line)]
+    assert len(rows) == 25
+    assert "saved in" in result.stdout
+    assert "output: " in result.stdout.splitlines()[0]

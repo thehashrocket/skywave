@@ -41,6 +41,19 @@ MAX_BASELINE_BUSY=70
 WARN_BUSY=95
 # Memory py-spy --native needs headroom for (its symbol tables), in MB.
 MIN_AVAILABLE_MB=250
+# The watchdog: a /healthz probe every WATCH_S, each given WATCH_TIMEOUT_S, and
+# WATCH_MISSES misses in a row stop py-spy, with WATCH_GRACE_S after SIGINT
+# before SIGKILL. The radio ends every listener's Kiwi stream once audio is
+# ~10 s late (KiwiClient's timeout_s, apps/radio/skywave_radio/kiwi.py), so
+# WATCH_MISSES * (WATCH_S + WATCH_TIMEOUT_S) + WATCH_GRACE_S must stay well
+# under that: 4.5 s here. The tests check it against kiwi.py.
+WATCH_S=1
+WATCH_TIMEOUT_S=1
+WATCH_MISSES=2
+WATCH_GRACE_S=0.5
+# py-spy may take this long past its window (attaching, writing out) before
+# the watchdog stops it anyway.
+SPY_OVERRUN_S=30
 
 force=0
 if [[ "${1:-}" == --force ]]; then
@@ -64,7 +77,7 @@ sample() {
   local phase=$1 window=$2 rows=$(($2 / INTERVAL_S)) start=$SECONDS i pause listeners stats radio_cpu caddy_cpu
   for ((i = 1; i <= rows; i++)); do
     ((SECONDS - start >= window)) && break
-    listeners=$(curl -s --max-time 2 "http://$radio_ip:8765/healthz" | grep -oE '"listeners": ?[0-9]+' | grep -oE '[0-9]+$' || true)
+    listeners=$(curl -sf --max-time 2 "http://$radio_ip:8765/healthz" | grep -oE '"listeners": ?[0-9]+' | grep -oE '[0-9]+$' || true)
     # One call for both: {{.Container}} echoes the ID as given.
     stats=$(timeout 4 docker stats --no-stream --format '{{.Container}} {{.CPUPerc}}' "$radio" ${caddy:+"$caddy"} || true)
     radio_cpu=$(awk -v id="$radio" '$1 == id { sub(/%/, "", $2); print $2 }' <<<"$stats")
@@ -84,22 +97,38 @@ spy_alive() {
     [[ "$(awk '{ print $3 }' "/proc/$spy_pid/stat" 2>/dev/null)" != Z ]]
 }
 
-# From py-spy's launch until it's gone: /healthz every INTERVAL_S, on its own
-# so nothing else (docker stats, the wait for py-spy to start sampling) can
-# hold it up. Two probes in a row the radio doesn't answer within 2 s mean
-# py-spy is starving it: py-spy is stopped (stop_spy resumes the radio) and the
-# reason goes in $out/aborted.
+# From py-spy's launch until it's gone, on its own so nothing else (docker
+# stats, the wait for py-spy to start sampling) can hold it up. It stops py-spy
+# (resuming the radio first) and writes why to $out/aborted when:
+#   - the radio misses WATCH_MISSES /healthz probes in a row (no answer, or
+#     an HTTP error, within WATCH_TIMEOUT_S): py-spy is starving it;
+#   - py-spy says it fell behind in sampling: it is pausing the radio for
+#     longer than it samples, even if /healthz still gets through;
+#   - py-spy is still attached SPY_OVERRUN_S past its window.
 watchdog() {
-  local misses=0
+  local misses=0 started=$SECONDS reason
   while spy_alive; do
-    if curl -s --max-time 2 -o /dev/null "http://$radio_ip:8765/healthz"; then misses=0; else misses=$((misses + 1)); fi
-    if ((misses >= 2)) && spy_alive; then
-      echo "the radio stopped answering /healthz (twice in a row) with py-spy attached, so py-spy was stopped" >"$out/aborted"
-      stop_spy
+    if curl -sf --max-time "$WATCH_TIMEOUT_S" -o /dev/null "http://$radio_ip:8765/healthz"; then
+      misses=0
+    else
+      misses=$((misses + 1))
+    fi
+    reason=
+    if ((misses >= WATCH_MISSES)); then
+      reason="the radio stopped answering /healthz ($WATCH_MISSES times in a row) with py-spy attached"
+    elif grep -qi 'behind in sampling' "$out/py-spy.log" 2>/dev/null; then
+      reason="py-spy fell behind in sampling, so it was pausing the radio too long"
+    elif ((SECONDS - started > seconds + SPY_OVERRUN_S)); then
+      reason="py-spy was still attached $((seconds + SPY_OVERRUN_S)) s after it started"
+    fi
+    if [[ -n "$reason" ]] && spy_alive; then
+      echo "$reason, so py-spy was stopped" >"$out/aborted"
+      kill -CONT "$radio_pid" 2>/dev/null || true
+      stop_spy fast
       kill -CONT "$radio_pid" 2>/dev/null || true
       break
     fi
-    sleep "$INTERVAL_S"
+    sleep "$WATCH_S"
   done
   return 0
 }
@@ -151,17 +180,21 @@ available_mb() {
 # It starts with SIGINT ignored (bash ignores it for background jobs), so
 # that relies on py-spy's own Ctrl-C handler. Then SIGTERM, then SIGKILL (a
 # tracer's death detaches it), after 2 s and 1 s: a py-spy stuck while holding
-# the radio stopped freezes everyone's audio until then. The radio gets a
-# SIGCONT before and after the last wait in case it was left paused; to a
-# running process that does nothing.
+# the radio stopped freezes everyone's audio until then. `stop_spy fast` (the
+# watchdog: the radio is already known to be starved) gives SIGINT only
+# WATCH_GRACE_S, then goes straight to SIGKILL. The radio gets a SIGCONT
+# before and after the last wait in case it was left paused; to a running
+# process that does nothing.
 spy_pid= radio_pid=
 stop_spy() {
-  local sig ticks t
-  for sig in INT TERM; do
+  local sig ticks t sigs="INT TERM"
+  [[ "${1:-}" == fast ]] && sigs=INT
+  for sig in $sigs; do
     spy_alive || return 0
     kill "-$sig" "$spy_pid" 2>/dev/null || return 0
     ticks=20 # tenths of a second: 2 s after SIGINT, 1 s after SIGTERM
     [[ $sig == TERM ]] && ticks=10
+    [[ "${1:-}" == fast ]] && ticks=$(awk -v g="$WATCH_GRACE_S" 'BEGIN { print int(g * 10 + 0.5) }')
     for ((t = 0; t < ticks; t++)); do
       spy_alive || return 0
       sleep 0.1
@@ -223,6 +256,8 @@ main() {
     out=$(mktemp -d "/var/tmp/skywave-profile-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
   fi
   printf 'time\tphase\tlisteners\tradio_cpu\tcaddy_cpu\n' >"$out/samples.tsv"
+  # Now, not only at the end: a Ctrl-C or a dropped session still says where.
+  echo "output: $out"
 
   echo "baseline: ${BASELINE_S} s, no profiler"
   vmstat -n "$INTERVAL_S" $((BASELINE_S / INTERVAL_S + 1)) >"$out/vmstat-baseline.txt" &
@@ -255,7 +290,7 @@ main() {
   fi
 
   echo "profile: ${seconds} s, py-spy --native at ${RATE_HZ} Hz on pid $pid (listen for audio gaps)"
-  local spy=0 pending= t
+  local spy=0 pending= t sampling=
   # The radio is resumed by any exit from here on. From starting py-spy until
   # its pid is noted (cleanup needs it to stop py-spy cleanly), a Ctrl-C, TERM
   # or HUP is only recorded, then acted on at once. The subshell gets those
@@ -282,7 +317,10 @@ main() {
   # after it has loaded the radio's symbols), so both windows match. Up to
   # 30 s for that; if py-spy ends first, sample anyway for the record.
   for ((t = 0; t < 300; t++)); do
-    grep -q "Sampling process" "$out/py-spy.log" 2>/dev/null && break
+    if grep -q "Sampling process" "$out/py-spy.log" 2>/dev/null; then
+      sampling=1
+      break
+    fi
     spy_alive || break
     sleep 0.1
   done
@@ -318,6 +356,9 @@ main() {
     if [[ -z "$radio_ip" ]]; then
       echo "  warning: unguarded run: no radio address, so the /healthz watchdog didn't run (--force)."
     fi
+    if [[ -z "$sampling" && -s "$out/radio.raw" ]]; then
+      echo "  warning: py-spy never said it started sampling (\"Sampling process\"), so this window's numbers may not line up with its samples."
+    fi
     echo
     if [[ -s "$out/aborted" ]]; then
       echo "== aborted: $(cat "$out/aborted")"
@@ -331,10 +372,13 @@ main() {
       # py-spy says on stderr when it fell behind or hit errors; a run like
       # that still finishes, with numbers that read too low. Its normal last
       # line ("... Samples: N Errors: 0") isn't one of those.
-      local warn_re='behind|inaccurate|errors: [1-9]|error:|warn'
-      if grep -v "^warning: couldn't set" "$out/py-spy.log" | grep -qiE "$warn_re"; then
+      # (No grep -q or head in these pipelines: an early exit would SIGPIPE the
+      # stage before it and, under pipefail, end the summary right there.)
+      local warn_re='behind|inaccurate|errors: [1-9]|error:|warn' warns
+      warns=$(grep -v "^warning: couldn't set" "$out/py-spy.log" | grep -iE "$warn_re" || true)
+      if [[ -n "$warns" ]]; then
         echo "== py-spy warnings (its numbers may read low):"
-        grep -v "^warning: couldn't set" "$out/py-spy.log" | grep -iE "$warn_re" | sed 's/^/  /'
+        sed 's/^/  /' <<<"$warns"
       fi
       # Collapsed stacks: "frame;frame;...;leaf count". Frames are keyed
       # without their line number. py-spy leaves out idle samples, so the count
@@ -349,7 +393,7 @@ main() {
       awk '{ n = $NF; total += n; sub(/ [0-9]+$/, ""); k = split($0, f, ";"); leaf = f[k]
              sub(/:[0-9]+\)$/, ")", leaf); self[leaf] += n }
            END { for (s in self) printf "%6.1f%%  %s\n", 100 * self[s] / total, s }' "$out/radio.raw" \
-        | sort -rn | head -20 | sed 's/^/  /'
+        | sort -rn | awk 'NR <= 20' | sed 's/^/  /'
       # Inclusive time: every frame on the stack, once per sample even when it
       # recurses. This is what names a path (send, Kiwi receive, scans, audio).
       echo "== top 25 functions by inclusive time (% of non-idle samples)"
@@ -357,7 +401,7 @@ main() {
              for (i = 1; i <= k; i++) { fr = f[i]; sub(/:[0-9]+\)$/, ")", fr)
                if (!(fr in seen)) { seen[fr] = 1; inc[fr] += n } } }
            END { for (s in inc) printf "%6.1f%%  %s\n", 100 * inc[s] / total, s }' "$out/radio.raw" \
-        | sort -rn | head -25 | sed 's/^/  /'
+        | sort -rn | awk 'NR <= 25' | sed 's/^/  /'
     fi
   } | tee "$out/summary.txt"
   echo
