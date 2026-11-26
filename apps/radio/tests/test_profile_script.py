@@ -14,11 +14,20 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "deploy" / "profile.sh"
 
+# FAKE_NO_RADIO / FAKE_NO_CADDY: that compose service isn't running.
+# FAKE_NO_IP: the radio container has no network address.
+# FAKE_STATS_FAIL: every docker stats call fails.
 FAKE_DOCKER = """#!/usr/bin/env bash
 case "$1 $2" in
-  "compose -f") case "$6" in radio) echo radioid;; caddy) echo caddyid;; esac ;;
-  "inspect -f") case "$3" in *Pid*) echo "${FAKE_RADIO_PID:-4194303}";; *IPAddress*) echo "172.30.0.3 ";; esac ;;
-  "stats --no-stream") echo "radioid 30.00%"; echo "caddyid 10.00%" ;;
+  "compose -f") case "$6" in
+      radio) [[ -n "${FAKE_NO_RADIO:-}" ]] || echo radioid;;
+      caddy) [[ -n "${FAKE_NO_CADDY:-}" ]] || echo caddyid;;
+    esac ;;
+  "inspect -f") case "$3" in
+      *Pid*) echo "${FAKE_RADIO_PID:-4194303}";;
+      *IPAddress*) [[ -n "${FAKE_NO_IP:-}" ]] && echo " " || echo "172.30.0.3 ";;
+    esac ;;
+  "stats --no-stream") [[ -n "${FAKE_STATS_FAIL:-}" ]] && exit 1; echo "radioid 30.00%"; echo "caddyid 10.00%" ;;
   *) echo "unexpected docker call: $*" >&2; exit 9 ;;
 esac
 """
@@ -44,6 +53,7 @@ wc -l <"$FAKE_DIR/out/samples.tsv" >"$FAKE_DIR/rows-at-spy-start"
 if [[ -n "${FAKE_SPY_HANG:-}" ]]; then echo $$ >"$FAKE_DIR/spy-pid"; exec /bin/sleep 30; fi
 if [[ -n "${FAKE_SPY_FAIL:-}" ]]; then echo "Permission denied (os error 13)" >&2; exit 1; fi
 while [[ $# -gt 0 ]]; do [[ "$1" == --output ]] && out=$2; shift; done
+if [[ -n "${FAKE_SPY_EMPTY:-}" ]]; then : >"$out"; exit 0; fi
 cp "$FAKE_DIR/raw" "$out"
 """
 
@@ -71,7 +81,9 @@ def setup(tmp_path: Path, *, spy: bool = True, **fake_env: str) -> tuple[list[st
     fakes = {
         "docker": FAKE_DOCKER,
         "vmstat": FAKE_VMSTAT,
-        "curl": '#!/usr/bin/env bash\necho \'{"ok":true,"listeners":7,"maxListeners":15}\'\n',
+        # FAKE_CURL_FAIL: the radio doesn't answer (curl's "couldn't connect").
+        "curl": '#!/usr/bin/env bash\n[[ -n "${FAKE_CURL_FAIL:-}" ]] && exit 7\n'
+        'echo \'{"ok":true,"listeners":7,"maxListeners":15}\'\n',
         "sleep": "#!/usr/bin/env bash\nexit 0\n",
         "nproc": "#!/usr/bin/env bash\necho 1\n",
     }
@@ -152,14 +164,51 @@ def test_rejects_bad_window(tmp_path: Path, arg: str):
     assert not out.exists()
 
 
-# Value: protects=a failed attach (no root, wrong PID) still leaves the unprofiled numbers and says why; fails_when=set -e aborts on py-spy's exit or the error is swallowed; why_new=new script; seam=fake py-spy on PATH; no_claim=py-spy's real error text
-def test_py_spy_failure_keeps_the_numbers(tmp_path: Path):
-    result, out = run_profile(tmp_path, "30", FAKE_SPY_FAIL="1")
+# Value: protects=a failed attach (no root, wrong PID) or an empty profile still leaves the unprofiled numbers and says it failed, not a 0% or divide-by-zero summary; fails_when=set -e aborts on py-spy's exit, the error is swallowed, or the empty-radio.raw check is dropped; why_new=new script; seam=fake py-spy on PATH; no_claim=py-spy's real error text, or when real py-spy writes empty output
+@pytest.mark.parametrize(
+    ("fake", "says"),
+    [("FAKE_SPY_FAIL", ["py-spy failed (exit 1)", "Permission denied"]), ("FAKE_SPY_EMPTY", ["py-spy failed (exit 0)"])],
+)
+def test_py_spy_failure_keeps_the_numbers(tmp_path: Path, fake: str, says: list[str]):
+    result, out = run_profile(tmp_path, "30", **{fake: "1"})
     assert result.returncode == 0, result.stderr
     summary = (out / "summary.txt").read_text()
-    assert "py-spy failed (exit 1)" in summary
-    assert "Permission denied" in summary
+    for text in says:
+        assert text in summary
+    assert "by self time" not in summary
     assert "steal=15.0%" in summary
+
+
+# Value: protects=the profiler never starts when the radio container is down (py-spy would get --pid ""); fails_when=the empty-$radio check is removed; why_new=no test covers compose ps returning nothing; seam=fake docker on PATH; no_claim=real docker compose ps output
+def test_needs_the_radio_container(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30", FAKE_NO_RADIO="1")
+    assert result.returncode == 1
+    assert "radio container isn't running" in result.stderr
+    assert not (tmp_path / "py-spy-args").exists()
+    assert not out.exists()
+
+
+# Value: protects=one busy-hour run survives a /healthz that doesn't answer, failing docker stats, no caddy container and no radio address: those columns read "-" and the profile still finishes; fails_when=a "|| true" is dropped under set -euo pipefail or ${caddy:+} goes; why_new=test_summary only feeds healthy fakes; seam=fake docker/curl on PATH; no_claim=real /healthz or docker stats output formats
+def test_failed_samples_degrade_to_dashes(tmp_path: Path):
+    result, out = run_profile(
+        tmp_path, "30", FAKE_CURL_FAIL="1", FAKE_STATS_FAIL="1", FAKE_NO_CADDY="1", FAKE_NO_IP="1"
+    )
+    assert result.returncode == 0, result.stderr
+    assert "no network address" in result.stderr
+    summary = (out / "summary.txt").read_text()
+    assert summary.count("listeners=-  radio_cpu=-%  caddy_cpu=-%") == 2
+    assert "by self time" in summary  # the profile itself still ran
+    rows = (out / "samples.tsv").read_text().splitlines()
+    assert len(rows) == 1 + 60 // 5 + 30 // 5
+
+
+# Value: protects=the documented default window (README and usage say 120 s) when no argument is given; fails_when=the default drifts from the docs; why_new=every other test passes a window; seam=fake py-spy and vmstat on PATH; no_claim=none beyond protects
+def test_default_window_is_120_s(tmp_path: Path):
+    result, _ = run_profile(tmp_path)
+    assert result.returncode == 0, result.stderr
+    args = (tmp_path / "py-spy-args").read_text().split()
+    assert args[args.index("--duration") + 1] == "120"
+    assert (tmp_path / "vmstat-args").read_text().splitlines() == ["-n 5 13", "-n 5 25"]
 
 
 # Value: protects=the script refuses to start without py-spy rather than sampling a window with no profile; fails_when=the check is removed; why_new=new script; seam=PATH without py-spy; no_claim=none
