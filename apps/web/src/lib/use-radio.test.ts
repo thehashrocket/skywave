@@ -77,12 +77,31 @@ class FakeAudioContext {
   createAnalyser() {
     return { kind: "analyser", fftSize: 2048, smoothingTimeConstant: 0.8 };
   }
+  state: AudioContextState | "interrupted" = "suspended";
+  onstatechange: (() => void) | null = null;
+  // Whether resume() works; iOS may refuse one that no tap started (#137).
+  resumeAllowed = true;
   async resume() {
     await resumeReady;
+    if (!this.resumeAllowed) throw new DOMException("Not allowed without a user gesture", "NotAllowedError");
+    this.setState("running");
   }
   async close() {
     this.closed = true;
+    this.setState("closed");
   }
+  /** The browser stopping playback on its own: a hidden tab on a phone, or a call. */
+  setState(state: AudioContextState | "interrupted") {
+    if (this.state === state) return;
+    this.state = state;
+    this.onstatechange?.();
+  }
+}
+
+/** The page going to the background and coming back, as visibilitychange reports it. */
+function setVisibility(state: DocumentVisibilityState) {
+  Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
+  document.dispatchEvent(new Event("visibilitychange"));
 }
 
 class FakeWorkletNode {
@@ -114,6 +133,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -1592,5 +1612,59 @@ describe("useRadio", () => {
       act(() => text(ws, { type: "decoded", mode: "rtty", text: "AFTER", atMs: 5 }));
       expect(result.current.decoded).toBe("");
     });
+  });
+});
+
+describe("coming back to a tab the phone paused (#137)", () => {
+  async function listening() {
+    const hook = renderHook(() => useRadio());
+    await act(() => hook.result.current.tune(tuning));
+    act(() => FakeSocket.instances[0]!.status("listening", { host: tuning.host, port: tuning.port }));
+    const ctx = FakeAudioContext.instances[0]!;
+    // The phone stops the sound while the listener is on another tab.
+    act(() => {
+      setVisibility("hidden");
+      ctx.setState("suspended");
+    });
+    workletMessages.mockClear();
+    return { ...hook, ctx };
+  }
+
+  // Value: protects=audio comes back by itself when the listener returns from a new-tab link (a station page, Priyom, /owners) and plays live, not seconds behind; fails_when=nothing resumes the context on visibilitychange, or the samples buffered while it was stopped aren't dropped; why_new=#137; seam=Web Audio and visibility faked; no_claim=whether real iOS Safari lets a resume without a tap succeed
+  it("resumes the sound on return and drops what queued while it was stopped", async () => {
+    const { result, ctx } = await listening();
+    expect(result.current.audioSuspended).toBe(true);
+
+    await act(async () => setVisibility("visible"));
+
+    expect(ctx.state).toBe("running");
+    expect(result.current.audioSuspended).toBe(false);
+    expect(resets()).toBe(1);
+  });
+
+  // Value: protects=when the phone refuses to resume without a tap the page says so and a tap brings the sound back, instead of a silent player that looks like it's playing; fails_when=a refused resume leaves audioSuspended false, or resumeAudio doesn't resume the context; why_new=#137; seam=a fake context that rejects resume; no_claim=the exact error or "interrupted" state a real iPhone gives
+  it("asks for a tap when the phone refuses, and the tap resumes it", async () => {
+    const { result, ctx } = await listening();
+    ctx.resumeAllowed = false;
+
+    await act(async () => setVisibility("visible"));
+    expect(ctx.state).toBe("suspended");
+    expect(result.current.audioSuspended).toBe(true);
+
+    ctx.resumeAllowed = true;
+    await act(async () => result.current.resumeAudio());
+
+    expect(ctx.state).toBe("running");
+    expect(result.current.audioSuspended).toBe(false);
+  });
+
+  // Value: protects=returning to a page that was stopped doesn't wake the audio (Listen does that); fails_when=the visibility handler resumes without checking for a live session; why_new=#137; seam=Web Audio faked; no_claim=battery cost of an idle running context
+  it("leaves the sound alone when nothing is playing", async () => {
+    const { result, ctx } = await listening();
+    act(() => result.current.stop());
+
+    await act(async () => setVisibility("visible"));
+
+    expect(ctx.state).toBe("suspended");
   });
 });
