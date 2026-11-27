@@ -43,6 +43,9 @@ def test_load_answers_reads_station_names_and_receivers(tmp_path):
     assert missing == ("tx_name", "receiver", "report_id")
     answers, _, missing = load_answers(write(tmp_path, HEADER[:-1] + ",tx_name\n" + row()[:-1] + ",Radio A\n"), 3)  # block 10 before receiver
     assert (answers[0].stations, answers[0].receiver) == (("Radio A",), None) and missing == ("receiver", "report_id")
+    # Value: protects=a question naming exactly MAX_LISTED (3) stations loads, a repeat counted once before the limit; fails_when=the MAX_LISTED check goes off by one (>=) or counts names before de-duplicating, refusing a real block 10 export; why_new=only 4 names (refused) and 2 names were tested; seam=none; no_claim=none beyond protects
+    answers, _, _ = load_answers(write(tmp_path, NAMED + row(name="C / B / A / C")), 3)
+    assert answers[0].stations == ("A", "B", "C")
     with pytest.raises(ValueError, match="line 2: tx_name is empty"):
         load_answers(write(tmp_path, NAMED + row(name=" ")), 3)
     with pytest.raises(ValueError, match="line 2: receiver isn't host:port"):
@@ -62,6 +65,9 @@ def test_load_answers_reads_station_names_and_receivers(tmp_path):
         (NAMED + row(name="Radio A", rx="kiwi.example:0"), "receiver isn't host:port"),
         (NAMED + row(name="Radio A", rx="kiwi.example:99999"), "receiver isn't host:port"),
         (NAMED + row(name="Radio A", rx="kiwi example:8073"), "receiver isn't host:port"),
+        # Value: protects=a URL-shaped or hostless receiver is refused, so one Kiwi can't count as two receivers ("http://kiwi:8073" beside "kiwi:8073") or a bare port pass as a receiver; fails_when=the '/' or empty-host check is dropped from the host:port rule; why_new=the four rows above don't reach those two clauses; seam=none; no_claim=that block 10 ever emits a URL
+        (NAMED + row(name="Radio A", rx="http://kiwi.example:8073"), "receiver isn't host:port"),
+        (NAMED + row(name="Radio A", rx=":8073"), "receiver isn't host:port"),
         (NAMED + row(name="A / B / C / D"), "tx_name names 4 stations; a question names at most 3"),
     ],
 )
