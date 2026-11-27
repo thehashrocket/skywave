@@ -183,6 +183,57 @@ export function diffSchedules(
   return [...byStation.values()].sort((a, b) => a.station.localeCompare(b.station));
 }
 
+/** A fetched copy of the schedule: what the server keeps, and what it records (#147). */
+export type PriyomCopy = { transmissions: readonly PriyomTx[]; fetchedAt: number };
+
+/**
+ * What changed between two fetches, over the time both cover from the later
+ * fetch on: a slot that has since passed, or only rolled into or out of the
+ * week, isn't a change. Empty when the copies share no future time (fetched
+ * more than a week apart).
+ */
+export function changesBetween(prev: PriyomCopy, next: PriyomCopy): StationChange[] {
+  const a = priyomSpan(prev.fetchedAt);
+  const b = priyomSpan(next.fetchedAt);
+  return diffSchedules(prev.transmissions, next.transmissions, {
+    fromMs: Math.max(a.fromMs, b.fromMs, next.fetchedAt),
+    toMs: Math.min(a.toMs, b.toMs),
+  });
+}
+
+/**
+ * Priyom's frequencies are said to change monthly; this long with no change
+ * reads as "Priyom's schedule may not be maintained" (#147). Repeating calendar
+ * events keep showing future dates even when nobody edits them, so fresh dates
+ * alone prove nothing.
+ */
+export const PRIYOM_UNCHANGED_MS = 45 * DAY;
+
+/**
+ * The record the server keeps across instances (#147): the last fetched copy,
+ * so the next fetch on any instance can tell whether Priyom edited anything,
+ * and when it last did. `changedAt` null: no change seen since `trackedSince`.
+ */
+export type PriyomFeedRecord = PriyomCopy & { trackedSince: number; changedAt: number | null };
+
+/**
+ * The record after a successful fetch: `changedAt` moves to this fetch when
+ * the catalog stations' slots differ from the last copy (changesBetween), and
+ * stays put otherwise. A copy older than the record's (another instance got
+ * there first) leaves it as it is.
+ */
+export function nextFeedRecord(prev: PriyomFeedRecord | null, fresh: PriyomCopy): PriyomFeedRecord {
+  if (!prev) return { ...fresh, trackedSince: fresh.fetchedAt, changedAt: null };
+  if (fresh.fetchedAt <= prev.fetchedAt) return prev;
+  const changed = changesBetween(prev, fresh).length > 0;
+  return { ...fresh, trackedSince: prev.trackedSince, changedAt: changed ? fresh.fetchedAt : prev.changedAt };
+}
+
+/** Whether Priyom's schedule looks unmaintained at `now`: no change seen in PRIYOM_UNCHANGED_MS (counting from when tracking began). */
+export function priyomUnchanged(record: Pick<PriyomFeedRecord, "trackedSince" | "changedAt">, now: number): boolean {
+  return now - (record.changedAt ?? record.trackedSince) > PRIYOM_UNCHANGED_MS;
+}
+
 /** "E11: 2 changed, 1 added; M12: 1 removed", for the server log. */
 export function describeChanges(changes: readonly StationChange[]): string {
   return changes

@@ -1,10 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import type { PriyomTx } from "@/lib/priyom-schedule";
 
 // The real module opens a Prisma client at import; this router never uses it.
 vi.mock("@/server/db", () => ({ db: {} }));
 
-const { priyomScheduleSource, lastHeardSource, LAST_HEARD_READ_TIMEOUT_MS, LAST_HEARD_TTL_MS } = await import("./signals");
+const { priyomScheduleSource, lastHeardSource, readPriyomFeed, recordPriyomFetch, LAST_HEARD_READ_TIMEOUT_MS, LAST_HEARD_TTL_MS } =
+  await import("./signals");
 const { appRouter } = await import("@/server/root");
 const { PRIYOM_SLICES } = await import("@/lib/priyom-schedule");
 
@@ -103,6 +105,82 @@ describe("priyomScheduleSource change log", () => {
     await get();
     await defer.mock.calls[1]![0];
     expect(info).toHaveBeenCalledWith("signals.priyom: schedule changed:", "E07: 1 changed");
+  });
+});
+
+describe("priyomScheduleSource record and status", () => {
+  // Value: protects=#147 each good fetch is handed to `record` after the response (through defer), a failing record is only logged and the schedule still served, and status() says what this server's copy is and why its last fetch failed; fails_when=the shared record never hears of fetches (the report can't see Priyom changing), a database error breaks the schedule, or a fetch error isn't reported; why_new=#147 persisted last change; seam=fetch, defer, record; no_claim=the database write itself
+  it("records good fetches and reports its status", async () => {
+    let clock = Date.parse("2026-11-25T13:00:00Z");
+    let fail = true;
+    const fetchImpl = vi.fn(async () => (fail ? new Response("oops", { status: 503 }) : new Response(EVENTS)));
+    const defer = vi.fn((_task: Promise<unknown>) => {});
+    const record = vi.fn(async () => {
+      throw new Error("db down");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const get = priyomScheduleSource({ fetchImpl: fetchImpl as unknown as typeof fetch, now: () => clock, defer, record });
+    expect(await get()).toBeNull();
+    expect(get.status()).toEqual({ fetchedAt: null, error: "Priyom schedule request failed: HTTP 503" });
+    expect(record).not.toHaveBeenCalled();
+    fail = false;
+    clock += 10 * 60_000;
+    const schedule = await get();
+    expect(schedule?.transmissions).toHaveLength(7);
+    expect(get.status()).toEqual({ fetchedAt: clock, error: null });
+    expect(record).toHaveBeenCalledWith(schedule);
+    await defer.mock.calls[0]![0];
+    expect(warn).toHaveBeenCalledWith("signals.priyom: not recorded:", expect.any(Error));
+    warn.mockRestore();
+  });
+
+  // Value: protects=#147 outside a request (`after` throws), a good fetch is still served and still handed to `record`; fails_when=the throw from defer escapes the success handler, so the fetch reads as failed (null schedule, ten-minute backoff) and nothing is recorded; why_new=saveCopy's not-in-a-request branch had no test; seam=fetch, defer, record; no_claim=Next's `after` behaviour itself
+  it("still serves and records when there's no request to defer to", async () => {
+    const clock = Date.parse("2026-11-25T13:00:00Z");
+    const record = vi.fn(async () => {});
+    const defer = vi.fn((_task: Promise<unknown>) => {
+      throw new Error("`after` was called outside a request scope");
+    });
+    const fetchImpl = async () => new Response(EVENTS);
+    const get = priyomScheduleSource({ fetchImpl: fetchImpl as unknown as typeof fetch, now: () => clock, defer, record });
+    const schedule = await get();
+    expect(schedule?.transmissions).toHaveLength(7);
+    expect(record).toHaveBeenCalledWith(schedule);
+    expect(get.status()).toEqual({ fetchedAt: clock, error: null });
+  });
+});
+
+describe("recordPriyomFetch and readPriyomFeed", () => {
+  type Db = Parameters<typeof recordPriyomFetch>[0];
+  const t0 = Date.parse("2026-11-25T13:00:00Z");
+  const e07 = (khz: number): PriyomTx => ({ station: "E07", startMs: Date.parse("2026-11-27T19:00:00Z"), khz, mode: "usb", summary: `E07 ${khz}kHz USB` });
+
+  /** One PriyomFeed table in memory: upsert stores what it's given, findUnique hands it back. */
+  function fakeDb() {
+    let row: Record<string, unknown> | null = null;
+    const findUnique = vi.fn(async ({ where }: { where: { id: string } }) => (where.id === "priyom" ? row : null));
+    const upsert = vi.fn(async ({ where, create, update }: { where: { id: string }; create: object; update: object }) => {
+      expect(where).toEqual({ id: "priyom" });
+      row = row ? { ...row, ...update } : { ...create };
+    });
+    return { db: { priyomFeed: { findUnique, upsert } } as unknown as Db, upsert };
+  }
+
+  // Value: protects=#147 the shared row round-trips through the database: the first fetch starts tracking with no change, a later identical fetch moves only fetchedAt, a fetch with a moved slot sets changedAt to that fetch, and an older copy (another instance got there first) writes nothing; fails_when=dates are stored or read back wrong (changedAt null turning into a date, ms vs Date), the row is never written, or a stale copy overwrites a newer one; why_new=recordPriyomFetch and readPriyomFeed had no test (the route test mocks the row); seam=db object passed in (in-memory fake); no_claim=Prisma/Postgres JSON and timestamp handling, or two instances racing
+  it("keeps one row with the last copy and when the slots last changed", async () => {
+    const { db, upsert } = fakeDb();
+    expect(await readPriyomFeed(db)).toBeNull();
+    await recordPriyomFetch(db, { transmissions: [e07(17_428)], fetchedAt: t0 });
+    expect(await readPriyomFeed(db)).toEqual({ transmissions: [e07(17_428)], fetchedAt: t0, trackedSince: t0, changedAt: null });
+    await recordPriyomFetch(db, { transmissions: [e07(17_428)], fetchedAt: t0 + 6 * HOUR });
+    expect(await readPriyomFeed(db)).toMatchObject({ fetchedAt: t0 + 6 * HOUR, trackedSince: t0, changedAt: null });
+    await recordPriyomFetch(db, { transmissions: [e07(9_999)], fetchedAt: t0 + 12 * HOUR });
+    const changed = await readPriyomFeed(db);
+    expect(changed).toEqual({ transmissions: [e07(9_999)], fetchedAt: t0 + 12 * HOUR, trackedSince: t0, changedAt: t0 + 12 * HOUR });
+    expect(upsert).toHaveBeenCalledTimes(3);
+    await recordPriyomFetch(db, { transmissions: [], fetchedAt: t0 + 7 * HOUR });
+    expect(upsert).toHaveBeenCalledTimes(3);
+    expect(await readPriyomFeed(db)).toEqual(changed);
   });
 });
 
