@@ -2,6 +2,16 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.63.0.0] - 2026-11-26 ([#150](https://github.com/thehashrocket/skywave/issues/150))
+
+### Added
+- **Say which time station you heard when WWV and WWVH share the dial.** Tuned by hand to 2.5, 5, 10 or 15 MHz, where both are on the air, "Did you hear it?" now asks which one: Heard WWV (a man's voice), Heard WWVH (a woman's voice), Heard both, Heard nothing, Something else / can't tell, or Didn't open. Before, those frequencies asked about whichever EiBi station ranked first there (often PPE or BPM), so the answer couldn't be credited to either time station. Any catalog stations that come to share a frequency later get the same question.
+- **One answer is filed for each station it names.** "Heard WWV" records WWV heard and WWVH not heard, both share one id so analysis knows they came from one question, and "can't tell" records nothing, so a listener hearing BPM isn't pushed into crediting either. The server checks every station is on the air there and counts the answer once against your 10 an hour. The cap on any one receiver still counts each station's row, so a flood of fake answers can't add more to a receiver than before.
+
+### Changed
+- **A listener who chose WWV with Listen is still asked about WWV alone on the frequency that Listen tuned,** and 20 MHz, where only WWV transmits, keeps its single question. Tuned by hand from there to a frequency WWVH shares, they're asked which one they heard.
+- **The weekly signal-stations report doesn't count a station as missing just because the other was louder.** A "not heard" filed beside a "heard" in the same answer never counts toward "possibly off the air", so WWVH isn't flagged in places where WWV drowns it out. It still shows WWVH was answered about. "Heard nothing" counts against both.
+
 ## [0.62.0.0] - 2026-11-26 ([#147](https://github.com/thehashrocket/skywave/issues/147))
 
 ### Added

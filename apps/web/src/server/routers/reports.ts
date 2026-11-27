@@ -11,7 +11,11 @@ import {
   ASK_RULE_VERSION,
   BEACON_MIN_HEARD_MS,
   COMMENT_MAX,
+  GROUP_ANSWERS,
+  GROUP_MAX,
+  groupOutcomes,
   LISTING_GRACE_MS,
+  signalGroupAsk,
   MAX_LISTED,
   OUTCOMES,
   SAME_CHANNEL_MS,
@@ -21,8 +25,8 @@ import {
   TX_NAME_SEPARATOR,
 } from "@/lib/reception";
 import { stationNamed } from "@/lib/on-air";
-import { findStation } from "@/lib/signal-stations";
-import { publicProcedure, router } from "../trpc";
+import { findStation, SIGNAL_STATIONS, type SignalStation } from "@/lib/signal-stations";
+import { publicProcedure, router, type createContext } from "../trpc";
 import { getBeaconStatus, rbnDays } from "./beacons";
 import { getReceivers, servedReceivers } from "./receivers";
 import { getPriyomSchedule } from "./signals";
@@ -167,6 +171,28 @@ export function signalChannel(
   return null;
 }
 
+/**
+ * Whether `slugs` are exactly the stations a shared-frequency question (#150)
+ * names on `freqKhz` (signalGroupAsk) at some minute of the last
+ * LISTING_GRACE_MS, by this server's clock, in any order: the page asks about
+ * all of them, so a subset, or one that adds a station, is no question it
+ * asked. `priyom`: this server's copy of Priyom's schedule, null with none.
+ */
+export function askedTogether(
+  slugs: readonly string[],
+  freqKhz: number,
+  priyom: readonly PriyomTx[] | null,
+  ms: number,
+  stations: readonly SignalStation[] = SIGNAL_STATIONS,
+): boolean {
+  const named = [...slugs].sort().join("\n");
+  for (let t = ms - LISTING_GRACE_MS; t <= ms; t += MINUTE) {
+    const asks = signalGroupAsk(freqKhz, priyom, t, stations);
+    if (asks && asks.map((a) => a.slug).sort().join("\n") === named) return true;
+  }
+  return false;
+}
+
 /** The public list as the page is served it (opted-out owners left out), or null with none to check against. */
 async function servedList(): Promise<readonly Receiver[] | null> {
   try {
@@ -197,7 +223,8 @@ export { SAME_CHANNEL_MS };
  * id is made by the browser, so a script can send a fresh one with every
  * report and never meet the per-listener limits; this cap bounds what such
  * a flood can add to any one receiver's data (issue #60's "cap per receiver
- * per hour"). A real hour seldom sees more than a handful. The cost: a flood
+ * per hour"). It counts rows, so a shared-frequency answer (#150) costs one
+ * per station it files and the bound holds whatever the grouping. A real hour seldom sees more than a handful. The cost: a flood
  * also crowds out genuine reports for that receiver until the hour rolls.
  */
 export const RECEIVER_REPORTS_PER_HOUR = 30;
@@ -368,6 +395,127 @@ const reportInput = z.object({
 
 export type ReportInput = z.input<typeof reportInput>;
 
+/**
+ * A shared-frequency answer (#150): the stations the question named (each with
+ * its Priyom slot, for a numbers station) and which choice was picked. The
+ * server maps the choice to each station's outcome (groupOutcomes), so a page
+ * can't file a combination the question doesn't offer. "can't tell" files
+ * nothing, so the page never sends it. A shape no question makes (one
+ * station, a repeated one, "can't tell") is refused quietly by the mutation,
+ * like every other answer the server can't take; only one longer than any
+ * question (past GROUP_MAX) fails the input check.
+ */
+const groupInput = reportInput
+  .pick({ listenerId: true, receiverHost: true, receiverPort: true, freqKhz: true, mode: true, comment: true, pick: true })
+  .extend({
+    stations: z
+      .array(z.object({ slug: z.string().trim().min(1).max(100), slotStartMs: z.number().int().optional() }))
+      .min(1)
+      .max(GROUP_MAX),
+    answer: z.union([z.object({ heard: z.string().trim().min(1).max(100) }), z.enum(GROUP_ANSWERS)]),
+  });
+
+export type GroupReportInput = z.input<typeof groupInput>;
+
+type Db = Awaited<ReturnType<typeof createContext>>["db"];
+type ReportWhere = NonNullable<Parameters<Db["receptionReport"]["findMany"]>[0]>["where"];
+
+/**
+ * How many answers the rows matching `where` hold, counted in the database: a
+ * shared-frequency answer's rows (one askGroup, #150) are one answer. The
+ * groups come back one row each.
+ */
+async function answersWhere(db: Db, where: ReportWhere): Promise<number> {
+  const [single, groups] = await Promise.all([
+    db.receptionReport.count({ where: { ...where, askGroup: null } }),
+    db.receptionReport.groupBy({ by: ["askGroup"], where: { ...where, askGroup: { not: null } } }),
+  ]);
+  return single + groups.length;
+}
+
+/**
+ * Whether another answer is within the limits: REPORTS_PER_HOUR answers from
+ * this listener, a shared-frequency answer counting once (#150), so asking
+ * about WWV and WWVH together doesn't cost two of a listener's ten;
+ * RECEIVER_REPORTS_PER_HOUR rows about this receiver, every row counted, so
+ * the bound on what a flood with fresh listener ids adds to one receiver's
+ * data holds however answers are grouped (#150 review; a group then costs
+ * its station count); and none in SAME_CHANNEL_MS matching `sameChannel`
+ * (this listener, receiver and frequency, plus the kind and names the caller
+ * adds). `rows` is how many rows this answer would add.
+ */
+async function withinLimits(
+  db: Db,
+  a: { listenerId: string; receiverHost: string; receiverPort: number; freqKhz: number },
+  sameChannel: ReportWhere,
+  now: number,
+  rows = 1,
+): Promise<boolean> {
+  const { listenerId, receiverHost, receiverPort, freqKhz } = a;
+  const hourAgo = new Date(now - 60 * MINUTE);
+  const [lastHour, receiverHour, sameCount] = await Promise.all([
+    answersWhere(db, { listenerId, createdAt: { gte: hourAgo } }),
+    db.receptionReport.count({ where: { receiverHost, receiverPort, createdAt: { gte: hourAgo } } }),
+    db.receptionReport.count({
+      where: { listenerId, receiverHost, receiverPort, freqKhz, ...sameChannel, createdAt: { gte: new Date(now - SAME_CHANNEL_MS) } },
+    }),
+  ]);
+  return lastHour < REPORTS_PER_HOUR && receiverHour + rows <= RECEIVER_REPORTS_PER_HOUR && sameCount === 0;
+}
+
+/**
+ * Pick best's context as stored, when it fits the report (pickChecks); else
+ * nothing, the answer kept, and a warning under `procedure`'s name.
+ */
+function pickColumns(
+  procedure: "submit" | "submitGroup",
+  pick: PickInput | undefined,
+  report: Parameters<typeof pickChecks>[1],
+  served: readonly Receiver[],
+  now: number,
+) {
+  if (!pick) return {};
+  if (!pickChecks(pick, report, now)) {
+    console.warn(`reports.${procedure}: dropped pick context that doesn't fit the report`);
+    return {};
+  }
+  return {
+    pickVersion: pick.version,
+    pickedAtMs: BigInt(pick.pickedAtMs),
+    pickSource: pick.pickSource,
+    rankPos: pick.rankPos,
+    candidates: pick.candidates,
+    candidatesListed: listedCandidates(pick.candidates, served),
+    pickLat: pick.lat,
+    pickLon: pick.lon,
+    pickSnr: pick.snr,
+    pickUsers: pick.users,
+  };
+}
+
+/**
+ * A signal answer's txDetail and slot (#101): the channel signalChannel matched,
+ * with the designator Priyom listed the slot under when it isn't the station's
+ * own ("17529.875 F06a", #148), and the Priyom slot for a numbers station. Null
+ * when the station wasn't on the air there.
+ */
+async function signalColumns(
+  slug: string,
+  freqKhz: number,
+  slotStartMs: number | undefined,
+  now: number,
+): Promise<{ txDetail: string; slot?: number } | null> {
+  const designated = findStation(slug)?.priyom;
+  const priyom = designated !== undefined ? ((await getPriyomSchedule())?.transmissions ?? null) : null;
+  const channel = signalChannel(slug, freqKhz, slotStartMs, priyom, now);
+  if (channel === null) return null;
+  if (designated === undefined) return { txDetail: String(channel) };
+  const designator = priyom?.find(
+    (t) => t.startMs === slotStartMs && t.station === designated && t.khz !== null && Math.abs(freqKhz - t.khz) <= MATCH_KHZ,
+  )?.designator;
+  return { txDetail: designator ? `${channel} ${designator}` : String(channel), slot: slotStartMs };
+}
+
 export const reportsRouter = router({
   /**
    * Store one reception report. Over a limit, or about a receiver or station
@@ -383,7 +531,7 @@ export const reportsRouter = router({
    */
   submit: publicProcedure.input(reportInput).mutation(async ({ ctx, input }) => {
     const now = Date.now();
-    const { listenerId, receiverHost, receiverPort, freqKhz } = input;
+    const { receiverHost, receiverPort, freqKhz } = input;
     // Only what the page could really have asked about: a listed receiver,
     // and a station the schedule had on that frequency just now (or the
     // beacon the schedule had on that band in the slot asked about, or the signal
@@ -393,27 +541,16 @@ export const reportsRouter = router({
     let listed: readonly ListedBroadcast[] | undefined;
     // The slot kept with the answer: a beacon's, or a numbers station's Priyom transmission.
     let slot: number | undefined;
-    let designator: string | undefined;
-    // A signal answer's channel as the server matched it (signalChannel): stored as txDetail.
-    let channel: number | null = null;
+    // A signal answer's channel as the server matched it (signalColumns): stored as txDetail.
+    let signalDetail: string | undefined;
     if (input.txKind === "beacon") {
       if (slotStartMs === undefined || !beaconSlotChecks(input.txName, freqKhz, slotStartMs, now))
         return { accepted: false };
       slot = slotStartMs;
     } else if (input.txKind === "signal") {
-      const designated = findStation(input.txName)?.priyom;
-      const priyomStation = designated !== undefined;
-      const priyom = priyomStation ? ((await getPriyomSchedule())?.transmissions ?? null) : null;
-      channel = signalChannel(input.txName, freqKhz, slotStartMs, priyom, now);
-      if (channel === null) return { accepted: false };
-      if (priyomStation) {
-        slot = slotStartMs;
-        // The designator Priyom listed the slot under, when it isn't the station's own
-        // (F06a for F06, #148), kept with the answer so the two could be told apart.
-        designator = priyom?.find(
-          (t) => t.startMs === slotStartMs && t.station === designated && t.khz !== null && Math.abs(freqKhz - t.khz) <= MATCH_KHZ,
-        )?.designator;
-      }
+      const columns = await signalColumns(input.txName, freqKhz, slotStartMs, now);
+      if (!columns) return { accepted: false };
+      ({ txDetail: signalDetail, slot } = columns);
     } else {
       // A station Priyom drives is asked about as itself, never by EiBi's season name (#148 D9).
       if (namesPriyomStation(input.txName)) return { accepted: false };
@@ -422,29 +559,13 @@ export const reportsRouter = router({
     }
     const served = await servedList();
     if (!served || !findReceiver(served, receiverHost, receiverPort)) return { accepted: false };
-    const hourAgo = new Date(now - 60 * MINUTE);
-    const [lastHour, receiverHour, sameChannel] = await Promise.all([
-      ctx.db.receptionReport.count({ where: { listenerId, createdAt: { gte: hourAgo } } }),
-      ctx.db.receptionReport.count({ where: { receiverHost, receiverPort, createdAt: { gte: hourAgo } } }),
-      ctx.db.receptionReport.count({
-        where: {
-          listenerId,
-          receiverHost,
-          receiverPort,
-          freqKhz,
-          // Each kind counts only its own answers, so a signal answer doesn't block the
-          // EiBi question on a frequency the station shares (WWV with BPM on 10 MHz,
-          // #148 D12), nor the other way round. A beacon frequency carries a
-          // new beacon every 10 s: each callsign is its own channel. Signal stations
-          // share frequencies too (WWV and WWVH): each is its own.
-          txKind: input.txKind,
-          ...(input.txKind !== "eibi" && { txName: input.txName }),
-          createdAt: { gte: new Date(now - SAME_CHANNEL_MS) },
-        },
-      }),
-    ]);
-    if (lastHour >= REPORTS_PER_HOUR || receiverHour >= RECEIVER_REPORTS_PER_HOUR || sameChannel > 0)
-      return { accepted: false };
+    // Each kind counts only its own answers, so a signal answer doesn't block the
+    // EiBi question on a frequency the station shares (WWV with BPM on 10 MHz,
+    // #148 D12), nor the other way round. A beacon frequency carries a
+    // new beacon every 10 s: each callsign is its own channel. Signal stations
+    // share frequencies too (WWV and WWVH): each is its own.
+    const sameChannel = { txKind: input.txKind, ...(input.txKind !== "eibi" && { txName: input.txName }) };
+    if (!(await withinLimits(ctx.db, input, sameChannel, now))) return { accepted: false };
     // NCDXF's word on the beacon now, from this server's cached copy (null until it has one).
     const official =
       input.txKind === "beacon" ? (await getBeaconStatus())?.beacons.find((b) => b.call === input.txName) : undefined;
@@ -461,19 +582,13 @@ export const reportsRouter = router({
         console.warn("reports.submit: couldn't work out the transmitter sites:", error);
       }
     }
-    let fit = pick;
-    // Only a beacon's slot bounds when the pick was made (PICK_IN_SLOT_MS).
-    if (pick && !pickChecks(pick, { ...input, slotStartMs: input.txKind === "beacon" ? slot : undefined }, now)) {
-      console.warn("reports.submit: dropped pick context that doesn't fit the report");
-      fit = undefined;
-    }
     await ctx.db.receptionReport.create({
       data: {
         ...report,
         // A signal station's detail is the channel the server matched, not the page's word nor
         // the dial (freqKhz keeps that), and the designator Priyom used when it isn't the
         // station's own ("17529.875 F06a").
-        ...(input.txKind === "signal" && channel !== null && { txDetail: designator ? `${channel} ${designator}` : String(channel) }),
+        ...(signalDetail !== undefined && { txDetail: signalDetail }),
         // The slot is kept for beacons and Priyom's numbers stations only.
         ...(slot !== undefined && { slotStartMs: BigInt(slot) }),
         ...(official && { beaconStatus: official.off ? "OFF" : "OK" }),
@@ -481,19 +596,62 @@ export const reportsRouter = router({
         ...(txSites && { txSites }),
         // The question's rule and region, for a station only; a region only with a rule.
         ...(input.txKind === "eibi" && askRule !== undefined && { askRule, ...(askRegion && { askRegion }) }),
-        ...(fit && {
-          pickVersion: fit.version,
-          pickedAtMs: BigInt(fit.pickedAtMs),
-          pickSource: fit.pickSource,
-          rankPos: fit.rankPos,
-          candidates: fit.candidates,
-          candidatesListed: listedCandidates(fit.candidates, served),
-          pickLat: fit.lat,
-          pickLon: fit.lon,
-          pickSnr: fit.snr,
-          pickUsers: fit.users,
-        }),
+        // Only a beacon's slot bounds when the pick was made (PICK_IN_SLOT_MS).
+        ...pickColumns("submit", pick, { ...input, slotStartMs: input.txKind === "beacon" ? slot : undefined }, served, now),
       },
+    });
+    return { accepted: true };
+  }),
+
+  /**
+   * Store a shared-frequency answer (#150): one "signal" report per station the
+   * question named, outcomes from groupOutcomes, all sharing a new askGroup id
+   * so analysis can tell they came from one question. Only when every station
+   * is a distinct catalog station on the air on that frequency now, as for one
+   * station's answer (signalColumns), and they are exactly the stations the
+   * question names there (askedTogether), two to GROUP_MAX of them; else
+   * nothing is stored. The listener's limit counts the group as one answer,
+   * the receiver's counts its rows (withinLimits), and either refuses it if any
+   * station it names was answered about here in SAME_CHANNEL_MS. Each row
+   * carries the comment and Pick best's context.
+   */
+  submitGroup: publicProcedure.input(groupInput).mutation(async ({ ctx, input }) => {
+    const now = Date.now();
+    const { listenerId, receiverHost, receiverPort, freqKhz, mode, comment, pick, stations, answer } = input;
+    const slugs = stations.map((s) => s.slug);
+    if (slugs.length < 2 || new Set(slugs).size !== slugs.length) return { accepted: false };
+    const outcomes = groupOutcomes(slugs, answer);
+    if (!outcomes || outcomes.length === 0) return { accepted: false };
+    const columns = await Promise.all(stations.map((s) => signalColumns(s.slug, freqKhz, s.slotStartMs, now)));
+    if (columns.some((c) => c === null)) return { accepted: false };
+    // Exactly the stations the question names there, not a set the page chose.
+    const priyom = (await getPriyomSchedule())?.transmissions ?? null;
+    if (!askedTogether(slugs, freqKhz, priyom, now)) return { accepted: false };
+    const served = await servedList();
+    if (!served || !findReceiver(served, receiverHost, receiverPort)) return { accepted: false };
+    if (!(await withinLimits(ctx.db, input, { txKind: "signal", txName: { in: slugs } }, now, outcomes.length)))
+      return { accepted: false };
+    const picked = pickColumns("submitGroup", pick, { receiverHost, receiverPort, freqKhz, txKind: "signal" }, served, now);
+    const askGroup = crypto.randomUUID();
+    await ctx.db.receptionReport.createMany({
+      data: outcomes.map(({ slug, outcome }, i) => {
+        const { txDetail, slot } = columns[i]!;
+        return {
+          listenerId,
+          receiverHost,
+          receiverPort,
+          freqKhz,
+          mode,
+          txKind: "signal",
+          txName: slug,
+          txDetail,
+          outcome,
+          ...(comment !== undefined && { comment }),
+          ...(slot !== undefined && { slotStartMs: BigInt(slot) }),
+          askGroup,
+          ...picked,
+        };
+      }),
     });
     return { accepted: true };
   }),

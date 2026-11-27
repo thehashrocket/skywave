@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const groupBy = vi.fn();
 const findUnique = vi.fn();
-vi.mock("@/server/db", () => ({ db: { receptionReport: { groupBy }, priyomFeed: { findUnique } } }));
+// Shared-frequency answers' tallies (#150, server/grouped-tallies.ts); none unless a test sets them.
+const queryRaw = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
+vi.mock("@/server/db", () => ({ db: { receptionReport: { groupBy }, priyomFeed: { findUnique }, $queryRawUnsafe: queryRaw } }));
 const getPriyomSchedule = Object.assign(vi.fn(), { status: vi.fn(), refreshNow: vi.fn() });
 vi.mock("@/server/routers/signals", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/server/routers/signals")>()),
@@ -11,6 +13,8 @@ vi.mock("@/server/routers/signals", async (importOriginal) => ({
 }));
 const { GET } = await import("./route");
 const { SIGNAL_STATIONS } = await import("@/lib/signal-stations");
+const { NOT_HEARD_OVER_OTHER } = await import("@/lib/signal-heard");
+const { groupedTalliesSql } = await import("@/server/grouped-tallies");
 
 const call = (auth?: string) =>
   GET(new Request("https://skywave.test/api/signals/freshness", { headers: auth ? { authorization: auth } : {} }));
@@ -59,21 +63,46 @@ describe("signal freshness route", () => {
     expect(text).not.toContain("listener-");
     expect(text).not.toMatch(/listenerId|comment/);
     const { report, body } = JSON.parse(text);
+    const window = {
+      txKind: "signal",
+      outcome: { in: ["heard", "not_heard"] },
+      createdAt: { gte: new Date("2026-10-08T15:00:00Z"), lte: new Date("2026-12-07T15:00:00Z") },
+    };
     expect(groupBy).toHaveBeenCalledWith({
       by: ["txName", "outcome", "listenerId"],
-      where: {
-        txKind: "signal",
-        outcome: { in: ["heard", "not_heard"] },
-        createdAt: { gte: new Date("2026-10-08T15:00:00Z"), lte: new Date("2026-12-07T15:00:00Z") },
-      },
+      where: { ...window, askGroup: null },
       _count: { _all: true },
     });
+    // Shared-frequency answers are summed by the database too, by listener, over the same window.
+    expect(queryRaw).toHaveBeenCalledWith(groupedTalliesSql(true), window.createdAt.gte, window.createdAt.lte);
     expect(report.suspect).toEqual([expect.objectContaining({ slug: "uvb-76", notHeard: 6, listeners: 3 })]);
     expect(report.priyom).toMatchObject({ changedAt: "2026-12-01T00:00:00.000Z", unchanged: false, error: null });
     const priyomIds = SIGNAL_STATIONS.filter((s) => s.priyom && s.schedule.kind !== "defunct").map((s) => s.priyom);
     expect(report.priyom.missing.map((m: { designator: string }) => m.designator)).toEqual(priyomIds);
     expect(report.empty).toBe(false);
     expect(body).toContain("### Possibly off the air");
+  });
+
+  // Value: protects=#150 owner rule wired into the weekly report: the database's grouped tallies are added to the single-station ones, so WWVH answered only as "not heard over the other" (three listeners, twice each) is neither suspect nor listed as unanswered, while plain grouped not-heards ("Heard nothing") make both suspect; fails_when=grouped tallies are dropped from the report or the over-other ones are counted as not heard; why_new=#150 review; seam=db and Priyom source mocked (the SQL itself is in grouped-tallies.test); no_claim=Prisma's parameter binding
+  it("leaves out WWVH not heard over WWV, and counts heard nothing", async () => {
+    vi.stubEnv("SIGNAL_FRESHNESS_SECRET", "s3cret");
+    groupBy.mockResolvedValue([]);
+    findUnique.mockResolvedValue(null);
+    getPriyomSchedule.refreshNow.mockResolvedValue({ transmissions: [], fetchedAt: Date.now() });
+    getPriyomSchedule.status.mockReturnValue({ fetchedAt: Date.now(), error: null });
+    const tallies = (wwv: string, wwvh: string) =>
+      ["a", "b", "c"].flatMap((listenerId) => [
+        { txName: "wwv", outcome: wwv, listenerId, n: 2 },
+        { txName: "wwvh", outcome: wwvh, listenerId, n: 2 },
+      ]);
+    queryRaw.mockResolvedValueOnce(tallies("heard", NOT_HEARD_OVER_OTHER));
+    const overWwv = (await (await call("Bearer s3cret")).json()).report;
+    expect(overWwv.suspect).toEqual([]);
+    // Someone did answer about WWVH: it isn't listed as having no answers either.
+    expect(overWwv.quiet.map((s: { slug: string }) => s.slug)).not.toContain("wwvh");
+    queryRaw.mockResolvedValueOnce(tallies("not_heard", "not_heard"));
+    const nothing = (await (await call("Bearer s3cret")).json()).report;
+    expect(nothing.suspect.map((s: { slug: string }) => s.slug)).toEqual(["wwv", "wwvh"]);
   });
 
   // Value: protects=#147 review D2: the route reads the shared Priyom record only after its own forced refresh and save finished, so a week with no visitors doesn't read as a stale record or copy; fails_when=the record read runs in parallel with (or before) the refresh again, flagging a healthy feed and keeping the issue open; why_new=owner chose to stop false alarms after quiet days; seam=db and Priyom source mocked; no_claim=Next's after() timing in production

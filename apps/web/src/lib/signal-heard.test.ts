@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { HEARD_SHOWN_MS, lastHeard, sharedChannels, stationActivity, type AnswerTally, type HeardSums } from "./signal-heard";
+import {
+  HEARD_SHOWN_MS,
+  lastHeard,
+  NOT_HEARD_OVER_OTHER,
+  sharedChannels,
+  stationActivity,
+  type AnswerTally,
+  type HeardSums,
+} from "./signal-heard";
 import { findStation, SIGNAL_STATIONS } from "./signal-stations";
 
 const NOW = Date.parse("2026-11-25T12:00:00Z");
@@ -154,5 +162,18 @@ describe("stationActivity", () => {
       expect(stationActivity(s, tallies), s.slug).toBeNull();
     }
     expect(stationActivity({ ...wwv, priyom: "X01" }, notHeardFrom("a", "b", "c"))).toBeNull();
+  });
+});
+
+describe("stationActivity with shared-frequency answers (#150)", () => {
+  const t = (outcome: string, listenerId: string, n = 2): AnswerTally => ({ txName: "wwvh", outcome, listenerId, n });
+
+  // Value: protects=the owner's #150 rule: "not heard over the other" tallies, however many and from however many listeners, never make a station suspect, but keep it out of "quiet" (someone answered), while plain not-heards beside them still count; fails_when=WWVH drowned out by WWV is flagged as possibly off the air, or reads as unanswered in the weekly report; why_new=#150 review; seam=none; no_claim=the database's tallies (grouped-tallies.test)
+  it("never calls a station suspect on not heard over the other, nor quiet", () => {
+    const wwvh = findStation("wwvh")!;
+    const over = ["a", "b", "c", "d"].map((l) => t(NOT_HEARD_OVER_OTHER, l));
+    expect(stationActivity(wwvh, over)).toEqual({ status: "ok", heard: 0, notHeard: 0, notHeardListeners: 0 });
+    const plain = ["a", "b", "c"].map((l) => t("not_heard", l));
+    expect(stationActivity(wwvh, [...over, ...plain])!.status).toBe("suspect");
   });
 });

@@ -175,7 +175,9 @@ vi.mock("@/lib/use-priyom-schedule", () => ({
 // No listener reports (#102) unless a test sets them: the panel shows no "heard" badges.
 const signalHeard: { current: Record<string, import("@/lib/signal-heard").LastHeard> | null } = { current: null };
 vi.mock("@/lib/use-signal-last-heard", () => ({ useSignalLastHeard: () => signalHeard.current }));
-vi.mock("@/lib/use-submit-report", () => ({ useSubmitReport: () => submitReport }));
+// A shared-frequency answer (#150): sends unless it's "can't tell", as the real hook does.
+const submitGroupReport = vi.fn((_p: unknown, answer: unknown) => answer !== "unsure");
+vi.mock("@/lib/use-submit-report", () => ({ useSubmitReport: () => submitReport, useSubmitGroupReport: () => submitGroupReport }));
 // The radio service's measured noise floors (issue #67), as useNoise hands them to the page.
 const noise: { current: import("@/lib/noise-rank").NoiseLevels | null } = { current: null };
 vi.mock("@/lib/use-noise", () => ({ useNoise: () => noise.current }));
@@ -2276,6 +2278,7 @@ describe("ListenPage", () => {
       vi.useFakeTimers();
       sessionStorage.clear();
       submitReport.mockClear();
+      submitGroupReport.mockClear();
       schedule.data = {
         season: "b26",
         bundled: false,
@@ -2405,12 +2408,11 @@ describe("ListenPage", () => {
       expect(screen.getAllByText(new RegExp(`^${station} ·`)).length).toBeGreaterThan(0);
       fireEvent.click(screen.getByRole("button", { name: "Heard" }));
       const tx = submitReport.mock.lastCall![0].tx;
-      expect(tx).toMatchObject({ name: station, askRule: 2 });
+      expect(tx).toMatchObject({ name: station, askRule: 3 });
       expect(tx.askRegion).toBe(region);
     });
 
-    // Value: protects=D12's "more than one station" rule on a time-signal frequency: hand-tuned to 10,000 kHz, where WWV and WWVH share the dial with PPE, BPM and ItalCable, the question is today's EiBi one about the first-ranked station (more than 3 names), never a signal question about WWV, while the readout names WWV (#152, readout only); fails_when=the merged dial's catalog WWV row is taken as the only station, EiBi's question stops naming the first listing, the readout loses its catalog-first order, or the prompt starts reading the merged list; why_new=R10 named this case, #152 added the readout; seam=useRadio, useSchedule and useSubmitReport mocked, fake timers; no_claim=region ranking (eibi/reception tests)
-    it("asks today's EiBi question on a time-signal frequency several stations share", () => {
+    const timeSignals10 = () => {
       const daily = (station: string, target: string) => ({ khz: 10_000, start: 0, end: 1440, days: "", station, lang: "-TS", target });
       schedule.data!.broadcasts = [
         daily("PPE Observatorio Nac.", "B"),
@@ -2420,13 +2422,87 @@ describe("ListenPage", () => {
         daily("WWV Colorado (m.ann.)", "USA"),
       ];
       receiverList.data = { receivers: [{ ...listed, lat: undefined, lon: undefined }, backup] };
+    };
+
+    // Value: protects=#150 replacing D12 where catalog stations share the dial: hand-tuned to 10,000 kHz (WWV and WWVH, with PPE, BPM and ItalCable from EiBi) one question asks which was heard, offering WWV and WWVH by their hints, both, nothing, can't tell and didn't open, and the answer goes to the grouped submit naming both slugs, never EiBi's question about PPE, while the readout still names WWV (#152); fails_when=page.tsx stops passing the group, the EiBi question comes back, a choice is missing, or the answer goes through the single-station submit; why_new=#150 acceptance (prompt on 10000); seam=useRadio, useSchedule and both submit hooks mocked, fake timers; no_claim=the server's checks (reports.test)
+    it("asks which time station was heard on a frequency WWV and WWVH share", () => {
+      timeSignals10();
       listeningOn(10_000);
       act(() => vi.advanceTimersByTime(62_000));
-      // #152: the readout names the catalog's WWV while the question stays EiBi's, about PPE.
       expect(document.querySelector(".readout-station")!.textContent).toMatch(/^WWV · .* \+\d+ more$/);
-      expect(line().textContent).toContain("Did you hear PPE Observatorio Nac. on the receiver");
+      expect(line().textContent).toMatch(/^Which did you hear on the receiver .* on 10,000 kHz: WWV or WWVH\?/);
+      const answers = [...line().querySelectorAll(".reception-answers button")].map((b) => b.textContent);
+      expect(answers).toEqual([
+        "Heard WWV (a man's voice)",
+        "Heard WWVH (a woman's voice)",
+        "Heard both",
+        "Heard nothing",
+        "Something else / can't tell",
+        "Didn't open",
+      ]);
+      fireEvent.click(screen.getByRole("button", { name: "Heard WWVH (a woman's voice)" }));
+      expect(submitReport).not.toHaveBeenCalled();
+      const [p, answer] = submitGroupReport.mock.lastCall!;
+      expect(answer).toEqual({ heard: "wwvh" });
+      expect((p as { tx: { group: { slug: string }[] } }).tx.group.map((m) => m.slug)).toEqual(["wwv", "wwvh"]);
+      expect(line().textContent).toBe("Thanks for the report.");
+    });
+
+    // Value: protects="can't tell" on the shared-frequency question sends nothing through either submit path except the group hook's own refusal, and still thanks; fails_when=can't tell is mapped onto a station or sent as a single report; why_new=#150 acceptance (can't-tell files no signal report); seam=both submit hooks mocked (the real group hook's no-send is in use-submit-report.test); no_claim=none
+    it("files nothing for can't tell", () => {
+      timeSignals10();
+      listeningOn(10_000);
+      act(() => vi.advanceTimersByTime(62_000));
+      fireEvent.click(screen.getByRole("button", { name: "Something else / can't tell" }));
+      expect(submitGroupReport.mock.lastCall![1]).toBe("unsure");
+      expect(submitGroupReport.mock.results.at(-1)!.value).toBe(false);
+      expect(submitReport).not.toHaveBeenCalled();
+      expect(line().textContent).toBe("Thanks for the report.");
+    });
+
+    // Value: protects=a Listen on WWV's row tuned to 10,000 kHz still asks the single WWV question (#150 leaves Listen-picked questions alone), with the signal pick context; fails_when=the group question takes over from a Listen pick, so a listener who chose WWV is asked about WWVH too; why_new=#150 acceptance (Listen-picked WWV on 10000); seam=useRadio, the list hook and both submit hooks mocked, fake timers; no_claim=the dwell rules (use-reception-prompt.test)
+    it("asks only about WWV after its Listen on 10 MHz", () => {
+      timeSignals10();
+      receiverList.data = { receivers: [listed, backup] };
+      window.history.replaceState(null, "", "/?f=10000&m=am&sig=wwv");
+      radio.status = { state: "idle" };
+      radio.heardAudio = false;
+      const view = render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+      const { host, port } = (radio.tune.mock.lastCall as unknown as [{ host: string; port: number }])[0];
+      radio.status = { state: "listening", host, port, freqKhz: 10_000, mode: "am" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(62_000));
+      expect(line().textContent).toMatch(/^Did you hear WWV \(a man's voice\) on the receiver .* on 10,000 kHz\?/);
       fireEvent.click(screen.getByRole("button", { name: "Heard" }));
-      expect(submitReport.mock.lastCall![0].tx).toMatchObject({ kind: "eibi", name: "PPE Observatorio Nac.", askRule: 2 });
+      expect(submitReport.mock.lastCall![0].tx).toMatchObject({ kind: "signal", name: "wwv" });
+      expect(submitReport.mock.lastCall![3]).toMatchObject({ pickSource: "signal" });
+      expect(submitGroupReport).not.toHaveBeenCalled();
+    });
+
+    // Value: protects=a WWV Listen on 20 MHz (WWV's alone) followed by a hand-tune to 10 MHz, which WWVH shares, asks which was heard, not "Did you hear WWV?", while the pick itself stays (#150 review); fails_when=the Listen pick on one channel decides the question on another that catalog stations share, so a WWVH signal is filed as WWV heard; why_new=#150 review (important); seam=useRadio, the list hook and both submit hooks mocked, fake timers; no_claim=the dwell rules (use-reception-prompt.test)
+    it("asks which was heard after a WWV Listen on 20 MHz is tuned by hand to 10 MHz", () => {
+      timeSignals10();
+      receiverList.data = { receivers: [listed, backup] };
+      window.history.replaceState(null, "", "/?f=20000&m=am&sig=wwv");
+      radio.status = { state: "idle" };
+      radio.heardAudio = false;
+      const view = render(<ListenPage />);
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Listen" })));
+      const { host, port } = (radio.tune.mock.lastCall as unknown as [{ host: string; port: number }])[0];
+      radio.status = { state: "listening", host, port, freqKhz: 20_000, mode: "am" };
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      const readout = screen.getByLabelText("Frequency in kilohertz") as HTMLInputElement;
+      act(() => readout.focus());
+      fireEvent.change(readout, { target: { value: "10000" } });
+      fireEvent.submit(readout.form!);
+      radio.status = { state: "listening", host, port, freqKhz: 10_000, mode: "am" };
+      view.rerender(<ListenPage />);
+      act(() => vi.advanceTimersByTime(62_000));
+      expect(line().textContent).toMatch(/^Which did you hear on the receiver .* on 10,000 kHz: WWV or WWVH\?/);
+      expect(submitReport).not.toHaveBeenCalled();
     });
 
     // Value: protects=D3 on a frequency only one catalog station uses: hand-tuned to 20,000 kHz, where EiBi lists only WWV, the question is one signal question about wwv (with its hint), never EiBi's question about "WWV Colorado (m.ann.)"; fails_when=the hand-tuned signal path is lost and the EiBi question comes back, or WWV's catalog row isn't seen as the only station; why_new=R10 named this case; seam=useRadio, useSchedule and useSubmitReport mocked, fake timers; no_claim=that WWV is on the air
@@ -2490,7 +2566,7 @@ describe("ListenPage", () => {
       act(() => vi.advanceTimersByTime(60_000));
       expect(line().textContent).toContain("Did you hear Sound of Hope on the receiver");
       fireEvent.click(screen.getByRole("button", { name: "Heard" }));
-      expect(submitReport.mock.lastCall![0].tx).toMatchObject({ kind: "eibi", name: "Sound of Hope", askRule: 2 });
+      expect(submitReport.mock.lastCall![0].tx).toMatchObject({ kind: "eibi", name: "Sound of Hope", askRule: 3 });
       cleanup();
       sessionStorage.clear();
       listeningOn(12_200);

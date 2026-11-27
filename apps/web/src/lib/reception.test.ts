@@ -8,8 +8,13 @@ import {
   beaconWatch,
   eibiTransmitter,
   formatCountdown,
+  groupChoices,
+  groupOutcomes,
+  LISTING_GRACE_MS,
   noQuestionReason,
   signalAsk,
+  signalGroupAsk,
+  signalGroupTransmitter,
   signalPromptAt,
   signalTransmitter,
   STREAM_LATENCY_MS,
@@ -38,7 +43,7 @@ describe("eibiTransmitter", () => {
       name: "KBS World Radio",
       detail: "E/NAm",
       label: "KBS World Radio",
-      askRule: 2,
+      askRule: 3,
     });
   });
 
@@ -46,7 +51,7 @@ describe("eibiTransmitter", () => {
     [["A", "B"], "anything from A or B", "A / B"],
     [["A", "B", "C"], "anything from A, B or C", "A / B / C"],
   ])("asks about %j together", (stations, label, name) => {
-    expect(eibiTransmitter(stations.map((s) => b(s)))).toEqual({ kind: "eibi", name, label, askRule: 2 });
+    expect(eibiTransmitter(stations.map((s) => b(s)))).toEqual({ kind: "eibi", name, label, askRule: 3 });
   });
 
   it("names only the nearest listing when more than three share it", () => {
@@ -67,10 +72,10 @@ describe("eibiTransmitter", () => {
     expect(ask(two, "na")?.label).toBe("anything from WWCR 2 or Xizang RTV");
     expect(ask(two)?.label).toBe("anything from Xizang RTV or WWCR 2");
     const four = [...two, b("C", "E", "Eu", 5_935), b("D", "E", "Eu", 5_935)];
-    expect(ask(four, "na")).toMatchObject({ name: "WWCR 2", detail: "E/NAm", askRule: 2, askRegion: "na" });
-    expect(ask(four)).toMatchObject({ name: "Xizang RTV", askRule: 2 });
+    expect(ask(four, "na")).toMatchObject({ name: "WWCR 2", detail: "E/NAm", askRule: 3, askRegion: "na" });
+    expect(ask(four)).toMatchObject({ name: "Xizang RTV", askRule: 3 });
     expect(ask(four)).not.toHaveProperty("askRegion");
-    expect(ask(two, "as")).toMatchObject({ askRule: 2, askRegion: "as" });
+    expect(ask(two, "as")).toMatchObject({ askRule: 3, askRegion: "as" });
   });
 });
 
@@ -303,5 +308,69 @@ describe("signalTransmitter (#101)", () => {
     expect(signalTransmitter(ask("wwv", 10_000))).toEqual({ kind: "signal", name: "wwv", detail: "10000", label: "WWV (a man's voice)" });
     expect(signalTransmitter(ask("wwvh", 10_000)).label).toBe("WWVH (a woman's voice)");
     expect(signalTransmitter(ask("uvb-76", 4_625)).label).toBe("UVB-76");
+  });
+});
+
+describe("shared-frequency questions (#150)", () => {
+  const NOON = Date.UTC(2026, 10, 18, 12);
+  const slugs = (asks: { slug: string }[] | null) => asks?.map((a) => a.slug) ?? null;
+
+  // Value: protects=a hand-tuned frequency gets one group question when two or more catalog stations are on the air there (WWV and WWVH on 2.5, 5, 10, 15 MHz, within half a kHz), in catalog order, and none where only one is (WWV alone on 20 MHz) or none is; any catalog pair qualifies, not just WWV/WWVH; fails_when=the group misses a station, includes one off the dial, or WWV-only 20 MHz gets a group; why_new=#150 acceptance (prompt rule); seam=catalog as shipped, plus a made-up pair; no_claim=propagation
+  it("groups the catalog stations on the air on the dial, two or more", () => {
+    for (const khz of [2_500, 5_000, 10_000, 15_000, 10_000.4]) expect(slugs(signalGroupAsk(khz, null, NOON))).toEqual(["wwv", "wwvh"]);
+    expect(signalGroupAsk(20_000, null, NOON)).toBeNull();
+    expect(signalGroupAsk(10_000.6, null, NOON)).toBeNull();
+    expect(signalGroupAsk(9_580, null, NOON)).toBeNull();
+    const twin: SignalStation = { ...findStation("wwv")!, slug: "twin", name: "Twin", askHint: undefined, channels: [{ khz: 4_625, mode: "usb" }] };
+    expect(slugs(signalGroupAsk(4_625, null, NOON, [findStation("uvb-76")!, findStation("the-pip")!, twin]))).toEqual(["uvb-76", "twin"]);
+  });
+
+  // Value: protects=the group question names each station once with its hint, stores their slugs joined as txName and the dial as detail, carries a Priyom slot per member, and closes with the first station to go off; fails_when=the hint is lost (WWV and WWVH can't be told apart), a member's slot is dropped (the server refuses it), or the prompt stays open after one goes off; why_new=#150; seam=made-up asks; no_claim=none
+  it("builds the question from each station's hint and slot", () => {
+    expect(signalGroupTransmitter(signalGroupAsk(10_000, null, NOON)!)).toEqual({
+      kind: "signal",
+      name: "wwv / wwvh",
+      detail: "10000",
+      label: "WWV or WWVH",
+      group: [
+        { slug: "wwv", name: "WWV", hint: "a man's voice" },
+        { slug: "wwvh", name: "WWVH", hint: "a woman's voice" },
+      ],
+    });
+    const timed = signalGroupTransmitter([
+      { slug: "a", name: "A", khz: 5_000, untilMs: Infinity },
+      { slug: "b", name: "B", khz: 5_000, untilMs: NOON, slotStartMs: NOON - 60_000 },
+    ]);
+    expect(timed.group![1]).toEqual({ slug: "b", name: "B", slotStartMs: NOON - 60_000 });
+    expect(timed.answerByMs).toBe(NOON + LISTING_GRACE_MS);
+  });
+
+  // Value: protects=the choices #150 lists, in order: each station by its hint, both, nothing, can't tell, didn't open; a station without a hint by name, and "all of them" past two; fails_when=a choice is missing or mislabelled, so a listener can't say which station they heard; why_new=#150 acceptance (choices); seam=catalog as shipped; no_claim=none
+  it("offers each station, both, nothing, can't tell and didn't open", () => {
+    const { group } = signalGroupTransmitter(signalGroupAsk(10_000, null, NOON)!);
+    expect(groupChoices(group!)).toEqual([
+      { answer: { heard: "wwv" }, label: "Heard WWV (a man's voice)" },
+      { answer: { heard: "wwvh" }, label: "Heard WWVH (a woman's voice)" },
+      { answer: "all", label: "Heard both" },
+      { answer: "none", label: "Heard nothing" },
+      { answer: "unsure", label: "Something else / can't tell" },
+      { answer: "no_open", label: "Didn't open" },
+    ]);
+    const three = groupChoices([{ slug: "a", name: "A" }, { slug: "b", name: "B" }, { slug: "c", name: "C" }]);
+    expect(three.map((c) => c.label).slice(0, 4)).toEqual(["Heard A", "Heard B", "Heard C", "Heard all of them"]);
+  });
+
+  // Value: protects=#150's mapping: heard one files it heard and the others not_heard, both files both heard, nothing both not_heard, didn't open both no_open, can't tell files nothing, and a heard station that wasn't asked about is refused; fails_when=outcomes are swapped or can't tell credits a station; why_new=#150 acceptance (mapping); seam=none; no_claim=none
+  it("maps each answer to the stations' outcomes", () => {
+    const pair = ["wwv", "wwvh"];
+    expect(groupOutcomes(pair, { heard: "wwvh" })).toEqual([
+      { slug: "wwv", outcome: "not_heard" },
+      { slug: "wwvh", outcome: "heard" },
+    ]);
+    expect(groupOutcomes(pair, "all")!.map((o) => o.outcome)).toEqual(["heard", "heard"]);
+    expect(groupOutcomes(pair, "none")!.map((o) => o.outcome)).toEqual(["not_heard", "not_heard"]);
+    expect(groupOutcomes(pair, "no_open")!.map((o) => o.outcome)).toEqual(["no_open", "no_open"]);
+    expect(groupOutcomes(pair, "unsure")).toEqual([]);
+    expect(groupOutcomes(pair, { heard: "chu" })).toBeNull();
   });
 });

@@ -9,6 +9,8 @@ const { priyomScheduleSource, lastHeardSource, readPriyomFeed, recordPriyomFetch
   await import("./signals");
 const { appRouter } = await import("@/server/root");
 const { PRIYOM_SLICES } = await import("@/lib/priyom-schedule");
+const { COUNT_MS, NOT_HEARD_OVER_OTHER } = await import("@/lib/signal-heard");
+const { groupedTalliesSql } = await import("@/server/grouped-tallies");
 
 const EVENTS = readFileSync(new URL("../../lib/fixtures/priyom-events.json", import.meta.url), "utf8");
 const HOUR = 60 * 60_000;
@@ -211,7 +213,7 @@ describe("recordPriyomFetch and readPriyomFeed", () => {
 });
 
 describe("lastHeardSource", () => {
-  type Row = { txKind: string; txName: string; freqKhz: number; outcome: string; createdAt: Date };
+  type Row = { txKind: string; txName: string; freqKhz: number; outcome: string; createdAt: Date; askGroup?: string };
   const NOW = Date.parse("2026-11-25T12:00:00Z");
   const row = (txKind: string, txName: string, khz: number, outcome: string, agoMin: number): Row => ({
     txKind,
@@ -221,16 +223,17 @@ describe("lastHeardSource", () => {
     createdAt: new Date(NOW - agoMin * 60_000),
   });
   type Range<T> = { gte: T; lte: T };
-  type Where = { txKind: string; outcome?: string; createdAt: Range<Date>; freqKhz?: Range<number> };
+  type Where = { txKind: string; outcome?: string; createdAt: Range<Date>; freqKhz?: Range<number>; askGroup?: null };
   type GroupBy = { by: ("txName" | "outcome")[]; where: Where; _max?: { createdAt: true }; _count?: { _all: true } };
 
   /** A ReceptionReport table answering groupBy the way Postgres would for the filters signals.lastHeard uses. */
-  function fakeDb(rows: Row[]) {
+  function fakeDb(rows: Row[], grouped: { txName: string; outcome: string; n: number }[] = []) {
     const within = <T>(v: T, r: Range<T>) => v >= r.gte && v <= r.lte;
     const groupBy = vi.fn(async ({ by, where, _max, _count }: GroupBy) => {
       const groups = new Map<string, Row[]>();
       for (const r of rows) {
         if (r.txKind !== where.txKind || (where.outcome !== undefined && r.outcome !== where.outcome)) continue;
+        if (where.askGroup === null && r.askGroup !== undefined) continue;
         if (!within(r.createdAt, where.createdAt) || (where.freqKhz && !within(r.freqKhz, where.freqKhz))) continue;
         const key = by.map((k) => r[k]).join("\u0000");
         groups.set(key, [...(groups.get(key) ?? []), r]);
@@ -243,8 +246,49 @@ describe("lastHeardSource", () => {
     });
     /** How many reads ran: each read counts answers by outcome once. */
     const reads = () => groupBy.mock.calls.filter(([a]) => a.by.includes("outcome")).length;
-    return { db: { receptionReport: { groupBy } } as never, groupBy, reads };
+    // Shared-frequency answers' tallies (#150), as server/grouped-tallies.ts's SQL sums them.
+    const queryRaw = vi.fn(async (..._args: unknown[]) => grouped);
+    return { db: { receptionReport: { groupBy }, $queryRawUnsafe: queryRaw } as never, groupBy, reads, queryRaw };
   }
+
+  // Value: protects=a shared-frequency "Heard WWV" (#150) badges WWV alone, never "WWV or WWVH heard" on WWVH, which the same answer said wasn't heard, while an older single-station heard on the shared channel still shows on both; fails_when=the shared-channel read takes grouped rows, so WWVH looks heard moments after a listener said it wasn't; why_new=#150 review; seam=groupBy faked (askGroup null honoured); no_claim=Postgres behavior
+  it("badges a grouped heard on its own station only", async () => {
+    vi.useFakeTimers({ now: NOW });
+    try {
+      const grouped = (outcome: string, txName: string): Row => ({ ...row("signal", txName, 10_000, outcome, 5), askGroup: "g1" });
+      const { db } = fakeDb([grouped("heard", "wwv"), grouped("not_heard", "wwvh")]);
+      const { heard } = await lastHeardSource({ now: () => NOW })(db);
+      expect(heard.wwv).toMatchObject({ heardMs: NOW - 5 * 60_000, either: null });
+      expect(heard.wwvh?.heardMs ?? null).toBeNull();
+      const older = fakeDb([grouped("heard", "wwv"), row("signal", "wwvh", 10_000, "heard", 60)]);
+      const both = await lastHeardSource({ now: () => NOW })(older.db);
+      expect(both.heard.wwvh).toMatchObject({ heardMs: NOW - 60 * 60_000, either: ["WWV", "WWVH"] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=the badges' day counts add shared-frequency answers (#150) without counting "not heard over the other" as not heard (owner, #150): WWVH not heard beside a heard WWV adds nothing to WWVH's not-heard count, while a group's plain not-heard and heard do count; the grouped read covers the day's window, not grouped by listener; fails_when=grouped answers are left out of the counts, or every "Heard WWV" adds a WWVH not-heard; why_new=#150 review; seam=groupBy and the grouped SQL faked (the SQL is in grouped-tallies.test); no_claim=Postgres behavior
+  it("counts shared-frequency answers, but not WWVH not heard over WWV", async () => {
+    vi.useFakeTimers({ now: NOW });
+    try {
+      const { db, queryRaw } = fakeDb(
+        [row("signal", "wwvh", 10_000, "heard", 30)],
+        [
+          { txName: "wwv", outcome: "heard", n: 4 },
+          { txName: "wwvh", outcome: NOT_HEARD_OVER_OTHER, n: 4 },
+          { txName: "wwvh", outcome: "not_heard", n: 1 },
+        ],
+      );
+      // A source of its own, so the router's cached answer is neither read nor left behind.
+      const { heard } = await lastHeardSource({ now: () => NOW })(db);
+      expect(heard.wwv).toMatchObject({ heard24h: 4, notHeard24h: 0 });
+      expect(heard.wwvh).toMatchObject({ heard24h: 1, notHeard24h: 1 });
+      expect(queryRaw).toHaveBeenCalledWith(groupedTalliesSql(false), new Date(NOW - COUNT_MS), new Date(NOW));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   // Value: protects=signals.lastHeard sums only signal answers from the last week per station (a beacon or EiBi row never badges a station; mixed answers give the latest heard and day counts; a week-old heard is dropped; a heard from two days ago badges but stays out of the day's counts); fails_when=another kind's rows leak in, the window is wrong (including the counts reading the week window instead of COUNT_MS), or the query isn't wired to the router; why_new=#102 query; the 2-day row added because no fixture sat between COUNT_MS and HEARD_SHOWN_MS; seam=ctx.db.receptionReport.groupBy faked; no_claim=Postgres behavior (checked against a real Postgres in /ship QA)
   it("sums the week's signal answers per station", async () => {
