@@ -200,4 +200,38 @@ describe("globals.css", () => {
     expect(named).toEqual(expect.arrayContaining([".receivers-table .receiver-host"]));
     expect(named.filter((s) => !s.includes(".receivers-table"))).toEqual([]);
   });
+
+  // Value: protects=Listen/Stop holds its place in the header's first row whatever the strip says, so the button just pressed doesn't move while a receiver connects; fails_when=.console-header goes back to a wrapping flex row or the strip's column loses minmax(0, 1fr); why_new=design critique 2026-11-27 saw Stop wrap under the wordmark on a long "Listening via" line; seam=the strip's text is page.tsx's, tested there; no_claim=jsdom has no layout, so this reads the CSS and does not prove the rendered position
+  it("keeps Listen/Stop in its own header column beside a strip that can shrink", () => {
+    const header = ruleBody(".console-header");
+    expect(header).toMatch(/display:\s*grid\s*;/);
+    expect(header).toMatch(/grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s*;/);
+    // A strip that wraps its links to a second line grows the row; the button holds the top.
+    expect(header).toMatch(/align-items:\s*start\s*;/);
+  });
+
+  // Value: protects=on a small tablet or narrow window the strip gets a row of its own instead of a ~100px column four lines deep, while Listen/Stop keeps the first row's right end; fails_when=the mid-width media block stops giving the button its own auto column or stops putting the strip on a full-width second row, or its breakpoint goes back to px so large text squeezes the strip's links under the button, or the ≤520px block stops returning .console-header to the wrapping flex row so phones get the grid instead of #106's stacked header; why_new=headless measure at 521px showed the three-column strip squeezed to ~100px, and nothing else asserts the phone override the owner chose; seam=none; no_claim=jsdom has no layout, so this reads the CSS and does not prove the rendered position or the 720px width is the best cut
+  it("gives the header strip its own row between phone and desktop widths", () => {
+    // In em, so with a larger default font the switch moves out with the wordmark and button.
+    const block = /@media \(max-width: 45em\)\s*\{([\s\S]*?)\n\}/.exec(css)?.[1];
+    expect(block, "the 45em (720px at 16px) media block").toBeDefined();
+    expect(block).toMatch(/\.console-header\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto\s*;/);
+    // The strip is placed on row 2, not given a two-row template, so a header without one gets no empty row.
+    expect(block).not.toMatch(/grid-template-(areas|rows)/);
+    const strip = /\.tuned-to\s*\{([^}]*)\}/.exec(block!)?.[1];
+    expect(strip).toMatch(/grid-column:\s*1\s*\/\s*-1\s*;/);
+    expect(strip).toMatch(/grid-row:\s*2\s*;/);
+    // A phone keeps #106's stacked header: the 520px block puts the wrapping flex row back.
+    const phone = /@media \(max-width: 520px\)\s*\{([\s\S]*?)\n\}/.exec(css)?.[1]?.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(phone, "the 520px media block").toBeDefined();
+    const phoneHeader = /(?:^|\s)\.console-header\s*\{([^}]*)\}/.exec(phone!)?.[1];
+    expect(phoneHeader, "the phone .console-header rule").toBeDefined();
+    expect(phoneHeader).toMatch(/display:\s*flex\s*;/);
+    expect(phoneHeader).toMatch(/flex-wrap:\s*wrap\s*;/);
+  });
+
+  // Value: protects=on /owners and /signals the header's lone "skywave" link keeps its text width in the grid, so blank header space doesn't link home; fails_when=.owners-wordmark loses justify-self: start and the link stretches across the ≤720px grid's wide column; why_new=the Step 9 review found the stretch at 521-720px, which no test covered; seam=none; no_claim=jsdom has no layout, so this reads the CSS and does not prove the rendered click area
+  it("keeps the secondary pages' wordmark link to its text width in the header grid", () => {
+    expect(ruleBody(".owners-wordmark")).toMatch(/justify-self:\s*start\s*;/);
+  });
 });

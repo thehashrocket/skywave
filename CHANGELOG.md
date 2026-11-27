@@ -2,6 +2,11 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.64.3.0] - 2026-11-27 ([#173](https://github.com/thehashrocket/skywave/issues/173))
+
+### Fixed
+- **Listen/Stop stays where you pressed it while a receiver connects.** When the header changed from the Auto chip to "Listening via <place> · <host>", a long place and host (such as "Near Tarlee, South Australia · kiwisdr.areg.org.au") pushed Stop down under the wordmark, and it jumped back up when Pick best moved to a receiver with a shorter name. The button now has a place of its own at the right end of the header's first row, and a long line is cut with "…" or wraps its links beside it instead. On a narrow window or a small tablet (720px wide or less at normal text size) the "Listening via" line takes its own row under the wordmark, with the button still top right. With a larger default text size that switch comes sooner, so the links never slide under the button. Phones (520px wide or less) keep today's stacked header.
+
 ## [0.64.2.0] - 2026-11-27 ([#168](https://github.com/thehashrocket/skywave/issues/168))
 
 ### Fixed
