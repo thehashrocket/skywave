@@ -2,6 +2,14 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.64.1.0] - 2026-11-27 ([#155](https://github.com/thehashrocket/skywave/issues/155))
+
+### Changed
+- **Receiver owners are told that anyone can see whether a skywave listener is on their receiver.** The page for owners now says skywave's server answers, for any receiver it is asked about (listed, or reached by typing its address), whether a skywave listener is on it right now, much as the Kiwi's own user list shows, and that it says nothing about who is listening.
+
+### Fixed
+- **The receiver you just left stops reading as taken within seconds.** After Stop or a switch, the page asks again 5 seconds later, once the service has usually freed your old slot, instead of waiting up to a minute. Moving the dial in the meantime no longer cancels that second ask. Switching while a band scan is still running on a slow receiver can still take until the next minute's refresh.
+
 ## [0.64.0.0] - 2026-11-26 ([#150](https://github.com/thehashrocket/skywave/issues/150))
 
 ### Added
