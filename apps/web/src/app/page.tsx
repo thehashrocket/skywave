@@ -1154,13 +1154,6 @@ export default function ListenPage() {
       (fieldsHost ? { host: fieldsHost, port: fieldsPort } : null);
     return otherThan(heard, shown ? receiverKey(shown) : undefined);
   }, [heard, current, status.host, status.port, fieldsHost, fieldsPort]);
-  // Back names its receiver the way the strip does: by place when the list has
-  // one, else by host. A list's full name runs to 90 characters (#176).
-  const backPlace = useMemo(() => {
-    if (!backTo) return "";
-    const listedBack = findReceiver(receivers, backTo.host, backTo.port);
-    return (listedBack && placeName(listedBack.location)) || backTo.host;
-  }, [backTo, receivers]);
 
   // A receiver earns its scan and its own waterfall once it has played for
   // AUTO_SCAN_MS and Pick best is done with it: not during its attempts, nor
@@ -1352,6 +1345,17 @@ export default function ListenPage() {
   );
   // Where audio comes from, as the strip, the status row and the tuning bar all name it.
   const playingPlace = playingNow ? listedPlace || playingNow.host : "";
+  // Back names its receiver the way the strip does: by place when the list has
+  // one, else by host. A list's full name runs to 90 characters (#176). When
+  // another receiver plays in that same place, the host tells the two apart
+  // (Back can be the one still playing while a switch connects).
+  const backPlace = useMemo(() => {
+    if (!backTo) return "";
+    const listedBack = findReceiver(receivers, backTo.host, backTo.port);
+    const place = listedBack ? placeName(listedBack.location) : "";
+    const samePlaceElsewhere = place === playingPlace && playingKey !== receiverKey(backTo);
+    return place && !samePlaceElsewhere ? place : backTo.host;
+  }, [backTo, receivers, playingPlace, playingKey]);
   // One wheel notch over the readout. Medium wave channels are 10 kHz apart in
   // the Americas, 9 elsewhere: go by where the receiver playing is, 9 if unknown.
   const wheelStep = tuningStepKhz(freqKhz, mode, inAmericas(playingListed?.lon));

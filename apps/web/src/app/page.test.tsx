@@ -1350,6 +1350,14 @@ describe("ListenPage", () => {
       view.rerender(<ListenPage />);
       const byHost = screen.getByRole("button", { name: `Back to ${listed.host}, ${listed.name}` });
       expect(byHost.textContent).toBe(`Back to ${listed.host}`);
+
+      // Back to a receiver in the place playing reads by host, so the two can be told apart (owner D1).
+      receiverList.data = {
+        receivers: [listed, { ...backup, host: "kiwi.example", port: 8073, location: listed.location }],
+      };
+      view.rerender(<ListenPage />);
+      const samePlace = screen.getByRole("button", { name: `Back to ${listed.host}, ${listed.name}` });
+      expect(samePlace.textContent).toBe(`Back to ${listed.host}`);
       view.unmount();
     });
 
@@ -2219,7 +2227,8 @@ describe("ListenPage", () => {
       radio.status = { state: "error", code: "busy", message: "full", host: listed.host, port: listed.port };
       view.rerender(<ListenPage />);
       listening(view, backup.host, backup.port);
-      fireEvent.click(screen.getByRole("button", { name: "Back to Vermont, K1VL" }));
+      // Backup is in Vermont too, so Back names K1VL by host (#176 D1).
+      fireEvent.click(screen.getByRole("button", { name: "Back to sdr.k1vl.com, K1VL" }));
       expect(chip()).toBe("Auto (best for this frequency)");
       cleanup();
 
