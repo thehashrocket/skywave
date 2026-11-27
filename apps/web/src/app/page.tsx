@@ -346,6 +346,13 @@ export default function ListenPage() {
   heardRef.current = heard;
   const [freqKhz, setFreqKhz] = useState(DEFAULT_TUNING.freqKhz);
   const [mode, setMode] = useState<Mode>(DEFAULT_TUNING.mode);
+  // The mode a decoder was last on in, kept after it's turned off until the mode changes, so the
+  // Decode RTTY switch just unticked in AM or CW doesn't vanish from under keyboard focus (#179).
+  const [decodeSeenIn, setDecodeSeenIn] = useState<Mode | null>(null);
+  const decodeSeenNext = decodeState !== null ? mode : decodeSeenIn === mode ? mode : null;
+  if (decodeSeenNext !== decodeSeenIn) setDecodeSeenIn(decodeSeenNext);
+  // Nor while it holds focus: a letter key (A, C) can change the mode with focus on it (#179, owner D4).
+  const [decodeFocused, setDecodeFocused] = useState(false);
   // Not until the saved tuning is restored: saving first would overwrite it with the default.
   const [tuningRestored, setTuningRestored] = useState(false);
   const [volume, setVolume] = useState(0.8);
@@ -1811,7 +1818,14 @@ export default function ListenPage() {
       <Dial freqKhz={freqKhz} onChange={onDial} compact={waterfallOpen} />
 
       <section className="controls" aria-label="Tuning">
-        <FrequencyReadout freqKhz={freqKhz} onChange={(k) => changeFreq(k)} step={wheelStep} station={stationNow} />
+        {/* Copy link shares what the readout shows, so it sits under the station line, on a line of its own:
+            a station arriving or "+N more" opening only pushes it down, and its text can't move the digits. */}
+        <div className="readout-col">
+          <FrequencyReadout freqKhz={freqKhz} onChange={(k) => changeFreq(k)} step={wheelStep} station={stationNow} />
+          <button type="button" className="link-button readout-copy" onClick={copyLink}>
+            {copied ? "Link copied" : "Copy link"}
+          </button>
+        </div>
 
         <div className="mode-group" ref={modeGroupRef}>
           <fieldset className="modes">
@@ -1850,14 +1864,27 @@ export default function ListenPage() {
             />
             Letter keys change mode (A U L C)
           </label>
-          <label className="letter-keys">
-            <input
-              type="checkbox"
-              checked={decodeState !== null && decodeState.state !== "error"}
-              onChange={(e) => setDecode(e.target.checked ? { mode: "rtty" } : null)}
-            />
-            Decode RTTY
-          </label>
+          {/* RTTY is tuned in USB or LSB, so the switch shows there; and whenever a decoder is on or has
+              failed, so it can always be turned off after a mode change, staying until the next one once
+              it is. Its line is held either way. */}
+          <div className="decode-slot">
+            {(mode === "usb" || mode === "lsb" || decodeState !== null || decodeSeenIn === mode || decodeFocused) && (
+              <label className="letter-keys">
+                <input
+                  type="checkbox"
+                  checked={decodeState !== null && decodeState.state !== "error"}
+                  onChange={(e) => setDecode(e.target.checked ? { mode: "rtty" } : null)}
+                  onFocus={() => setDecodeFocused(true)}
+                  // Not when the window loses focus: the switch stays the active element, and focus
+                  // comes back to it on return (owner D5).
+                  onBlur={(e) => {
+                    if (document.activeElement !== e.currentTarget) setDecodeFocused(false);
+                  }}
+                />
+                Decode RTTY
+              </label>
+            )}
+          </div>
         </div>
 
         <SMeter meter={meter} />
@@ -1878,10 +1905,6 @@ export default function ListenPage() {
             }}
           />
         </div>
-
-        <button type="button" className="link-button" onClick={copyLink}>
-          {copied ? "Link copied" : "Copy link"}
-        </button>
 
         {/* With the waterfall, from the visit's first audio: the same one layout change. */}
         {waterfallOpen && (

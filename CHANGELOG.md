@@ -9,6 +9,15 @@ Notable changes to skywave, newest first. Versions come from `VERSION` (four par
 - **The coverage check refuses an export the database couldn't have produced.** A repeated answer, a repeated column, a receiver that isn't an address or a question naming more than three stations stops it, so a doubled download can't pad its minimum. It also shows the largest single receiver's and station's share of the answers, so a lopsided sample is visible, and it exits with status 3 when it gives no verdict.
 - **The research scripts' tests run with every other radio service test, in CI and in `pnpm test:radio`.** Before, they ran only when someone typed their command by hand.
 
+## [0.64.6.0] - 2026-11-27 ([#179](https://github.com/thehashrocket/skywave/issues/179))
+
+### Changed
+- **Copy link sits under the frequency, and the tuning panel is one row tall again.** It copies what the readout shows, so it now sits on its own line under the station name, in small text, instead of alone on a second row at the bottom left of the panel. A station name arriving, or its "+N more" list opening, only pushes it down, and "Link copied" never moves the digits. On touch screens of any size it's 44px tall, so it's easy to tap.
+- **Decode RTTY shows where RTTY is tuned.** The switch appears in USB and LSB. In AM and CW it shows only while a decoder is on or has just failed, so you can always turn a decoder off after changing mode, and its line stays reserved so the panel doesn't change height when it comes and goes. A GhostNet RTTY slot's Listen still turns the decoder on and ticks the switch.
+
+### Fixed
+- **The Decode RTTY switch never disappears from under keyboard focus.** Unticked in AM or CW, it stays until you change mode. With focus on it, a letter key (A, C) that changes the mode, or a switch to another window, no longer makes it vanish and drop focus to the top of the page.
+
 ## [0.64.5.0] - 2026-11-27 ([#180](https://github.com/thehashrocket/skywave/issues/180))
 
 ### Changed
