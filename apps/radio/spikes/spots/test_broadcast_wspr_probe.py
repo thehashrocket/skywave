@@ -15,12 +15,24 @@ import broadcast_wspr_probe as probe
 from broadcast_wspr_probe import Answer, build_query, load_answers, nearest_band, parse_reply, parse_sites, plan_queries, run_query, summarize
 
 HEADER = "created_ms,picked_ms,freq_khz,kiwi_lat,kiwi_lon,outcome,tx_sites\n"
+NAMED = HEADER[:-1] + ",tx_name\n"  # block 10 since D21 (2026-11-27)
 SITES = json.dumps([{"key": "a", "coords": [[52.0, 5.0], [52.0, 5.0]]}, {"key": "b", "coords": [[48.0, 11.0]]}])
 PICK_MS = 1_795_176_000_000  # 2026-11-20 12:00:00 UTC
 
 
-def row(outcome="heard", picked=str(PICK_MS), freq="9500", lat="51.5", lon="-0.1", sites=SITES, created=str(PICK_MS + 90_000)):
-    return ",".join([created, picked, freq, lat, lon, outcome, '"' + sites.replace('"', '""') + '"']) + "\n"
+def row(outcome="heard", picked=str(PICK_MS), freq="9500", lat="51.5", lon="-0.1", sites=SITES, created=str(PICK_MS + 90_000), name=None):
+    fields = [created, picked, freq, lat, lon, outcome, '"' + sites.replace('"', '""') + '"']
+    return ",".join(fields + ([name] if name is not None else [])) + "\n"
+
+
+# Value: protects=block 10's tx_name is read as the answer's station names, split on " / " and de-duplicated, an export without the column loads with no names, and an empty name is refused; fails_when=a joined name counts as one station, the column is ignored, or a blank name becomes a station; why_new=new column (eng review 2026-11-27, D21); seam=none; no_claim=that EiBi names one station the same way all season
+def test_load_answers_reads_station_names(tmp_path):
+    answers, _ = load_answers(write(tmp_path, NAMED + row(name="Radio A / Radio B / Radio A") + row(name="Radio C")), 3)
+    assert [a.stations for a in answers] == [("Radio A", "Radio B"), ("Radio C",)]
+    answers, _ = load_answers(write(tmp_path, HEADER + row()), 3)
+    assert answers[0].stations is None
+    with pytest.raises(ValueError, match="line 2: tx_name is empty"):
+        load_answers(write(tmp_path, NAMED + row(name=" ")), 3)
 
 
 def write(tmp_path, text):
@@ -76,6 +88,7 @@ def test_load_answers_sets_aside_unscorable_rows_and_places_the_window(tmp_path)
         (HEADER + row(sites="[1]"), "tx_sites isn't a list"),
         (HEADER + "1,2,3\n", "not 7 fields"),
         (HEADER + row()[:-1] + ",extra\n", "not 7 fields"),
+        (HEADER[:-1] + ",ask_rule,ask_region\n" + row()[:-1] + ",1\n", "not 9 fields"),  # short only in a cell the probe doesn't read
         (HEADER + '1,2,9500,51,0,heard,"[\n', "unexpected end of data"),
     ],
 )
@@ -84,8 +97,15 @@ def test_load_answers_refuses_rows_block_10_cant_produce(tmp_path, text, reason)
         load_answers(write(tmp_path, text), 30)
 
 
-def answer(line=2, end_s=PICK_MS // 1000 - 40, band=10, sites=((52.0, 5.0),), outcome="heard"):
-    return Answer(line, end_s - 1800, end_s, band, (51.5, -0.1), sites, outcome)
+def answer(line=2, end_s=PICK_MS // 1000 - 40, band=10, sites=((52.0, 5.0),), outcome="heard", kiwi=(51.5, -0.1), stations=("Radio A",)):
+    return Answer(line, end_s - 1800, end_s, band, kiwi, sites, outcome, stations)
+
+
+@pytest.fixture
+def no_floor(monkeypatch):
+    """D21's support floor out of the way, for tests about the 30% bar itself."""
+    for name in ("MIN_ANSWERS", "MIN_STATIONS", "MIN_KIWIS"):
+        monkeypatch.setattr(probe, name, 1)
 
 
 # Value: protects=each answer's columns ask for the smallest "both ends" distance in its own window with minOrNull (no spot -> NULL, never min()'s 0), over the nearest of its sites, on its band, and for the band's spot count in that same window; fails_when=min() replaces minOrNull (an empty window reads as a perfect match), the window or band is dropped, the count reads another window, or lat/lon swap in greatCircleDistance (which takes lon first); why_new=new probe (D4); seam=none; no_claim=ClickHouse's answer (checked by hand against wspr.live on 2026-11-21)
@@ -159,7 +179,7 @@ def test_run_query_caches_only_settled_windows(tmp_path, monkeypatch):
 
 
 # Value: protects=D4's bar: a match is both ends within 1,200 km (inclusive), the verdict is build at 30% or more and stop under it, and any unanswered query or no answers gives no verdict instead of a share; fails_when=the bar moves, NULL counts as a match, or a wspr.live outage turns into "under 30%: stop"; why_new=new probe (D4); seam=none; no_claim=that 1,200 km is the right radius (an owner decision)
-def test_summarize_applies_d4s_bar():
+def test_summarize_applies_d4s_bar(no_floor):
     a = [answer(line=i, outcome="heard" if i % 2 else "not_heard") for i in range(10)]
     near = {0: 1_200_000.0, 1: 599_000.0, 2: 250_000.0}
     s = summarize(a, {**{i: 5_000_000.0 for i in range(3, 10)}, **near}, set())
@@ -182,6 +202,28 @@ def test_summarize_applies_d4s_bar():
     assert summarize(a, {}, set(), set(range(10)))["verdict"] == "no verdict: no answer's band had any WSPR spot in its window"
 
 
+def _spread(n: int, stations: int, kiwis: int) -> list:
+    """n answers cycling over `stations` station names and `kiwis` Kiwi positions, each on its own site list."""
+    return [answer(line=i, sites=((40.0 + i % 37, 5.0),), stations=(f"Radio {i % stations}",), kiwi=(10.0 + i % kiwis, 0.0)) for i in range(n)]
+
+
+# Value: protects=D21's support floor: D4 gets a verdict only with >= 50 scored answers from >= 10 stations (by tx_name, never by site list) and >= 10 Kiwi positions, quiet and unanswered ones not counting, and an export without tx_name gets none; fails_when=the floor is dropped, counts unscored answers, counts site lists as stations (one station on many sites passes), or an unnamed export slips through; why_new=new rule (eng review 2026-11-27, D21; owner chose tx_name over site lists); seam=none; no_claim=that 50/10/10 is enough (an owner decision)
+def test_summarize_needs_d21s_support():
+    def verdict(answers, quiet=frozenset()):
+        return summarize(answers, {a.line: 1000.0 for a in answers}, set(), quiet)["verdict"]
+
+    assert verdict(_spread(50, 10, 10)).startswith("at least 30% matched")
+    s = summarize(_spread(50, 10, 10), {}, set())
+    assert (s["scored"], s["stations"], s["kiwis"]) == (50, 10, 10)
+    assert verdict(_spread(49, 10, 10)) == "no verdict: not enough broadcast data (49 scored answers, 10 stations, 10 Kiwi positions; D21 needs 50, 10 and 10)"
+    assert verdict(_spread(50, 9, 10)).startswith("no verdict: not enough broadcast data (50 scored answers, 9 stations")  # 37 site lists, 9 stations
+    assert verdict(_spread(50, 10, 9)).startswith("no verdict: not enough broadcast data (50 scored answers, 10 stations, 9 Kiwi")
+    assert verdict(_spread(51, 10, 10), quiet={50, 0}).startswith("no verdict: not enough broadcast data (49 scored")
+    unnamed = [answer(line=i, stations=None, kiwi=(10.0 + i % 10, 0.0)) for i in range(50)]
+    assert verdict(unnamed) == "no verdict: this export has no tx_name column, so D21's station count can't be checked; rerun block 10"
+    assert summarize(unnamed, {}, set())["stations"] is None
+
+
 # Value: protects=the CLI as the owner runs it: reads block 10, asks wspr.live per day and band, prints set-asides, shares and D4's verdict; refuses a missing --window-min (no default window to tip D4), a wrong row count, a window that isn't a multiple of 3, and a bad file with exit 2, and ties the verdict to the window; fails_when=argparse wiring, a guard, or the output breaks, or a default window creeps back; why_new=new probe (D4); seam=none (monkeypatches _fetch); no_claim=wspr.live itself
 def test_main(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(probe, "_fetch", lambda url: "a0\tc0\ta1\tc1\n900000\t4\t\\N\t4\n")
@@ -194,8 +236,18 @@ def test_main(tmp_path, monkeypatch, capsys):
     assert "set aside: 1 no_open (the replay drops it)" in out
     assert "both ends within 1,200 km:     1 of 2 (50.0%)" in out
     assert "band  10 (10.1387 MHz): 1 of 2 (50.0%)" in out
-    assert "at least 30% matched within 1,200 km: build the broadcast join (D4) [for a 30-min window only]" in out
+    assert "support: 2 scored answers, no tx_name column, 1 Kiwi positions" in out
+    # Value: protects=D21: only the 3-min window gives a D4 verdict; any other length prints its shares as exploratory with none, and at 3 min a thin sample says "not enough broadcast data"; fails_when=a longer window's (higher) share reaches the D4 verdict, or the floor is skipped in the CLI; why_new=new rule (eng review 2026-11-27, D21); seam=none (monkeypatches _fetch); no_claim=wspr.live itself
+    assert "no D4 verdict: exploratory 30-min window; D4 is decided at 3 min (D21)" in out and "build the broadcast join" not in out
     assert len(list((tmp_path / "cache").iterdir())) == 1  # the cache follows CACHE_DIR, never the real one
+    assert probe.main(["--answers", str(p), "--window-min", "3"]) == 0
+    assert "no tx_name column, so D21's station count can't be checked; rerun block 10 [3-min window: D4's]" in capsys.readouterr().out
+    named = tmp_path / "named.csv"  # not write(): that reuses b.csv, which the checks below read
+    named.write_text(NAMED + row(name="Radio A") + row(outcome="not_heard", name="Radio B / Radio C"), encoding="utf-8")
+    assert probe.main(["--answers", str(named), "--window-min", "3"]) == 0
+    out = capsys.readouterr().out
+    assert "support: 2 scored answers, 3 stations, 1 Kiwi positions" in out
+    assert "no verdict: not enough broadcast data (2 scored answers, 3 stations, 1 Kiwi positions; D21 needs 50, 10 and 10) [3-min window: D4's]" in out
     assert probe.main(["--answers", str(p), "--window-min", "30", "--expect-rows", "4"]) == 2
     assert "3 rows, but block 10b counted 4" in capsys.readouterr().err
     for argv in (["--window-min", "10"], []):
@@ -206,12 +258,14 @@ def test_main(tmp_path, monkeypatch, capsys):
     assert probe.main(["--answers", str(bad), "--window-min", "30"]) == 2
     assert "line 2" in capsys.readouterr().err
     monkeypatch.setattr(probe, "_fetch", lambda url: (_ for _ in ()).throw(OSError("down")))
-    assert probe.main(["--answers", str(write(tmp_path, HEADER + row())), "--window-min", "30"]) == 0
+    assert probe.main(["--answers", str(write(tmp_path, HEADER + row())), "--window-min", "3"]) == 0
     out = capsys.readouterr().out
     assert "unanswered: 1" in out and "no verdict: 1 of 1" in out
+    for name in ("MIN_ANSWERS", "MIN_STATIONS", "MIN_KIWIS"):  # the floor out of the way: quiet answers below
+        monkeypatch.setattr(probe, name, 1)
     monkeypatch.setattr(probe, "CACHE_DIR", tmp_path / "cache2")
     monkeypatch.setattr(probe, "_fetch", lambda url: "a0\tc0\ta1\tc1\n\\N\t0\t900000\t2\n")
-    assert probe.main(["--answers", str(write(tmp_path, HEADER + row() + row(outcome="not_heard"))), "--window-min", "30"]) == 0
+    assert probe.main(["--answers", str(write(tmp_path, NAMED + row(name="Radio A") + row(outcome="not_heard", name="Radio A"))), "--window-min", "3"]) == 0
     out = capsys.readouterr().out
     assert "no WSPR spot on the band anywhere in the window: 1" in out and "within 1,200 km:     1 of 1 (100.0%)" in out
     assert "counting quiet answers as misses: 50.0%" in out and "build the broadcast join" in out

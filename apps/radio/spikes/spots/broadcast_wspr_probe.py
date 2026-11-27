@@ -6,17 +6,29 @@ window. D4 builds the broadcast join only if at least 30% of the broadcast answe
 with coordinates get such a match within 1,200 km; otherwise the number is written
 up on #61 and the broadcast half stops. This script changes nothing; it only counts.
 
-Window: the replay's (Step 1): it ends PICK_LEAD_S before the pick, and runs
---window-min minutes (a multiple of 3, one WSPR cycle being 2 min and one IBP cycle 3).
---window-min has no default: Step 1 hasn't frozen the length, and a longer window
-only adds spots, so it can only raise the match share. Pass the length the replay
-will use; the verdict holds for that length only, and says so.
+Window: it ends PICK_LEAD_S before the pick, and runs --window-min minutes (a
+multiple of 3, one WSPR cycle being 2 min and one IBP cycle 3). A longer window only
+adds spots, so it can only raise the match share. D4 is decided at the shortest,
+D4_WINDOW_MIN (3 min; eng review 2026-11-27, D21): a share that clears the bar there
+clears it at any window the replay later freezes. Any other length prints its shares
+as exploratory, with no D4 verdict. --window-min has no default, so a run always says
+which it is.
+
+Support floor (D21): the 30% bar counts only when the scored answers (a wspr.live
+reply, and some spot on the band in the window) number at least MIN_ANSWERS, from at
+least MIN_STATIONS distinct stations and MIN_KIWIS distinct Kiwi positions, so one
+well-covered path can't decide D4. Stations are block 10's tx_name, split on " / "
+(one answer can name several). An export from before that column has no station
+count, so it gets no D4 verdict: rerun block 10. Block 10 has no receiver key, so a
+Kiwi position stands in for a receiver; receivers sharing a site count once, which can
+only undercount.
 
 Input: CSV from .local-data/61-step0.sql block 10:
-    created_ms,picked_ms,freq_khz,kiwi_lat,kiwi_lon,outcome,tx_sites
+    created_ms,picked_ms,freq_khz,kiwi_lat,kiwi_lon,outcome,tx_sites[,ask_rule,ask_region][,tx_name]
+    (ask_rule and ask_region aren't read yet; tx_name is needed for a D4 verdict)
 
     python broadcast_wspr_probe.py --answers ../../../../.local-data/61-broadcasts.csv \\
-        --window-min <the replay's window> --expect-rows <block 10b's count>
+        --window-min 3 --expect-rows <block 10b's count>
 
 wspr.live is asked once per UTC day and band (split into a few queries when one
 URL would be too long; it refuses POST). Each answer is two columns of the reply:
@@ -29,7 +41,7 @@ in its window (a wspr.live gap, or a band quiet worldwide) is counted apart: the
 is taken without such answers and with them as misses, and D4 gets a verdict only when
 both agree. Missing is never read as "no match".
 
-Tests beside this file run by hand, not in CI: apps/radio/.venv/bin/pytest apps/radio/spikes/spots
+Tests beside this file run with the radio service's (`pnpm test:radio`, and in CI).
 """
 
 from __future__ import annotations
@@ -70,6 +82,11 @@ RADII_KM = (300, 600, 1200)
 PASS_KM = 1200  # D4
 PASS_SHARE = 0.30  # D4
 PICK_LEAD_S = 40  # the replay's window ends this long before the pick (D6)
+D4_WINDOW_MIN = 3  # D4 is decided at the shortest window (D21)
+# D21's support floor on the scored answers behind the 30% bar.
+MIN_ANSWERS = 50
+MIN_STATIONS = 10
+MIN_KIWIS = 10
 ANSWER_COLUMNS = ("created_ms", "picked_ms", "freq_khz", "kiwi_lat", "kiwi_lon", "outcome", "tx_sites")
 OUTCOMES = ("heard", "not_heard", "no_open")  # apps/web/src/lib/reception.ts
 # nginx in front of wspr.live allows about 8 KB of request line; stay well under.
@@ -88,6 +105,7 @@ class Answer:
     kiwi: tuple[float, float]  # lat, lon
     sites: tuple[tuple[float, float], ...]
     outcome: str
+    stations: tuple[str, ...] | None = None  # tx_name split on " / "; None: an export without the column
 
 
 def nearest_band(freq_khz: float) -> int:
@@ -141,12 +159,13 @@ def load_answers(path: Path, window_min: int) -> tuple[list[Answer], Counter]:
             missing = [c for c in ANSWER_COLUMNS if c not in (rows.fieldnames or [])]
             if missing:
                 raise ValueError(f"not block 10's export: no {', '.join(missing)} column")
+            columns = ANSWER_COLUMNS + (("tx_name",) if "tx_name" in (rows.fieldnames or []) else ())
             for row in rows:
                 rows_read += 1
                 line = rows.line_num
-                if None in row or any(row.get(c) is None for c in ANSWER_COLUMNS):
-                    raise ValueError(f"line {line}: not {len(ANSWER_COLUMNS)} fields")
-                v = {c: row[c].strip() for c in ANSWER_COLUMNS}
+                if None in row or any(v is None for v in row.values()):  # every cell, read or not
+                    raise ValueError(f"line {line}: not {len(rows.fieldnames or [])} fields")
+                v = {c: row[c].strip() for c in columns}
                 try:
                     a = _answer(line, v, window_min)
                 except ValueError as e:
@@ -178,6 +197,11 @@ def _answer(line: int, v: dict[str, str], window_min: int) -> Answer | str:
         raise ValueError(f"a Kiwi position without a whole picked_ms: {v['picked_ms']!r}")
     if not v["created_ms"].isdigit():
         raise ValueError(f"created_ms isn't a whole number: {v['created_ms']!r}")
+    stations = None
+    if "tx_name" in v:
+        stations = tuple(sorted({n.strip() for n in v["tx_name"].split(" / ") if n.strip()}))
+        if not stations:
+            raise ValueError("tx_name is empty")
     # Reasons the probe can't score a well-formed answer, in the order the replay drops them.
     if v["outcome"] == "no_open":
         return "no_open (the replay drops it)"
@@ -189,7 +213,7 @@ def _answer(line: int, v: dict[str, str], window_min: int) -> Answer | str:
         return "tx_sites without coordinates"
     kiwi = _position(v["kiwi_lat"], v["kiwi_lon"], "the Kiwi")
     end_s = int(v["picked_ms"]) // 1000 - PICK_LEAD_S
-    return Answer(line, end_s - window_min * 60, end_s, nearest_band(freq), kiwi, sites, v["outcome"])
+    return Answer(line, end_s - window_min * 60, end_s, nearest_band(freq), kiwi, sites, v["outcome"], stations)
 
 
 def _columns(a: Answer, i: int) -> str:
@@ -300,8 +324,13 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
     """D4's shares and verdict. `quiet` answers (no spot on the band anywhere in the window:
     a wspr.live gap or a quiet band) are counted apart. The share is taken both without
     them and with them as misses, and gives a verdict only when both readings agree, so
-    neither an outage nor a quiet band can tip D4."""
+    neither an outage nor a quiet band can tip D4. Under D21's support floor (scored
+    answers, distinct stations, distinct Kiwi positions), or with no station names to
+    count (an export from before block 10's tx_name), there is no verdict either."""
     scored = [a for a in answers if a.line not in unanswered and a.line not in quiet]
+    named = all(a.stations is not None for a in answers)
+    stations = len({n for a in scored for n in (a.stations or ())}) if named else None
+    kiwis = len({a.kiwi for a in scored})
     near = {r: [a for a in scored if (d := dist_m.get(a.line)) is not None and d <= r * 1000] for r in RADII_KM}
     by_band: dict[int, list[int]] = {}
     for a in scored:
@@ -318,6 +347,13 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
         verdict = "no verdict: no answer's band had any WSPR spot in its window"
     elif unanswered:
         verdict = f"no verdict: {len(unanswered)} of {len(answers)} answers got no usable wspr.live reply (missing, not zero); run again"
+    elif stations is None:
+        verdict = "no verdict: this export has no tx_name column, so D21's station count can't be checked; rerun block 10"
+    elif len(scored) < MIN_ANSWERS or stations < MIN_STATIONS or kiwis < MIN_KIWIS:
+        verdict = (
+            f"no verdict: not enough broadcast data ({len(scored)} scored answers, {stations} stations, "
+            f"{kiwis} Kiwi positions; D21 needs {MIN_ANSWERS}, {MIN_STATIONS} and {MIN_KIWIS})"
+        )
     elif (share >= PASS_SHARE) != (share_quiet_missed >= PASS_SHARE):
         verdict = (
             f"no verdict: the {len(quiet)} quiet answers decide it ({share:.1%} without them, "
@@ -331,6 +367,8 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
         "answers": len(answers),
         "scored": len(scored),
         "quiet": len(quiet),
+        "stations": stations,
+        "kiwis": kiwis,
         "near": {r: len(v) for r, v in near.items()},
         "share": share,
         "share_quiet_missed": share_quiet_missed,
@@ -343,7 +381,7 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--answers", type=Path, required=True)
-    ap.add_argument("--window-min", type=_at_least_1, required=True, help="spot window length, minutes (a multiple of 3): the length the replay will freeze, since a longer one only raises the share")
+    ap.add_argument("--window-min", type=_at_least_1, required=True, help=f"spot window length, minutes (a multiple of 3): D4 is decided at {D4_WINDOW_MIN} (D21); other lengths are exploratory, and a longer one only raises the share")
     ap.add_argument("--expect-rows", type=_at_least_1, help="block 10b's count: refuse an export with any other number of rows")
     args = ap.parse_args(argv)
     if args.window_min % 3:
@@ -389,7 +427,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {o:<9} within {PASS_KM:,} km: {hit} of {n} ({pct(hit, n)})")
     for band, (hit, n) in s["by_band"].items():
         print(f"  band {band:>3} ({WSPR_BANDS[band]:g} MHz): {hit} of {n} ({pct(hit, n)})")
-    print(f"{s['verdict']} [for a {args.window_min}-min window only]")
+    named = "no tx_name column" if s["stations"] is None else f"{s['stations']} stations"
+    print(f"support: {s['scored']} scored answers, {named}, {s['kiwis']} Kiwi positions")
+    if args.window_min == D4_WINDOW_MIN:
+        print(f"{s['verdict']} [{D4_WINDOW_MIN}-min window: D4's]")
+    else:
+        print(f"no D4 verdict: exploratory {args.window_min}-min window; D4 is decided at {D4_WINDOW_MIN} min (D21)")
     return 0
 
 
