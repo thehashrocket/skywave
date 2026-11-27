@@ -148,6 +148,32 @@ describe("priyomScheduleSource record and status", () => {
     expect(record).toHaveBeenCalledWith(schedule);
     expect(get.status()).toEqual({ fetchedAt: clock, error: null });
   });
+
+  // Value: protects=#147 review D2: refreshNow fetches even while the cached copy is still within its TTL, resolves only after that copy's save finished, and on a failed fetch returns the last copy with the error in status() instead of throwing; fails_when=the report reads a copy or record a quiet week left old, or a Priyom outage makes the weekly route 502; why_new=owner chose refresh-then-judge; seam=fetch, defer, record; no_claim=Priyom's real latency
+  it("refreshNow fetches now and waits for the save", async () => {
+    let clock = Date.parse("2026-11-25T13:00:00Z");
+    let fail = false;
+    const fetchImpl = vi.fn(async () => (fail ? new Response("oops", { status: 503 }) : new Response(EVENTS)));
+    const saved: number[] = [];
+    const record = vi.fn(async (copy: { fetchedAt: number }) => {
+      await new Promise((r) => setTimeout(r, 5));
+      saved.push(copy.fetchedAt);
+    });
+    const get = priyomScheduleSource({ fetchImpl: fetchImpl as unknown as typeof fetch, now: () => clock, defer: () => {}, record });
+    await get();
+    const calls = fetchImpl.mock.calls.length;
+    clock += 60 * 60_000; // an hour later: still within the six-hour cache
+    const fresh = await get.refreshNow();
+    expect(fetchImpl.mock.calls.length).toBe(calls * 2);
+    expect(fresh?.fetchedAt).toBe(clock);
+    expect(saved).toContain(clock);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    fail = true;
+    clock += 60_000;
+    const kept = await get.refreshNow();
+    expect(kept?.fetchedAt).toBe(clock - 60_000);
+    expect(get.status()).toEqual({ fetchedAt: clock - 60_000, error: "Priyom schedule request failed: HTTP 503" });
+  });
 });
 
 describe("recordPriyomFetch and readPriyomFeed", () => {

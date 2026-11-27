@@ -87,6 +87,8 @@ export function priyomScheduleSource({
   let inflight: Promise<PriyomSchedule> | null = null;
   let lastFailureAt: number | null = null;
   let lastError: string | null = null;
+  /** The last good fetch's save, so refreshNow can wait for it. */
+  let lastSave: Promise<void> = Promise.resolve();
 
   async function slice(url: string): Promise<PriyomTx[]> {
     const res = await fetchImpl(url, {
@@ -122,6 +124,7 @@ export function priyomScheduleSource({
   function saveCopy(fresh: PriyomSchedule) {
     if (!record) return;
     const task = record(fresh).catch((error: unknown) => console.warn("signals.priyom: not recorded:", error));
+    lastSave = task;
     try {
       defer(task);
     } catch {
@@ -172,7 +175,23 @@ export function priyomScheduleSource({
     }
   }
 
-  return Object.assign(get, { status });
+  /**
+   * The freshness report's read (#147 review, owner D2): fetches now, whatever the cache's
+   * age, and waits for the copy to be saved, so the report judges the feed rather than how
+   * long ago a visitor last caused a fetch. A failed fetch leaves the last copy (or null) and
+   * its error in status(); a failed save is logged and shows as a stale shared record.
+   */
+  async function refreshNow(): Promise<PriyomSchedule | null> {
+    try {
+      await startRefresh();
+    } catch (error) {
+      console.warn("signals.priyom: refresh for the freshness report failed:", error);
+    }
+    await lastSave;
+    return cached;
+  }
+
+  return Object.assign(get, { status, refreshNow });
 }
 
 /** The one row PriyomFeed holds. */

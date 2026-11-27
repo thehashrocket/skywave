@@ -23,7 +23,9 @@ export async function GET(request: Request): Promise<Response> {
     return new Response("Unauthorized", { status: 401 });
   try {
     const now = Date.now();
-    const [rows, feed, schedule] = await Promise.all([
+    // A fresh fetch and its save first (owner D2), then the shared record, so neither check
+    // reads a copy or record left old only because nobody visited this week.
+    const [rows, schedule] = await Promise.all([
       db.receptionReport.groupBy({
         by: ["txName", "outcome", "listenerId"],
         where: {
@@ -33,9 +35,9 @@ export async function GET(request: Request): Promise<Response> {
         },
         _count: { _all: true },
       }),
-      readPriyomFeed(db),
-      getPriyomSchedule(),
+      getPriyomSchedule.refreshNow(),
     ]);
+    const feed = await readPriyomFeed(db);
     const report = freshnessReport({
       now,
       tallies: rows.map((r) => ({ txName: r.txName, outcome: r.outcome, listenerId: r.listenerId, n: r._count._all })),

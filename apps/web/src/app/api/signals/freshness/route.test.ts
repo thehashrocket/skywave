@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const groupBy = vi.fn();
 const findUnique = vi.fn();
 vi.mock("@/server/db", () => ({ db: { receptionReport: { groupBy }, priyomFeed: { findUnique } } }));
-const getPriyomSchedule = Object.assign(vi.fn(), { status: vi.fn() });
+const getPriyomSchedule = Object.assign(vi.fn(), { status: vi.fn(), refreshNow: vi.fn() });
 vi.mock("@/server/routers/signals", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/server/routers/signals")>()),
   getPriyomSchedule,
@@ -33,7 +33,7 @@ describe("signal freshness route", () => {
     expect((await call("Bearer wrong")).status).toBe(401);
     expect((await call("s3cret")).status).toBe(401);
     expect(groupBy).not.toHaveBeenCalled();
-    expect(getPriyomSchedule).not.toHaveBeenCalled();
+    expect(getPriyomSchedule.refreshNow).not.toHaveBeenCalled();
   });
 
   // Value: protects=#147 an authorized call reads 60 days of heard/not-heard answers summed per listener, the shared Priyom record and this server's copy, and returns the report and issue body, with no listenerId or comment anywhere in the output; fails_when=the read window or outcomes drift, the shape breaks the workflow (report.empty, body), or a listener's id leaks; why_new=#147 acceptance; seam=db and Priyom source mocked; no_claim=Prisma's SQL
@@ -50,7 +50,7 @@ describe("signal freshness route", () => {
       trackedSince: new Date("2026-11-28T00:00:00Z"),
       changedAt: new Date("2026-12-01T00:00:00Z"),
     });
-    getPriyomSchedule.mockResolvedValue({ transmissions: [], fetchedAt: Date.parse("2026-12-07T09:00:00Z") });
+    getPriyomSchedule.refreshNow.mockResolvedValue({ transmissions: [], fetchedAt: Date.parse("2026-12-07T09:00:00Z") });
     getPriyomSchedule.status.mockReturnValue({ fetchedAt: Date.parse("2026-12-07T09:00:00Z"), error: null });
 
     const res = await call("Bearer s3cret");
@@ -76,13 +76,33 @@ describe("signal freshness route", () => {
     expect(body).toContain("### Possibly off the air");
   });
 
+  // Value: protects=#147 review D2: the route reads the shared Priyom record only after its own forced refresh and save finished, so a week with no visitors doesn't read as a stale record or copy; fails_when=the record read runs in parallel with (or before) the refresh again, flagging a healthy feed and keeping the issue open; why_new=owner chose to stop false alarms after quiet days; seam=db and Priyom source mocked; no_claim=Next's after() timing in production
+  it("reads the shared record after its own refresh and save", async () => {
+    vi.stubEnv("SIGNAL_FRESHNESS_SECRET", "s3cret");
+    const order: string[] = [];
+    groupBy.mockResolvedValue([]);
+    getPriyomSchedule.refreshNow.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      order.push("refreshed and saved");
+      return { transmissions: [], fetchedAt: Date.now() };
+    });
+    getPriyomSchedule.status.mockReturnValue({ fetchedAt: Date.now(), error: null });
+    findUnique.mockImplementation(async () => {
+      order.push("record read");
+      return null;
+    });
+    expect((await call("Bearer s3cret")).status).toBe(200);
+    expect(order).toEqual(["refreshed and saved", "record read"]);
+    expect(getPriyomSchedule).not.toHaveBeenCalled();
+  });
+
   // Value: protects=#147 a failed database read returns 502 with the reason, so the workflow fails loudly instead of closing the issue on an empty-looking report; fails_when=an error reads as "nothing stale"; why_new=#147; seam=db mocked; no_claim=none
   it("fails loudly when the database read fails", async () => {
     vi.stubEnv("SIGNAL_FRESHNESS_SECRET", "s3cret");
     vi.spyOn(console, "warn").mockImplementation(() => {});
     groupBy.mockRejectedValue(new Error("connection refused"));
     findUnique.mockResolvedValue(null);
-    getPriyomSchedule.mockResolvedValue(null);
+    getPriyomSchedule.refreshNow.mockResolvedValue(null);
     const res = await call("Bearer s3cret");
     expect([res.status, await res.json()]).toEqual([502, { status: "failed", reason: "connection refused" }]);
   });
