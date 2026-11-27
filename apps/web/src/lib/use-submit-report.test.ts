@@ -4,12 +4,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mutate = vi.fn();
 vi.mock("@tanstack/react-query", () => ({ useMutation: () => ({ mutate }) }));
-vi.mock("./trpc", () => ({ useTRPC: () => ({ reports: { submit: { mutationOptions: () => ({}) } } }) }));
+vi.mock("./trpc", () => ({
+  useTRPC: () => ({ reports: { submit: { mutationOptions: () => ({}) }, submitGroup: { mutationOptions: () => ({}) } } }),
+}));
 vi.mock("@vercel/analytics", () => ({ track: vi.fn() }));
 vi.mock("./listener-id", () => ({ listenerId: () => "listener-1" }));
 
+import { track } from "@vercel/analytics";
 import type { PickContext } from "./pick-context";
-import { useSubmitReport } from "./use-submit-report";
+import { useSubmitGroupReport, useSubmitReport } from "./use-submit-report";
 import type { ReceptionPromptData } from "./use-reception-prompt";
 
 const prompt: ReceptionPromptData = {
@@ -54,5 +57,53 @@ describe("useSubmitReport", () => {
     expect(mutate).toHaveBeenLastCalledWith(expect.objectContaining({ askRule: 1, askRegion: "na" }));
     result.current(prompt, "heard", "");
     expect(mutate.mock.lastCall![0]).toMatchObject({ askRule: undefined, askRegion: undefined });
+  });
+});
+
+describe("useSubmitGroupReport (#150)", () => {
+  beforeEach(() => mutate.mockClear());
+  const group: ReceptionPromptData = {
+    ...prompt,
+    freqKhz: 10_000,
+    tx: {
+      kind: "signal",
+      name: "wwv / wwvh",
+      label: "WWV or WWVH",
+      group: [
+        { slug: "wwv", name: "WWV", hint: "a man's voice" },
+        { slug: "x", name: "X", slotStartMs: 5 },
+      ],
+    },
+  };
+
+  // Value: protects=a shared-frequency answer sends the stations asked about (slug and Priyom slot only, no hints) with the choice, comment and pick for the server to map, and "can't tell" sends nothing and says so; fails_when=can't tell reaches the server, a slot is dropped (the server refuses a numbers station without it), or the page maps outcomes itself; why_new=#150 acceptance (can't-tell files no signal report); seam=useMutation, useTRPC, listenerId mocked; no_claim=tRPC serialisation
+  it("sends the stations and the choice, and nothing for can't tell", () => {
+    const { result } = renderHook(() => useSubmitGroupReport());
+    expect(result.current(group, { heard: "wwv" }, "S9", pick)).toBe(true);
+    expect(mutate).toHaveBeenLastCalledWith({
+      listenerId: "listener-1",
+      receiverHost: "kiwi.example.org",
+      receiverPort: 8073,
+      freqKhz: 10_000,
+      mode: "am",
+      stations: [{ slug: "wwv" }, { slug: "x", slotStartMs: 5 }],
+      answer: { heard: "wwv" },
+      comment: "S9",
+      pick,
+    });
+    mutate.mockClear();
+    expect(result.current(group, "unsure", "")).toBe(false);
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=analytics counts a shared-frequency answer only for a group question (can't tell included, as an answer given), and a prompt with no group records and sends nothing; fails_when=the event is tracked before the group check, so a stray call inflates reception_report counts; why_new=#150 review; seam=track, useMutation, useTRPC mocked; no_claim=Vercel Analytics delivery
+  it("tracks an answer only for a group question", () => {
+    vi.mocked(track).mockClear();
+    const { result } = renderHook(() => useSubmitGroupReport());
+    expect(result.current(prompt, "all", "")).toBe(false);
+    expect(track).not.toHaveBeenCalled();
+    expect(mutate).not.toHaveBeenCalled();
+    result.current(group, "unsure", "");
+    expect(track).toHaveBeenLastCalledWith("reception_report", { outcome: "unsure", group: true });
   });
 });

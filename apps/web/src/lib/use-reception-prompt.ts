@@ -10,8 +10,10 @@ import {
   eibiTransmitter,
   LISTING_GRACE_MS,
   SAME_CHANNEL_MS,
+  signalGroupTransmitter,
   signalPromptAt,
   signalTransmitter,
+  TX_NAME_SEPARATOR,
   type BeaconPick,
   type SignalAsk,
   type Transmitter,
@@ -152,11 +154,15 @@ const promptKey = (p: ReceptionPromptData) => `${p.host.toLowerCase()}:${p.port}
  * (owner D3, D12, D5; the page works it out). Then it's the only thing asked
  * about, once DWELL_MS has played after first audio plus STREAM_LATENCY_MS,
  * all of it before the station goes off (signalPromptAt); one that goes off
- * first isn't asked about.
+ * first isn't asked about. A list of stations: tuned by hand to a frequency two
+ * or three catalog stations share (WWV and WWVH, #150; signalGroupAsk), one
+ * question asks which of them was heard, under the same dwell and limits, open
+ * until the first of them goes off.
  *
  * `schedule`: what an EiBi question may name: EiBi's rows less the Priyom
  * stations' (the server refuses those, D9), so on a frequency several stations
- * share the question is today's (D12), and a season row standing in for
+ * share, with fewer than two catalog stations among them, the question is
+ * today's (D12; with two or more, #150's group question), and a season row standing in for
  * Priyom's is never asked about (D5). Read on the server-corrected clock (D14).
  *
  * `region` is where the receiver is, from its listed position only (never a
@@ -174,7 +180,7 @@ export function useReceptionPrompt(
   onList: boolean,
   beacon: BeaconPick | null = null,
   region?: BroadRegion,
-  signal: SignalAsk | null = null,
+  signal: SignalAsk | readonly SignalAsk[] | null = null,
 ) {
   const [prompt, setPrompt] = useState<ReceptionPromptData | null>(null);
   // Loaded from sessionStorage on first use, then kept here (storage may throw).
@@ -196,10 +202,11 @@ export function useReceptionPrompt(
   const band = key === null ? -1 : ibpBandIndex(status.freqKhz!);
   // The Listen pick, while the dial is on the band it was picked on.
   const pick = beacon && band >= 0 && beacon.bandIndex === band ? beacon : null;
-  // The signal-station pick, while the dial is on the channel it was offered for.
-  const sig = key !== null && signal && onKhz(status.freqKhz!, signal.khz) ? signal : null;
+  // The signal station(s) asked about, while the dial is on the channel they were offered for.
+  const asks: readonly SignalAsk[] = signal === null ? [] : "slug" in signal ? [signal] : signal;
+  const sig = key !== null && asks.length > 0 && asks.every((a) => onKhz(status.freqKhz!, a.khz)) ? asks : null;
   // Changes only when what would be asked about does, not with a new object.
-  const sigKey = sig && `${sig.slug}|${sig.khz}|${sig.untilMs}|${sig.slotStartMs ?? ""}`;
+  const sigKey = sig && sig.map((a) => `${a.slug}|${a.khz}|${a.untilMs}|${a.slotStartMs ?? ""}`).join(",");
   const askable =
     key !== null &&
     onList &&
@@ -209,8 +216,9 @@ export function useReceptionPrompt(
         ? pick !== null
         : schedule !== undefined && scheduledOn(schedule, status.freqKhz!, serverNow()).length > 0);
   const pickCall = sig === null ? (pick?.call ?? null) : null;
-  // What the question is about beyond the channel: the beacon's callsign or the station's slug.
-  const pickId = sig !== null ? sig.slug : pickCall;
+  // What the question is about beyond the channel: the beacon's callsign or the station's
+  // slug, or the slugs of the stations sharing the dial (#150).
+  const pickId = sig !== null ? sig.map((a) => a.slug).join(TX_NAME_SEPARATOR) : pickCall;
 
   // When audio started on the picked beacon's channel (server time; the key
   // appears with first audio): what the prompt's rule counts from, and what the
@@ -276,16 +284,24 @@ export function useReceptionPrompt(
     let notBefore = asOfNow(c.lastShownMs) + PROMPT_GAP_MS;
     if (pickId !== null && audioStart.current !== null) {
       const s = latest.current.status;
-      // An answer this tab sent about this beacon or station here: the server takes
-      // the next one only after SAME_CHANNEL_MS, so don't ask (and thank) before then.
-      const sentAt =
-        s.host && s.freqKhz !== undefined
-          ? c.beacons?.[answerKey(s.host, s.port ?? DEFAULT_KIWI_PORT, s.freqKhz, pickId)]
-          : undefined;
-      if (sentAt !== undefined) notBefore = Math.max(notBefore, asOfNow(sentAt) + SAME_CHANNEL_MS + SAME_CHANNEL_SLACK_MS);
+      // An answer this tab sent about this beacon or station here (any of the stations a
+      // shared-frequency question names, #150): the server takes the next one only after
+      // SAME_CHANNEL_MS, so don't ask (and thank) before then.
+      for (const id of pickId.split(TX_NAME_SEPARATOR)) {
+        const sentAt =
+          s.host && s.freqKhz !== undefined
+            ? c.beacons?.[answerKey(s.host, s.port ?? DEFAULT_KIWI_PORT, s.freqKhz, id)]
+            : undefined;
+        if (sentAt !== undefined)
+          notBefore = Math.max(notBefore, asOfNow(sentAt) + SAME_CHANNEL_MS + SAME_CHANNEL_SLACK_MS);
+      }
     }
-    const ask = latest.current.signal;
-    if (sigKey !== null && ask && audioStart.current !== null) {
+    const signalNow = latest.current.signal;
+    const askList: readonly SignalAsk[] | null =
+      signalNow === null ? null : "slug" in signalNow ? [signalNow] : signalNow.length > 0 ? signalNow : null;
+    if (sigKey !== null && askList && audioStart.current !== null) {
+      // A shared-frequency question is open until the first of its stations goes off.
+      const ask: SignalAsk = { ...askList[0]!, untilMs: Math.min(...askList.map((a) => a.untilMs)) };
       // On the server's clock, as Priyom's times and the gaps are.
       const server = serverNow();
       const askAt = signalPromptAt(ask, audioStart.current, notBefore, DWELL_MS);
@@ -303,7 +319,7 @@ export function useReceptionPrompt(
           port: s.port ?? DEFAULT_KIWI_PORT,
           freqKhz: s.freqKhz,
           mode: s.mode,
-          tx: signalTransmitter(ask),
+          tx: askList.length === 1 ? signalTransmitter(ask) : signalGroupTransmitter(askList),
         });
       }, askAt - server);
       return () => clearTimeout(timer);
@@ -364,21 +380,27 @@ export function useReceptionPrompt(
     if (update((c) => ({ ...c, dismissals: c.dismissals + 1 })).dismissals >= MAX_DISMISSALS) setQuestionsOff(true);
   }, [update]);
 
-  /** Answered: goes away without counting as a dismissal, and thanks shows for THANKS_MS. */
+  /**
+   * Answered: goes away without counting as a dismissal, and thanks shows for
+   * THANKS_MS. `sent` false: the answer filed nothing ("can't tell", #150), so
+   * nothing holds the next question about these stations back.
+   */
   const [thanked, setThanked] = useState(false);
   const promptRef = useRef(prompt);
   promptRef.current = prompt;
-  const answered = useCallback(() => {
+  const answered = useCallback((sent = true) => {
     const p = promptRef.current;
     // An answer about a beacon or signal station is sent: remember it, so this tab
     // doesn't ask about it here again before the server would take another (SAME_CHANNEL_MS).
-    if (p?.tx.kind === "beacon" || p?.tx.kind === "signal") {
+    // A shared-frequency answer (#150) is about each station it names, unless it filed nothing.
+    if ((p?.tx.kind === "beacon" || p?.tx.kind === "signal") && sent) {
       const now = serverNow();
+      const names = p.tx.group ? p.tx.group.map((m) => m.slug) : [p.tx.name];
       update((c) => ({
         ...c,
         beacons: {
           ...Object.fromEntries(Object.entries(c.beacons ?? {}).filter(([, ms]) => now - ms < SAME_CHANNEL_MS)),
-          [answerKey(p.host, p.port, p.freqKhz, p.tx.name)]: now,
+          ...Object.fromEntries(names.map((n) => [answerKey(p.host, p.port, p.freqKhz, n), now])),
         },
       }));
     }

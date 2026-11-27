@@ -137,10 +137,21 @@ export const SUSPECT_MIN_LISTENERS = 3;
 export type AnswerTally = { txName: string; outcome: string; listenerId: string; n: number };
 
 /**
+ * A tally's outcome for a station not heard while another named in the same
+ * shared-frequency answer was (#150; summed by server/grouped-tallies.ts).
+ * Owner's rule: it never counts toward "suspect" nor as a "not heard" in the
+ * badges' counts, since WWVH drowned out by WWV says nothing about WWVH being
+ * off the air; it does keep a station out of "quiet", since someone answered.
+ */
+export const NOT_HEARD_OVER_OTHER = "not_heard_over_other";
+
+/**
  * "suspect": SUSPECT_MIN_NOT_HEARD or more "not heard" answers from
  * SUSPECT_MIN_LISTENERS or more listeners, and no "heard". "quiet": no answers
  * at all (nobody listened, so no evidence either way). "ok" otherwise.
- * "no_open" answers (the receiver never opened) say nothing about the station.
+ * "no_open" answers (the receiver never opened) say nothing about the station;
+ * NOT_HEARD_OVER_OTHER ones (#150) only that someone answered, so they keep a
+ * station out of "quiet" but never make it suspect.
  */
 export type Activity = {
   status: "ok" | "quiet" | "suspect";
@@ -162,17 +173,19 @@ export function stationActivity(station: SignalStation, tallies: readonly Answer
   if ((kind !== "always" && kind !== "dayNight") || station.priyom) return null;
   let heard = 0;
   let notHeard = 0;
+  let overOther = 0;
   const listeners = new Set<string>();
   for (const t of tallies) {
     if (t.txName !== station.slug || t.n <= 0) continue;
     if (t.outcome === "heard") heard += t.n;
+    else if (t.outcome === NOT_HEARD_OVER_OTHER) overOther += t.n;
     else if (t.outcome === "not_heard") {
       notHeard += t.n;
       listeners.add(t.listenerId);
     }
   }
   const status =
-    heard === 0 && notHeard === 0
+    heard === 0 && notHeard === 0 && overOther === 0
       ? "quiet"
       : heard === 0 && notHeard >= SUSPECT_MIN_NOT_HEARD && listeners.size >= SUSPECT_MIN_LISTENERS
         ? "suspect"

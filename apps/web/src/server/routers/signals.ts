@@ -14,6 +14,7 @@ import { COUNT_MS, HEARD_SHOWN_MS, lastHeard, sharedChannels, type LastHeard } f
 import { ON_KHZ } from "@/lib/signal-panel";
 import { SIGNAL_STATIONS } from "@/lib/signal-stations";
 import type { db as Db } from "../db";
+import { groupedTallies } from "../grouped-tallies";
 import { readCapped } from "../read-capped";
 import { publicProcedure, router } from "../trpc";
 
@@ -279,26 +280,38 @@ export function lastHeardSource({ now = () => Date.now() }: { now?: () => number
     const at = now();
     const until = new Date(at);
     const heard = { txKind: "signal", outcome: "heard", createdAt: { gte: new Date(at - HEARD_SHOWN_MS), lte: until } };
-    const newestBy = (where: typeof heard & { freqKhz?: { gte: number; lte: number } }) =>
+    const newestBy = (where: typeof heard & { freqKhz?: { gte: number; lte: number }; askGroup?: null }) =>
       db.receptionReport.groupBy({ by: ["txName"], where, _max: { createdAt: true } });
-    const [latest, shared, counts] = await Promise.all([
+    const countFrom = new Date(at - COUNT_MS);
+    const [latest, shared, counts, grouped] = await Promise.all([
       newestBy(heard),
+      // Only single-station answers make a shared channel's "WWV or WWVH heard": a
+      // shared-frequency answer (#150) names the one heard, and counts as its alone.
       Promise.all(
         SHARED_CHANNELS.map(async ({ khz }) =>
-          (await newestBy({ ...heard, freqKhz: { gte: khz - ON_KHZ, lte: khz + ON_KHZ } })).map((r) => ({ khz, ...r })),
+          (await newestBy({ ...heard, askGroup: null, freqKhz: { gte: khz - ON_KHZ, lte: khz + ON_KHZ } })).map((r) => ({
+            khz,
+            ...r,
+          })),
         ),
       ),
       db.receptionReport.groupBy({
         by: ["txName", "outcome"],
-        where: { txKind: "signal", createdAt: { gte: new Date(at - COUNT_MS), lte: until } },
+        where: { txKind: "signal", askGroup: null, createdAt: { gte: countFrom, lte: until } },
         _count: { _all: true },
       }),
+      // Shared-frequency answers (#150): a station not heard beside one that was comes back as
+      // NOT_HEARD_OVER_OTHER, which lastHeard doesn't count as "not heard" (owner, #150).
+      groupedTallies(db, countFrom, until, false),
     ]);
     const ms = (r: { _max: { createdAt: Date | null } }) => r._max.createdAt?.getTime() ?? null;
     const sums = {
       latest: latest.flatMap((r) => (ms(r) === null ? [] : [{ txName: r.txName, ms: ms(r)! }])),
       shared: shared.flat().flatMap((r) => (ms(r) === null ? [] : [{ khz: r.khz, txName: r.txName, ms: ms(r)! }])),
-      counts: counts.map((r) => ({ txName: r.txName, outcome: r.outcome, n: r._count._all })),
+      counts: [
+        ...counts.map((r) => ({ txName: r.txName, outcome: r.outcome, n: r._count._all })),
+        ...grouped.map((r) => ({ txName: r.txName, outcome: r.outcome, n: r.n })),
+      ],
     };
     return { heard: lastHeard(sums, at), at };
   }

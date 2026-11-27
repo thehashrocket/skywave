@@ -2,6 +2,7 @@ import { sameSecret } from "@/lib/same-secret";
 import { freshnessIssueBody, freshnessReport } from "@/lib/signal-freshness";
 import { ACTIVITY_WINDOW_MS } from "@/lib/signal-heard";
 import { db } from "@/server/db";
+import { groupedTallies } from "@/server/grouped-tallies";
 import { getPriyomSchedule, readPriyomFeed } from "@/server/routers/signals";
 
 /**
@@ -25,22 +26,29 @@ export async function GET(request: Request): Promise<Response> {
     const now = Date.now();
     // A fresh fetch and its save first (owner D2), then the shared record, so neither check
     // reads a copy or record left old only because nobody visited this week.
-    const [rows, schedule] = await Promise.all([
+    const where = {
+      txKind: "signal",
+      outcome: { in: ["heard", "not_heard"] },
+      createdAt: { gte: new Date(now - ACTIVITY_WINDOW_MS), lte: new Date(now) },
+    };
+    // Both summed by the database: single-station answers here, shared-frequency ones (#150)
+    // by groupedTallies, which marks a not_heard beside a heard in its group.
+    const [rows, grouped, schedule] = await Promise.all([
       db.receptionReport.groupBy({
         by: ["txName", "outcome", "listenerId"],
-        where: {
-          txKind: "signal",
-          outcome: { in: ["heard", "not_heard"] },
-          createdAt: { gte: new Date(now - ACTIVITY_WINDOW_MS), lte: new Date(now) },
-        },
+        where: { ...where, askGroup: null },
         _count: { _all: true },
       }),
+      groupedTallies(db, where.createdAt.gte, where.createdAt.lte, true),
       getPriyomSchedule.refreshNow(),
     ]);
     const feed = await readPriyomFeed(db);
     const report = freshnessReport({
       now,
-      tallies: rows.map((r) => ({ txName: r.txName, outcome: r.outcome, listenerId: r.listenerId, n: r._count._all })),
+      tallies: [
+        ...rows.map((r) => ({ txName: r.txName, outcome: r.outcome, listenerId: r.listenerId, n: r._count._all })),
+        ...grouped.map((r) => ({ txName: r.txName, outcome: r.outcome, listenerId: r.listenerId!, n: r.n })),
+      ],
       schedule,
       fetch: getPriyomSchedule.status(),
       feed,

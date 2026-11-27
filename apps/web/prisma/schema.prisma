@@ -118,12 +118,27 @@ model ReceptionReport {
   /// 1: with more than 3 stations on the frequency, the one aimed at
   /// `askRegion` was asked about; and with a region, a station listed more than
   /// once in one language (several sites) gets txDetail from its row aimed
-  /// there, on any frequency. The page's word; the server can't check it.
+  /// there, on any frequency. 2 (#148) and 3 (#150): which frequencies get a
+  /// signal question instead (ASK_RULE_VERSION's docblock). The page's word; the
+  /// server can't check it.
   askRule      Int?
   /// The receiver's broad region ("na", "eu", "as", "af", "me", "oc", "la")
   /// the stations were ranked by, from its listed position. Null with askRule
   /// 1: no position was known, so EiBi's order was kept.
   askRegion    String?
+  /// Shared-frequency answers only (#150): the id one answer's rows share. Tuned
+  /// by hand to a frequency two or three catalog stations are on (WWV and WWVH on
+  /// 2.5, 5, 10 and 15 MHz), or moved there by hand from another channel a Listen
+  /// tuned, the listener is asked which they heard, and the
+  /// answer is filed as one "signal" row per station named: "Heard WWV" files
+  /// WWV heard and WWVH not_heard, "Heard both" both heard, "Heard nothing" both
+  /// not_heard, "Didn't open" both no_open ("can't tell" files nothing). A
+  /// not_heard beside a heard in the same group means "not heard over the
+  /// other", weaker evidence than a plain not_heard (#61: the other may only
+  /// have been drowned out). Each row repeats the comment and pick context; count
+  /// a group once. The listener's hourly limit counts it as one answer; the
+  /// receiver's counts each of its rows. Null on every other row.
+  askGroup     String?
 
   @@index([receiverHost, receiverPort, freqKhz])
   @@index([listenerId, createdAt])

@@ -62,7 +62,7 @@ type Props = {
   onList?: boolean;
   beacon?: BeaconPick | null;
   region?: BroadRegion;
-  signal?: SignalAsk | null;
+  signal?: SignalAsk | readonly SignalAsk[] | null;
 };
 
 function setup(initial: Partial<Props> = {}) {
@@ -102,7 +102,7 @@ describe("useReceptionPrompt", () => {
       port: 8073,
       freqKhz: 9_580,
       mode: "am",
-      tx: { kind: "eibi", name: "KBS World Radio", detail: "E/NAm", label: "KBS World Radio", askRule: 2 },
+      tx: { kind: "eibi", name: "KBS World Radio", detail: "E/NAm", label: "KBS World Radio", askRule: 3 },
     });
   });
 
@@ -126,14 +126,14 @@ describe("useReceptionPrompt", () => {
       kind: "eibi",
       name: "Radio A / Radio B",
       label: "anything from Radio A or Radio B",
-      askRule: 2,
+      askRule: 3,
     });
   });
 
   // Value: protects=with 4+ stations the hook asks about the one aimed at the region it was given and records that region with the rule, and with none keeps EiBi's first and records no region; fails_when=the hook ranks by one region but records another, or drops the region; why_new=#115 review D2 (askRegion); seam=fake timers; no_claim=the page passing the receiver's region (page.test)
   it.each<[BroadRegion | undefined, string, Record<string, unknown>]>([
-    ["na", "WWCR 2", { askRule: 2, askRegion: "na" }],
-    [undefined, "Asia One", { askRule: 2 }],
+    ["na", "WWCR 2", { askRule: 3, askRegion: "na" }],
+    [undefined, "Asia One", { askRule: 3 }],
   ])("asks a crowded frequency's station by region %s and records it", (region, name, rule) => {
     const hook = setup({ status: listening(15_000), region });
     wait(DWELL_MS);
@@ -604,5 +604,63 @@ describe("useReceptionPrompt for a signal station (#101)", () => {
     expect(hook.result.current.prompt).toBeNull();
     wait(1_000 + ASK_AFTER);
     expect(hook.result.current.prompt?.tx.name).toBe("wwv");
+  });
+
+  describe("stations sharing the dial (#150)", () => {
+    const wwvh: SignalAsk = { slug: "wwvh", name: "WWVH", khz: 10_000, untilMs: Infinity, hint: "a woman's voice" };
+    const pair = [{ ...wwv, hint: "a man's voice" }, wwvh];
+    const onPair = { ...onWwv, signal: pair };
+
+    // Value: protects=a list of stations is asked about in one question after the same dwell as one station's, carrying each station's slug and hint in the group so the choices can be built; fails_when=a list is ignored (no question), asked early, or loses a station or its hint; why_new=#150 acceptance (prompt on 10000); seam=fake timers; no_claim=which stations the page passes (page.test)
+    it("asks one question about every station after the dwell", () => {
+      const hook = setup(onPair);
+      wait(ASK_AFTER - 1);
+      expect(hook.result.current.prompt).toBeNull();
+      wait(1);
+      expect(hook.result.current.prompt?.tx).toEqual({
+        kind: "signal",
+        name: "wwv / wwvh",
+        detail: "10000",
+        label: "WWV or WWVH",
+        group: [
+          { slug: "wwv", name: "WWV", hint: "a man's voice" },
+          { slug: "wwvh", name: "WWVH", hint: "a woman's voice" },
+        ],
+      });
+    });
+
+    // Value: protects=a group answer that was sent is remembered for each station it named, so a later Listen on WWV there waits out the server's same-channel window, while "can't tell" (nothing filed) holds nothing back; fails_when=the group is remembered under its joined name only, so the next WWV question is thanked and then dropped, or can't tell blocks a question the server would take; why_new=#150 (one answer, several stations); seam=fake timers, sessionStorage; no_claim=the server's count (reports.test)
+    it("remembers a sent group answer for each station, and can't tell for none", () => {
+      const hook = setup(onPair);
+      wait(ASK_AFTER);
+      act(() => hook.result.current.answered());
+      hook.rerender({ ...onWwv, status: listening(5_000), signal: null });
+      hook.rerender(onWwv);
+      wait(SAME_CHANNEL_MS + SAME_CHANNEL_SLACK_MS - ASK_AFTER - 1_000);
+      expect(hook.result.current.prompt).toBeNull();
+      wait(1_000 + ASK_AFTER);
+      expect(hook.result.current.prompt?.tx.name).toBe("wwv");
+
+      sessionStorage.clear();
+      const unsure = setup({ ...onPair, status: listening(10_000, "b.example") });
+      wait(ASK_AFTER);
+      act(() => unsure.result.current.answered(false));
+      unsure.rerender({ ...onWwv, status: listening(5_000, "b.example"), signal: null });
+      unsure.rerender({ ...onWwv, status: listening(10_000, "b.example"), signal: wwvh });
+      // Only the gap between questions holds it back, not the same-channel window.
+      wait(PROMPT_GAP_MS + 1_000);
+      expect(unsure.result.current.prompt?.tx.name).toBe("wwvh");
+    });
+
+    // Value: protects=a group question closes with the first of its stations to go off (the server refuses an answer about one off the air), and isn't asked if one goes off during the dwell; fails_when=the group plans by the first station's end only, so an answer about a station already off is thanked and refused; why_new=#150; seam=fake timers; no_claim=none
+    it("plans by the first station to go off", () => {
+      const short = setup({ ...onPair, signal: [pair[0]!, { ...wwvh, untilMs: NOW + ASK_AFTER - 1 }] });
+      wait(ASK_AFTER * 2);
+      expect(short.result.current.prompt).toBeNull();
+      const until = Date.now() + ASK_AFTER + 60_000;
+      const long = setup({ ...onPair, status: listening(10_000, "b.example"), signal: [pair[0]!, { ...wwvh, untilMs: until }] });
+      wait(ASK_AFTER);
+      expect(long.result.current.prompt?.tx.answerByMs).toBe(until + LISTING_GRACE_MS);
+    });
   });
 });
