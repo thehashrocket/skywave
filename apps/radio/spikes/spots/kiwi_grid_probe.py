@@ -23,8 +23,7 @@ Any input it can't trust stops it with exit 2 and a reason; wspr.live alone is
 optional, and reads as "missing" (never as zero matches) when it can't be had.
 
 "answers" are answers with pick context (block 9 counts only those). The tests
-beside this file are a spike's and run by hand, not in CI (pytest's testpaths
-is apps/radio/tests): apps/radio/.venv/bin/pytest apps/radio/spikes/spots
+beside this file run with the radio service's (`pnpm test:radio`, and in CI).
 """
 
 from __future__ import annotations
