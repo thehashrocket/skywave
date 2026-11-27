@@ -410,6 +410,18 @@ RBN live goes through #69's single connection in the radio service once its logi
 **Depends on:** Picking a feed and checking its terms of use
 
 
+### Decide whether links keep the lamp color
+
+**What:** Decide whether links and link buttons stay `--lamp` or move to `--glass` or `--text` with an underline, so that lamp marks only what is live or current: the readout, the listening lamp, the tuned row, the current preset.
+
+**Why:** DESIGN.md gives lamp the meaning "this is live / this is the one", but it is also the link color. The design critique of 2026-11-27 counted about ten lamp things on the idle listening page with nothing live: three header links, the readout, Copy link, Back and four footer links. The 9px listening lamp loses to all of them. Owner 2026-11-27: hold. Ship the header-links (#175) and Back-label (#176) issues from that critique first, since they remove the four loudest lamp links from the idle screen, then look at the page again and decide.
+
+**Context:** The link color is two rules in `apps/web/src/app/globals.css`: `a` and `.link-button` (hover is already `--text`). Changing them restyles every page at once: the listening page, `/owners`, `/signals` and each station page. Check `.signals-page-link` and `.tuned-to-place`, which already opt out of lamp, and the focus outline, which is lamp and should stay. DESIGN.md's Colors table, the Link button entry and the lamp "Do" would all need the new rule.
+
+**Effort:** S to change (two rules); the work is judging it on every page
+**Priority:** P3
+**Depends on:** #175 and #176 shipping first
+
 ## Completed
 
 ### /owners: tell receiver owners that /held shows where Skywave plays (#155 follow-up)
