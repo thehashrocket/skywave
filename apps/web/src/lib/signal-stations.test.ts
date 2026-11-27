@@ -28,6 +28,7 @@ function station(schedule: Schedule): SignalStation {
     tx: { lat: 0, lon: 0, label: "Nowhere", confidence: "country" },
     blurb: "",
     sources: [],
+    checked: "2026-11-24",
   };
 }
 
@@ -191,6 +192,16 @@ describe("SIGNAL_STATIONS", () => {
           for (const m of [w.startUtc, w.endUtc]) expect(Number.isInteger(m) && m >= 0 && m < 1440, `${s.slug} ${m}`).toBe(true);
         }
       if (s.schedule.kind === "dayNight") expect(khzs, s.slug).toEqual(expect.arrayContaining([s.schedule.dayKhz, s.schedule.nightKhz]));
+    }
+  });
+
+  // Value: protects=every entry, defunct ones included, says when someone last checked it against its sources, as a real calendar date ("YYYY-MM-DD") no later than today, so the weekly freshness report (#147) can list old ones; fails_when=an entry is added without `checked`, or with a typo ("2026-13-01", "2026-11-5", a future year); why_new=#147 checked dates; seam=none; no_claim=the date's age (the report flags that, so CI never goes red because the calendar moved), or that the check was done
+  it("has a valid checked date on every entry", () => {
+    for (const s of SIGNAL_STATIONS) {
+      expect(s.checked, s.slug).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      const ms = Date.parse(`${s.checked}T00:00:00Z`);
+      expect(new Date(ms).toISOString().slice(0, 10), s.slug).toBe(s.checked);
+      expect(ms, s.slug).toBeLessThanOrEqual(Date.now());
     }
   });
 });

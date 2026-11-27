@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { SignalLive } from "@/components/SignalLive";
 import { SiteFooter } from "@/components/SiteFooter";
 import { PRIYOM_SCHEDULE_PAGE } from "@/lib/priyom-schedule";
-import { CATEGORY_HEADINGS, channelText, listenHref, pageDescription, scheduleLines, stationHref } from "@/lib/signal-page";
+import { CATEGORY_HEADINGS, channelText, checkedText, listenHref, pageDescription, scheduleLines, stationHref } from "@/lib/signal-page";
 import { findStation, SIGNAL_STATIONS } from "@/lib/signal-stations";
 
 // One page per catalog station, built at deploy (#103); any other slug is a 404.
@@ -135,6 +135,7 @@ export default async function SignalStationPage({ params }: Params) {
                 </li>
               ))}
             </ul>
+            <p className="signal-note">Details checked {checkedText(station.checked)}</p>
           </section>
         )}
       </article>
