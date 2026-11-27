@@ -1154,6 +1154,13 @@ export default function ListenPage() {
       (fieldsHost ? { host: fieldsHost, port: fieldsPort } : null);
     return otherThan(heard, shown ? receiverKey(shown) : undefined);
   }, [heard, current, status.host, status.port, fieldsHost, fieldsPort]);
+  // Back names its receiver the way the strip does: by place when the list has
+  // one, else by host. A list's full name runs to 90 characters (#176).
+  const backPlace = useMemo(() => {
+    if (!backTo) return "";
+    const listedBack = findReceiver(receivers, backTo.host, backTo.port);
+    return (listedBack && placeName(listedBack.location)) || backTo.host;
+  }, [backTo, receivers]);
 
   // A receiver earns its scan and its own waterfall once it has played for
   // AUTO_SCAN_MS and Pick best is done with it: not during its attempts, nor
@@ -1947,6 +1954,8 @@ export default function ListenPage() {
           <button
             type="button"
             className="link-button status-back"
+            // Spoken: the visible words first (so voice control finds it), then the full name.
+            aria-label={backTo.label === backPlace ? undefined : `Back to ${backPlace}, ${backTo.label}`}
             onClick={(e) => {
               // The button flips to the receiver just left; a double-click would switch straight back.
               if (e.detail > 1) return;
@@ -1955,7 +1964,7 @@ export default function ListenPage() {
               else switchTo(backTo, backTo.fromList);
             }}
           >
-            Back to {backTo.label}
+            Back to {backPlace}
           </button>
         )}
         {/* The phone stopped the sound while the tab was hidden and wants a tap to start it again (#137). */}
