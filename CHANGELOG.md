@@ -9,6 +9,11 @@ Notable changes to skywave, newest first. Versions come from `VERSION` (four par
 - **The coverage check refuses an export the database couldn't have produced.** A repeated answer, a repeated column, a receiver that isn't an address or a question naming more than three stations stops it, so a doubled download can't pad its minimum. It also shows the largest single receiver's and station's share of the answers, so a lopsided sample is visible, and it exits with status 3 when it gives no verdict.
 - **The research scripts' tests run with every other radio service test, in CI and in `pnpm test:radio`.** Before, they ran only when someone typed their command by hand.
 
+## [0.64.5.0] - 2026-11-27 ([#180](https://github.com/thehashrocket/skywave/issues/180))
+
+### Changed
+- **Find a station shows more of each station's name when you filter by one language.** With English picked, every row used to end in "· English", so the ellipsis cut the station name instead ("WJHR Milton, FL (USB) · Engli…"). Now a row in just the picked language shows the station alone ("WBCQ The Planet"). Rows that say something else keep it: another language, a row in several languages ("RFI · French, English"), and non-voice kinds such as "WWV · Time signal" or "NSS US Navy · Digital data". With no language picked, or with two or more, every row names its language as before. A screen reader still hears the language on every row, and the note after you click a later broadcast still names it ("BBC · English starts at 18:00 UTC").
+
 ## [0.64.3.0] - 2026-11-27 ([#173](https://github.com/thehashrocket/skywave/issues/173))
 
 ### Fixed

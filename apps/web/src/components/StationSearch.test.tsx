@@ -198,6 +198,39 @@ describe("StationSearch", () => {
     expect(visibleWhen()).toEqual(["on now", "on now", "18:00 UTCin 6 h"]);
   });
 
+  // Value: protects=with one language picked, a row in that language shows the station name alone so the ellipsis cuts less of it, while non-voice kinds, other languages and the spoken label keep their text; fails_when=the language is dropped with zero or several languages picked, dropped from the accessible name, or a "Time signal" or "Digital data" label is dropped with it; why_new=design critique 2026-11-27: every row ended in the language the filter already named; seam=filtering and ordering are station-search.ts's tests; no_claim=does not check how much of a long name fits at a given width
+  it("doesn't repeat the one picked language on its rows", () => {
+    const broadcasts = [
+      ...SCHEDULE.broadcasts,
+      b("WBCQ The Planet", 7490, 660, 780, { target: "ENA" }),
+      b("WWV", 10_000, 660, 780, { lang: "-TS", target: "" }),
+      b("NSS US Navy", 4_285, 660, 780, { lang: "-TY", target: "" }),
+      b("RFI", 11_700, 660, 780, { lang: "F,E" }),
+      b("E11", 5_810, 660, 780, { unconfirmed: true }),
+    ];
+    const { view } = show({ schedule: { ...SCHEDULE, broadcasts } });
+    const names = () => [...view.container.querySelectorAll(".signal-station-name")].map((n) => n.textContent);
+    const pick = (name: string) => {
+      fireEvent.click(languagesButton());
+      fireEvent.click(screen.getByLabelText(name));
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    };
+    const kinds = ["WWV · Time signal", "NSS US Navy · Digital data", "RFI · French, English"];
+    // No language picked: every row names its language, as before.
+    expect(names()).toEqual(expect.arrayContaining(["WBCQ The Planet · English", ...kinds]));
+
+    pick("English");
+    expect(names()).toEqual(expect.arrayContaining(["WBCQ The Planet", "BBC", "Shannon Volmet", ...kinds]));
+    expect(names()).toContain(`E11 (season schedule, not confirmed)`);
+    expect(names().filter((n) => n!.endsWith("· English"))).toEqual([]);
+    // A screen reader hears one row at a time, without the filter beside it.
+    expect(rowNames().some((n) => n!.startsWith("12,095 kHz, BBC, English, on now, to South Asia"))).toBe(true);
+    expect(view.container.querySelector("[data-current] .signal-station-name")!.textContent).toBe("BBC");
+
+    pick("French");
+    expect(names()).toEqual(expect.arrayContaining(["WBCQ The Planet · English", "BBC · English", ...kinds]));
+  });
+
   // Value: protects=names from a schedule cached before this deploy show tidied in rows as in the area filter, and the filter's "(beam heading)" option suffix stays out of the status line, which uses the bare name; fails_when=a row says "to Taiwan *" beside a "Taiwan" option, or the status reads "to West-northwest (beam heading)"; why_new=/ship review of PR #119 (#117 follow-up); seam=none; no_claim=react-query's cache lifetime
   it("tidies cached target names in rows and keeps option labels out of the status line", () => {
     const cached: SearchSchedule = {
@@ -262,6 +295,39 @@ describe("StationSearch", () => {
     expect(screen.getByText("BBC · English starts at 18:00 UTC, in 30 min.")).toBeTruthy();
     rerender({ clock: NOW + 6 * 3_600_000 + 60_000 });
     expect(screen.getByText("BBC · English should be on now.")).toBeTruthy();
+  });
+
+  // Value: protects=a row drops its language only when every code on it is the picked language's and none is non-voice: "HM,HMQ" drops, "HM,XYZ" (XYZ unnamed) keeps "· Hmong", and a saved non-voice pick never strips "Time signal"; fails_when=title() compares display names again or loses the non-voice guard; why_new=/ship adversarial review (Claude + Codex) of #180; seam=none; no_claim=codes EiBi doesn't use yet
+  it("drops the language only for rows wholly in the picked language", () => {
+    const broadcasts = [
+      ...SCHEDULE.broadcasts,
+      b("Hmong Radio", 9_900, 660, 780, { lang: "HM,HMQ" }),
+      b("Hmong Mix", 9_950, 660, 780, { lang: "HM,XYZ" }),
+      b("WWV", 10_000, 660, 780, { lang: "-TS", target: "" }),
+    ];
+    const names = () => [...document.querySelectorAll(".signal-station-name")].map((n) => n.textContent);
+    show({ schedule: { ...SCHEDULE, broadcasts } });
+    fireEvent.click(languagesButton());
+    fireEvent.click(screen.getByLabelText("Hmong"));
+    expect(names()).toEqual(expect.arrayContaining(["Hmong Radio", "Hmong Mix · Hmong", "WWV · Time signal"]));
+    cleanup();
+    // Storage the page never writes: a non-voice code saved as the one pick.
+    localStorage.setItem(FILTERS_KEY, JSON.stringify({ area: "", languages: ["-TS"], nonVoice: true }));
+    show({ schedule: { ...SCHEDULE, broadcasts } });
+    expect(names()).toContain("WWV · Time signal");
+  });
+
+  // Value: protects=with one language picked, the "starts at" note under a clicked later row still names the language its row leaves out (owner decision, #180); fails_when=the note passes the picked name to title() and reads "BBC starts at 18:00 UTC"; why_new=the #180 row test never clicks a later row with a language picked; seam=none; no_claim=the note's wording without a pick (tested above)
+  it("keeps the language in the starts-at note when one language is picked", () => {
+    const { type } = show();
+    fireEvent.click(languagesButton());
+    fireEvent.click(screen.getByLabelText("English"));
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    type("bbc");
+    const row = screen.getByRole("button", { name: /^6,195 kHz/ });
+    expect(row.querySelector(".signal-station-name")!.textContent).toBe("BBC");
+    fireEvent.click(row);
+    expect(screen.getByText("BBC · English starts at 18:00 UTC, in 6 h.")).toBeTruthy();
   });
 
   // Value: protects=long results page in 20s with a counting button ("Show 20 more of R", then "Show the last R"), focus moving to the first new row, each page read out at once ("Showing 40 of 45."), rows past 8 marked for the phone's first page with its own reveal that moves focus to the ninth row and goes away, and a new query starting over; fails_when=rows past 20 are unreachable, focus is lost after either Show more, a screen reader hears nothing after paging or a wrong count, the phone sees all 20 at once, or a new search keeps the old page count; why_new=station search D5, design 2A, 11A, 12A, 13A; phone reveal and paging announcement added by the /ship coverage audit; seam=none; no_claim=the 520px CSS hiding (jsdom applies no media queries)
