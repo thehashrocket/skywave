@@ -7,12 +7,25 @@ import http.client
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 import kiwi_grid_probe
 from kiwi_grid_probe import Receiver, grid6, load_receivers, skimmer_grids, summarize, wspr_cache_path, wspr_grids
+
+
+class _FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 11, 20, 23, 59, 59, tzinfo=timezone.utc).astimezone(tz)
+
+
+# Value: protects=the cache tests' own path and the code's path name the same UTC day; fails_when=a CI run crosses 00:00 UTC between the test's wspr_cache_path call and the one inside wspr_grids (the test reads yesterday's file); why_new=Codex on PR #182, owner D4 (these tests run in CI since D7); seam=none (monkeypatches the module's datetime); no_claim=the cache's real day rollover
+@pytest.fixture(autouse=True)
+def frozen_utc_day(monkeypatch):
+    monkeypatch.setattr(kiwi_grid_probe, "datetime", _FrozenDatetime)
 
 # skimmer_grids refuses fewer than MIN_SKIMMER_GRIDS usable grids, so every skimmer
 # fixture carries these 100 (AA00AA..AA99AA), which no test receiver sits on.
@@ -367,9 +380,10 @@ def test_cache_read_and_write_failures_never_cost_the_run(tmp_path, monkeypatch)
 def test_cache_name_follows_the_query_and_is_utf8(tmp_path, monkeypatch):
     a = wspr_cache_path(7, tmp_path)
     assert wspr_cache_path(3, tmp_path) != a
+    limit = kiwi_grid_probe.WSPR_ROW_LIMIT
     monkeypatch.setattr(kiwi_grid_probe, "WSPR_ROW_LIMIT", 5)
     assert wspr_cache_path(7, tmp_path) != a  # same days, different query
-    monkeypatch.undo()
+    monkeypatch.setattr(kiwi_grid_probe, "WSPR_ROW_LIMIT", limit)  # not undo(): that would unfreeze the day too
     monkeypatch.setattr(kiwi_grid_probe, "_fetch", lambda url: "FN31PR\n# Zürich\n")
     assert wspr_grids(7, cache_dir=tmp_path) == {"FN31PR"}
     assert a.read_bytes() == "FN31PR\n# Zürich\n".encode("utf-8")
