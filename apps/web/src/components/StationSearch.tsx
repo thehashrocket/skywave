@@ -3,7 +3,16 @@
 import { SectionBody, SectionHeading } from "@/components/SectionHeading";
 import type { Fold } from "@/lib/section-folds";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { languageChoices, languageNames, type LanguageChoice, MATCH_KHZ, pickedNames, UNCONFIRMED } from "@/lib/eibi";
+import {
+  languageChoices,
+  languageCodes,
+  languageNames,
+  type LanguageChoice,
+  MATCH_KHZ,
+  NON_VOICE,
+  pickedNames,
+  UNCONFIRMED,
+} from "@/lib/eibi";
 import {
   areaCodes,
   areaLabel,
@@ -78,8 +87,19 @@ export const ANNOUNCE_DELAY_MS = 500;
 const khz = (f: number) => f.toLocaleString("en-US", { maximumFractionDigits: 3 });
 const plural = (n: number, one: string, many: string) => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
 const language = (codes: string) => languageNames(codes) || codes;
-const title = (f: FoundBroadcast) => {
-  const text = f.lang ? `${f.station} · ${language(f.lang)}` : f.station;
+/** Whether every code on a row is one of the picked language's codes, none of them non-voice. */
+const onlyIn = (lang: string, codes: readonly string[]) => {
+  const own = languageCodes(lang);
+  return own.length > 0 && own.every((c) => codes.includes(c) && !NON_VOICE.has(c));
+};
+/**
+ * A row's name and language, "BBC · English". With one language picked
+ * (`picked`, its codes), a row in just that language shows the station alone,
+ * since the filter already says it (#180); other languages, rows with another
+ * code too, and non-voice kinds ("Time signal") keep theirs.
+ */
+const title = (f: FoundBroadcast, picked?: readonly string[]) => {
+  const text = f.lang && !(picked && onlyIn(f.lang, picked)) ? `${f.station} · ${language(f.lang)}` : f.station;
   return f.unconfirmed ? `${text} (${UNCONFIRMED})` : text;
 };
 
@@ -268,6 +288,9 @@ export function StationSearch({
   const codes = useMemo(() => areaCodes(broadcasts ?? [], targetNames, savedCode), [broadcasts, targetNames, savedCode]);
   const areaName = !area ? undefined : "region" in area ? regionName(area.region) : codes.find((c) => c.code === area.code)?.name;
   const described = describeFilters(filters, choices, areaName);
+  const pickedChoices = choices.filter((c) => c.codes.some((code) => filters.language.codes.includes(code)));
+  // The one language picked, whose rows needn't repeat it (#180).
+  const onlyLanguage = pickedChoices.length === 1 ? pickedChoices[0]!.codes : undefined;
   const status = statusText(ready, loadFailed, query, result, described);
   // While folded: what the list holds (collapsible sections), its filters included.
   // Browsing (nothing typed), every row found is on now.
@@ -395,7 +418,7 @@ export function StationSearch({
           </span>
           <span className="signal-what">
             <span className="signal-station">
-              <span className="signal-station-name">{title(f)}</span>
+              <span className="signal-station-name">{title(f, onlyLanguage)}</span>
             </span>
             {(to || strongHere) && (
               <span className="station-second">
