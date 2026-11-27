@@ -117,13 +117,16 @@ describe("EiBi schedule", () => {
     expect(parseEibi(csv("7000;0000-2400;;X;Summer only;E;Eu;;5;;"), "a26")).toHaveLength(1);
   });
 
-  // Value: protects=a row with both a start and an end date keeps the window whatever its persistence (#149), unless the end is the season's last day (then the start is when it began), a start date alone counts only on P 6, an end date alone and a P 6 row behave as before; fails_when=a Mar-Apr month row shows in November beside the Nov-Feb one, or a lasting entry's start date hides it for most of the season; why_new=#149; seam=none; no_claim=EiBi's windows being right
+  // Value: protects=a row with both a start and an end date keeps the window whatever its persistence (#149), unless the end is the season's last day (then the start is when it began), a window ending 28 Feb covers a leap year's 29th, a start date alone counts only on P 6, an end date alone and a P 6 row behave as before; fails_when=a Mar-Apr month row shows in November beside the Nov-Feb one, or a lasting entry's start date hides it for most of the season; why_new=#149; seam=none; no_claim=EiBi's windows being right
   it("keeps a month window on any row with both dates", () => {
     const row = (dates: string, persistence = 1) =>
       parseEibi(csv(`7000;0000-2400;;X;Row;E;Eu;;${persistence};${dates}`), "b26")[0]!;
     const novFeb = row("0111;2802");
     expect(onAirAt(novFeb, at("2026-12-15T12:00:00Z"))).toBe(true);
     expect(onAirAt(novFeb, at("2027-03-15T12:00:00Z"))).toBe(false);
+    // A leap year's 29 Feb is still February's, not a day between windows.
+    expect(onAirAt(novFeb, at("2028-02-29T12:00:00Z"))).toBe(true);
+    expect(onAirAt(novFeb, at("2028-03-01T12:00:00Z"))).toBe(false);
     const marApr = row("0103;3004");
     expect(onAirAt(marApr, at("2026-11-25T12:00:00Z"))).toBe(false);
     expect(onAirAt(marApr, at("2027-03-15T12:00:00Z"))).toBe(true);

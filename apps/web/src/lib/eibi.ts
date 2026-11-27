@@ -208,7 +208,9 @@ function inDates(from: string | undefined, to: string | undefined, day: Date): b
   const key = (ddmm: string) => Number(ddmm.slice(2)) * 100 + Number(ddmm.slice(0, 2));
   const today = (day.getUTCMonth() + 1) * 100 + day.getUTCDate();
   if (from && to) {
-    const [a, b] = [key(from), key(to)];
+    // "2802" ends February: a leap year's 29th belongs to the same window, not to
+    // the gap before a "0103" row (The Pip's Nov-Feb then Mar-Apr hours).
+    const [a, b] = [key(from), to === "2802" ? 229 : key(to)];
     return a <= b ? today >= a && today <= b : today >= a || today <= b;
   }
   if (from) return today >= key(from);
