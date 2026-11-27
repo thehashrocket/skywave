@@ -97,6 +97,30 @@
 
 ## Web app
 
+### /owners: tell receiver owners that /held shows where Skywave plays (#155 follow-up)
+
+**What:** Add one line to `apps/web/src/app/owners/page.tsx` under "What it does on your Kiwi", as the /held PR's docs audit proposed: "skywave's server answers, for any listed receiver, whether a skywave listener is on it now, much as your Kiwi's own user list shows." Update its page test.
+
+**Why:** `GET /held` is public (owner D3), so anyone can see which listed receivers Skywave is on right now. Nothing on /owners is false without it, but the page exists to tell volunteers what Skywave does with their receiver.
+
+**Context:** Owner chose to ship the /held PR without it and add it next (D8, 2026-11-26).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+
+### /held: ask again a few seconds after this page's receiver changes (#155 follow-up)
+
+**What:** `useHeld` (`apps/web/src/lib/use-held.ts`) asks `/held` again as soon as this page's receiver changes or stops, but the radio service frees the old slot only once the session's pump has closed its Kiwi (the lease is released in a done callback in `session.py`). That first answer usually still lists the receiver just left, so for up to `HELD_REFRESH_MS` (60 s) its row reads "Another Skywave listener is on it", and a Stop-then-Listen in Auto on the same frequency tries it last. Ask a second time about 3 s after `playing` changes (or keep the key just left out of the set until a later answer), with a use-held test where the first answer after Stop still lists the old receiver.
+
+**Why:** A wrong "taken" label and a worse pick for up to a minute after Stop or a switch. Cosmetic, and never worse than before `/held`: audio is never cut and no Kiwi channel is held.
+
+**Context:** Found by the read-only final review of the `/held` PR (red team, 6/10); owner chose to ship with this as a TODO (D6, 2026-11-26).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
 ### Signal stations: verify the seed catalog before the panel ships (#98 follow-up)
 
 **What:** Check these entries in `apps/web/src/lib/signal-stations.ts` against Priyom (priyom.org) or the operators, and fix any that are wrong. Done in v0.58.2.1: CHU's end date (2026-06-22, not 2023-10-09, which was CBC's time signal), The Pip's and Squeaky Wheel's mode (USB on Priyom) and Squeaky Wheel's channels (Priyom confirms 5367/3363.5; VE3SUN's 3829.18/3830.45 is stale). Still open: (3) their day/night switch times: `dayNight` follows the sun at the transmitter, so check a dawn and a dusk on a live Kiwi; (5) the credit line the panel shows for Priyom (CC BY-NC-SA 4.0), which the numbers-station entries come from; (6) how long numbers-station transmissions last: `PRIYOM_ON_AIR_MS` in `apps/web/src/lib/priyom-schedule.ts` counts a transmission as on air for 10 minutes after its listed start, an estimate, since Priyom gives no end time (its pages bound it only from above: E07, V07 and M12 repeat every 20 minutes). Listen by ear to a few E11, E07, S06 and M12 slots on a Kiwi, note when each ends, and set the window to the shortest typical length so Listen never lands after a message has ended.
