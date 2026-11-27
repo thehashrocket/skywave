@@ -11,6 +11,7 @@ import {
   nextStartAfter,
   windowSpanAt,
 } from "@/lib/signal-stations";
+import { useDayNightRows } from "@/lib/use-day-night-rows";
 import { usePriyomScheduleState } from "@/lib/use-priyom-schedule";
 import { useServerTick } from "@/lib/use-server-tick";
 import { heardText } from "@/lib/signal-heard";
@@ -34,6 +35,8 @@ export function SignalLive({ slug }: { slug: string }) {
   const now = useServerTick(MINUTE);
   const priyom = usePriyomScheduleState();
   const heard = useSignalLastHeard();
+  // A day/night station's switch times, as the dial has them (#168).
+  const dayNight = useDayNightRows(station?.schedule.kind === "dayNight");
   if (!station || station.schedule.kind === "defunct") return null;
   if (now === null) return <p className="signal-live" aria-busy="true" />;
 
@@ -85,8 +88,11 @@ export function SignalLive({ slug }: { slug: string }) {
         </>
       );
     }
+  } else if (station.schedule.kind === "dayNight" && dayNight === undefined) {
+    // Its switch times are still loading: say nothing yet rather than offer the sun's
+    // channel, which can be the one off the air near a switch (#168).
   } else {
-    const ch = activeChannelAt(station, now);
+    const ch = activeChannelAt(station, now, dayNight ?? undefined);
     const span = windowSpanAt(station, now);
     const next = nextStartAfter(station, now);
     if (ch) {

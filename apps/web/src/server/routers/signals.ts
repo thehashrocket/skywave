@@ -10,12 +10,14 @@ import {
   type PriyomFeedRecord,
   type PriyomTx,
 } from "@/lib/priyom-schedule";
+import { dayNightRows } from "@/lib/on-air";
 import { COUNT_MS, HEARD_SHOWN_MS, lastHeard, sharedChannels, type LastHeard } from "@/lib/signal-heard";
 import { ON_KHZ } from "@/lib/signal-panel";
 import { SIGNAL_STATIONS } from "@/lib/signal-stations";
 import type { db as Db } from "../db";
 import { groupedTallies } from "../grouped-tallies";
 import { readCapped } from "../read-capped";
+import { getSchedule } from "./stations";
 import { publicProcedure, router } from "../trpc";
 
 // Priyom's frequencies change monthly and its schedules weekly; a few hours is plenty.
@@ -365,4 +367,6 @@ export const getLastHeard = lastHeardSource();
 export const signalsRouter = router({
   priyom: publicProcedure.query(() => getPriyomSchedule()),
   lastHeard: publicProcedure.query(({ ctx }) => getLastHeard(ctx.db)),
+  /** The day/night stations' EiBi rows from the server's copy, for a station page (#168). */
+  dayNight: publicProcedure.query(async () => dayNightRows((await getSchedule()).broadcasts)),
 });

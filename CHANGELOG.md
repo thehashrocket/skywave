@@ -2,6 +2,12 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.64.2.0] - 2026-11-27 ([#168](https://github.com/thehashrocket/skywave/issues/168))
+
+### Fixed
+- **The Signal stations panel names the same frequency as the dial for The Pip and The Squeaky Wheel.** Both switch between a day and a night frequency. The dial already took the switch times from EiBi's schedule, which lists them for each stretch of months, but the panel guessed them from the sun at the transmitter, so for a while around dawn and dusk the two could disagree and the panel's Listen could tune the frequency that was off the air. On 25 November, for example, the panel said 5,448 kHz for The Pip at 05:00 UTC while EiBi has it on 3,756 until 05:30. The panel now follows EiBi's hours, and the sun only when EiBi has nothing for the station or the schedule can't be loaded. For the moment after the page opens, before the schedule arrives, those two rows show no frequency and no Listen rather than the sun's guess. The Squeaky Wheel still tunes 3,363.5 kHz at night, Priyom's figure, which EiBi lists as 3,364.
+- **A day/night station's own page follows EiBi too.** The Pip's and The Squeaky Wheel's pages fetch just those two stations' hours from the server, not the whole schedule, and show no Listen until they arrive, so the page never offers the sun's guess for a moment first. If the hours can't be had, the page follows the sun as before. Its schedule line now says the switch follows EiBi's listed times, not just day and night at the transmitter.
+
 ## [0.64.1.0] - 2026-11-27 ([#155](https://github.com/thehashrocket/skywave/issues/155))
 
 ### Changed

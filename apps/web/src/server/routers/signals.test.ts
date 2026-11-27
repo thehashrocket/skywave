@@ -4,6 +4,15 @@ import type { PriyomTx } from "@/lib/priyom-schedule";
 
 // The real module opens a Prisma client at import; this router never uses it.
 vi.mock("@/server/db", () => ({ db: {} }));
+vi.mock("./stations", async (actual) => {
+  const { forPage, parseEibi } = await import("@/lib/eibi");
+  const snapshot = (await import("../eibi-snapshot.json")).default;
+  const broadcasts = parseEibi(snapshot.csv, snapshot.season).map(forPage);
+  return {
+    ...(await actual<typeof import("./stations")>()),
+    getSchedule: vi.fn(async () => ({ season: snapshot.season, bundled: true, broadcasts, listed: broadcasts, targetNames: {} })),
+  };
+});
 
 const { priyomScheduleSource, lastHeardSource, readPriyomFeed, recordPriyomFetch, LAST_HEARD_READ_TIMEOUT_MS, LAST_HEARD_TTL_MS } =
   await import("./signals");
@@ -395,5 +404,15 @@ describe("lastHeardSource", () => {
     groupBy.mockReset();
     const { db: healthy } = fakeDb([row("signal", "rwm", 9_996, "heard", 5)]);
     expect((await get(healthy)).heard["rwm"]).toMatchObject({ heardMs: NOW - 5 * 60_000 });
+  });
+});
+
+describe("signals.dayNight", () => {
+  // Value: protects=#168 the station page's query is on the app router and answers with the day/night stations' rows built from the server's EiBi copy (getSchedule), The Pip's Nov-Feb night row among them; fails_when=the procedure is dropped or renamed (the page's useDayNightRows fails and it follows the sun), or it answers from something other than the server's schedule; why_new=review: the procedure itself was untested; seam=getSchedule mocked with the bundled B26 snapshot; no_claim=the slice's contents (on-air.test dayNightRows)
+  it("serves the day/night stations' rows from the server's schedule", async () => {
+    const caller = appRouter.createCaller({ db: {} } as never);
+    const rows = await caller.signals.dayNight();
+    expect(new Set(rows.map((r) => r.slug))).toEqual(new Set(["the-pip", "squeaky-wheel"]));
+    expect(rows).toContainEqual(expect.objectContaining({ slug: "the-pip", khz: 3_756, start: 14 * 60, end: 5 * 60 + 30 }));
   });
 });

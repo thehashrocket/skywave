@@ -87,7 +87,7 @@ export function scheduleLines(station: SignalStation): string[] {
       return [
         `On the air around the clock: ${day ? channelText(day) : `${schedule.dayKhz} kHz`} by day and ${
           night ? channelText(night) : `${schedule.nightKhz} kHz`
-        } by night at the transmitter.`,
+        } by night, switching at the times EiBi's schedule lists (by the sun at the transmitter when it lists none).`,
       ];
     }
     case "windows":

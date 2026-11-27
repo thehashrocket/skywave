@@ -9,7 +9,7 @@ import type { Mode } from "@/lib/radio-types";
 import { heardText, type LastHeard } from "@/lib/signal-heard";
 import { channelParts, channelText } from "@/lib/signal-page";
 import { onKhz, panelGroups, type PanelGroups, type PanelRow } from "@/lib/signal-panel";
-import type { SignalCategory, SignalChannel, SignalStation } from "@/lib/signal-stations";
+import type { SignalCategory, SignalChannel, SignalStation, SlugRow } from "@/lib/signal-stations";
 import { localLabel, utcLabel } from "@/lib/utc-time";
 import { useServerTick } from "@/lib/use-server-tick";
 
@@ -31,6 +31,12 @@ type Props = {
   mode: Mode;
   /** Priyom's schedule for the numbers stations; null while the server has none. */
   priyom: readonly PriyomTx[] | null;
+  /**
+   * The merged schedule the dial reads (on-air.ts): the day/night stations' switch
+   * times (#168). Null while it loads (those rows hold their Listen); undefined when
+   * there's none to be had (they follow the sun).
+   */
+  schedule?: readonly SlugRow[] | null;
   /** When listeners last heard each station, by slug (signals.lastHeard, #102); null for no badges. */
   heard?: Record<string, LastHeard> | null;
   /** The station a Listen or a shared link picked (its slug), while the dial stays on it. */
@@ -66,6 +72,7 @@ export function SignalStations({
   freqKhz,
   mode,
   priyom,
+  schedule,
   heard = null,
   picked,
   connecting = false,
@@ -73,7 +80,7 @@ export function SignalStations({
   onListen,
 }: Props) {
   const now = useServerTick(MINUTE);
-  const groups = now === null ? null : panelGroups(now, priyom);
+  const groups = now === null ? null : panelGroups(now, priyom, schedule);
   const announce = useAnnouncements(groups?.onNow ?? null, picked, freqKhz, connecting, playing);
   // While folded: what's on the air (collapsible sections).
   let foldTail: string | null = null;

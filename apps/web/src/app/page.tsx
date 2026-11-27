@@ -452,7 +452,9 @@ export default function ListenPage() {
     // gives none) and marks it in the Signal stations panel, so Listen ranks by its path.
     const station = shared?.signal ? findStation(shared.signal) : undefined;
     const linkKhz = shared?.freqKhz;
-    // The link's frequency, if it's one of the station's catalog channels; else its channel now.
+    // The link's frequency, if it's one of the station's catalog channels; else its channel now
+    // (a day/night station's by the sun: EiBi's switch times aren't loaded yet at mount, #168;
+    // Listen links always carry the frequency, so only a hand-made link lands here; #171).
     const linkCh = linkKhz === undefined ? undefined : station?.channels.find((c) => onKhz(linkKhz, c.khz));
     const stationCh = station && linkKhz === undefined ? activeChannelAt(station, serverNow()) : null;
     const startKhz = linkKhz ?? stationCh?.khz ?? t.freqKhz;
@@ -2078,6 +2080,7 @@ export default function ListenPage() {
         freqKhz={freqKhz}
         mode={mode}
         priyom={priyom}
+        schedule={schedule ?? (scheduleQuery.isError ? undefined : null)}
         heard={signalHeard}
         picked={signalPick?.slug ?? null}
         connecting={busy && !playingAudio}
