@@ -430,3 +430,26 @@ def test_hourly_cpu_from_sar(tmp_path: Path):
     assert "  00:00   22.5 /  30.0" in out
     assert "  10:00   65.0 /  80.0" in out
     assert "Average" not in out.split("== host CPU")[1]
+
+
+# The refusal throttle as session.py writes it: one line per receiver and code
+# every 10 s, the next carrying suppressed=N for the ones held back, and a
+# detail=throttled line at close that is only those N.
+THROTTLED = textwrap.dedent(
+    f"""\
+    2026-11-26 15:00:00,000 event=refused host={KIWI_HOST} port=8073 code=skywave_cap detail=skywave_cap=1 audio_s=0.0 listeners=11
+    2026-11-26 15:00:10,000 event=refused host={KIWI_HOST} port=8073 code=skywave_cap detail=skywave_cap=1 audio_s=0.0 listeners=11 suppressed=4
+    2026-11-26 15:00:15,000 event=refused host={KIWI_HOST} port=8073 code=skywave_cap detail=throttled audio_s=0.0 listeners=10 suppressed=2
+    2026-11-26 15:01:00,000 event=listening host={KIWI_HOST} port=8073 code=- detail=- audio_s=0.0 listeners=9
+    """
+)
+
+
+# Value: protects=refusal counts in the daily report are refusals, not log lines: each line's suppressed=N is added and a detail=throttled line adds only its N; fails_when=the count goes back to counting lines, drops suppressed=, or counts the close-time flush as a refusal of its own; why_new=the #155 report counted 701 skywave_cap lines, fewer than the refusals behind the 10 s throttle; seam=fake docker on PATH; no_claim=the throttle interval or when sessions flush
+def test_counts_refusals_the_throttle_held_back(tmp_path: Path):
+    out = run_stats(tmp_path, LOGS_NO_EVENTS, receivers=THROTTLED)
+    assert out.returncode == 0, out.stderr
+    section = out.stdout.split("by event and code:")[1].split("most listeners")[0]
+    assert "    8  event=refused code=skywave_cap" in section  # 1 + (1 + 4) + 2
+    assert "    1  event=listening code=-" in section
+    assert "2026-11-26T15  11" in out.stdout
