@@ -2627,18 +2627,12 @@ html:has(.tuning-bar:not([hidden])) {
 @media (max-width: 720px) {
   .console-header {
     grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      "brand power"
-      "strip strip";
   }
-  .brand-row {
-    grid-area: brand;
-  }
+  /* Placed on a second row rather than a two-row template, so a header with no strip (/owners,
+     /signals) never gets an empty row and its gap. The wordmark and Listen/Stop fill the first row. */
   .tuned-to {
-    grid-area: strip;
-  }
-  .console-header > .power {
-    grid-area: power;
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 }
 
@@ -2962,7 +2956,10 @@ body:has(> .analytics-consent) {
 
 /* The /owners page: running text for KiwiSDR owners, in the console's frame. */
 
+/* Alone in .console-header, it would stretch across the grid's wide column at ≤720px (#173):
+   the link keeps its text width, so blank header space doesn't link home. */
 .owners-wordmark {
+  justify-self: start;
   text-decoration: none;
 }
 

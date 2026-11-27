@@ -210,13 +210,16 @@ describe("globals.css", () => {
     expect(header).toMatch(/align-items:\s*start\s*;/);
   });
 
-  // Value: protects=on a small tablet or narrow window the strip gets a row of its own instead of a ~100px column four lines deep, while Listen/Stop keeps the first row's right end; fails_when=the mid-width media block loses its two-row areas or stops placing the strip and the button in them, or the ≤520px block stops returning .console-header to the wrapping flex row so phones get the grid instead of #106's stacked header; why_new=headless measure at 521px showed the three-column strip squeezed to ~100px, and nothing else asserts the phone override the owner chose; seam=none; no_claim=jsdom has no layout, so this reads the CSS and does not prove the rendered position or the 720px width is the best cut
+  // Value: protects=on a small tablet or narrow window the strip gets a row of its own instead of a ~100px column four lines deep, while Listen/Stop keeps the first row's right end; fails_when=the mid-width media block stops giving the button its own auto column or stops putting the strip on a full-width second row, or the ≤520px block stops returning .console-header to the wrapping flex row so phones get the grid instead of #106's stacked header; why_new=headless measure at 521px showed the three-column strip squeezed to ~100px, and nothing else asserts the phone override the owner chose; seam=none; no_claim=jsdom has no layout, so this reads the CSS and does not prove the rendered position or the 720px width is the best cut
   it("gives the header strip its own row between phone and desktop widths", () => {
     const block = /@media \(max-width: 720px\)\s*\{([\s\S]*?)\n\}/.exec(css)?.[1];
     expect(block, "the 720px media block").toBeDefined();
-    expect(block).toMatch(/grid-template-areas:\s*"brand power"\s*"strip strip"\s*;/);
-    expect(block).toMatch(/\.tuned-to\s*\{\s*grid-area:\s*strip\s*;/);
-    expect(block).toMatch(/\.console-header > \.power\s*\{\s*grid-area:\s*power\s*;/);
+    expect(block).toMatch(/\.console-header\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto\s*;/);
+    // The strip is placed on row 2, not given a two-row template, so a header without one gets no empty row.
+    expect(block).not.toMatch(/grid-template-(areas|rows)/);
+    const strip = /\.tuned-to\s*\{([^}]*)\}/.exec(block!)?.[1];
+    expect(strip).toMatch(/grid-column:\s*1\s*\/\s*-1\s*;/);
+    expect(strip).toMatch(/grid-row:\s*2\s*;/);
     // A phone keeps #106's stacked header: the 520px block puts the wrapping flex row back.
     const phone = /@media \(max-width: 520px\)\s*\{([\s\S]*?)\n\}/.exec(css)?.[1]?.replace(/\/\*[\s\S]*?\*\//g, "");
     expect(phone, "the 520px media block").toBeDefined();
@@ -224,5 +227,10 @@ describe("globals.css", () => {
     expect(phoneHeader, "the phone .console-header rule").toBeDefined();
     expect(phoneHeader).toMatch(/display:\s*flex\s*;/);
     expect(phoneHeader).toMatch(/flex-wrap:\s*wrap\s*;/);
+  });
+
+  // Value: protects=on /owners and /signals the header's lone "skywave" link keeps its text width in the grid, so blank header space doesn't link home; fails_when=.owners-wordmark loses justify-self: start and the link stretches across the ≤720px grid's wide column; why_new=the Step 9 review found the stretch at 521-720px, which no test covered; seam=none; no_claim=jsdom has no layout, so this reads the CSS and does not prove the rendered click area
+  it("keeps the secondary pages' wordmark link to its text width in the header grid", () => {
+    expect(ruleBody(".owners-wordmark")).toMatch(/justify-self:\s*start\s*;/);
   });
 });
