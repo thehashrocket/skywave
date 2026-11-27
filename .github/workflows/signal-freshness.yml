@@ -1,0 +1,70 @@
+# Weekly signal-stations freshness report (issue #147): asks the production web
+# app what in the hand-kept catalog (apps/web/src/lib/signal-stations.ts) needs
+# a look, and keeps ONE open issue labelled `signal-stations` + `freshness`:
+# opened when something needs a look, its body replaced on later runs, closed
+# when the report comes back empty. The route reads the database; Actions only
+# holds the bearer secret (SIGNAL_FRESHNESS_SECRET, the same value as the
+# Vercel env var of that name).
+#
+# Mondays 15:23 UTC.
+name: Signal freshness
+
+on:
+  schedule:
+    - cron: "23 15 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: signal-freshness
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Fetch the report
+        env:
+          SECRET: ${{ secrets.SIGNAL_FRESHNESS_SECRET }}
+          SITE_URL: ${{ vars.SITE_URL || 'https://www.skywavehf.com' }}
+        run: |
+          if [ -z "$SECRET" ]; then
+            echo "::error::SIGNAL_FRESHNESS_SECRET isn't set (Actions secret, and the same value in Vercel)"
+            exit 1
+          fi
+          # --fail-with-body: a 401 or 502 fails the job with the route's reason,
+          # so an error never reads as "nothing stale" and closes the issue.
+          curl --silent --show-error --fail-with-body --max-time 90 \
+            -H "Authorization: Bearer ${SECRET}" \
+            "${SITE_URL}/api/signals/freshness" > report.json
+          jq -e '.report.empty | type == "boolean"' report.json > /dev/null
+          jq -r '.body' report.json > body.md
+
+      - name: Update the freshness issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo="$GITHUB_REPOSITORY"
+          # Labels may not exist yet in a fresh repo; creating an existing one fails harmlessly.
+          gh label create signal-stations -R "$repo" --color 8250df --description "Signal stations directory" 2>/dev/null || true
+          gh label create freshness -R "$repo" --color c5def5 --description "Weekly catalog freshness report" 2>/dev/null || true
+          issue=$(gh issue list -R "$repo" --label signal-stations --label freshness --state open --json number -q '.[0].number')
+          if [ "$(jq -r '.report.empty' report.json)" = "true" ]; then
+            if [ -n "$issue" ]; then
+              gh issue close "$issue" -R "$repo" --comment "Nothing needs a look this week ($(date -u +%F)). Closing; next week's run reopens a new one if something comes up."
+            fi
+            echo "Nothing needs a look."
+            exit 0
+          fi
+          if [ -n "$issue" ]; then
+            gh issue edit "$issue" -R "$repo" --body-file body.md
+            echo "Updated #$issue"
+          else
+            gh issue create -R "$repo" --title "Signal stations: catalog freshness check" \
+              --label signal-stations --label freshness --body-file body.md
+          fi
