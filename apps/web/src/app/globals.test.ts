@@ -200,4 +200,29 @@ describe("globals.css", () => {
     expect(named).toEqual(expect.arrayContaining([".receivers-table .receiver-host"]));
     expect(named.filter((s) => !s.includes(".receivers-table"))).toEqual([]);
   });
+
+  // Value: protects=Listen/Stop holds its place in the header's first row whatever the strip says, so the button just pressed doesn't move while a receiver connects; fails_when=.console-header goes back to a wrapping flex row or the strip's column loses minmax(0, 1fr); why_new=design critique 2026-11-27 saw Stop wrap under the wordmark on a long "Listening via" line; seam=the strip's text is page.tsx's, tested there; no_claim=jsdom has no layout, so this reads the CSS and does not prove the rendered position
+  it("keeps Listen/Stop in its own header column beside a strip that can shrink", () => {
+    const header = ruleBody(".console-header");
+    expect(header).toMatch(/display:\s*grid\s*;/);
+    expect(header).toMatch(/grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s*;/);
+    // A strip that wraps its links to a second line grows the row; the button holds the top.
+    expect(header).toMatch(/align-items:\s*start\s*;/);
+  });
+
+  // Value: protects=on a small tablet or narrow window the strip gets a row of its own instead of a ~100px column four lines deep, while Listen/Stop keeps the first row's right end; fails_when=the mid-width media block loses its two-row areas or stops placing the strip and the button in them, or the ≤520px block stops returning .console-header to the wrapping flex row so phones get the grid instead of #106's stacked header; why_new=headless measure at 521px showed the three-column strip squeezed to ~100px, and nothing else asserts the phone override the owner chose; seam=none; no_claim=jsdom has no layout, so this reads the CSS and does not prove the rendered position or the 720px width is the best cut
+  it("gives the header strip its own row between phone and desktop widths", () => {
+    const block = /@media \(max-width: 720px\)\s*\{([\s\S]*?)\n\}/.exec(css)?.[1];
+    expect(block, "the 720px media block").toBeDefined();
+    expect(block).toMatch(/grid-template-areas:\s*"brand power"\s*"strip strip"\s*;/);
+    expect(block).toMatch(/\.tuned-to\s*\{\s*grid-area:\s*strip\s*;/);
+    expect(block).toMatch(/\.console-header > \.power\s*\{\s*grid-area:\s*power\s*;/);
+    // A phone keeps #106's stacked header: the 520px block puts the wrapping flex row back.
+    const phone = /@media \(max-width: 520px\)\s*\{([\s\S]*?)\n\}/.exec(css)?.[1]?.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(phone, "the 520px media block").toBeDefined();
+    const phoneHeader = /(?:^|\s)\.console-header\s*\{([^}]*)\}/.exec(phone!)?.[1];
+    expect(phoneHeader, "the phone .console-header rule").toBeDefined();
+    expect(phoneHeader).toMatch(/display:\s*flex\s*;/);
+    expect(phoneHeader).toMatch(/flex-wrap:\s*wrap\s*;/);
+  });
 });

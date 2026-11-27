@@ -120,16 +120,22 @@ html,
   gap: var(--console-gap);
 }
 
+/* Three columns, so the strip's length never moves Listen/Stop (#173): the button the listener just
+   pressed stays at the first row's right end, and a long "Listening via" cuts or wraps in its own
+   column. The wordmark and the button hold the row's top, so a strip that wraps to a second line
+   doesn't nudge them down either; only the strip centers. At 520px and under it goes back to the
+   wrapping row (#106's phone layout). */
 .console-header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
   gap: 12px 20px;
 }
 
 /* The strip: what's playing (or the receiver choice), and "change" for the drawer. */
 .tuned-to {
   flex: 1 1 auto;
+  align-self: center;
   min-width: 0;
   display: flex;
   flex-wrap: wrap;
@@ -2616,7 +2622,33 @@ html:has(.tuning-bar:not([hidden])) {
   }
 }
 
+/* Too narrow for the strip between the wordmark and the button (it would stack its links four deep):
+   the strip takes a row of its own, and Listen/Stop keeps the first row's right end (#173). */
+@media (max-width: 720px) {
+  .console-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "brand power"
+      "strip strip";
+  }
+  .brand-row {
+    grid-area: brand;
+  }
+  .tuned-to {
+    grid-area: strip;
+  }
+  .console-header > .power {
+    grid-area: power;
+  }
+}
+
 @media (max-width: 520px) {
+  /* A phone keeps the stacked header: wordmark and clock, then the strip, then Listen (#173). */
+  .console-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+  }
   /* Room for the wordmark and clock on one row at 320px with Barlow Condensed loaded (#106). */
   .brand-row {
     gap: 12px;
