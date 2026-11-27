@@ -71,7 +71,7 @@ describe("EiBi schedule", () => {
     expect(seasonFor(at("2026-10-25T00:00:00Z"))).toBe("b26");
   });
 
-  // Value: protects=parsing keeps live broadcasts sorted by frequency and drops inactive (P 8), other-season (P 4/5), alternative and spurious entries, and keeps only real date limits (P 6 both, others an end, with or without a "[last heard]" note after it, never the note alone); fails_when=a dead or summer-only entry names a station, or a last-heard note hides a live one; why_new=station names; seam=none; no_claim=EiBi's own accuracy
+  // Value: protects=parsing keeps live broadcasts sorted by frequency and drops inactive (P 8), other-season (P 4/5), alternative and spurious entries, and keeps only real date limits (both dates on any row, a start alone only on P 6, and the "Ended" row off in the winter after it ended, an end with or without a "[last heard]" note after it, never the note alone); fails_when=a dead or summer-only entry names a station, or a last-heard note hides a live one; why_new=station names; seam=none; no_claim=EiBi's own accuracy
   it("keeps what's live this season", () => {
     const parsed = parseEibi(
       csv(
@@ -109,9 +109,73 @@ describe("EiBi schedule", () => {
       site: "KRE-k",
     });
     expect(parsed[2]).toMatchObject({ from: "2810", to: "3012" });
-    expect(parsed[3]).toMatchObject({ to: "3110" });
-    expect(parsed[3]!.from).toBeUndefined();
+    expect(parsed[3]).toMatchObject({ from: "0103", to: "3110" });
+    // Ended on 31 Oct, so off in the winter; dates carry no year, so the window comes round again in March.
+    expect(onAirAt(parsed[3]!, at("2026-11-10T08:00:00Z"))).toBe(false);
+    expect(onAirAt(parsed[3]!, at("2027-01-15T08:00:00Z"))).toBe(false);
+    expect(onAirAt(parsed[3]!, at("2027-03-15T08:00:00Z"))).toBe(true);
     expect(parseEibi(csv("7000;0000-2400;;X;Summer only;E;Eu;;5;;"), "a26")).toHaveLength(1);
+  });
+
+  // Value: protects=a row with both a start and an end date keeps the window whatever its persistence (#149), unless the end is the season's last day (then the start is when it began), a window ending 28 Feb covers a leap year's 29th, a start date alone counts only on P 6, an end date alone and a P 6 row behave as before; fails_when=a Mar-Apr month row shows in November beside the Nov-Feb one, or a lasting entry's start date hides it for most of the season; why_new=#149; seam=none; no_claim=EiBi's windows being right
+  it("keeps a month window on any row with both dates", () => {
+    const row = (dates: string, persistence = 1) =>
+      parseEibi(csv(`7000;0000-2400;;X;Row;E;Eu;;${persistence};${dates}`), "b26")[0]!;
+    const novFeb = row("0111;2802");
+    expect(onAirAt(novFeb, at("2026-12-15T12:00:00Z"))).toBe(true);
+    expect(onAirAt(novFeb, at("2027-03-15T12:00:00Z"))).toBe(false);
+    // A leap year's 29 Feb is still February's, not a day between windows.
+    expect(onAirAt(novFeb, at("2028-02-29T12:00:00Z"))).toBe(true);
+    expect(onAirAt(novFeb, at("2028-03-01T12:00:00Z"))).toBe(false);
+    const marApr = row("0103;3004");
+    expect(onAirAt(marApr, at("2026-11-25T12:00:00Z"))).toBe(false);
+    expect(onAirAt(marApr, at("2027-03-15T12:00:00Z"))).toBe(true);
+    // An end date alone, as before: on until it, off once it's past.
+    const endOnly = row(";3004");
+    expect(endOnly.from).toBeUndefined();
+    expect(onAirAt(endOnly, at("2026-11-25T12:00:00Z"))).toBe(true);
+    expect(onAirAt(endOnly, at("2027-05-15T12:00:00Z"))).toBe(false);
+    // A start date alone on a lasting entry is when it began, not a window.
+    const startOnly = row("0111;");
+    expect(startOnly.from).toBeUndefined();
+    expect(onAirAt(startOnly, at("2027-03-15T12:00:00Z"))).toBe(true);
+    const p6 = row("2810;3012", 6);
+    expect(p6).toMatchObject({ from: "2810", to: "3012" });
+    expect(onAirAt(p6, at("2026-11-25T12:00:00Z"))).toBe(true);
+    expect(onAirAt(p6, at("2027-01-05T12:00:00Z"))).toBe(false);
+    // An end on the season's last day (B26 ends 27 Mar 2027, A26 24 Oct 2026) runs
+    // the season out: the start date is when it began, not a window's start.
+    const sinceJanuary = row("0101;2803");
+    expect(sinceJanuary.from).toBeUndefined();
+    expect(onAirAt(sinceJanuary, at("2026-11-10T12:00:00Z"))).toBe(true);
+    const sinceOctober = parseEibi(csv("7000;0000-2400;;X;Row;E;Eu;;1;1510;2410"), "a26")[0]!;
+    expect(sinceOctober.from).toBeUndefined();
+    expect(onAirAt(sinceOctober, at("2026-06-15T12:00:00Z"))).toBe(true);
+    // A month window ending on the 31st is still one.
+    const march = row("0103;3103");
+    expect(march).toMatchObject({ from: "0103", to: "3103" });
+    expect(onAirAt(march, at("2026-11-25T12:00:00Z"))).toBe(false);
+  });
+
+  // Value: protects=on B26's real Pip rows (four month windows per frequency), only the Nov-Feb hours count on 2026-11-25, so The Pip is named on 3756 or 5448 kHz, never both; fails_when=the Mar-Apr rows count too and both frequencies name it 04:30-05:30 and 14:00-16:00 UTC; why_new=#149 acceptance; seam=rows copied from the bundled B26 snapshot; no_claim=the dial's day/night pick (signal-stations.ts)
+  it("names The Pip on one frequency at a time in November", () => {
+    const pip = parseEibi(
+      csv(
+        "3756;1400-0530;;RUS;The Pip (Kaplya) Rostov;-TS;EEu;rp;1;0111;2802[1125]",
+        "3756;1600-0430;;RUS;The Pip (Kaplya) Rostov;-TS;EEu;rp;1;0103;3004[0324]",
+        "3756;1630-0430;;RUS;The Pip (Kaplya) Rostov;-TS;EEu;rp;1;0109;3110[1019]",
+        "3756;1730-0300;;RUS;The Pip (Kaplya) Rostov;-TS;EEu;rp;1;0105;3108[0626]",
+        "5448;0300-1730;;RUS;The Pip (Kaplya) Rostov;-TS;EEu;rp;1;0105;3108",
+        "5448;0430-1600;;RUS;The Pip (Kaplya) Rostov;-TS;EEu;rp;1;0103;3004[0321]",
+        "5448;0430-1630;;RUS;The Pip (Kaplya) Rostov;-TS;EEu;rp;1;0109;3110",
+        "5448;0530-1400;;RUS;The Pip (Kaplya) Rostov;-TS;EEu;rp;1;0111;2802[0118]",
+      ),
+      "b26",
+    );
+    const on = (khz: number, iso: string) => scheduledOn(pip, khz, at(iso)).length > 0;
+    expect([on(3756, "2026-11-25T15:00:00Z"), on(5448, "2026-11-25T15:00:00Z")]).toEqual([true, false]);
+    expect([on(3756, "2026-11-25T05:00:00Z"), on(5448, "2026-11-25T05:00:00Z")]).toEqual([true, false]);
+    expect([on(3756, "2026-11-25T06:00:00Z"), on(5448, "2026-11-25T06:00:00Z")]).toEqual([false, true]);
   });
 
   // Value: protects=a page that isn't the schedule (moved file, error page, empty) throws instead of parsing to nothing, so the server keeps its good copy; fails_when=an HTML error page replaces the schedule and every name vanishes; why_new=station names; seam=none; no_claim=none

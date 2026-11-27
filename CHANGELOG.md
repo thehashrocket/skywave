@@ -2,6 +2,13 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.63.1.0] - 2026-11-26 ([#149](https://github.com/thehashrocket/skywave/issues/149))
+
+### Fixed
+- **The Pip and The Squeaky Wheel are named on one frequency at a time.** EiBi lists their winter and summer hours as one row per stretch of months (November to February, March to April, and so on), and skywave only read the end of each stretch. So in November the March–April hours counted too, and for about three hours a day the dial named The Pip on both 3,756 and 5,448 kHz, one of them dead air. The same went for The Squeaky Wheel on 3,364 and 5,367 kHz. Every schedule row with a start and an end date now counts only between them. In this winter's schedule that takes 292 rows off the air outside their months, most of them numbers stations that EiBi lists month by month (E06, E07, E11). One row comes on: VFF Iqaluit Radio on 2,514 kHz, 13:20–14:00 UTC, now shows from 7 January, as EiBi's dates say (probably a slip for July).
+- **A station that runs the season out stays named all season.** When a row's end date is the season's last day, its start date is taken as when the station began, not as the start of a window, so a station that began in January isn't hidden until then.
+- **On 29 February in a leap year, The Pip is still named.** A window that EiBi ends on 28 February now covers the 29th too, so the day doesn't fall between The Pip's November–February and March–April hours and leave both frequencies unnamed.
+
 ## [0.63.0.0] - 2026-11-26 ([#155](https://github.com/thehashrocket/skywave/issues/155), [#144](https://github.com/thehashrocket/skywave/issues/144))
 
 ### Added

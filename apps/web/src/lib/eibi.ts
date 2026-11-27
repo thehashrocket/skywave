@@ -24,7 +24,11 @@ export type Broadcast = {
   lang: string;
   /** Target-area code ("Eu", "NAm"...). */
   target: string;
-  /** Dates it runs between, "DDMM" each, when the file gives them. */
+  /**
+   * Dates it runs between, "DDMM" each, any year: a window that may wrap New
+   * Year. `from` is kept only as half of a window (see parseEibi); `to` alone
+   * ends a lasting entry.
+   */
   from?: string;
   to?: string;
   /**
@@ -78,6 +82,20 @@ const DATE = /^((?:0[1-9]|[12]\d|3[01])(?:0[1-9]|1[0-2]))(?:\[\d{4}\])?$/;
 const dateIn = (field: string) => DATE.exec(field)?.[1];
 
 /**
+ * Whether a "DDMM" end date is the season's last day, give or take two days
+ * (the day before the last Sunday of March or October, the 24th to the
+ * 30th, so the 22nd to the 30th): how EiBi ends an entry that runs the season out. Never the 31st,
+ * which ends a month window (E07's "0103;3103").
+ */
+function endsSeason(ddmm: string, season: string): boolean {
+  const year = 2000 + Number(season.slice(1));
+  const last = season.startsWith("b") ? lastSunday(year + 1, 2) - DAY : lastSunday(year, 9) - DAY;
+  const end = new Date(last);
+  const day = Number(ddmm.slice(0, 2));
+  return Number(ddmm.slice(2)) === end.getUTCMonth() + 1 && day < 31 && Math.abs(day - end.getUTCDate()) <= 2;
+}
+
+/**
  * A season's CSV (sked-a26.csv, sked-b26.csv...) as broadcasts sorted by
  * frequency. Drops inactive entries, ones for the other season, and
  * alternative or spurious frequencies. Throws if the text isn't the
@@ -101,7 +119,8 @@ export function parseEibi(text: string, season: string): ListedBroadcast[] {
     const days = f[2]!.trim();
     if (NOT_ON_AIR.has(days)) continue;
     // Persistence: 8 is inactive, 4 winter only, 5 summer only, 6 between the dates
-    // given; 90 and up are the same for utility stations.
+    // given (a start date alone counts only here); 90 and up are the same for
+    // utility stations. Both dates make a window at any persistence (below).
     const persistence = Number(f[8]) % 90;
     if (persistence === 8 || (persistence === 4 && !winter) || (persistence === 5 && winter)) continue;
     const from = f[9]?.trim() ?? "";
@@ -110,11 +129,19 @@ export function parseEibi(text: string, season: string): ListedBroadcast[] {
     const b: ListedBroadcast = { khz, start, end, days, station, lang: f[5]!.trim(), target: f[6]!.trim(), country };
     const site = siteKey(country, f[7] ?? "");
     if (site !== undefined) b.site = site;
-    // A start date on a lasting entry is only when it began; an end date ("[0326]",
-    // the last time it was heard, isn't one) still ends it.
+    // A start date with an end date is a window, whatever the persistence: seasonal
+    // rows give one row per month range (The Pip's Nov-Feb and Mar-Apr hours, #149).
+    // A start date alone on a lasting entry is only when it began; an end date
+    // ("[0326]", the last time it was heard, isn't one) still ends it. So does a
+    // start date beside an end on the season's last day: "0101;2803" in B26 began
+    // in January and runs the season out, not a January-March window.
+    // Taken as written, including slips: B26's "2514;1320-1400;...;VFF Iqaluit
+    // Radio;...;0701;3110" (beside its 0107-3110 rows, likely meant July) reads
+    // as 7 Jan-31 Oct and is named on 2514 kHz from 7 Jan (#149 review).
     const fromDate = dateIn(from);
     const toDate = dateIn(to);
-    if (persistence === 6 && fromDate) b.from = fromDate;
+    const isWindow = toDate !== undefined && !endsSeason(toDate, season);
+    if (fromDate && (persistence === 6 || isWindow)) b.from = fromDate;
     if (toDate) b.to = toDate;
     out.push(b);
   }
@@ -181,7 +208,9 @@ function inDates(from: string | undefined, to: string | undefined, day: Date): b
   const key = (ddmm: string) => Number(ddmm.slice(2)) * 100 + Number(ddmm.slice(0, 2));
   const today = (day.getUTCMonth() + 1) * 100 + day.getUTCDate();
   if (from && to) {
-    const [a, b] = [key(from), key(to)];
+    // "2802" ends February: a leap year's 29th belongs to the same window, not to
+    // the gap before a "0103" row (The Pip's Nov-Feb then Mar-Apr hours).
+    const [a, b] = [key(from), to === "2802" ? 229 : key(to)];
     return a <= b ? today >= a && today <= b : today >= a || today <= b;
   }
   if (from) return today >= key(from);
