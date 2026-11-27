@@ -1657,17 +1657,14 @@ export default function ListenPage() {
           height: on a phone they wrap differently, and a switch would move the dial under a finger. */}
       {!waterfallOpen && (
         <p className="console-intro">
-          {[true, false].map((wwv) => (
-            <span
-              key={String(wwv)}
-              aria-hidden={wwv !== onDefaultTuning || undefined}
-            >
-              Shortwave and ham radio through volunteer receivers around the world.{" "}
-              {wwv
-                ? "Press Listen: the dial is on 10,000 kHz, where the WWV time signal usually is."
-                : "Press Listen to hear this frequency."}
-            </span>
-          ))}
+          <span aria-hidden={!onDefaultTuning || undefined}>
+            Shortwave and ham radio through volunteer receivers around the world. Press Listen: the dial is on
+            10,000 kHz, where the WWV time signal usually is.
+          </span>
+          <span aria-hidden={onDefaultTuning || undefined}>
+            Shortwave and ham radio through volunteer receivers around the world. Press Listen to hear this
+            frequency.
+          </span>
         </p>
       )}
 
