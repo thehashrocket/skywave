@@ -186,6 +186,7 @@ RBN live goes through #69's single connection in the radio service once its logi
 - **Messages:** a wspr.live outage message hides a missing-column message; exit 3 lumps "retry later" (outage, unsettled windows) with "won't change" (thin data, exploratory window); exit 2 covers both a bad file and a bad command line.
 - **Reporting:** no listener or geographic share is shown (block 10 has no listener ids by design); a bad identity cell on a row that would be set aside still stops the run.
 - **CI:** collecting `apps/radio/spikes` relies on pytest's default import mode (`spikes/spots` has no `__init__.py`; the probe imports its sibling).
+- **From the run 4 review:** a receiver host may itself contain a colon (`bad:host0:8073` loads as host `bad:host0`); a pick time with milliseconds is floored to the second, so the window and the 24 h wait can be up to a second off; `picked_ms` isn't range-checked (a future value waits forever, a huge one gives an error with no line number); the waiting message doesn't say the floor is also short; a repeated column name is printed unescaped; an export with only one of tx_name and receiver hides the share it could show.
 
 **Why:** Each can make the D4 verdict or its message less clear than it should be, but none blocks the first real run now that the probe waits for settled windows.
 

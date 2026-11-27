@@ -319,19 +319,24 @@ def test_summarize_guards_the_window_and_missing_results():
     assert summarize(a, {i: 1000.0 for i in range(50)}, set())["verdict"] == "no D4 verdict: exploratory 3.01667-min window; D4 is decided at 3 min (D21)"
 
 
-# Value: protects=no D4 verdict while any scored answer's window ended under 24 h ago (wspr.live is still filling it in, the rule that already keeps such replies out of the cache), with the time to run again; fails_when=a fresh export gets a final build/stop that late spots could flip; why_new=Codex on PR #182 final review, owner D1 (2026-11-27, run 3); seam=none (now_s parameter, which main leaves to the clock); no_claim=how late wspr.live spots really arrive
+# Value: protects=no D4 verdict while any answered window (scored or quiet) ended under 24 h ago (wspr.live is still filling it in, the rule that already keeps such replies out of the cache), with the time to run again; fails_when=a fresh export gets a final build/stop that late spots could flip; why_new=Codex on PR #182 final review, owner D1 (2026-11-27, run 3); seam=none (now_s parameter, which main leaves to the clock); no_claim=how late wspr.live spots really arrive
 def test_summarize_waits_for_settled_windows():
     a = _spread(50, 10, 10)
     end = a[0].end_s
     dist = {i: 1000.0 for i in range(50)}
     assert summarize(a, dist, set(), now_s=end + 24 * 3600)["decided"]
     s = summarize(a, dist, set(), now_s=end + 24 * 3600 - 1)
-    assert not s["decided"] and s["verdict"].startswith("no verdict: 50 scored answers' windows ended under 24 h ago and wspr.live is still filling them in; run again after 2026-11-21 11:59 UTC")
-    assert summarize(a, dist, set(), {i for i in range(50)}, now_s=end)["verdict"] == "no verdict: no answer's band had any WSPR spot in its window"  # quiet answers aren't scored, so they don't hold it back
+    assert not s["decided"] and s["verdict"].startswith("no verdict: 50 answers' windows ended under 24 h ago and wspr.live is still filling them in; run again after 2026-11-21 12:00 UTC")
+    # Value: protects=a fresh quiet answer holds a settled stop (its band is often quiet only because wspr.live hasn't loaded the spots yet); fails_when=the wait looks at scored answers only, so 14/50 settled plus 2 fresh quiet answers stops, then builds at 16/52 once the spots arrive; why_new=all three PR #182 run 4 reviewers, owner D1 (2026-11-27); seam=none; no_claim=how often a fresh window is really quiet
+    far = {i: 5_000_000.0 for i in range(50)}
+    fresh_quiet = answer(line=50, end_s=end + 3600, stations=("Radio 0",))
+    assert "stop the broadcast half" in summarize(a, far, set(), now_s=end + 24 * 3600)["verdict"]  # settled: a final stop
+    s = summarize(a + [fresh_quiet], far, set(), {50}, now_s=end + 24 * 3600)
+    assert not s["decided"] and s["verdict"].startswith("no verdict: 1 answers' windows ended under 24 h ago")
     # Value: protects=two fresh answers among 48 settled ones still hold the verdict, counted alone (2), with the rerun time taken from the latest window; fails_when=the check needs all (or the first) windows fresh, counts every scored answer, or names the earliest end as the rerun time; why_new=the fixture above ends every window at once, so any/all and max/min read the same (ship coverage audit, 2026-11-27); seam=none; no_claim=none beyond protects
     late = [dataclasses.replace(x, start_s=x.start_s + d, end_s=x.end_s + d) if (d := {7: 3600, 8: 1800}.get(x.line)) else x for x in a]
     s = summarize(late, dist, set(), now_s=end + 24 * 3600)
-    assert not s["decided"] and s["verdict"].startswith("no verdict: 2 scored answers' windows ended under 24 h ago and wspr.live is still filling them in; run again after 2026-11-21 12:59 UTC")
+    assert not s["decided"] and s["verdict"].startswith("no verdict: 2 answers' windows ended under 24 h ago and wspr.live is still filling them in; run again after 2026-11-21 13:00 UTC")
 
 
 # Value: protects=the CLI as the owner runs it: reads block 10, asks wspr.live per day and band, prints set-asides, shares and D4's verdict; refuses a missing --window-min (no default window to tip D4), a wrong row count, a window that isn't a multiple of 3, and a bad file with exit 2, and ties the verdict to the window; fails_when=argparse wiring, a guard, or the output breaks, or a default window creeps back; why_new=new probe (D4); seam=none (monkeypatches _fetch); no_claim=wspr.live itself

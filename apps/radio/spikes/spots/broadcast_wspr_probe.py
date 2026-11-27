@@ -369,10 +369,11 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
     windows), without the identity columns (an export from before block 10's tx_name,
     receiver and report_id), or under D21's support floor (scored answers, distinct
     stations with a joined question counting once, distinct receivers). `decided` says
-    whether `verdict` is a D4 verdict. Nor is there one while any scored answer's window
-    ended less than CACHE_AFTER_S before `now_s` (default: the clock): wspr.live is still
-    filling those windows in, so a late spot could change the share (the same rule that
-    keeps such replies out of the cache)."""
+    whether `verdict` is a D4 verdict. Nor is there one while any answer wspr.live replied
+    for, scored or quiet, has a window that ended less than CACHE_AFTER_S before `now_s`
+    (default: the clock): wspr.live is still filling those windows in, so a late spot could
+    change the share, and a quiet window is often quiet only because its spots haven't
+    arrived yet (the same rule keeps such replies out of the cache)."""
     now_s = time.time() if now_s is None else now_s
     unanswered = set(unanswered) | {a.line for a in answers if a.line not in dist_m and a.line not in quiet}
     scored = [a for a in answers if a.line not in unanswered and a.line not in quiet]
@@ -384,7 +385,7 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
     receivers = None if "receiver" in missing else len(by_receiver)
     top = lambda c, n: max(c.values()) / len(scored) if scored and n is not None else None
     windows = sorted({a.end_s - a.start_s for a in answers})  # seconds, compared exactly
-    unsettled = [a for a in scored if a.end_s > now_s - CACHE_AFTER_S]
+    unsettled = [a for a in answers if a.line not in unanswered and a.end_s > now_s - CACHE_AFTER_S]
     near = {r: [a for a in scored if (d := dist_m.get(a.line)) is not None and d <= r * 1000] for r in RADII_KM}
     by_band: dict[int, list[int]] = {}
     for a in scored:
@@ -407,8 +408,9 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
     elif missing:
         verdict = f"no verdict: this export has no {' or '.join(missing)} column{'s' if len(missing) > 1 else ''}, so D21's floor can't be checked; rerun block 10"
     elif unsettled:
-        ready = datetime.fromtimestamp(max(a.end_s for a in unsettled) + CACHE_AFTER_S, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        verdict = f"no verdict: {len(unsettled)} scored answers' windows ended under 24 h ago and wspr.live is still filling them in; run again after {ready}"
+        ready_s = -(-(max(a.end_s for a in unsettled) + CACHE_AFTER_S) // 60) * 60  # rounded up to the minute, so the time printed is never early
+        ready = datetime.fromtimestamp(ready_s, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        verdict = f"no verdict: {len(unsettled)} answers' windows ended under 24 h ago and wspr.live is still filling them in; run again after {ready}"
     elif len(scored) < MIN_ANSWERS or stations < MIN_STATIONS or receivers < MIN_RECEIVERS:
         verdict = (
             f"no verdict: not enough broadcast data ({len(scored)} scored answers, {stations} stations, "
@@ -464,8 +466,9 @@ def main(argv: list[str] | None = None) -> int:
     dist_m: dict[int, float | None] = {}
     unanswered: set[int] = set()
     quiet: set[int] = set()
+    now_s = time.time()  # one reading, so a reply the cache took as settled is the one summarize does
     for chunk, query in queries:
-        got = run_query(query, len(chunk), max(a.end_s for a in chunk))
+        got = run_query(query, len(chunk), max(a.end_s for a in chunk), now_s=now_s)
         if got is None:
             unanswered.update(a.line for a in chunk)
         else:
@@ -473,7 +476,7 @@ def main(argv: list[str] | None = None) -> int:
                 dist_m[a.line] = d
                 if spots == 0:
                     quiet.add(a.line)
-    s = summarize(answers, dist_m, unanswered, quiet)
+    s = summarize(answers, dist_m, unanswered, quiet, now_s=now_s)
 
     print(f"answer rows read: {rows}; probed: {s['answers']} in {len(queries)} wspr.live queries; window {args.window_min} min")
     for reason, n in sorted(set_aside.items()):
