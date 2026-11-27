@@ -2,6 +2,11 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.64.5.0] - 2026-11-27 ([#180](https://github.com/thehashrocket/skywave/issues/180))
+
+### Changed
+- **Find a station shows more of each station's name when you filter by one language.** With English picked, every row used to end in "· English", so the ellipsis cut the station name instead ("WJHR Milton, FL (USB) · Engli…"). Now a row in just the picked language shows the station alone ("WBCQ The Planet"). Rows that say something else keep it: another language, a row in several languages ("RFI · French, English"), and non-voice kinds such as "WWV · Time signal" or "NSS US Navy · Digital data". With no language picked, or with two or more, every row names its language as before. A screen reader still hears the language on every row, and the note after you click a later broadcast still names it ("BBC · English starts at 18:00 UTC").
+
 ## [0.64.3.0] - 2026-11-27 ([#173](https://github.com/thehashrocket/skywave/issues/173))
 
 ### Fixed
