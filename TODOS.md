@@ -155,7 +155,8 @@ F06 (#148, owner 2026-11-25): Priyom lists its slots as RTTY ("F06a 17532kHz RTT
 
 **Context:** Owner D7 in the #61 eng review (2026-11-18). Start only after the #61 replay passes its pre-registered bar (D1, D4); a pass also says which source earns the work. The re-review (2026-11-20) tightened that bar and added a fork:
 - **Pass means a lift of at least 0.03 AUC** (D10), not only a lower bound above 0. A smaller real lift is written up as too small to build on, and this item stays closed.
-- **Live or daily** (D11): the replay also scores yesterday's spots at the same time of day. If they come within 0.01 AUC of fresh spots, build this as a daily batch from RBN's daily file (`RBN_DAY_URL` in `apps/web/src/lib/rbn.ts`, no login) instead of a live feed, and #69's login stops being a dependency.
+- **Live or daily** (D11, revised by the 2026-11-27 eng review, D15): the replay also scores yesterday's spots at the same time of day. Build this as a daily batch from RBN's daily file (`RBN_DAY_URL` in `apps/web/src/lib/rbn.ts`, no login) if that stale score passes D10 on its own, unless fresh spots beat stale with a paired lower bound above 0 (then live). If only the fresh score passes, build live. With a daily batch, #69's login stops being a dependency.
+- **Which source** (2026-11-27 eng review, D17): radius, window and source (RBN, WSPR or both) are chosen on the training 70% only; the test set judges exactly one score.
 - **Kiwi-own reports** (D12): if the Step 1 freeze adds a score from Kiwis that report spots themselves (same 6-character grid), wspr.live may be the source instead of RBN.
 
 RBN live goes through #69's single connection in the radio service once its login question is settled. wspr.live (https://wspr.live/) is a free, non-commercial research service with no availability promise: use it only as a cached, rate-limited poll, and fall back to today's order when it's down or slow. A WSPR spot counts only when both ends match: transmitter near the station or beacon, receiver near the Kiwi.
@@ -163,6 +164,42 @@ RBN live goes through #69's single connection in the radio service once its logi
 **Effort:** M
 **Priority:** P3
 **Depends on:** #61 replay passing (D10's 0.03 floor); #69 login (RBN live half only, not needed for the daily-batch path)
+
+### Signal-station answers in the #61 broadcast half (#61)
+
+**What:** Bring "Did you hear it?" answers about signal stations (txKind `signal`, #101) into #61's broadcast half: count them in Step 0 and let the D4 WSPR probe and the secondary join use them.
+
+**Why:** Signal stations sit at known transmitter positions (`apps/web/src/lib/signal-stations.ts`, e.g. WWV at Fort Collins), unlike the ~25% of EiBi answers with no site, so they suit the WSPR both-ends join better.
+
+**Context:** #61 eng review 2026-11-27, owner D1 and D19: deferred so this freeze stays on the beacon verdict. Single-station answers (`askGroup` null) can be used any time. Only shared-dial answers (WWV/WWVH "which did you hear?", `askGroup` set) need #169's count-once view, which also treats "not heard over the other" apart.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** #61 Step 1 freeze (not this one); #169 for grouped rows only
+
+### Randomised exploration in Pick best for #61 (#61)
+
+**What:** On 10–20% of beacon-Listen runs, pick at random among ranks 0–2 instead of rank 0, and flag it in the pick context (bump `PICK_CONTEXT_VERSION`).
+
+**Why:** Only the picked receiver gets an answer, so the replay can't show that a re-rank would choose receivers that are heard more often. Random picks among the top 3 are the only way to label runners-up.
+
+**Context:** #61 eng review 2026-11-27 (outside voice), owner D20: deferred. Revisit at the Step 1 freeze if the within-request pair count from D8 (same beacon, band and 30–60 min bucket, opposite outcomes) is too thin to judge ranking skill. Listener-visible: those listeners get a lower-ranked receiver, so it needs its own decision.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** D8's pair count at the #61 freeze
+
+### "Band looks shut" hint from RBN beacon spots
+
+**What:** Show a "band looks shut right now" hint next to the dial, from how many RBN skimmers anywhere heard the NCDXF beacons on that band.
+
+**Why:** Band openness is the same for every receiver, so it can't re-rank them, but it explains silence to a listener. It doesn't depend on #61 passing.
+
+**Context:** #61 eng review 2026-11-27 (outside voice), owner D22. `apps/web/src/lib/rbn.ts` already parses RBN's daily file and counts spots per beacon (`quietBeacons`). Band openness is a baseline feature in the #61 replay; read its secondary numbers first to see whether it tracks "heard". A daily file lags the live band, so this may want the live or daily feed above. Needs a design pass (listener-visible).
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** #61 RESULTS (band-openness numbers)
 
 ### Read the question rule in the #61 broadcast probe (#115)
 
