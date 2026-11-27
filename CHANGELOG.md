@@ -11,6 +11,7 @@ Notable changes to skywave, newest first. Versions come from `VERSION` (four par
 ### Changed
 - **A listener who chose WWV with Listen is still asked about WWV alone on the frequency that Listen tuned,** and 20 MHz, where only WWV transmits, keeps its single question. Tuned by hand from there to a frequency WWVH shares, they're asked which one they heard.
 - **The weekly signal-stations report doesn't count a station as missing just because the other was louder.** A "not heard" filed beside a "heard" in the same answer never counts toward "possibly off the air", so WWVH isn't flagged in places where WWV drowns it out. It still shows WWVH was answered about. "Heard nothing" counts against both.
+- **Reception data for #61:** EiBi answers now carry `askRule` 3, so an EiBi answer on a WWV/WWVH frequency with `askRule` 2 or older came from a tab opened before this release. Shared-frequency answers are stored one row per station, linked by the new `askGroup` column: count each group as one answer (issue #169 adds a shared view for that).
 
 ## [0.63.1.0] - 2026-11-26 ([#149](https://github.com/thehashrocket/skywave/issues/149))
 

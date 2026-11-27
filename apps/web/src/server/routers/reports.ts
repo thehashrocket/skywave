@@ -406,8 +406,8 @@ export type ReportInput = z.input<typeof reportInput>;
  * can't file a combination the question doesn't offer. "can't tell" files
  * nothing, so the page never sends it. A shape no question makes (one
  * station, a repeated one, "can't tell") is refused quietly by the mutation,
- * like every other answer the server can't take; only one longer than any
- * question (past GROUP_MAX) fails the input check.
+ * like every other answer the server can't take; only one with no stations,
+ * or more than any question names (past GROUP_MAX), fails the input check.
  */
 const groupInput = reportInput
   .pick({ listenerId: true, receiverHost: true, receiverPort: true, freqKhz: true, mode: true, comment: true })

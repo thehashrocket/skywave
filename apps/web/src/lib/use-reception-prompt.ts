@@ -155,7 +155,7 @@ const promptKey = (p: ReceptionPromptData) => `${p.host.toLowerCase()}:${p.port}
  * about, once DWELL_MS has played after first audio plus STREAM_LATENCY_MS,
  * all of it before the station goes off (signalPromptAt); one that goes off
  * first isn't asked about. A list of stations: tuned by hand to a frequency two
- * or more catalog stations share (WWV and WWVH, #150; signalGroupAsk), one
+ * or three catalog stations share (WWV and WWVH, #150; signalGroupAsk), one
  * question asks which of them was heard, under the same dwell and limits, open
  * until the first of them goes off.
  *
