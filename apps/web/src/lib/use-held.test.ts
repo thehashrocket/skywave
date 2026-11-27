@@ -3,7 +3,7 @@ import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Receiver } from "./kiwi-list";
 import { NOISE_MAX_RECEIVERS } from "./noise-rank";
-import { heldUrl, parseHeld, useHeld } from "./use-held";
+import { HELD_SETTLE_MS, heldUrl, parseHeld, useHeld } from "./use-held";
 
 const rx = (name: string): Receiver => ({
   id: name,
@@ -128,6 +128,100 @@ describe("useHeld", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     rerender({ mine: null });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // Value: protects=after Stop or a switch the page asks once more HELD_SETTLE_MS later, so when the service's first answer still counts this page's old slot (it frees the slot only once the Kiwi is closed), the receiver just left stops reading as taken within seconds, not up to a minute; fails_when=the settle ask is dropped, or fires on every keys change instead of a change of this page's receiver; why_new=#155 follow-up (red team, final review); seam=fetch stubbed, fake timers; no_claim=how long the service really takes to free the slot
+  it("asks once more a few seconds after its receiver changes, so the one just left clears", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { result, rerender } = renderHook(({ mine }) => useHeld(RECEIVERS, 7_050, mine), {
+        initialProps: { mine: "a.example:8073" as string | null },
+      });
+      await waitFor(() => expect(result.current.has("a.example:8073")).toBe(true));
+      // Stop: the answer at once still lists the old slot; a while later it's gone.
+      rerender({ mine: null });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      expect(result.current.has("a.example:8073")).toBe(true);
+      fetchMock.mockImplementation(async () => new Response(JSON.stringify({ held: [] })));
+      await vi.advanceTimersByTimeAsync(HELD_SETTLE_MS);
+      await waitFor(() => expect(result.current.size).toBe(0));
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      // Nothing more until the minute's refresh.
+      await vi.advanceTimersByTimeAsync(HELD_SETTLE_MS);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=the settle ask is only for a change of this page's receiver, so the first visit doesn't cost a second /held request a few seconds in; fails_when=the settle timer is set on mount or on a keys change; why_new=#155 follow-up; seam=fetch stubbed, fake timers; no_claim=none
+  it("doesn't ask a second time on its own when nothing changed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderHook(() => useHeld(RECEIVERS, 7_050, "a.example:8073"));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(HELD_SETTLE_MS * 2);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  // Value: protects=a dial move that crosses a coverage edge while the same receiver keeps playing asks once, not twice, so the settle ask stays tied to a change of this page's receiver; fails_when=the settle timer is set on any effect re-run after mount (a first-render flag instead of comparing the receiver asked for); why_new=the mount-only test can't see a keys-only re-run; seam=fetch stubbed, fake timers; no_claim=none
+  it("doesn't ask again a few seconds after only the receivers asked about change", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { rerender } = renderHook(({ list }) => useHeld(list, 7_050, "a.example:8073"), {
+        initialProps: { list: RECEIVERS },
+      });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      rerender({ list: [rx("a"), rx("c")] });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      await vi.advanceTimersByTimeAsync(HELD_SETTLE_MS * 2);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=a dial move across a coverage edge (new keys) inside the settle wait doesn't drop the ask owed for a receiver change: it still goes out once, at the original deadline, about the new keys; fails_when=the settle ask is tied to the effect run that saw the change (a keys change then cancels it), or a keys change restarts the wait; why_new=adversarial review of the #155 follow-up; seam=fetch stubbed, fake timers; no_claim=how long the service takes to free a slot
+  it("keeps the owed ask through a dial move during the wait", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { rerender } = renderHook(({ list, mine }) => useHeld(list, 7_050, mine), {
+        initialProps: { list: RECEIVERS, mine: "a.example:8073" as string | null },
+      });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      rerender({ list: RECEIVERS, mine: null }); // Stop: ask at once, one more owed
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      await vi.advanceTimersByTimeAsync(HELD_SETTLE_MS / 2);
+      rerender({ list: [rx("a"), rx("c")], mine: null }); // dial crosses a coverage edge
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+      await vi.advanceTimersByTimeAsync(HELD_SETTLE_MS / 2 + 50);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+      expect(new URL(fetchMock.mock.calls[3]![0] as string).searchParams.get("receivers")).toContain("c.example");
+      await vi.advanceTimersByTimeAsync(HELD_SETTLE_MS);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Value: protects=leaving the page within seconds of Stop or a switch cancels the pending settle ask, so no /held request goes out from an unmounted page; fails_when=the settle timeout isn't cleared on cleanup; why_new=#155 follow-up added the timeout; seam=fetch stubbed, fake timers; no_claim=none
+  it("doesn't ask after it's gone, even with a settle ask pending", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { rerender, unmount } = renderHook(({ mine }) => useHeld(RECEIVERS, 7_050, mine), {
+        initialProps: { mine: "a.example:8073" as string | null },
+      });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      rerender({ mine: null });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      unmount();
+      await vi.advanceTimersByTimeAsync(HELD_SETTLE_MS * 2);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

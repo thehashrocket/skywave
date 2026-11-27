@@ -57,6 +57,13 @@ export default function OwnersPage() {
               who was listening is written. The log is replaced as it grows (25 MB at most) and is used only to
               find out why receivers refuse, so skywave can ask less of them.
             </li>
+            <li>
+              <strong>skywave&rsquo;s server answers, for any receiver it is asked about (listed, or reached by
+              typing its address), whether a skywave listener is on it now</strong>, much as your Kiwi&rsquo;s own
+              user list shows. Anyone can ask. The skywave page uses
+              the answer to send its next listener to a receiver nobody from skywave is on. It says nothing about
+              who is listening.
+            </li>
           </ul>
         </section>
 
