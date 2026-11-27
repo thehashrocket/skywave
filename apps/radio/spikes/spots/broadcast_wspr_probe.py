@@ -20,8 +20,9 @@ least MIN_STATIONS distinct stations and MIN_KIWIS distinct Kiwi positions, so o
 well-covered path can't decide D4. Stations are block 10's tx_name, split on " / "
 (one answer can name several). An export from before that column has no station
 count, so it gets no D4 verdict: rerun block 10. Block 10 has no receiver key, so a
-Kiwi position stands in for a receiver; receivers sharing a site count once, which can
-only undercount.
+Kiwi's listed position (exact lat/lon at pick time) stands in for a receiver. That can
+miscount both ways: receivers sharing a site count once, and a receiver whose listed
+position changed between answers counts once per position.
 
 Input: CSV from .local-data/61-step0.sql block 10:
     created_ms,picked_ms,freq_khz,kiwi_lat,kiwi_lon,outcome,tx_sites[,ask_rule,ask_region][,tx_name]

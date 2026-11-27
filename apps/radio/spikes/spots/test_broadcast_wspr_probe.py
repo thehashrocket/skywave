@@ -219,6 +219,12 @@ def test_summarize_needs_d21s_support():
     assert verdict(_spread(50, 9, 10)).startswith("no verdict: not enough broadcast data (50 scored answers, 9 stations")  # 37 site lists, 9 stations
     assert verdict(_spread(50, 10, 9)).startswith("no verdict: not enough broadcast data (50 scored answers, 10 stations, 9 Kiwi")
     assert verdict(_spread(51, 10, 10), quiet={50, 0}).startswith("no verdict: not enough broadcast data (49 scored")
+    # A quiet or unanswered answer's station and Kiwi don't count toward the floor either.
+    extra = _spread(50, 9, 9) + [answer(line=50, stations=("Radio 9",), kiwi=(19.0, 0.0))]
+    s = summarize(extra, {a.line: 1000.0 for a in extra}, set(), {50})
+    assert (s["scored"], s["stations"], s["kiwis"]) == (50, 9, 9) and s["verdict"].startswith("no verdict: not enough broadcast data")
+    s = summarize(extra, {a.line: 1000.0 for a in extra}, {50})
+    assert (s["scored"], s["stations"], s["kiwis"]) == (50, 9, 9)
     unnamed = [answer(line=i, stations=None, kiwi=(10.0 + i % 10, 0.0)) for i in range(50)]
     assert verdict(unnamed) == "no verdict: this export has no tx_name column, so D21's station count can't be checked; rerun block 10"
     assert summarize(unnamed, {}, set())["stations"] is None
