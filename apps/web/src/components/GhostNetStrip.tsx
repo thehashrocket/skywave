@@ -52,13 +52,6 @@ const KIND_NOTES: Record<SlotKind, string> = {
   voice: "Emergency voice only; usually silent.",
 };
 
-/** The strip's open focus target, like focusBeaconStrip. */
-export function focusGhostNetStrip() {
-  const summary = document.querySelector<HTMLElement>(".ghostnet > summary");
-  summary?.scrollIntoView?.({ block: "nearest" });
-  summary?.focus();
-}
-
 /** Listen's accessible name (owner D15): net, kind, the guide's frequency, and the dial when it differs. */
 export function listenLabel(o: Occurrence): string {
   const { guideKhz, dialKhz, mode, kind } = o.slot;
