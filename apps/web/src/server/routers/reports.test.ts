@@ -7,6 +7,7 @@ import type { RbnDay } from "@/lib/rbn";
 import type { Receiver } from "@/lib/kiwi-list";
 import { PICK_CONTEXT_VERSION } from "@/lib/pick-context";
 import { ASK_RULE_VERSION } from "@/lib/reception";
+import { findStation, type SignalStation } from "@/lib/signal-stations";
 import type { createContext } from "@/server/trpc";
 import {
   candidateKeyOk,
@@ -17,6 +18,8 @@ import {
   REPORTS_PER_HOUR,
   SAME_CHANNEL_MS,
   signalChecks,
+  askedTogether,
+  type GroupReportInput,
   type ReportInput,
 } from "./reports";
 
@@ -62,6 +65,7 @@ vi.mock("./receivers", async (actual) => ({
 
 const { appRouter } = await import("@/server/root");
 const { getSchedule, getSites } = await import("./stations");
+const { getPriyomSchedule } = await import("./signals");
 const { getReceivers } = await import("./receivers");
 
 /** A broadcast between two UTC times ("HHMM"), daily. */
@@ -95,24 +99,47 @@ beforeEach(() => {
 });
 
 type Context = Awaited<ReturnType<typeof createContext>>;
-type Row = { listenerId: string; receiverHost: string; receiverPort: number; freqKhz: number; createdAt: Date };
-type Where = Partial<Omit<Row, "createdAt">> & { createdAt: { gte: Date } };
+type Row = {
+  listenerId: string;
+  receiverHost: string;
+  receiverPort: number;
+  freqKhz: number;
+  txName?: string;
+  askGroup?: string;
+  createdAt: Date;
+};
+type Where = Record<string, unknown> & { createdAt: { gte: Date } };
 
-/** An in-memory ReceptionReport table that answers count() the way Prisma would for these filters. */
+/**
+ * An in-memory ReceptionReport table that answers count() and groupBy() the
+ * way Prisma would for these filters (equality, null for an empty column,
+ * `{ in: [...] }`, `{ not: null }`).
+ */
 function setup() {
   const rows: Row[] = [];
+  const matching = ({ createdAt, ...eq }: Where) =>
+    rows.filter(
+      (r) =>
+        r.createdAt >= createdAt.gte &&
+        Object.entries(eq).every(([k, v]) => {
+          const got = r[k as keyof Row] ?? null;
+          if (v !== null && typeof v === "object" && "in" in v) return (v.in as unknown[]).includes(got);
+          if (v !== null && typeof v === "object" && "not" in v) return got !== v.not;
+          return got === v;
+        }),
+    );
+  const add = (data: Omit<Row, "createdAt">) => {
+    const row = { ...data, createdAt: new Date() };
+    rows.push(row);
+    return { id: String(rows.length), ...row };
+  };
   const receptionReport = {
-    count: vi.fn(async ({ where }: { where: Where }) => {
-      const { createdAt, ...eq } = where;
-      return rows.filter(
-        (r) => r.createdAt >= createdAt.gte && Object.entries(eq).every(([k, v]) => r[k as keyof typeof eq] === v),
-      ).length;
-    }),
-    create: vi.fn(async ({ data }: { data: Omit<Row, "createdAt"> }) => {
-      const row = { ...data, createdAt: new Date() };
-      rows.push(row);
-      return { id: String(rows.length), ...row };
-    }),
+    count: vi.fn(async ({ where }: { where: Where }) => matching(where).length),
+    groupBy: vi.fn(async ({ by, where }: { by: ["askGroup"]; where: Where }) =>
+      [...new Set(matching(where).map((r) => r[by[0]] ?? null))].map((askGroup) => ({ askGroup })),
+    ),
+    create: vi.fn(async ({ data }: { data: Omit<Row, "createdAt"> }) => add(data)),
+    createMany: vi.fn(async ({ data }: { data: Omit<Row, "createdAt">[] }) => ({ count: data.map(add).length })),
   };
   const caller = appRouter.createCaller({ db: { receptionReport } } as unknown as Context);
   return { caller, receptionReport };
@@ -965,5 +992,171 @@ describe("a signal-station report (#101)", () => {
     const { result, data } = await submit({ ...e11, pick });
     expect(result).toEqual({ accepted: true });
     expect(data).toMatchObject({ pickSource: "signal", pickedAtMs: BigInt(SLOT + 60_000), slotStartMs: BigInt(SLOT) });
+  });
+});
+
+describe("a shared-frequency report (#150)", () => {
+  const NOON = Date.UTC(2026, 10, 18, 12);
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOON });
+    cache.priyom = null;
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const group: GroupReportInput = {
+    listenerId: LISTENER,
+    receiverHost: "Kiwi.Example.org",
+    receiverPort: 8073,
+    freqKhz: 10_000,
+    mode: "am",
+    stations: [{ slug: "wwv" }, { slug: "wwvh" }],
+    answer: { heard: "wwv" },
+  };
+  const rowsOf = (createMany: ReturnType<typeof setup>["receptionReport"]["createMany"]) =>
+    (createMany.mock.lastCall?.[0].data ?? []) as unknown as Record<string, unknown>[];
+
+  // Value: protects=each choice files the rows #150 lists (heard one: that one heard and the other not_heard; both; nothing; didn't open), one signal row per station with its checked channel, the comment and the lowercased host, all sharing one askGroup that differs between answers; fails_when=the outcomes are swapped, a station is left out, rows don't share a group id, or two answers share one; why_new=#150 acceptance (mapping); seam=in-memory db; no_claim=Postgres behaviour
+  it.each<[string, GroupReportInput["answer"], Record<string, string>]>([
+    ["heard WWV", { heard: "wwv" }, { wwv: "heard", wwvh: "not_heard" }],
+    ["heard WWVH", { heard: "wwvh" }, { wwv: "not_heard", wwvh: "heard" }],
+    ["heard both", "all", { wwv: "heard", wwvh: "heard" }],
+    ["heard nothing", "none", { wwv: "not_heard", wwvh: "not_heard" }],
+    ["didn't open", "no_open", { wwv: "no_open", wwvh: "no_open" }],
+  ])("files %s as one row per station sharing a group", async (_, answer, outcomes) => {
+    const { caller, receptionReport } = setup();
+    await expect(caller.reports.submitGroup({ ...group, answer, comment: " S5 " })).resolves.toEqual({ accepted: true });
+    const rows = rowsOf(receptionReport.createMany);
+    expect(Object.fromEntries(rows.map((r) => [r.txName, r.outcome]))).toEqual(outcomes);
+    expect(rows[0]!.askGroup).toEqual(expect.any(String));
+    for (const r of rows)
+      expect(r).toMatchObject({
+        txKind: "signal",
+        txDetail: "10000",
+        receiverHost: "kiwi.example.org",
+        comment: "S5",
+        askGroup: rows[0]!.askGroup,
+      });
+    await caller.reports.submitGroup({ ...group, receiverPort: 8074 });
+    expect(rowsOf(receptionReport.createMany)[0]!.askGroup).not.toBe(rows[0]!.askGroup);
+  });
+
+  // Value: protects=the server quietly refuses (accepted: false, not an error) a group it can't vouch for: an unknown slug, a duplicate slug, a single station, a station not on that frequency (WWVH isn't on 20 MHz), a heard answer naming a station not asked about, "can't tell" (nothing to file), and an unlisted receiver; nothing is stored; fails_when=any client-sent group is filed unchecked, one bad station still files the rest, or a shape no question makes throws instead of the quiet refusal every other path gives; why_new=#150 acceptance (server refusals), #150 review (quiet refusal); seam=catalog as shipped, in-memory db; no_claim=none
+  it.each<[string, Partial<GroupReportInput>]>([
+    ["an unknown slug", { stations: [{ slug: "wwv" }, { slug: "wwvx" }] }],
+    ["a duplicate slug", { stations: [{ slug: "wwv" }, { slug: "wwv" }] }],
+    ["a single station", { stations: [{ slug: "wwv" }] }],
+    ["a station not on that frequency", { freqKhz: 20_000 }],
+    ["a heard station not asked about", { answer: { heard: "chu" } }],
+    ["can't tell", { answer: "unsure" }],
+    ["an unlisted receiver", { receiverHost: "nowhere.example" }],
+  ])("declines %s", async (_, change) => {
+    const { caller, receptionReport } = setup();
+    await expect(caller.reports.submitGroup({ ...group, ...change })).resolves.toEqual({ accepted: false });
+    expect(receptionReport.createMany).not.toHaveBeenCalled();
+  });
+
+  // Value: protects=a group counts as one answer against REPORTS_PER_HOUR (nine single answers and a group fill the hour; ten groups do too, not five), so the shared-frequency question doesn't cost two of a listener's ten; fails_when=the limits count rows, so a group costs two answers, or groups aren't counted at all; why_new=#150 acceptance (rate limit counts a group once); seam=in-memory db + fake clock; no_claim=concurrent submits racing the count
+  it("counts a group as one answer against the hourly limit", async () => {
+    const singles = setup();
+    for (let i = 0; i < REPORTS_PER_HOUR - 1; i++)
+      await expect(singles.caller.reports.submit({ ...valid, freqKhz: 6_000 + i })).resolves.toEqual({ accepted: true });
+    await expect(singles.caller.reports.submitGroup(group)).resolves.toEqual({ accepted: true });
+    await expect(singles.caller.reports.submit({ ...valid, freqKhz: 7_000 })).resolves.toEqual({ accepted: false });
+
+    const groups = setup();
+    const places = [2_500, 5_000, 10_000, 15_000].flatMap((freqKhz) => [8073, 8074].map((receiverPort) => ({ freqKhz, receiverPort })));
+    for (const [i, place] of places.entries())
+      await expect(groups.caller.reports.submitGroup({ ...group, ...place, answer: i % 2 ? "all" : "none" })).resolves.toEqual({ accepted: true });
+    for (const freqKhz of [2_500, 5_000])
+      await expect(groups.caller.reports.submitGroup({ ...group, receiverHost: "other.example", freqKhz })).resolves.toEqual({ accepted: true });
+    // Ten groups, twenty rows: the hour is full.
+    await expect(groups.caller.reports.submit(valid)).resolves.toEqual({ accepted: false });
+  });
+
+  // Value: protects=a group is taken only when it names exactly the stations the question names on that frequency, in any order, at some minute of the last 5 (a question asked before one went off still counts); a subset of three stations sharing a channel, or the full set once one has been off for over 5 minutes, is refused; fails_when=a page can choose which stations an answer files, so a heard-one answer drops a station the listener was asked about; why_new=#150 review; seam=made-up stations sharing a channel, catalog for WWV/WWVH; no_claim=none
+  it("takes only the stations the question names there", () => {
+    const wwv = findStation("wwv")!;
+    expect(askedTogether(["wwvh", "wwv"], 10_000, null, NOON)).toBe(true);
+    expect(askedTogether(["wwv", "wwvh"], 20_000, null, NOON)).toBe(false);
+    const at = (slug: string, schedule: SignalStation["schedule"] = { kind: "always" }): SignalStation => ({
+      ...wwv,
+      slug,
+      name: slug.toUpperCase(),
+      channels: [{ khz: 7_000, mode: "am" }],
+      schedule,
+    });
+    const three = [at("a"), at("b"), at("c")];
+    expect(askedTogether(["a", "b", "c"], 7_000, null, NOON, three)).toBe(true);
+    expect(askedTogether(["a", "b"], 7_000, null, NOON, three)).toBe(false);
+    // C on the air until 4 minutes ago: the three-station question was still asked within the grace.
+    // NOON is 12:00 UTC: minute 720 of the day.
+    const until = (agoMin: number) => at("c", { kind: "windows", windows: [{ startUtc: 6 * 60, endUtc: 720 - agoMin, khz: 7_000 }] });
+    expect(askedTogether(["a", "b", "c"], 7_000, null, NOON, [at("a"), at("b"), until(4)])).toBe(true);
+    expect(askedTogether(["a", "b", "c"], 7_000, null, NOON, [at("a"), at("b"), until(10)])).toBe(false);
+  });
+
+  // Value: protects=the per-receiver cap counts rows, so a flood of group answers from fresh listener ids adds at most RECEIVER_REPORTS_PER_HOUR rows to one receiver an hour (15 WWV/WWVH groups fill it, and a group needing two rows is refused at 29), while another receiver is unaffected; fails_when=the receiver cap counts a group once, so a flood doubles what lands against one receiver; why_new=#150 review (the cap's bound); seam=in-memory db + fake clock; no_claim=per-IP limits (Vercel firewall)
+  it("caps one receiver's rows an hour, a group costing one per station", async () => {
+    const { caller, receptionReport } = setup();
+    const fresh = () => crypto.randomUUID();
+    const freqs = [2_500, 5_000, 10_000, 15_000];
+    for (let i = 0; i < RECEIVER_REPORTS_PER_HOUR / 2; i++)
+      await expect(caller.reports.submitGroup({ ...group, listenerId: fresh(), freqKhz: freqs[i % 4]! })).resolves.toEqual({ accepted: true });
+    expect(receptionReport.createMany).toHaveBeenCalledTimes(RECEIVER_REPORTS_PER_HOUR / 2);
+    await expect(caller.reports.submitGroup({ ...group, listenerId: fresh() })).resolves.toEqual({ accepted: false });
+    await expect(caller.reports.submit({ ...valid, listenerId: fresh() })).resolves.toEqual({ accepted: false });
+    await expect(caller.reports.submitGroup({ ...group, listenerId: fresh(), receiverHost: "other.example" })).resolves.toEqual({ accepted: true });
+
+    // At 29 rows a single answer still fits; a group of two doesn't.
+    const near = setup();
+    for (let i = 0; i < RECEIVER_REPORTS_PER_HOUR - 1; i++)
+      await near.caller.reports.submit({ ...valid, listenerId: fresh(), freqKhz: 6_000 + i });
+    await expect(near.caller.reports.submitGroup({ ...group, listenerId: fresh() })).resolves.toEqual({ accepted: false });
+    await expect(near.caller.reports.submit({ ...valid, listenerId: fresh(), freqKhz: 7_000 })).resolves.toEqual({ accepted: true });
+  });
+
+  // Value: protects=the same-channel limit holds across single and grouped answers per station: a group naming WWV is refused within 30 minutes of a single WWV answer there, and a single WWVH answer after a group naming it, while another frequency is free, and the group is taken once the window passes; fails_when=the group's same-channel check skips its stations, so one listener files WWV twice in 30 minutes; why_new=#150 (limits); seam=in-memory db + fake clock; no_claim=none
+  it("holds the same-channel limit across single and grouped answers", async () => {
+    const { caller } = setup();
+    const wwv = { ...valid, freqKhz: 10_000, txKind: "signal" as const, txName: "wwv" };
+    await expect(caller.reports.submit(wwv)).resolves.toEqual({ accepted: true });
+    await expect(caller.reports.submitGroup(group)).resolves.toEqual({ accepted: false });
+    await expect(caller.reports.submitGroup({ ...group, freqKhz: 5_000 })).resolves.toEqual({ accepted: true });
+    await expect(caller.reports.submit({ ...wwv, freqKhz: 5_000, txName: "wwvh" })).resolves.toEqual({ accepted: false });
+    vi.advanceTimersByTime(SAME_CHANNEL_MS + 1);
+    await expect(caller.reports.submitGroup(group)).resolves.toEqual({ accepted: true });
+  });
+
+  // Value: protects=a group's rows keep Pick best's context from a non-beacon run, as a single signal answer does, and drop a beacon pick or malformed context while keeping the answer, each logged as reports.submitGroup; fails_when=grouped answers lose #61's pick context, store a beacon pick, or log either drop under reports.submit; why_new=#150 (shared pick handling), #150 review (log name); seam=in-memory db, console.warn spied; no_claim=none
+  it("keeps pick context on every row of a group", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const pick = { version: 10, pickedAtMs: NOON - 90_000, rankPos: 0, candidates: ["kiwi.example.org:8073"], freqKhz: 10_000, snr: 20, users: 1 };
+    const { caller, receptionReport } = setup();
+    await caller.reports.submitGroup({ ...group, pick: { ...pick, pickSource: "search" } });
+    const rows = rowsOf(receptionReport.createMany);
+    expect(rows).toHaveLength(2);
+    for (const r of rows) expect(r).toMatchObject({ pickSource: "search", candidatesListed: 1 });
+    await expect(
+      caller.reports.submitGroup({ ...group, freqKhz: 5_000, pick: { ...pick, freqKhz: 5_000, pickSource: "beacon" } }),
+    ).resolves.toEqual({ accepted: true });
+    for (const r of rowsOf(receptionReport.createMany)) expect(r).not.toHaveProperty("pickSource");
+    // Logged under the procedure that dropped it.
+    expect(warn).toHaveBeenLastCalledWith("reports.submitGroup: dropped pick context that doesn't fit the report");
+    // Malformed context too: the answer is kept, the warning names submitGroup.
+    await expect(
+      caller.reports.submitGroup({ ...group, freqKhz: 15_000, pick: { ...pick, freqKhz: 15_000, rankPos: 1.5, pickSource: "search" } }),
+    ).resolves.toEqual({ accepted: true });
+    expect(warn).toHaveBeenCalledWith("reports.submitGroup: dropped malformed pick context:", "rankPos");
+  });
+
+  // Value: protects=a WWV/WWVH answer never waits on Priyom's schedule (a fresh server's first fetch can take 10 s), as a single WWV answer doesn't; fails_when=submitGroup fetches Priyom for every group, so a slow or unreachable Priyom delays or times out answers that don't depend on it; why_new=#150 review; seam=getPriyomSchedule mocked; no_claim=Priyom's latency
+  it("doesn't fetch Priyom's schedule for stations that don't use it", async () => {
+    vi.mocked(getPriyomSchedule).mockClear();
+    const { caller } = setup();
+    await expect(caller.reports.submitGroup(group)).resolves.toEqual({ accepted: true });
+    expect(getPriyomSchedule).not.toHaveBeenCalled();
   });
 });

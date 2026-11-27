@@ -2,7 +2,7 @@ import { MATCH_KHZ, type Broadcast } from "./eibi";
 import type { BroadRegion } from "./eibi-targets";
 import { BEACONS, CYCLE_MS, IBP_BANDS_KHZ, SLOT_MS } from "./ibp";
 import { onAirTx, PRIYOM_ON_AIR_MS, type PriyomTx } from "./priyom-schedule";
-import { activeChannelAt, windowSpanAt, type SignalStation } from "./signal-stations";
+import { activeChannelAt, SIGNAL_STATIONS, windowSpanAt, type SignalStation } from "./signal-stations";
 
 /**
  * Reception reports (issue #60): "Did you hear it?" about a known transmitter
@@ -69,7 +69,16 @@ export type Transmitter = {
   askRule?: number;
   /** EiBi only, stored as askRegion: the receiver's broad region the stations were ranked by; absent when none was known. */
   askRegion?: BroadRegion;
+  /**
+   * Signal stations sharing the dial (#150): the question asks which of them was
+   * heard (groupChoices), and the answer is filed as one row per station, sharing
+   * an askGroup. `name` is then their slugs joined with TX_NAME_SEPARATOR.
+   */
+  group?: readonly GroupMember[];
 };
+
+/** One of the stations a shared-frequency question (#150) names. */
+export type GroupMember = { slug: string; name: string; hint?: string; slotStartMs?: number };
 
 /** Up to this many stations sharing a frequency are asked about together. */
 export const MAX_LISTED = 3;
@@ -97,14 +106,20 @@ function orList(names: readonly string[]): string {
  * row on any frequency (scheduledBetween). 2 (#148): the EiBi question never
  * names a station Priyom drives (E11, E07...); on a frequency with only one
  * catalog station on the merged dial a signal question is asked instead, and
- * on a frequency several stations share it's rule 1 over the rest. Bump it,
+ * on a frequency several stations share it's rule 1 over the rest. 3 (#150):
+ * on a frequency two to GROUP_MAX (3) catalog stations are on (WWV and WWVH on
+ * 2.5, 5, 10 and 15 MHz) the shared-frequency signal question is asked instead,
+ * so no EiBi question is asked there; an EiBi answer there under rule 2 or older
+ * comes from a tab opened before #150's deploy. With more than GROUP_MAX catalog
+ * stations on one frequency (none today) the EiBi question is still asked, as
+ * under rule 2. Bump it,
  * and say what changed here, when the choice of station or row changes.
  *
  * EiBi answers with askRule null or 1 about Priyom-driven stations are left out
  * of #61's analysis by the CTE in apps/web/analysis/61-exclude-priyom-eibi.sql;
  * any new analysis query over reception reports must apply it too.
  */
-export const ASK_RULE_VERSION = 2;
+export const ASK_RULE_VERSION = 3;
 
 /**
  * What to ask about, from what's scheduled on the frequency: `broadcasts`
@@ -354,4 +369,88 @@ export function signalTransmitter(ask: SignalAsk): Transmitter {
     ...(ask.slotStartMs !== undefined && { slotStartMs: ask.slotStartMs }),
     ...(Number.isFinite(ask.untilMs) && { answerByMs: ask.untilMs + LISTING_GRACE_MS }),
   };
+}
+
+/** The most stations one shared-frequency question (#150) names. */
+export const GROUP_MAX = MAX_LISTED;
+
+/**
+ * The catalog stations a hand-tuned listener on `freqKhz` is asked about
+ * together at `ms` (#150): every station signalAsk allows there, in catalog
+ * order, when there are two to GROUP_MAX of them (WWV and WWVH on 2.5, 5, 10
+ * and 15 MHz); otherwise null. Nothing WWV-specific: any catalog stations
+ * sharing a channel get the same question.
+ */
+export function signalGroupAsk(
+  freqKhz: number,
+  priyom: readonly PriyomTx[] | null,
+  ms: number,
+  stations: readonly SignalStation[] = SIGNAL_STATIONS,
+): SignalAsk[] | null {
+  const asks = stations.flatMap((s) => signalAsk(s, freqKhz, priyom, ms) ?? []);
+  return asks.length >= 2 && asks.length <= GROUP_MAX ? asks : null;
+}
+
+/**
+ * What a shared-frequency prompt (#150) asks about: "Which did you hear: WWV or
+ * WWVH …?", with a choice per station (groupChoices). Open until the first of
+ * them goes off.
+ */
+export function signalGroupTransmitter(asks: readonly SignalAsk[]): Transmitter {
+  const untilMs = Math.min(...asks.map((a) => a.untilMs));
+  return {
+    kind: "signal",
+    name: asks.map((a) => a.slug).join(TX_NAME_SEPARATOR),
+    detail: String(asks[0]!.khz),
+    label: orList(asks.map((a) => a.name)),
+    group: asks.map((a) => ({
+      slug: a.slug,
+      name: a.name,
+      ...(a.hint && { hint: a.hint }),
+      ...(a.slotStartMs !== undefined && { slotStartMs: a.slotStartMs }),
+    })),
+    ...(Number.isFinite(untilMs) && { answerByMs: untilMs + LISTING_GRACE_MS }),
+  };
+}
+
+/**
+ * An answer to a shared-frequency question (#150): heard one station (by
+ * slug), all of them, none, couldn't tell (another station, or no telling them
+ * apart), or the receiver didn't open.
+ */
+export const GROUP_ANSWERS = ["all", "none", "unsure", "no_open"] as const;
+export type GroupAnswer = { heard: string } | (typeof GROUP_ANSWERS)[number];
+
+/** The choices a shared-frequency question offers, in order: each station with its hint when it has one. */
+export function groupChoices(group: readonly GroupMember[]): { answer: GroupAnswer; label: string }[] {
+  return [
+    ...group.map((m) => ({ answer: { heard: m.slug }, label: `Heard ${m.name}${m.hint ? ` (${m.hint})` : ""}` })),
+    { answer: "all", label: group.length === 2 ? "Heard both" : "Heard all of them" },
+    { answer: "none", label: "Heard nothing" },
+    { answer: "unsure", label: "Something else / can't tell" },
+    { answer: "no_open", label: "Didn't open" },
+  ];
+}
+
+/**
+ * The report each station named in a shared-frequency question gets from one
+ * answer (#150): "Heard WWV" files WWV heard and WWVH not heard (the listener
+ * was asked about both and picked one; weaker evidence than a plain "not
+ * heard", since WWVH may only have been drowned out), "Heard both" both heard,
+ * "Heard nothing" both not heard, "Didn't open" both no_open, and "can't tell"
+ * nothing, so a listener hearing BPM isn't pushed into crediting either. Null
+ * for a heard-one answer naming a station that wasn't asked about. The server
+ * maps the answer itself with this, so a page can't file other combinations.
+ */
+export function groupOutcomes(
+  slugs: readonly string[],
+  answer: GroupAnswer,
+): { slug: string; outcome: Outcome }[] | null {
+  if (typeof answer === "object") {
+    if (!slugs.includes(answer.heard)) return null;
+    return slugs.map((slug) => ({ slug, outcome: slug === answer.heard ? "heard" : "not_heard" }));
+  }
+  if (answer === "unsure") return [];
+  const outcome: Outcome = answer === "all" ? "heard" : answer === "none" ? "not_heard" : "no_open";
+  return slugs.map((slug) => ({ slug, outcome }));
 }

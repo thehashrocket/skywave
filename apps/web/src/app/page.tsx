@@ -67,10 +67,10 @@ import { useHeld } from "@/lib/use-held";
 import { useBetterReceiver } from "@/lib/use-better-receiver";
 import { useMapAdmission } from "@/lib/use-map-admission";
 import { useListenTracking } from "@/lib/use-listen-tracking";
-import { signalAsk, type BeaconPick, type Outcome } from "@/lib/reception";
+import { signalAsk, signalGroupAsk, type BeaconPick, type GroupAnswer, type Outcome } from "@/lib/reception";
 import { useRadio } from "@/lib/use-radio";
 import { useReceptionPrompt } from "@/lib/use-reception-prompt";
-import { useSubmitReport } from "@/lib/use-submit-report";
+import { useSubmitGroupReport, useSubmitReport } from "@/lib/use-submit-report";
 import { useSchedule } from "@/lib/use-schedule";
 import { useSolarClock } from "@/lib/use-solar-clock";
 import { bandAt, DEFAULT_SPAN, nextView, spanKhz, type SpanStep, type WideView } from "@/lib/wide-view";
@@ -750,9 +750,15 @@ export default function ListenPage() {
   // like the other picks on a change of receiver. Header Listen ranks by its path.
   // `listened`: it came from a Listen (a row's, or header Listen on it), not only a
   // link; only then is it asked about (#101: questions follow a Listen pick only).
-  const [signalPick, setSignalPick] = useState<{ slug: string; khzs: readonly number[]; listened: boolean } | null>(
-    null,
-  );
+  // `listenedKhz`: the frequency that Listen tuned. On another of the station's
+  // channels that catalog stations share (WWV to 10 MHz from its 20 MHz Listen),
+  // the listener could be hearing either, so #150's group question is asked there.
+  const [signalPick, setSignalPick] = useState<{
+    slug: string;
+    khzs: readonly number[];
+    listened: boolean;
+    listenedKhz?: number;
+  } | null>(null);
   if (signalPick && !signalPick.khzs.some((k) => onKhz(freqKhz, k))) setSignalPick(null);
   // A shared link naming a station brings the page to the panel once, after the first render.
   const [scrollToSignals, setScrollToSignals] = useState(false);
@@ -943,7 +949,7 @@ export default function ListenPage() {
         setFreqKhz(ch.khz);
         setMode(ch.mode);
         // A Listen on it, even if a link named it first: now it's asked about.
-        setSignalPick({ ...signalPick, khzs: [...new Set([...signalPick.khzs, ...khzs])], listened: true });
+        setSignalPick({ ...signalPick, khzs: [...new Set([...signalPick.khzs, ...khzs])], listened: true, listenedKhz: ch.khz });
         sendRetune({ freqKhz: ch.khz, mode: ch.mode });
         return false;
       }
@@ -957,7 +963,7 @@ export default function ListenPage() {
       // which are in the drawer (the panel and header Listen are outside it), as startPickBest does.
       if (receivers === undefined) setDrawerOpen(true);
       // After the run starts, which ends any earlier pick.
-      setSignalPick({ slug: station.slug, khzs, listened: true });
+      setSignalPick({ slug: station.slug, khzs, listened: true, listenedKhz: ch.khz });
       return started;
     },
     [listenAt, signalPick, status.state, sendRetune, receivers],
@@ -1419,7 +1425,9 @@ export default function ListenPage() {
   // The signal station a question would be about (#101, #148): the one a Listen
   // picked, while it's on the air on the dial's frequency; or, tuned by hand, the
   // one catalog station on the dial (D3), when it's the only station there (D12)
-  // and not a season row standing in for Priyom's (D5). Worked out again each
+  // and not a season row standing in for Priyom's (D5); or, tuned by hand to a
+  // frequency two or more catalog stations are on (WWV and WWVH, #150), all of
+  // them in one question, instead of D12's EiBi one. Worked out again each
   // minute, so a slot starting while the dial waits on it is asked about; the
   // prompt waits out the dwell itself.
   const signalQuestion = useMemo(() => {
@@ -1427,7 +1435,13 @@ export default function ListenPage() {
     if (clock === null) return null;
     const now = serverNow();
     const picked = signalPick?.listened ? findStation(signalPick.slug) : undefined;
-    if (picked) return signalAsk(picked, freqKhz, priyom, now);
+    const group = signalGroupAsk(freqKhz, priyom, now);
+    // A Listen pick is asked about alone where that Listen tuned, or where no other
+    // catalog station is on the air; moved by hand onto a channel it shares, the
+    // listener is asked which they heard (#150 review).
+    const onListened = signalPick?.listenedKhz === undefined || onKhz(freqKhz, signalPick.listenedKhz);
+    if (picked && (!group || onListened)) return signalAsk(picked, freqKhz, priyom, now);
+    if (group) return group;
     const onDial = schedule ? listedOn(schedule, freqKhz, now) : [];
     const stations = new Set(onDial.map((r) => r.slug ?? `eibi:${r.station}`));
     const only: OnAirRow | undefined = onDial[0];
@@ -1473,19 +1487,31 @@ export default function ListenPage() {
   // The buttons go away with the prompt; leave focus where it was asked: the
   // strip, or the status row beside the line (moving to the other would scroll the page).
   const focusAfterPrompt = (inStrip: boolean) => (inStrip ? focusBeaconStrip() : statusRef.current?.focus());
-  const answerReception = (outcome: Outcome, comment: string) => {
+  // Anything that has dropped the hook's choice since the question appeared (a
+  // hand pick, a failed or abandoned run, a dial move, even one followed by a
+  // run that picks the same receiver again) revokes the snapshot. A newer run
+  // that replaced the choice without a drop, on the same frequency and
+  // receiver, leaves the snapshot as is.
+  const keptPick = () => {
     const p = reception.prompt;
-    // Anything that has dropped the hook's choice since the question appeared (a
-    // hand pick, a failed or abandoned run, a dial move, even one followed by a
-    // run that picks the same receiver again) revokes the snapshot. A newer run
-    // that replaced the choice without a drop, on the same frequency and
-    // receiver, leaves the snapshot as is.
     const live = p && promptPick ? pickedFor(p.host, p.port) : null;
     const kept = promptPick && live && live.freqKhz === promptPick.pick.freqKhz && dropCount() === promptPick.drops;
-    if (p) submitReport(p, outcome, comment, kept ? promptPick.pick : undefined);
-    reception.answered();
+    return kept ? promptPick.pick : undefined;
+  };
+  const afterAnswer = (sent: boolean) => {
+    reception.answered(sent);
     if (promptInStrip) setThanksBand(promptBand);
     focusAfterPrompt(promptInStrip);
+  };
+  const answerReception = (outcome: Outcome, comment: string) => {
+    const p = reception.prompt;
+    if (p) submitReport(p, outcome, comment, keptPick());
+    afterAnswer(true);
+  };
+  const submitGroupReport = useSubmitGroupReport();
+  const answerReceptionGroup = (answer: GroupAnswer, comment: string) => {
+    const p = reception.prompt;
+    afterAnswer(p ? submitGroupReport(p, answer, comment, keptPick()) : false);
   };
   const receptionPrompt = reception.prompt && (
     <ReceptionPrompt
@@ -1493,6 +1519,7 @@ export default function ListenPage() {
       prompt={reception.prompt}
       place={receptionPlace}
       onAnswer={answerReception}
+      onAnswerGroup={answerReceptionGroup}
       onClose={() => {
         reception.dismiss();
         focusAfterPrompt(promptInStrip);
