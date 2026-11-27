@@ -394,6 +394,14 @@ def test_main(tmp_path, monkeypatch, capsys):
     assert "no WSPR spot on the band anywhere in the window: 1" in out and "within 1,200 km:     1 of 1 (100.0%)" in out
     assert "counting quiet answers as misses: 50.0%" in out
     assert "build the broadcast join (D4) [3-min window: D4's]" in out  # a D4 verdict: exit 0 (asserted above)
+    # Value: protects=the CLI reads the clock once, so a run just under 24 h after the windows ended neither caches the replies nor prints a verdict, and says when to run again; fails_when=main lets run_query and summarize each read the clock (a reply left uncached as still filling, then a verdict from a later reading), or the unsettled verdict never reaches the CLI; why_new=7b407c3 passes one now_s to both and no test ran the CLI on a fresh window (ship coverage audit, 2026-11-27); seam=none (monkeypatches time.time, whose later readings jump 3 days); no_claim=the clock's real drift within a run
+    readings = iter([PICK_MS / 1000 + 23 * 3600])  # first reading: windows ended about 23 h ago
+    monkeypatch.setattr(probe.time, "time", lambda: next(readings, PICK_MS / 1000 + 3 * 86400))
+    monkeypatch.setattr(probe, "CACHE_DIR", tmp_path / "cache3")
+    assert probe.main(["--answers", str(write(tmp_path, NAMED + row(name="Radio A") + row(outcome="not_heard", name="Radio A"))), "--window-min", "3"]) == 3
+    out = capsys.readouterr().out
+    assert "no verdict: 2 answers' windows ended under 24 h ago and wspr.live is still filling them in; run again after 2026-11-21 12:00 UTC" in out
+    assert "build the broadcast join" not in out and not list((tmp_path / "cache3").glob("*"))
 
 
 REPO = Path(__file__).resolve().parents[4]
