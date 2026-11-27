@@ -3738,7 +3738,7 @@ describe("ListenPage", () => {
 
     // Value: protects=Listen on the RTTY slot turns the decoder on (and a JS8 Listen doesn't), so the strip's "text shows under the waterfall" holds; fails_when=listenToGhostNet stops calling setDecode for RTTY or calls it for other slots; why_new=RTTY decoding (#92); seam=useRadio mocked, real GhostNetStrip; no_claim=whether the 7.077 dial reading is right (TODOS.md)
     it("turns the decoder on for the RTTY slot only", () => {
-      render(<ListenPage />);
+      const { rerender } = render(<ListenPage />);
       openGhostNet();
       act(() => fireEvent.click(screen.getByRole("button", { name: NA_JS8 })));
       expect(radio.setDecode).not.toHaveBeenCalled();
@@ -3752,6 +3752,10 @@ describe("ListenPage", () => {
         ),
       );
       expect(radio.setDecode).toHaveBeenCalledWith({ mode: "rtty" });
+      // The decoder it asked for shows as the Decode RTTY switch, ticked (#179).
+      radio.decodeState = { state: "searching", reverse: false };
+      rerender(<ListenPage />);
+      expect((screen.getByRole("checkbox", { name: "Decode RTTY" }) as HTMLInputElement).checked).toBe(true);
     });
 
     // Value: protects=GhostNet Listen hands Pick best the net's dial and mode (7.107 USB), not the dial as it was, and tries the receiver inside the net's region before a stronger one outside it (review A1, owner D2/D5); fails_when=the dial is set only through changeFreq/the next render, or ranking ignores the region; why_new=new Listen through listenAt; seam=MapPanel/picker/radio mocked, real GhostNetStrip and ranking; no_claim=Kiwi audio
@@ -4579,6 +4583,7 @@ describe("ListenPage", () => {
   it("turns RTTY decoding on and off, showing the panel only while on", () => {
     const { rerender } = render(<ListenPage />);
     expect(screen.queryByRole("region", { name: "Decoded RTTY" })).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: "USB" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Decode RTTY" }));
     expect(radio.setDecode).toHaveBeenLastCalledWith({ mode: "rtty" });
     radio.decodeState = { state: "locked", markHz: 2125, reverse: false };
@@ -4588,5 +4593,86 @@ describe("ListenPage", () => {
     expect(screen.getByLabelText("Decoded text").textContent).toBe("CQ DE W1AW");
     fireEvent.click(screen.getByRole("checkbox", { name: "Decode RTTY" }));
     expect(radio.setDecode).toHaveBeenLastCalledWith(null);
+  });
+
+  // Value: protects=the Decode RTTY switch shows only in USB and LSB, or while a decoder is on or failed, so it can always be turned off and never clutters AM; fails_when=the switch shows in AM with no decoder, disappears while a decoder is running after a mode change or from under focus right after it's turned off there, or the .decode-slot holding its line unmounts with it (the slot's CSS height is globals.test.ts's); why_new=design critique 2026-11-27: a permanent RTTY switch under the AM button; seam=what the decoder does is DecodePanel's and the radio service's tests; no_claim=does not check that RTTY can or cannot be decoded in AM or CW
+  it("shows Decode RTTY in USB and LSB, or while a decoder is on or failed", () => {
+    const { rerender } = render(<ListenPage />);
+    const decodeSwitch = () => screen.queryByRole("checkbox", { name: "Decode RTTY" }) as HTMLInputElement | null;
+    expect(decodeSwitch()).toBeNull(); // AM
+    // The line stays, empty, so the panel keeps its height (#179).
+    const slot = document.querySelector(".mode-group > .decode-slot");
+    expect(slot).not.toBeNull();
+    expect(slot!.childElementCount).toBe(0);
+    fireEvent.click(screen.getByRole("radio", { name: "CW" }));
+    expect(decodeSwitch()).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: "LSB" }));
+    expect(decodeSwitch()).not.toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: "USB" }));
+    expect(decodeSwitch()!.checked).toBe(false);
+    // A decoder running, then a change to AM: the switch stays, ticked, and turns it off.
+    radio.decodeState = { state: "locked", markHz: 2125, reverse: false };
+    rerender(<ListenPage />);
+    fireEvent.click(screen.getByRole("radio", { name: "AM" }));
+    expect(decodeSwitch()!.checked).toBe(true);
+    const unticked = decodeSwitch()!;
+    unticked.focus();
+    fireEvent.click(unticked);
+    expect(radio.setDecode).toHaveBeenLastCalledWith(null);
+    // Off now, in AM: the same switch stays, unticked and focused, until the mode changes (owner D2).
+    radio.decodeState = null;
+    rerender(<ListenPage />);
+    expect(decodeSwitch()).toBe(unticked);
+    expect(unticked.checked).toBe(false);
+    expect(document.activeElement).toBe(unticked);
+    act(() => unticked.blur()); // a real click on a mode moves focus there; jsdom's click doesn't
+    fireEvent.click(screen.getByRole("radio", { name: "CW" }));
+    expect(decodeSwitch()).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: "AM" }));
+    expect(decodeSwitch()).toBeNull(); // not brought back by returning to the mode it was turned off in
+    // A failed decoder in CW: still shown (unticked), so it can be cleared.
+    radio.decodeState = { state: "error", message: "No RTTY found", reverse: false };
+    fireEvent.click(screen.getByRole("radio", { name: "CW" }));
+    rerender(<ListenPage />);
+    expect(decodeSwitch()!.checked).toBe(false);
+    // Cleared in CW: it stays until the next mode change, then goes.
+    radio.decodeState = null;
+    rerender(<ListenPage />);
+    expect(decodeSwitch()).not.toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: "AM" }));
+    expect(decodeSwitch()).toBeNull();
+  });
+
+  // Value: protects=a letter key pressed with focus on the Decode RTTY switch (no decoder) doesn't unmount it from under focus; it goes once focus leaves; fails_when=A or C there leaves focus on <body>, a window switch (blur with the document unfocused) unmounts it, or it stays in AM after focus moves on; why_new=owner D4, review of #179 (reproduced in a browser); seam=none; no_claim=screen-reader announcements (jsdom)
+  it("keeps Decode RTTY while it holds focus when a letter key changes the mode", () => {
+    render(<ListenPage />);
+    fireEvent.click(screen.getByRole("radio", { name: "USB" }));
+    const sw = screen.getByRole("checkbox", { name: "Decode RTTY" });
+    act(() => sw.focus());
+    fireEvent.keyDown(sw, { key: "a" });
+    expect((screen.getByRole("radio", { name: "AM" }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole("checkbox", { name: "Decode RTTY" })).toBe(sw);
+    expect(document.activeElement).toBe(sw);
+    // Another window or tab takes focus: blur fires but the switch stays the active element, so it
+    // stays (owner D5).
+    act(() => {
+      fireEvent.blur(sw);
+    });
+    expect(screen.getByRole("checkbox", { name: "Decode RTTY" })).toBe(sw);
+    act(() => sw.blur());
+    expect(screen.queryByRole("checkbox", { name: "Decode RTTY" })).toBeNull();
+  });
+
+  // Value: protects=Copy link lives in the readout's column, so the controls panel has no row holding one link; fails_when=the button goes back to being a direct child of .controls, or its rule gives it a grid row of its own; why_new=design critique 2026-11-27: Copy link alone at the bottom left of the panel; seam=what the link copies is covered by the Copy link tests at page.test.tsx line 610; no_claim=jsdom has no layout, so this checks DOM structure only, not CSS or the rendered position
+  it("puts Copy link in the readout's column, after the readout", () => {
+    render(<ListenPage />);
+    const copy = screen.getByRole("button", { name: "Copy link" });
+    const col = copy.parentElement!;
+    expect(col.classList.contains("readout-col")).toBe(true);
+    expect(col.parentElement!.classList.contains("controls")).toBe(true);
+    // Under the readout (and its station line), so Tab reaches it after the frequency.
+    const readout = col.querySelector("form.readout")!;
+    expect(readout.compareDocumentPosition(copy) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(readout.contains(copy)).toBe(false);
   });
 });

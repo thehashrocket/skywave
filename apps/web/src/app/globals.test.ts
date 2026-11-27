@@ -31,6 +31,22 @@ function ruleBody(selector: string): string {
   return m[1]!;
 }
 
+/** The body of the `@media <query>` block (to its closing brace at the start of a line), comments stripped. */
+function mediaBlock(query: string): string {
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const esc = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = new RegExp(`@media ${esc}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(text);
+  if (!m) throw new Error(`no @media ${query} block`);
+  return m[1]!;
+}
+
+/** Whether any rule in `text` lists `selector` in its selector list and declares `declaration`. */
+function declares(text: string, selector: string, declaration: RegExp): boolean {
+  return [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)].some(
+    ([, selectors, body]) => selectors!.split(",").some((s) => s.trim() === selector) && declaration.test(body!),
+  );
+}
+
 /** A :root color token's hex value. */
 function token(name: string): string {
   const m = new RegExp(`${name}\\s*:\\s*(#[0-9a-fA-F]{6})\\s*;`).exec(ruleBody(":root"));
@@ -233,5 +249,23 @@ describe("globals.css", () => {
   // Value: protects=on /owners and /signals the header's lone "skywave" link keeps its text width in the grid, so blank header space doesn't link home; fails_when=.owners-wordmark loses justify-self: start and the link stretches across the ≤720px grid's wide column; why_new=the Step 9 review found the stretch at 521-720px, which no test covered; seam=none; no_claim=jsdom has no layout, so this reads the CSS and does not prove the rendered click area
   it("keeps the secondary pages' wordmark link to its text width in the header grid", () => {
     expect(ruleBody(".owners-wordmark")).toMatch(/justify-self:\s*start\s*;/);
+  });
+
+  // Value: protects=between phone and desktop widths the readout's column (readout plus Copy link, #179) spans both control columns, and on phones drops back to the single column; fails_when=the 860px span-2 list or the 520px reset names the inner .readout form (as before #179) or drops .readout-col, so the readout and its station line squeeze into half the panel; why_new=#179 moved the grid item from .readout to .readout-col and no test read either media list; seam=none; no_claim=jsdom has no layout, so this reads the CSS and does not prove the rendered widths
+  it("lets the readout's column span the controls' two columns at tablet width, one on phones", () => {
+    const tablet = mediaBlock("(max-width: 860px)");
+    expect(declares(tablet, ".controls", /grid-template-columns:\s*1fr 1fr\s*;/)).toBe(true);
+    expect(declares(tablet, ".readout-col", /grid-column:\s*span 2\s*;/), ".readout-col spans both").toBe(true);
+    expect(declares(mediaBlock("(max-width: 520px)"), ".readout-col", /grid-column:\s*auto\s*;/), "reset on phones").toBe(true);
+  });
+
+  // Value: protects=the Decode RTTY line keeps its height while the switch is hidden (AM, CW, #179), on touch too, so changing mode doesn't move the S-meter row and everything under it; fails_when=.decode-slot loses its one-line min-height, or leaves the coarse-pointer 44px list while .letter-keys (the switch inside it) stays, so the panel jumps ~20px on a tablet when USB is picked, or Copy link (.readout-copy) leaves that list and is a ~20px tap target on a touch tablet; why_new=#179 added the held slot and nothing read its rules; seam=none; no_claim=jsdom has no layout, so this reads the CSS and does not measure the panel
+  it("holds the Decode RTTY line's height while the switch is hidden, at touch size too", () => {
+    expect(ruleBody(".decode-slot")).toMatch(/min-height:\s*1lh\s*;/);
+    const touch = mediaBlock("(max-width: 520px), (pointer: coarse)");
+    // Copy link (#179, owner D3) is small text on its own line; on touch it gets the same 44px.
+    for (const selector of [".letter-keys", ".decode-slot", ".readout-copy"]) {
+      expect(declares(touch, selector, /min-height:\s*44px\s*;/), `${selector} at 44px on touch`).toBe(true);
+    }
   });
 });
