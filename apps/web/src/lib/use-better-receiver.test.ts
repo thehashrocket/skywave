@@ -74,4 +74,16 @@ describe("useBetterReceiver", () => {
     act(() => vi.advanceTimersByTime(REST_MS * 2));
     expect(hook.result.current.offer).toBeNull();
   });
+
+  // Value: protects=a receiver another Skywave listener holds is never offered (the switch would be refused, skywave_cap), but stays out of `excluded`, so the switch an offer starts can still try it last; fails_when=isHeld is ignored by the offer, or folded into excluded (which drops it from the switch's fallback list); why_new=#155 held receivers; seam=none; no_claim=how fresh the held set is (use-held)
+  it("never offers a held receiver, but leaves it to the switch", () => {
+    const held = (r: Receiver) => r.host === "other";
+    const hook = renderHook(
+      (p: Props) => useBetterReceiver({ ...p, receivers, isRefused: () => false, isHeld: held }),
+      { initialProps: { enabled: true, freqKhz: 11_000, playing: here } },
+    );
+    act(() => vi.advanceTimersByTime(REST_MS));
+    expect(hook.result.current.offer?.target.host).toBe("third");
+    expect(hook.result.current.excluded(rx("other"))).toBe(false);
+  });
 });

@@ -334,6 +334,10 @@ class Slots:
     def receiver_full(self, receiver: Hashable) -> bool:
         return self.per_receiver is not None and self._receivers.get(receiver, 0) >= self.per_receiver
 
+    def held(self, receivers: Iterable[Hashable]) -> list[Hashable]:
+        """Those of `receivers` at the per-receiver cap now, in the order given (GET /held)."""
+        return [r for r in receivers if self.receiver_full(r)]
+
     def acquire(self, receiver: Hashable, owner: Hashable | None) -> Lease | str:
         """A Lease, or the refusal() reason when there's no room."""
         reason = self.refusal(receiver, owner)

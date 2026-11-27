@@ -32,6 +32,12 @@ export function useBetterReceiver(a: {
   playing: Where | null;
   freqKhz: number;
   isRefused: (r: Receiver) => boolean;
+  /**
+   * Another Skywave listener holds it (use-held): never offered, since the
+   * service would refuse the switch (skywave_cap). Unlike isRefused it stays in
+   * `excluded`'s list, so the switch an offer starts can still try it last.
+   */
+  isHeld?: (r: Receiver) => boolean;
 }) {
   const [offer, setOffer] = useState<Suggestion | null>(null);
   const playingKey = a.playing ? receiverKey(a.playing) : null;
@@ -44,6 +50,8 @@ export function useBetterReceiver(a: {
   receivers.current = a.receivers;
   const isRefused = useRef(a.isRefused);
   isRefused.current = a.isRefused;
+  const isHeld = useRef(a.isHeld);
+  isHeld.current = a.isHeld;
   const freq = useRef(a.freqKhz);
   freq.current = a.freqKhz;
 
@@ -71,7 +79,13 @@ export function useBetterReceiver(a: {
       const list = receivers.current;
       if (!list) return;
       setOffer(
-        suggestBetter({ receivers: list, playing: p, freqKhz, anchorKhz: anchor.current.khz, exclude: excluded }),
+        suggestBetter({
+          receivers: list,
+          playing: p,
+          freqKhz,
+          anchorKhz: anchor.current.khz,
+          exclude: (r) => excluded(r) || (isHeld.current?.(r) ?? false),
+        }),
       );
     }, REST_MS);
     return () => clearTimeout(timer);

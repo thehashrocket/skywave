@@ -161,9 +161,21 @@ main() {
     fi
   else
     echo "  by event and code:"
+    # The service writes one refusal line per receiver and code every 10 s
+    # (session.py REFUSED_LOG_INTERVAL_S) and holds the rest back: the next
+    # line carries suppressed=N for them, and a session that closes mid-burst
+    # writes a detail=throttled line that is only those N, not a refusal of its
+    # own. So a line counts 1 (0 if throttled) plus its suppressed=N, not 1.
     # A day of only event=dropped notes has no code= field: say so, don't exit.
-    grep -oE 'event=[a-z_]+ .* code=[A-Za-z0-9_-]+' <<<"$events" \
-      | awk '{print $1, $NF}' | sort | uniq -c | sort -rn | awk '{printf "    %5d  %s %s\n", $1, $2, $3}' \
+    awk '{ ev = code = ""; own = 1; held = 0
+           for (i = 2; i <= NF; i++) {
+             if ($i ~ /^event=/ && ev == "") ev = $i
+             else if ($i ~ /^code=/ && code == "") code = $i
+             else if ($i == "detail=throttled") own = 0
+             else if ($i ~ /^suppressed=[0-9]+$/) held = substr($i, 12) + 0 }
+           if (ev != "" && code != "") n[ev " " code] += own + held }
+         END { for (k in n) if (n[k] > 0) print n[k], k }' <<<"$events" \
+      | sort -k1,1rn -k2 | awk '{printf "    %5d  %s %s\n", $1, $2, $3}' | grep . \
       || echo "    (none)"
     echo "  most listeners per hour:"
     awk '{ h = substr($1, 1, 13); for (i = 2; i <= NF; i++) if ($i ~ /^listeners=/) {
