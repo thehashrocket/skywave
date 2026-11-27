@@ -227,7 +227,7 @@ export function Waterfall({ mode, sampleRate, active, expanded, connecting, subs
               ? "The waterfall fills in once you're listening."
               : connecting || active
                 ? "Tuning in…"
-                : "Press Listen to hear the band. A blank receiver picks the best one."}
+                : "A blank receiver picks the best one."}
           </p>
         )}
       </div>

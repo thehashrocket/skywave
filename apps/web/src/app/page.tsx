@@ -1648,6 +1648,18 @@ export default function ListenPage() {
         <PowerButton busy={busy} />
       </header>
 
+      {/* What skywave is and what Listen will play (#177), on every visit until its first audio,
+          which is already the one layout change. Plain text, not a live region: read in order, never
+          announced as the dial moves. "Usually": the schedule is a hint, not a promise WWV is on. */}
+      {!waterfallOpen && (
+        <p className="console-intro">
+          Shortwave and ham radio through volunteer receivers around the world.{" "}
+          {freqKhz === DEFAULT_TUNING.freqKhz && mode === DEFAULT_TUNING.mode
+            ? "Press Listen: the dial is on 10,000 kHz, where the WWV time signal usually is."
+            : "Press Listen to hear this frequency."}
+        </p>
+      )}
+
       <section
         id="receiver-drawer"
         ref={drawerRef}

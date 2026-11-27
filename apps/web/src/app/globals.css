@@ -188,6 +188,16 @@ html,
   margin-top: calc(-1 * var(--console-gap));
 }
 
+/* Under the header until the visit's first audio (#177): what skywave is and what Listen plays.
+   Running text, so Atkinson, and muted like the status message, so the dial stays the loud thing. */
+.console-intro {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 1rem;
+  color: var(--muted);
+  max-width: 75ch;
+}
+
 .wordmark {
   margin: 0;
   font-family: var(--font-instrument);
