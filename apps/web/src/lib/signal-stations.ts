@@ -14,9 +14,11 @@
  *
  * VE3SUN's list has Squeaky Wheel on 3829.18/3830.45; no other source has
  * that, so it isn't used (Priyom has 5367/3363.5 USB).
- * Still unchecked: day/night switch times. They're unpublished, so `dayNight`
- * follows the sun at the transmitter (owner's choice) and can be wrong for a
- * while around dawn and dusk.
+ * Day/night switch times: Priyom doesn't publish them, but EiBi does, one row per
+ * month range, so `dayNight` follows EiBi's rows for the station when the caller
+ * has them (#168, the same rows the dial names it by) and the sun at the
+ * transmitter otherwise (owner's choice), which can be wrong for a while around
+ * dawn and dusk.
  *
  * Left out of #98's seed list for now, each waiting on a source:
  * - CHU is listed as defunct: NRC shut it down 2026-06-22 at 14:10 UTC (Wikipedia,
@@ -30,7 +32,7 @@
  *   EiBi's season grid off the dial; F06's feed also uses F06a (priyomAlso).
  */
 
-import { onDay } from "./eibi";
+import { onAirAt as listedAt, onDay, type Broadcast } from "./eibi";
 import type { Mode } from "./radio-types";
 import { isNight, sunPosition } from "./solar";
 
@@ -58,8 +60,9 @@ export type SignalWindow = { days?: string; startUtc: number; endUtc: number; kh
 export type Schedule =
   | { kind: "always" }
   /**
-   * On all the time, on one channel by day and another by night, switching at
-   * unpublished times: the sun at the transmitter decides which (`tx` required).
+   * On all the time, on one channel by day and another by night: EiBi's rows
+   * for it decide which when the caller has them (activeChannelAt), else the
+   * sun at the transmitter (`tx` required).
    */
   | { kind: "dayNight"; dayKhz: number; nightKhz: number }
   | { kind: "windows"; windows: readonly SignalWindow[] }
@@ -67,6 +70,13 @@ export type Schedule =
   | { kind: "irregular"; note: string }
   /** History only, no Listen. `ended` is "YYYY-MM" when a source gives it. */
   | { kind: "defunct"; ended?: string };
+
+/**
+ * A row of the merged schedule (on-air.ts's OnAirRow), which names the catalog
+ * station it is by `slug`, on the catalog's own channel: where a day/night
+ * station's switch times come from (#168).
+ */
+export type SlugRow = Broadcast & { slug?: string };
 
 export type Transmitter = {
   lat: number;
@@ -422,15 +432,34 @@ export function onAirAt(station: SignalStation, ms: number): boolean {
 }
 
 /**
- * The channel to tune at `ms`: the open window's, the main one for an always-on
- * station, the day or night one by the sun at the transmitter, else null.
+ * A day/night station's frequency at `ms`: the one channel its `rows` have on
+ * the air (EiBi's month window, #168), else the sun's guess, also when the rows
+ * have it on both channels or neither (a gap between EiBi's windows).
  */
-export function activeChannelAt(station: SignalStation, ms: number): SignalChannel | null {
+function dayNightKhz(
+  station: SignalStation,
+  schedule: { dayKhz: number; nightKhz: number },
+  tx: Transmitter,
+  ms: number,
+  rows: readonly SlugRow[] | undefined,
+): number {
+  const on = new Set(rows?.filter((r) => r.slug === station.slug && listedAt(r, ms)).map((r) => r.khz));
+  if (on.size === 1) return [...on][0]!;
+  return isNight(tx.lat, tx.lon, sunPosition(ms)) ? schedule.nightKhz : schedule.dayKhz;
+}
+
+/**
+ * The channel to tune at `ms`: the open window's, the main one for an always-on
+ * station, the day or night one for a day/night station (by EiBi's hours in
+ * `rows`, the merged schedule, when they have it; else by the sun at the
+ * transmitter), else null.
+ */
+export function activeChannelAt(station: SignalStation, ms: number, rows?: readonly SlugRow[]): SignalChannel | null {
   const { schedule, tx } = station;
   if (schedule.kind === "always") return station.channels[0] ?? null;
   if (schedule.kind === "dayNight") {
     if (!tx) return null;
-    const khz = isNight(tx.lat, tx.lon, sunPosition(ms)) ? schedule.nightKhz : schedule.dayKhz;
+    const khz = dayNightKhz(station, schedule, tx, ms, rows);
     return station.channels.find((c) => c.khz === khz) ?? null;
   }
   const w = windowAt(station, ms);

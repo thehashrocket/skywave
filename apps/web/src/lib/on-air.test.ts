@@ -11,7 +11,7 @@ import {
   stationLine,
   type Broadcast,
 } from "./eibi";
-import { onAirSchedule, stationNamed, type OnAirRow, type PriyomCopy } from "./on-air";
+import { dayNightRows, onAirSchedule, stationNamed, type OnAirRow, type PriyomCopy } from "./on-air";
 import { priyomSpan, type PriyomTx } from "./priyom-schedule";
 import { findBroadcasts } from "./station-search";
 import { SIGNAL_STATIONS } from "./signal-stations";
@@ -229,5 +229,17 @@ describe("the catalog's EiBi names", () => {
     const used = new Set(EIBI.map((b) => b.station));
     for (const s of SIGNAL_STATIONS) for (const n of s.eibi ?? []) expect(used, `${s.slug}: ${n}`).toContain(n);
     expect(stationNamed("WWVB Colorado")).toBeUndefined();
+  });
+});
+
+describe("dayNightRows", () => {
+  // Value: protects=#168 the station page's slice of the schedule is exactly the merged schedule's rows for The Pip and The Squeaky Wheel (EiBi's four month windows on each of their two channels, on the catalog's frequencies, 3363.5 for EiBi's 3364), so the page and the dial read the same hours; fails_when=other stations' rows leak in (a bigger payload, wrong names), a channel's rows go missing, or the Squeaky Wheel's 3364 rows keep EiBi's frequency; why_new=#168 signals.dayNight; seam=the bundled B26 snapshot; no_claim=that the server serves the current season
+  it("keeps only the day/night stations' rows, on the catalog's channels", () => {
+    const rows = dayNightRows(EIBI);
+    const merged = onAirSchedule(EIBI, undefined).filter((r) => r.slug === "the-pip" || r.slug === "squeaky-wheel");
+    expect(rows).toEqual(merged);
+    const count = (slug: string, khz: number) => rows.filter((r) => r.slug === slug && r.khz === khz).length;
+    expect([count("the-pip", 3_756), count("the-pip", 5_448), count("squeaky-wheel", 3_363.5), count("squeaky-wheel", 5_367)]).toEqual([4, 4, 4, 4]);
+    expect(rows.length).toBe(16);
   });
 });

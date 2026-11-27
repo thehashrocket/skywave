@@ -6,11 +6,11 @@ import { findStation, SIGNAL_STATIONS } from "./signal-stations";
 const station = (slug: string) => findStation(slug)!;
 
 describe("signal page text", () => {
-  // Value: protects=#103 every station page's schedule reads right for its kind: around the clock, day/night channels, Priyom's pattern note, or off the air since its year-month; fails_when=a kind falls through to empty text or the wrong channel names; why_new=#103 pages; seam=signal-stations catalog; no_claim=catalog facts
+  // Value: protects=#103 every station page's schedule reads right for its kind: around the clock, day/night channels (switching at EiBi's listed times, the sun only without them, #168), Priyom's pattern note, or off the air since its year-month; fails_when=a kind falls through to empty text or the wrong channel names, or the page still says the sun decides; why_new=#103 pages, reworded for #168 (owner, /document-release); seam=signal-stations catalog; no_claim=catalog facts
   it("describes each kind of schedule", () => {
     expect(scheduleLines(station("uvb-76"))).toEqual(["On the air around the clock."]);
     expect(scheduleLines(station("the-pip"))).toEqual([
-      "On the air around the clock: 5.448 USB by day and 3.756 USB by night at the transmitter.",
+      "On the air around the clock: 5.448 USB by day and 3.756 USB by night, switching at the times EiBi's schedule lists (by the sun at the transmitter when it lists none).",
     ]);
     expect(scheduleLines(station("e11"))[0]).toMatch(/twice a week/i);
     expect(scheduleLines(station("lincolnshire-poacher"))).toEqual(["Off the air since 2008-07."]);

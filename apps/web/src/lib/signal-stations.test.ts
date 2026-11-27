@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import snapshot from "../server/eibi-snapshot.json";
+import { forPage, parseEibi, scheduledOn } from "./eibi";
+import { onAirSchedule } from "./on-air";
 import { inTuneRange, isMode } from "./radio-types";
 import {
   activeChannelAt,
@@ -167,6 +170,54 @@ describe("nextStartAfter", () => {
     const yearly = station({ kind: "windows", windows: [{ days: "1Jan", startUtc: hhmm(0), endUtc: hhmm(1), khz: 6_000 }] });
     expect(nextStartAfter(yearly, at(`${MONDAY}T00:00:00Z`))).toBeNull();
     expect(nextStartAfter(findStation("wwv")!, at(`${MONDAY}T00:00:00Z`))).toBeNull();
+  });
+});
+
+describe("activeChannelAt for a day/night station (#168)", () => {
+  /** The merged schedule the dial reads, from the bundled B26 season. */
+  const ROWS = onAirSchedule(parseEibi(snapshot.csv, snapshot.season).map(forPage), null);
+  const pip = findStation("the-pip")!;
+  const wheel = findStation("squeaky-wheel")!;
+
+  // Value: protects=#168 acceptance: on 2026-11-25 the panel (activeChannelAt with the merged rows) names the frequency the dial names for The Pip at 05:00, 06:00, 14:00 and 15:00 UTC (EiBi Nov-Feb: 3756 14:00-05:30, 5448 05:30-14:00); fails_when=the rows are ignored and the sun's dawn guess picks 5448 while the dial says 3756, or another month window's hours are used; why_new=#168; seam=the bundled B26 snapshot through on-air.ts; no_claim=that EiBi's hours are right on the air
+  it.each([
+    ["05:00", 3_756],
+    ["06:00", 5_448],
+    ["14:00", 3_756],
+    ["15:00", 3_756],
+  ])("names The Pip on the dial's frequency at %s UTC", (hm, khz) => {
+    const ms = at(`2026-11-25T${hm}:00Z`);
+    expect(activeChannelAt(pip, ms, ROWS)?.khz).toBe(khz);
+    expect(scheduledOn(ROWS, khz, ms).filter((r) => r.slug === "the-pip").length).toBe(1);
+    const other = khz === 3_756 ? 5_448 : 3_756;
+    expect(scheduledOn(ROWS, other, ms).some((r) => r.slug === "the-pip")).toBe(false);
+  });
+
+  // Value: protects=the 05:00 case above really tests EiBi over the sun: without rows the sun at Rostov says day (5448), so the two sources disagree there; fails_when=the fixture moment stops discriminating (sun math or the transmitter moves) and the acceptance test passes vacuously; why_new=#168; seam=solar.ts; no_claim=none
+  it("differs from the sun's guess at 05:00, the case #168 fixes", () => {
+    expect(activeChannelAt(pip, at("2026-11-25T05:00:00Z"))?.khz).toBe(5_448);
+  });
+
+  // Value: protects=The Squeaky Wheel's EiBi night rows on 3364 count as the catalog's 3363.5 channel (on-air.ts's MATCH_KHZ, owner #168), so the panel's Listen tunes 3363.5 at night and 5367 by day by EiBi's Nov-Feb hours (3364 14:10-06:00); fails_when=the half-kHz difference drops the night rows and the sun decides, or the panel tunes EiBi's 3364; why_new=#168 shape item 3; seam=the bundled B26 snapshot through on-air.ts; no_claim=which figure is right on the air
+  it("matches The Squeaky Wheel's 3364 to the catalog's 3363.5", () => {
+    expect(activeChannelAt(wheel, at("2026-11-25T05:30:00Z"), ROWS)).toEqual({ khz: 3_363.5, mode: "usb" });
+    expect(activeChannelAt(wheel, at("2026-11-25T14:05:00Z"), ROWS)).toEqual({ khz: 5_367, mode: "usb" });
+    expect(activeChannelAt(wheel, at("2026-11-25T14:10:00Z"), ROWS)).toEqual({ khz: 3_363.5, mode: "usb" });
+  });
+
+  // Value: protects=#168 acceptance: a day/night station with no EiBi rows (none loaded, rows only for other stations, or rows that have it on neither channel or both) behaves exactly as today, by the sun; fails_when=missing or ambiguous rows give null, pick a channel arbitrarily, or another station's rows are read as this one's; why_new=#168; seam=solar.ts; no_claim=none
+  it("follows the sun when the rows don't settle it", () => {
+    const row = (khz: number, start: number, end: number) => ({ khz, start, end, days: "", station: "The Pip", lang: "", target: "", slug: "the-pip" });
+    const both = [row(3_756, 0, 1440), row(5_448, 0, 1440)];
+    // On 01:00-01:10 only, so at every hh:15 sampled below neither channel is on.
+    const neither = [row(3_756, hhmm(1), hhmm(1, 10))];
+    const others = ROWS.filter((r) => r.slug !== "the-pip");
+    for (let h = 0; h < 24; h++) {
+      const ms = at(`2026-11-25T${String(h).padStart(2, "0")}:15:00Z`);
+      const sun = activeChannelAt(pip, ms);
+      expect(sun, `${h}`).not.toBeNull();
+      for (const rows of [[], both, neither, others]) expect(activeChannelAt(pip, ms, rows), `${h}`).toEqual(sun);
+    }
   });
 });
 

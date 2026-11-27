@@ -1,8 +1,9 @@
 /**
  * The Signal stations panel's rows (issue #100): which group each catalog
  * station falls in at a given time, and what its Listen would tune. Pure: the
- * panel passes the server-corrected time and Priyom's schedule (null while the
- * server has none), so tests need no clock or network.
+ * panel passes the server-corrected time, Priyom's schedule (null while the
+ * server has none) and the merged schedule (on-air.ts) once it has one, so tests
+ * need no clock or network.
  */
 
 import { nextTx, onAirTx, PRIYOM_ON_AIR_MS, type PriyomTx } from "./priyom-schedule";
@@ -13,6 +14,7 @@ import {
   windowSpanAt,
   type SignalChannel,
   type SignalStation,
+  type SlugRow,
 } from "./signal-stations";
 
 const HOUR = 60 * 60_000;
@@ -61,9 +63,18 @@ export function txChannel(tx: PriyomTx | null): SignalChannel | null {
 /**
  * Where each station sits at `ms`. Numbers stations (those with a Priyom
  * designator) take their times from `priyom`; a Priyom slot is on for
- * PRIYOM_ON_AIR_MS after its start, since Priyom gives no end time.
+ * PRIYOM_ON_AIR_MS after its start, since Priyom gives no end time. A day/night
+ * station's channel follows `rows` (the merged schedule, the dial's) when given,
+ * so the panel and the dial name the same frequency (#168); while they load
+ * (null) its row shows no frequency and no Listen, rather than the sun's guess,
+ * which can be the channel off the air; with none to be had (undefined), the sun.
  */
-export function panelGroups(ms: number, priyom: readonly PriyomTx[] | null, stations = SIGNAL_STATIONS): PanelGroups {
+export function panelGroups(
+  ms: number,
+  priyom: readonly PriyomTx[] | null,
+  rows?: readonly SlugRow[] | null,
+  stations = SIGNAL_STATIONS,
+): PanelGroups {
   const g: PanelGroups = { onNow: [], upNext: [], always: [], later: [], history: [] };
   for (const station of stations) {
     const kind = station.schedule.kind;
@@ -72,7 +83,7 @@ export function panelGroups(ms: number, priyom: readonly PriyomTx[] | null, stat
       continue;
     }
     if (kind === "always" || kind === "dayNight") {
-      const ch = activeChannelAt(station, ms);
+      const ch = kind === "dayNight" && rows === null ? null : activeChannelAt(station, ms, rows ?? undefined);
       g.always.push({ station, group: "always", listen: ch, shown: ch, atMs: null });
       continue;
     }

@@ -17,7 +17,8 @@
  *   copy doesn't cover, its EiBi rows come back marked unconfirmed (D4, D13).
  * - a day/night station (The Pip, The Squeaky Wheel): EiBi's rows and hours on
  *   its catalog channels, as the catalog station (D8). EiBi's month windows are
- *   the best published switch times.
+ *   the best published switch times; the Signal stations panel and the station
+ *   page read these same rows (activeChannelAt, dayNightRows, #168).
  * - any other catalog station: the catalog's channels and schedule. Its EiBi rows
  *   on frequencies the catalog doesn't list stay plain EiBi rows (WWV on 25 MHz, D7).
  * - everything else: EiBi, unchanged.
@@ -194,4 +195,17 @@ export function onAirSchedule(
   // Still loading (undefined): nothing for them, rather than EiBi's season grid (D4).
 
   return rows.sort((a, b) => a.khz - b.khz || Number(a.source === "eibi") - Number(b.source === "eibi"));
+}
+
+/**
+ * The merged schedule's rows for the day/night stations only: EiBi's month-window
+ * hours on their catalog channels, all a station page needs to agree with the
+ * dial without loading the whole schedule (signals.dayNight, #168).
+ */
+export function dayNightRows(eibi: readonly Broadcast[], stations: readonly SignalStation[] = SIGNAL_STATIONS): OnAirRow[] {
+  const isDayNight = (s: SignalStation | undefined) => s?.schedule.kind === "dayNight";
+  // Only their EiBi rows go through the merge (a few dozen, not the season's thousands);
+  // the catalog rows it adds for other stations are dropped after.
+  const theirs = eibi.filter((b) => isDayNight(stationNamed(b.station, stations)));
+  return onAirSchedule(theirs, undefined, stations).filter((r) => r.slug !== undefined && isDayNight(stations.find((s) => s.slug === r.slug)));
 }

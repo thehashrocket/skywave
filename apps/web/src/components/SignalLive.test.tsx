@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { OnAirRow } from "@/lib/on-air";
 import type { PriyomTx } from "@/lib/priyom-schedule";
 import type { LastHeard } from "@/lib/signal-heard";
 
@@ -8,10 +9,18 @@ const state = {
   now: null as number | null,
   priyom: null as PriyomTx[] | null | undefined,
   heard: null as Record<string, LastHeard> | null,
+  dayNight: null as OnAirRow[] | null | undefined,
+  dayNightAsked: [] as boolean[],
 };
 vi.mock("@/lib/use-server-tick", () => ({ useServerTick: () => state.now }));
 vi.mock("@/lib/use-priyom-schedule", () => ({ usePriyomScheduleState: () => state.priyom }));
 vi.mock("@/lib/use-signal-last-heard", () => ({ useSignalLastHeard: () => state.heard }));
+vi.mock("@/lib/use-day-night-rows", () => ({
+  useDayNightRows: (enabled: boolean) => {
+    state.dayNightAsked.push(enabled);
+    return state.dayNight;
+  },
+}));
 
 const { SignalLive } = await import("./SignalLive");
 
@@ -26,7 +35,7 @@ const tx = (station: string, iso: string, khz: number): PriyomTx => ({
 
 afterEach(() => {
   cleanup();
-  Object.assign(state, { now: null, priyom: null, heard: null });
+  Object.assign(state, { now: null, priyom: null, heard: null, dayNight: null, dayNightAsked: [] });
 });
 
 describe("SignalLive", () => {
@@ -98,5 +107,29 @@ describe("SignalLive", () => {
     const { container } = render(<SignalLive slug="e11" />);
     expect(screen.queryByText(/Schedule unavailable/)).toBeNull();
     expect(container.querySelector(".signal-status")).toBeNull();
+  });
+
+  // Value: protects=#168 a day/night station's page tunes by the server's EiBi rows once they've come (The Pip at 05:00 UTC on 2026-11-25: 3756, as the dial and panel name it), offers no Listen while they load, follows the sun (5448) when they can't be had, and only a day/night page asks for them; fails_when=the page ignores the rows and its Listen lands on the other channel than the panel's around a switch, offers the sun's channel during the load (review), or every station page fetches the rows; why_new=#168 station page (owner chose the small endpoint and holding the status while it loads); seam=clock and queries mocked; no_claim=the switch rule (signal-stations.test) or the endpoint (signals.test)
+  it("tunes a day/night station by EiBi's rows once they come", () => {
+    const pip: OnAirRow = { khz: 3_756, start: 14 * 60, end: 5 * 60 + 30, days: "", station: "The Pip", lang: "-TS", target: "EEu", source: "catalog", slug: "the-pip", mode: "usb" };
+    Object.assign(state, { now: Date.parse("2026-11-25T05:00:00Z"), dayNight: undefined });
+    const loading = render(<SignalLive slug="the-pip" />);
+    expect(screen.queryByRole("link", { name: "Listen" })).toBeNull();
+    expect(loading.container.querySelector(".signal-status")).toBeNull();
+    loading.unmount();
+    Object.assign(state, { dayNight: null });
+    const first = render(<SignalLive slug="the-pip" />);
+    expect(screen.getByRole("link", { name: "Listen" }).getAttribute("href")).toBe("/?f=5448&m=usb&sig=the-pip");
+    first.unmount();
+    Object.assign(state, { dayNight: [pip] });
+    const second = render(<SignalLive slug="the-pip" />);
+    expect(screen.getByRole("link", { name: "Listen" }).getAttribute("href")).toBe("/?f=3756&m=usb&sig=the-pip");
+    second.unmount();
+    expect(state.dayNightAsked.length).toBeGreaterThan(0);
+    expect(state.dayNightAsked.every(Boolean)).toBe(true);
+    state.dayNightAsked = [];
+    render(<SignalLive slug="wwv" />);
+    expect(state.dayNightAsked.length).toBeGreaterThan(0);
+    expect(state.dayNightAsked.some(Boolean)).toBe(false);
   });
 });

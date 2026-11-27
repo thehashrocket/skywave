@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import snapshot from "../server/eibi-snapshot.json";
+import { forPage, parseEibi } from "./eibi";
+import { onAirSchedule } from "./on-air";
 import type { PriyomTx } from "./priyom-schedule";
 import { panelGroups, UP_NEXT_MS, type PanelGroups } from "./signal-panel";
 import type { SignalStation } from "./signal-stations";
@@ -30,6 +33,21 @@ describe("panelGroups", () => {
     expect(g.later.every((r) => r.listen === null && r.atMs === null)).toBe(true);
     expect(g.onNow).toEqual([]);
     expect(g.upNext).toEqual([]);
+  });
+
+  // Value: protects=#168 the panel passes the merged schedule to the day/night rows, so at 05:00 UTC on 2026-11-25 The Pip's Always on row tunes EiBi's 3756 (as the dial names it), not the sun's 5448; fails_when=the rows stop reaching activeChannelAt and the panel and dial disagree around a switch; why_new=#168; seam=the bundled B26 snapshot through on-air.ts; no_claim=the switch rule itself (signal-stations.test)
+  it("tunes a day/night station by the merged schedule when it has one", () => {
+    const rows = onAirSchedule(parseEibi(snapshot.csv, snapshot.season).map(forPage), null);
+    const ms = at("2026-11-25T05:00:00Z");
+    expect(findRow(panelGroups(ms, null, rows), "the-pip")?.listen?.khz).toBe(3_756);
+    expect(findRow(panelGroups(ms, null), "the-pip")?.listen?.khz).toBe(5_448);
+  });
+
+  // Value: protects=while the merged schedule loads (null) a day/night station's row shows no frequency and no Listen, so a listener arriving from its page's Listen on 3756 at 05:00 isn't offered the sun's 5448, which is off the air; WWV's always-on row keeps its Listen; fails_when=loading falls back to the sun's channel (review of #168) or every always-on row loses its Listen; why_new=/ship review of #168; seam=signal-stations catalog; no_claim=how long the schedule takes to load
+  it("holds a day/night station's Listen while the schedule loads", () => {
+    const g = panelGroups(at("2026-11-25T05:00:00Z"), null, null);
+    for (const slug of ["the-pip", "squeaky-wheel"]) expect(findRow(g, slug), slug).toMatchObject({ group: "always", listen: null, shown: null });
+    expect(findRow(g, "wwv")?.listen?.khz).toBe(10_000);
   });
 
   // Value: protects=the panel's Listen on an F06 RTTY slot tunes the dial parsePriyomEvents gives it (USB, 2.125 kHz below the listed 17532), so the panel, the dial and search agree (owner: apply it to the panel too); fails_when=data slots lose their Listen or the panel tunes the listed frequency; why_new=R15 panel scope; seam=none; no_claim=mark-vs-centre on the air

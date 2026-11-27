@@ -308,7 +308,7 @@ export type SignalAsk = { slug: string; name: string; khz: number; untilMs: numb
  * The question `station` allows at `ms` with the dial on `freqKhz`, or null:
  * defunct, no transmitter, or not on the air within MATCH_KHZ of that frequency
  * now (#148 D10). A day/night station counts on either of its channels, since its
- * switch times are only the sun's guess. A numbers station needs Priyom's schedule
+ * switch times are a guess (EiBi's or the sun's, #168). A numbers station needs Priyom's schedule
  * (`priyom`) to have it on that frequency now.
  */
 export function signalAsk(
