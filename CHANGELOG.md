@@ -2,11 +2,12 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
-## [0.64.4.0] - 2026-11-27 ([#61](https://github.com/thehashrocket/skywave/issues/61))
+## [0.64.7.0] - 2026-11-27 ([#61](https://github.com/thehashrocket/skywave/issues/61))
 
 ### Changed
 - **The broadcast coverage check for the receiver-ranking research is stricter about when it decides.** This is the offline script that asks whether WSPR spots cover enough broadcast "Did you hear it?" answers to be worth a second study. It now gives its build-or-stop answer only for a 3-minute spot window, the shortest one, so a pass there holds for any longer window chosen later. Any other window prints its numbers as exploratory, with no verdict. It also gives no verdict until at least 50 answers it could check come from 10 or more different stations and 10 or more different receivers, so one well-covered path can't decide it. Stations are counted by name and receivers by address, from new columns in the answer export, so a receiver whose listed position moved still counts once, and a question that named two or three stations counts once. An export made before those columns says to download it again.
 - **The coverage check refuses an export the database couldn't have produced.** A repeated answer, a repeated column, a receiver that isn't an address or a question naming more than three stations stops it, so a doubled download can't pad its minimum. It also shows the largest single receiver's and station's share of the answers, so a lopsided sample is visible, and it exits with status 3 when it gives no verdict.
+- **The coverage check waits until wspr.live has caught up.** Spots reach wspr.live late, so it gives no verdict while any answer's window ended less than 24 hours ago, whether that window had spots or none yet. It usually prints when to run it again; if every recent window is still empty, it says no band had a spot.
 - **The research scripts' tests run with every other radio service test, in CI and in `pnpm test:radio`.** Before, they ran only when someone typed their command by hand.
 
 ## [0.64.6.0] - 2026-11-27 ([#179](https://github.com/thehashrocket/skywave/issues/179))
