@@ -15,24 +15,28 @@ import broadcast_wspr_probe as probe
 from broadcast_wspr_probe import Answer, build_query, load_answers, nearest_band, parse_reply, parse_sites, plan_queries, run_query, summarize
 
 HEADER = "created_ms,picked_ms,freq_khz,kiwi_lat,kiwi_lon,outcome,tx_sites\n"
-NAMED = HEADER[:-1] + ",tx_name\n"  # block 10 since D21 (2026-11-27)
+NAMED = HEADER[:-1] + ",tx_name,receiver\n"  # block 10 since D21 (2026-11-27)
+RX = "kiwi.example.org:8073"
 SITES = json.dumps([{"key": "a", "coords": [[52.0, 5.0], [52.0, 5.0]]}, {"key": "b", "coords": [[48.0, 11.0]]}])
 PICK_MS = 1_795_176_000_000  # 2026-11-20 12:00:00 UTC
 
 
-def row(outcome="heard", picked=str(PICK_MS), freq="9500", lat="51.5", lon="-0.1", sites=SITES, created=str(PICK_MS + 90_000), name=None):
+def row(outcome="heard", picked=str(PICK_MS), freq="9500", lat="51.5", lon="-0.1", sites=SITES, created=str(PICK_MS + 90_000), name=None, rx=RX):
+    """A block 10 row; with `name`, also the tx_name and receiver columns (the NAMED header)."""
     fields = [created, picked, freq, lat, lon, outcome, '"' + sites.replace('"', '""') + '"']
-    return ",".join(fields + ([name] if name is not None else [])) + "\n"
+    return ",".join(fields + ([name, rx] if name is not None else [])) + "\n"
 
 
-# Value: protects=block 10's tx_name is read as the answer's station names, split on " / " and de-duplicated, an export without the column loads with no names, and an empty name is refused; fails_when=a joined name counts as one station, the column is ignored, or a blank name becomes a station; why_new=new column (eng review 2026-11-27, D21); seam=none; no_claim=that EiBi names one station the same way all season
-def test_load_answers_reads_station_names(tmp_path):
-    answers, _ = load_answers(write(tmp_path, NAMED + row(name="Radio A / Radio B / Radio A") + row(name="Radio C")), 3)
-    assert [a.stations for a in answers] == [("Radio A", "Radio B"), ("Radio C",)]
+# Value: protects=block 10's tx_name is read as the answer's station names, split on " / " and de-duplicated, and its receiver column as the receiver key; an export without them loads with none, and an empty name or receiver is refused; fails_when=a joined name counts as one station, a column is ignored, or a blank value becomes a station or receiver; why_new=new columns (eng review 2026-11-27, D21; owner chose names and keys over sites and positions); seam=none; no_claim=that EiBi names one station the same way all season
+def test_load_answers_reads_station_names_and_receivers(tmp_path):
+    answers, _ = load_answers(write(tmp_path, NAMED + row(name="Radio A / Radio B / Radio A") + row(name="Radio C", rx="other.example:8073")), 3)
+    assert [(a.stations, a.receiver) for a in answers] == [(("Radio A", "Radio B"), RX), (("Radio C",), "other.example:8073")]
     answers, _ = load_answers(write(tmp_path, HEADER + row()), 3)
-    assert answers[0].stations is None
+    assert (answers[0].stations, answers[0].receiver) == (None, None)
     with pytest.raises(ValueError, match="line 2: tx_name is empty"):
         load_answers(write(tmp_path, NAMED + row(name=" ")), 3)
+    with pytest.raises(ValueError, match="line 2: receiver is empty"):
+        load_answers(write(tmp_path, NAMED + row(name="Radio A", rx=" ")), 3)
 
 
 def write(tmp_path, text):
@@ -97,14 +101,14 @@ def test_load_answers_refuses_rows_block_10_cant_produce(tmp_path, text, reason)
         load_answers(write(tmp_path, text), 30)
 
 
-def answer(line=2, end_s=PICK_MS // 1000 - 40, band=10, sites=((52.0, 5.0),), outcome="heard", kiwi=(51.5, -0.1), stations=("Radio A",)):
-    return Answer(line, end_s - 1800, end_s, band, kiwi, sites, outcome, stations)
+def answer(line=2, end_s=PICK_MS // 1000 - 40, band=10, sites=((52.0, 5.0),), outcome="heard", kiwi=(51.5, -0.1), stations=("Radio A",), receiver=RX):
+    return Answer(line, end_s - 1800, end_s, band, kiwi, sites, outcome, stations, receiver)
 
 
 @pytest.fixture
 def no_floor(monkeypatch):
     """D21's support floor out of the way, for tests about the 30% bar itself."""
-    for name in ("MIN_ANSWERS", "MIN_STATIONS", "MIN_KIWIS"):
+    for name in ("MIN_ANSWERS", "MIN_STATIONS", "MIN_RECEIVERS"):
         monkeypatch.setattr(probe, name, 1)
 
 
@@ -202,32 +206,39 @@ def test_summarize_applies_d4s_bar(no_floor):
     assert summarize(a, {}, set(), set(range(10)))["verdict"] == "no verdict: no answer's band had any WSPR spot in its window"
 
 
-def _spread(n: int, stations: int, kiwis: int) -> list:
-    """n answers cycling over `stations` station names and `kiwis` Kiwi positions, each on its own site list."""
-    return [answer(line=i, sites=((40.0 + i % 37, 5.0),), stations=(f"Radio {i % stations}",), kiwi=(10.0 + i % kiwis, 0.0)) for i in range(n)]
+def _spread(n: int, stations: int, receivers: int) -> list:
+    """n answers cycling over `stations` station names and `receivers` receiver keys; every answer
+    has its own site list and its own Kiwi position, so neither can stand in for the count."""
+    return [
+        answer(line=i, sites=((40.0 + i % 37, 5.0),), stations=(f"Radio {i % stations}",), receiver=f"rx{i % receivers}.example:8073", kiwi=(10.0 + i * 0.01, 0.0))
+        for i in range(n)
+    ]
 
 
-# Value: protects=D21's support floor: D4 gets a verdict only with >= 50 scored answers from >= 10 stations (by tx_name, never by site list) and >= 10 Kiwi positions, quiet and unanswered ones not counting, and an export without tx_name gets none; fails_when=the floor is dropped, counts unscored answers, counts site lists as stations (one station on many sites passes), or an unnamed export slips through; why_new=new rule (eng review 2026-11-27, D21; owner chose tx_name over site lists); seam=none; no_claim=that 50/10/10 is enough (an owner decision)
+# Value: protects=D21's support floor: D4 gets a verdict only with >= 50 scored answers from >= 10 stations (by tx_name, never by site list) and >= 10 receivers (by receiver key, never by position), quiet and unanswered ones not counting, and an export without either column gets none; fails_when=the floor is dropped, counts unscored answers, counts site lists or positions (one receiver that moved passes), or an unkeyed export slips through; why_new=new rule (eng review 2026-11-27, D21; owner chose names and keys); seam=none; no_claim=that 50/10/10 is enough (an owner decision)
 def test_summarize_needs_d21s_support():
     def verdict(answers, quiet=frozenset()):
         return summarize(answers, {a.line: 1000.0 for a in answers}, set(), quiet)["verdict"]
 
     assert verdict(_spread(50, 10, 10)).startswith("at least 30% matched")
     s = summarize(_spread(50, 10, 10), {}, set())
-    assert (s["scored"], s["stations"], s["kiwis"]) == (50, 10, 10)
-    assert verdict(_spread(49, 10, 10)) == "no verdict: not enough broadcast data (49 scored answers, 10 stations, 10 Kiwi positions; D21 needs 50, 10 and 10)"
+    assert (s["scored"], s["stations"], s["receivers"]) == (50, 10, 10)
+    assert verdict(_spread(49, 10, 10)) == "no verdict: not enough broadcast data (49 scored answers, 10 stations, 10 receivers; D21 needs 50, 10 and 10)"
     assert verdict(_spread(50, 9, 10)).startswith("no verdict: not enough broadcast data (50 scored answers, 9 stations")  # 37 site lists, 9 stations
-    assert verdict(_spread(50, 10, 9)).startswith("no verdict: not enough broadcast data (50 scored answers, 10 stations, 9 Kiwi")
+    assert verdict(_spread(50, 10, 9)).startswith("no verdict: not enough broadcast data (50 scored answers, 10 stations, 9 receivers")  # 50 positions, 9 receivers
     assert verdict(_spread(51, 10, 10), quiet={50, 0}).startswith("no verdict: not enough broadcast data (49 scored")
-    # A quiet or unanswered answer's station and Kiwi don't count toward the floor either.
-    extra = _spread(50, 9, 9) + [answer(line=50, stations=("Radio 9",), kiwi=(19.0, 0.0))]
+    # A quiet or unanswered answer's station and receiver don't count toward the floor either.
+    extra = _spread(50, 9, 9) + [answer(line=50, stations=("Radio 9",), receiver="rx9.example:8073")]
     s = summarize(extra, {a.line: 1000.0 for a in extra}, set(), {50})
-    assert (s["scored"], s["stations"], s["kiwis"]) == (50, 9, 9) and s["verdict"].startswith("no verdict: not enough broadcast data")
+    assert (s["scored"], s["stations"], s["receivers"]) == (50, 9, 9) and s["verdict"].startswith("no verdict: not enough broadcast data")
     s = summarize(extra, {a.line: 1000.0 for a in extra}, {50})
-    assert (s["scored"], s["stations"], s["kiwis"]) == (50, 9, 9)
-    unnamed = [answer(line=i, stations=None, kiwi=(10.0 + i % 10, 0.0)) for i in range(50)]
-    assert verdict(unnamed) == "no verdict: this export has no tx_name column, so D21's station count can't be checked; rerun block 10"
+    assert (s["scored"], s["stations"], s["receivers"]) == (50, 9, 9)
+    unnamed = [answer(line=i, stations=None, receiver=f"rx{i % 10}.example:8073") for i in range(50)]
+    assert verdict(unnamed) == "no verdict: this export has no tx_name column, so D21's floor can't be checked; rerun block 10"
     assert summarize(unnamed, {}, set())["stations"] is None
+    old = [answer(line=i, stations=None, receiver=None) for i in range(50)]
+    assert verdict(old) == "no verdict: this export has no tx_name or receiver columns, so D21's floor can't be checked; rerun block 10"
+    assert summarize(old, {}, set())["receivers"] is None
 
 
 # Value: protects=the CLI as the owner runs it: reads block 10, asks wspr.live per day and band, prints set-asides, shares and D4's verdict; refuses a missing --window-min (no default window to tip D4), a wrong row count, a window that isn't a multiple of 3, and a bad file with exit 2, and ties the verdict to the window; fails_when=argparse wiring, a guard, or the output breaks, or a default window creeps back; why_new=new probe (D4); seam=none (monkeypatches _fetch); no_claim=wspr.live itself
@@ -242,18 +253,18 @@ def test_main(tmp_path, monkeypatch, capsys):
     assert "set aside: 1 no_open (the replay drops it)" in out
     assert "both ends within 1,200 km:     1 of 2 (50.0%)" in out
     assert "band  10 (10.1387 MHz): 1 of 2 (50.0%)" in out
-    assert "support: 2 scored answers, no tx_name column, 1 Kiwi positions" in out
+    assert "support: 2 scored answers, no tx_name column, no receiver column" in out
     # Value: protects=D21: only the 3-min window gives a D4 verdict; any other length prints its shares as exploratory with none, and at 3 min a thin sample says "not enough broadcast data"; fails_when=a longer window's (higher) share reaches the D4 verdict, or the floor is skipped in the CLI; why_new=new rule (eng review 2026-11-27, D21); seam=none (monkeypatches _fetch); no_claim=wspr.live itself
     assert "no D4 verdict: exploratory 30-min window; D4 is decided at 3 min (D21)" in out and "build the broadcast join" not in out
     assert len(list((tmp_path / "cache").iterdir())) == 1  # the cache follows CACHE_DIR, never the real one
     assert probe.main(["--answers", str(p), "--window-min", "3"]) == 0
-    assert "no tx_name column, so D21's station count can't be checked; rerun block 10 [3-min window: D4's]" in capsys.readouterr().out
+    assert "no tx_name or receiver columns, so D21's floor can't be checked; rerun block 10 [3-min window: D4's]" in capsys.readouterr().out
     named = tmp_path / "named.csv"  # not write(): that reuses b.csv, which the checks below read
-    named.write_text(NAMED + row(name="Radio A") + row(outcome="not_heard", name="Radio B / Radio C"), encoding="utf-8")
+    named.write_text(NAMED + row(name="Radio A") + row(outcome="not_heard", name="Radio B / Radio C", rx="other.example:8073"), encoding="utf-8")
     assert probe.main(["--answers", str(named), "--window-min", "3"]) == 0
     out = capsys.readouterr().out
-    assert "support: 2 scored answers, 3 stations, 1 Kiwi positions" in out
-    assert "no verdict: not enough broadcast data (2 scored answers, 3 stations, 1 Kiwi positions; D21 needs 50, 10 and 10) [3-min window: D4's]" in out
+    assert "support: 2 scored answers, 3 stations, 2 receivers" in out
+    assert "no verdict: not enough broadcast data (2 scored answers, 3 stations, 2 receivers; D21 needs 50, 10 and 10) [3-min window: D4's]" in out
     assert probe.main(["--answers", str(p), "--window-min", "30", "--expect-rows", "4"]) == 2
     assert "3 rows, but block 10b counted 4" in capsys.readouterr().err
     for argv in (["--window-min", "10"], []):
@@ -267,7 +278,7 @@ def test_main(tmp_path, monkeypatch, capsys):
     assert probe.main(["--answers", str(write(tmp_path, HEADER + row())), "--window-min", "3"]) == 0
     out = capsys.readouterr().out
     assert "unanswered: 1" in out and "no verdict: 1 of 1" in out
-    for name in ("MIN_ANSWERS", "MIN_STATIONS", "MIN_KIWIS"):  # the floor out of the way: quiet answers below
+    for name in ("MIN_ANSWERS", "MIN_STATIONS", "MIN_RECEIVERS"):  # the floor out of the way: quiet answers below
         monkeypatch.setattr(probe, name, 1)
     monkeypatch.setattr(probe, "CACHE_DIR", tmp_path / "cache2")
     monkeypatch.setattr(probe, "_fetch", lambda url: "a0\tc0\ta1\tc1\n\\N\t0\t900000\t2\n")

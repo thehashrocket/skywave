@@ -16,17 +16,16 @@ which it is.
 
 Support floor (D21): the 30% bar counts only when the scored answers (a wspr.live
 reply, and some spot on the band in the window) number at least MIN_ANSWERS, from at
-least MIN_STATIONS distinct stations and MIN_KIWIS distinct Kiwi positions, so one
+least MIN_STATIONS distinct stations and MIN_RECEIVERS distinct receivers, so one
 well-covered path can't decide D4. Stations are block 10's tx_name, split on " / "
-(one answer can name several). An export from before that column has no station
-count, so it gets no D4 verdict: rerun block 10. Block 10 has no receiver key, so a
-Kiwi's listed position (exact lat/lon at pick time) stands in for a receiver. That can
-miscount both ways: receivers sharing a site count once, and a receiver whose listed
-position changed between answers counts once per position.
+(one answer can name several); receivers are its `receiver` column (host:port), so a
+receiver counts once however its listed position moved, and two receivers at one site
+count twice. An export from before those columns can't be counted, so it gets no D4
+verdict: rerun block 10.
 
 Input: CSV from .local-data/61-step0.sql block 10:
-    created_ms,picked_ms,freq_khz,kiwi_lat,kiwi_lon,outcome,tx_sites[,ask_rule,ask_region][,tx_name]
-    (ask_rule and ask_region aren't read yet; tx_name is needed for a D4 verdict)
+    created_ms,picked_ms,freq_khz,kiwi_lat,kiwi_lon,outcome,tx_sites[,ask_rule,ask_region][,tx_name,receiver]
+    (ask_rule and ask_region aren't read yet; tx_name and receiver are needed for a D4 verdict)
 
     python broadcast_wspr_probe.py --answers ../../../../.local-data/61-broadcasts.csv \\
         --window-min 3 --expect-rows <block 10b's count>
@@ -87,7 +86,7 @@ D4_WINDOW_MIN = 3  # D4 is decided at the shortest window (D21)
 # D21's support floor on the scored answers behind the 30% bar.
 MIN_ANSWERS = 50
 MIN_STATIONS = 10
-MIN_KIWIS = 10
+MIN_RECEIVERS = 10
 ANSWER_COLUMNS = ("created_ms", "picked_ms", "freq_khz", "kiwi_lat", "kiwi_lon", "outcome", "tx_sites")
 OUTCOMES = ("heard", "not_heard", "no_open")  # apps/web/src/lib/reception.ts
 # nginx in front of wspr.live allows about 8 KB of request line; stay well under.
@@ -107,6 +106,7 @@ class Answer:
     sites: tuple[tuple[float, float], ...]
     outcome: str
     stations: tuple[str, ...] | None = None  # tx_name split on " / "; None: an export without the column
+    receiver: str | None = None  # block 10's host:port; None: an export without the column
 
 
 def nearest_band(freq_khz: float) -> int:
@@ -160,7 +160,7 @@ def load_answers(path: Path, window_min: int) -> tuple[list[Answer], Counter]:
             missing = [c for c in ANSWER_COLUMNS if c not in (rows.fieldnames or [])]
             if missing:
                 raise ValueError(f"not block 10's export: no {', '.join(missing)} column")
-            columns = ANSWER_COLUMNS + (("tx_name",) if "tx_name" in (rows.fieldnames or []) else ())
+            columns = ANSWER_COLUMNS + tuple(c for c in ("tx_name", "receiver") if c in (rows.fieldnames or []))
             for row in rows:
                 rows_read += 1
                 line = rows.line_num
@@ -203,6 +203,9 @@ def _answer(line: int, v: dict[str, str], window_min: int) -> Answer | str:
         stations = tuple(sorted({n.strip() for n in v["tx_name"].split(" / ") if n.strip()}))
         if not stations:
             raise ValueError("tx_name is empty")
+    receiver = v.get("receiver")
+    if receiver == "":
+        raise ValueError("receiver is empty")
     # Reasons the probe can't score a well-formed answer, in the order the replay drops them.
     if v["outcome"] == "no_open":
         return "no_open (the replay drops it)"
@@ -214,7 +217,7 @@ def _answer(line: int, v: dict[str, str], window_min: int) -> Answer | str:
         return "tx_sites without coordinates"
     kiwi = _position(v["kiwi_lat"], v["kiwi_lon"], "the Kiwi")
     end_s = int(v["picked_ms"]) // 1000 - PICK_LEAD_S
-    return Answer(line, end_s - window_min * 60, end_s, nearest_band(freq), kiwi, sites, v["outcome"], stations)
+    return Answer(line, end_s - window_min * 60, end_s, nearest_band(freq), kiwi, sites, v["outcome"], stations, receiver)
 
 
 def _columns(a: Answer, i: int) -> str:
@@ -326,12 +329,14 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
     a wspr.live gap or a quiet band) are counted apart. The share is taken both without
     them and with them as misses, and gives a verdict only when both readings agree, so
     neither an outage nor a quiet band can tip D4. Under D21's support floor (scored
-    answers, distinct stations, distinct Kiwi positions), or with no station names to
-    count (an export from before block 10's tx_name), there is no verdict either."""
+    answers, distinct stations, distinct receivers), or with no station names or receiver
+    keys to count (an export from before block 10's tx_name and receiver), there is no
+    verdict either."""
     scored = [a for a in answers if a.line not in unanswered and a.line not in quiet]
     named = all(a.stations is not None for a in answers)
+    keyed = all(a.receiver is not None for a in answers)
     stations = len({n for a in scored for n in (a.stations or ())}) if named else None
-    kiwis = len({a.kiwi for a in scored})
+    receivers = len({a.receiver for a in scored}) if keyed else None
     near = {r: [a for a in scored if (d := dist_m.get(a.line)) is not None and d <= r * 1000] for r in RADII_KM}
     by_band: dict[int, list[int]] = {}
     for a in scored:
@@ -348,12 +353,13 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
         verdict = "no verdict: no answer's band had any WSPR spot in its window"
     elif unanswered:
         verdict = f"no verdict: {len(unanswered)} of {len(answers)} answers got no usable wspr.live reply (missing, not zero); run again"
-    elif stations is None:
-        verdict = "no verdict: this export has no tx_name column, so D21's station count can't be checked; rerun block 10"
-    elif len(scored) < MIN_ANSWERS or stations < MIN_STATIONS or kiwis < MIN_KIWIS:
+    elif stations is None or receivers is None:
+        missing = [c for c, n in (("tx_name", stations), ("receiver", receivers)) if n is None]
+        verdict = f"no verdict: this export has no {' or '.join(missing)} column{'s' if len(missing) > 1 else ''}, so D21's floor can't be checked; rerun block 10"
+    elif len(scored) < MIN_ANSWERS or stations < MIN_STATIONS or receivers < MIN_RECEIVERS:
         verdict = (
             f"no verdict: not enough broadcast data ({len(scored)} scored answers, {stations} stations, "
-            f"{kiwis} Kiwi positions; D21 needs {MIN_ANSWERS}, {MIN_STATIONS} and {MIN_KIWIS})"
+            f"{receivers} receivers; D21 needs {MIN_ANSWERS}, {MIN_STATIONS} and {MIN_RECEIVERS})"
         )
     elif (share >= PASS_SHARE) != (share_quiet_missed >= PASS_SHARE):
         verdict = (
@@ -369,7 +375,7 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
         "scored": len(scored),
         "quiet": len(quiet),
         "stations": stations,
-        "kiwis": kiwis,
+        "receivers": receivers,
         "near": {r: len(v) for r, v in near.items()},
         "share": share,
         "share_quiet_missed": share_quiet_missed,
@@ -429,7 +435,8 @@ def main(argv: list[str] | None = None) -> int:
     for band, (hit, n) in s["by_band"].items():
         print(f"  band {band:>3} ({WSPR_BANDS[band]:g} MHz): {hit} of {n} ({pct(hit, n)})")
     named = "no tx_name column" if s["stations"] is None else f"{s['stations']} stations"
-    print(f"support: {s['scored']} scored answers, {named}, {s['kiwis']} Kiwi positions")
+    keyed = "no receiver column" if s["receivers"] is None else f"{s['receivers']} receivers"
+    print(f"support: {s['scored']} scored answers, {named}, {keyed}")
     if args.window_min == D4_WINDOW_MIN:
         print(f"{s['verdict']} [{D4_WINDOW_MIN}-min window: D4's]")
     else:
