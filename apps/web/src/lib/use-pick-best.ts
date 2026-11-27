@@ -173,6 +173,12 @@ export function usePickBest(
   provenance: Provenance = () => ({ fromList: false, secure: false }),
   /** The service's latest refused switch (use-radio): a candidate it refused while the old station plays on. */
   refusal: RadioRefusal | null = null,
+  /**
+   * Whether a receiver already has as many Skywave listeners as the service
+   * allows (use-held). A run tries those last: the service would refuse them
+   * (skywave_cap), and each one it walks past counts toward MAX_TOTAL.
+   */
+  isHeld: (r: Receiver) => boolean = () => false,
 ) {
   const chain = useRef<Chain | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -186,6 +192,8 @@ export function usePickBest(
   acceptsRef.current = accepts;
   const provenanceRef = useRef(provenance);
   provenanceRef.current = provenance;
+  const isHeldRef = useRef(isHeld);
+  isHeldRef.current = isHeld;
   // When each receiver last refused, by refusedKey.
   const refused = useRef(new Map<string, number>());
   /**
@@ -336,7 +344,15 @@ export function usePickBest(
         finish("No listed receiver covers this frequency.");
         return false;
       }
-      const candidates = covering.filter((r) => !isRefused(r));
+      const open = covering.filter((r) => !isRefused(r));
+      // Receivers another Skywave listener holds go last, not out: the answer
+      // can be a minute old, and one may have freed since. The one this page
+      // plays is held by this listener, so it keeps its place.
+      const now = latestStatus.current;
+      const live = now.state === "listening" || now.state === "connecting";
+      const mine = live && now.host && now.port ? refusedKey({ host: now.host, port: now.port }) : null;
+      const held = (r: Receiver) => refusedKey(r) !== mine && isHeldRef.current(r);
+      const candidates = [...open.filter((r) => !held(r)), ...open.filter(held)];
       const first = candidates[0];
       if (!first) {
         finish(

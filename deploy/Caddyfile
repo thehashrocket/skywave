@@ -25,6 +25,13 @@
 		reverse_proxy radio:8765
 	}
 
+	# Which of the receivers asked about already have Skywave's per-receiver
+	# limit of listeners (#155), so Pick best tries them last. CORS and
+	# Cache-Control (no-store) come from the service, as for /noise.
+	handle /held {
+		reverse_proxy radio:8765
+	}
+
 	handle {
 		respond 404
 	}

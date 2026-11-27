@@ -11,7 +11,7 @@ copies, which the README's "One process" rule forbids).
 | File | Does |
 | --- | --- |
 | `../docker-compose.prod.yml` | `radio` (no published port) + `caddy` (80/443) on a private network with fixed addresses, so `FORWARDED_ALLOW_IPS` names Caddy and only Caddy |
-| `Caddyfile` | TLS for `RADIO_DOMAIN`; proxies `/ws`, `/healthz` and `/noise`, 404s the rest |
+| `Caddyfile` | TLS for `RADIO_DOMAIN`; proxies `/ws`, `/healthz`, `/noise` and `/held`, 404s the rest |
 | `setup-droplet.sh` | One-time box setup: updates + unattended-upgrades, Docker, log rotation, 1 GB swap, ufw, a `deploy` user |
 | `deploy.sh` | Pull, rebuild, restart, wait for healthy |
 | `forced-command.sh` | The only command the GitHub Actions key may run on the box |
@@ -81,7 +81,8 @@ can't rotate the history out. The next line written for it adds
 `suppressed=N`, and a connection that closes writes what it still held back
 (`detail=throttled`). Past 256 receivers on one connection, the rest share one
 `host=<many>` line per code. Counting lines undercounts these bursts; add up
-`suppressed` to get them all.
+`suppressed` to get them all. `stats.sh` does: each line counts 1 plus its
+`suppressed=N`, and a `detail=throttled` line counts only its N.
 
 ```sh
 docker compose -f docker-compose.prod.yml exec radio sh -c 'cat /data/receivers.log*' \
@@ -262,6 +263,14 @@ holds no token or addresses; review any change to the script with that in mind.
   (compose recreates the container when its env changes).
 - `Caddyfile`: `docker compose -f docker-compose.prod.yml exec caddy caddy reload --config /etc/caddy/Caddyfile`.
   A reload gives open sockets up to 5 minutes (`stream_close_delay`) before cutting them.
+  The Caddyfile is mounted into the container as a single file, and `git pull`
+  replaces the file rather than editing it, so the container can keep reading
+  the old copy and the reload changes nothing. Check a new route afterwards
+  (for `/held`: `curl 'https://radio.example.com/held?receivers=a:8073'` should print
+  `{"held":[]}`, not a 404; the page reads a 404 as "nothing taken", so nothing
+  looks broken). If it 404s, recreate Caddy:
+  `docker compose -f docker-compose.prod.yml up -d --force-recreate caddy`.
+  Unlike a reload, that cuts open listeners at once.
 
 ## Noise-floor data
 

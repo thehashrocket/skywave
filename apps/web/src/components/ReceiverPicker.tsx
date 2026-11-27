@@ -11,6 +11,7 @@ import {
   receiverKey,
   type Receiver,
 } from "@/lib/kiwi-list";
+import { noiseKey } from "@/lib/noise-rank";
 import { formatHostPort } from "@/lib/receiver";
 import { isNight, type SunPosition } from "@/lib/solar";
 import { ageNow, LIST_FAILED_TEXT, listFailed, useReceiverList } from "@/lib/use-receiver-list";
@@ -37,6 +38,8 @@ type Props = {
   children?: ReactNode;
   /** The receiver map, drawn from this list, between the Pick best bar and the table. */
   map?: (list: MapList) => ReactNode;
+  /** Receivers already at Skywave's per-receiver cap (use-held), by noiseKey: marked in the table. */
+  held?: ReadonlySet<string>;
 };
 
 /** The public receiver list: a Pick best button plus a table to browse. */
@@ -52,6 +55,7 @@ export function ReceiverPicker({
   onStopPicking,
   children,
   map,
+  held,
 }: Props) {
   const list = useReceiverList();
   const receivers = list.data?.receivers;
@@ -137,6 +141,7 @@ export function ReceiverPicker({
               current={current}
               sun={sun}
               onChoose={onChoose}
+              held={held}
             />
           )}
         </details>
@@ -181,6 +186,8 @@ type TableProps = {
   serverAgeMs?: number;
   /** When this browser got that answer (ms since epoch, its own clock). */
   receivedAt?: number;
+  /** Receivers already at Skywave's per-receiver cap, by noiseKey. */
+  held?: ReadonlySet<string>;
 };
 
 function ago(ms: number): string {
@@ -198,6 +205,7 @@ export const ReceiverTable = memo(function ReceiverTable({
   current,
   sun,
   onChoose,
+  held,
 }: TableProps) {
   const [query, setQuery] = useState("");
   const [onlyFree, setOnlyFree] = useState(false);
@@ -274,6 +282,8 @@ export const ReceiverTable = memo(function ReceiverTable({
 
   const shown = showAll ? rows : rows.slice(0, PAGE);
   const currentKey = current && receiverKey(current);
+  // The service lowercases the host it plays; the list may not. The held mark never goes on this page's own row.
+  const currentHeldKey = current && noiseKey(current);
   const freqText = freqKhz.toLocaleString("en-US", { maximumFractionDigits: 2 });
 
   const sortBy = (key: SortKey) => {
@@ -371,6 +381,7 @@ export const ReceiverTable = memo(function ReceiverTable({
                   tuned={receiverKey(r) === currentKey ? current!.phase : undefined}
                   night={nightAt(r, sun)}
                   onChoose={onChoose}
+                  held={(held?.has(noiseKey(r)) && noiseKey(r) !== currentHeldKey) || undefined}
                 />
               ))}
             </tbody>
@@ -407,6 +418,8 @@ type RowProps = {
   tuned: Playing["phase"] | undefined;
   night: boolean | null;
   onChoose: (r: Receiver) => void;
+  /** Another Skywave listener has it (the one playing here is never marked): choosing it is likely refused. */
+  held?: boolean;
 };
 
 /**
@@ -414,7 +427,7 @@ type RowProps = {
  * don't redo every row. The whole row is clickable; the name button is the
  * keyboard target, and its click bubbles to the row.
  */
-const ReceiverRow = memo(function ReceiverRow({ receiver: r, tuned, night, onChoose }: RowProps) {
+const ReceiverRow = memo(function ReceiverRow({ receiver: r, tuned, night, onChoose, held }: RowProps) {
   return (
     <tr
       data-current={tuned}
@@ -445,6 +458,7 @@ const ReceiverRow = memo(function ReceiverRow({ receiver: r, tuned, night, onCho
           </span>
           {/* Phones hide the Location column and the host line, so the place goes here instead. */}
           {placeName(r.location) && <span className="receiver-place">{placeName(r.location)}</span>}
+          {held && <span className="receiver-held">Another Skywave listener is on it</span>}
         </button>
       </td>
       <td className="col-location">

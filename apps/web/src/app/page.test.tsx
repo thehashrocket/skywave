@@ -179,6 +179,9 @@ vi.mock("@/lib/use-submit-report", () => ({ useSubmitReport: () => submitReport 
 // The radio service's measured noise floors (issue #67), as useNoise hands them to the page.
 const noise: { current: import("@/lib/noise-rank").NoiseLevels | null } = { current: null };
 vi.mock("@/lib/use-noise", () => ({ useNoise: () => noise.current }));
+// Receivers another Skywave listener holds (#155), by noiseKey, as useHeld hands them to the page.
+const held: { current: ReadonlySet<string> } = { current: new Set() };
+vi.mock("@/lib/use-held", () => ({ useHeld: () => held.current }));
 vi.mock("@/lib/use-receiver-list", async (actual) => ({
   ...(await actual<typeof import("@/lib/use-receiver-list")>()),
   useReceiverList: () => receiverList,
@@ -194,7 +197,9 @@ vi.mock("@/components/ReceiverPicker", () => ({
     onStopPicking,
     children,
     map,
+    held: heldKeys,
   }: {
+    held?: ReadonlySet<string>;
     open: boolean;
     current: { host: string; port: number; phase: string } | null;
     sun: unknown;
@@ -209,6 +214,7 @@ vi.mock("@/components/ReceiverPicker", () => ({
       <output aria-label="tuned">{current ? `${current.host}:${current.port}` : "none"}</output>
       <output aria-label="phase">{current?.phase ?? "none"}</output>
       <output aria-label="sun">{sun ? "set" : "none"}</output>
+      <output aria-label="held">{[...(heldKeys ?? [])].join(",") || "none"}</output>
       <button type="button" onClick={() => onChoose(listed)}>
         choose listed
       </button>
@@ -257,6 +263,7 @@ beforeEach(() => {
   radio.decoded = "";
   schedule.data = undefined;
   noise.current = null;
+  held.current = new Set();
   beaconsOff.current = new Map();
   rbnQuiet.current = { day: null, quiet: new Set() };
   radio.showView.mockClear();
@@ -495,6 +502,16 @@ describe("ListenPage", () => {
     view.rerender(<ListenPage />);
     expect((screen.getByLabelText("Receiver") as HTMLInputElement).value).toBe(listed.host);
     expect(screen.queryByText("taken")).toBeNull();
+  });
+
+  // Value: protects=the page wires /held (#155) into Pick best and the table: a receiver another Skywave listener holds is tried after the free one even when it ranks first, and the table is handed the held set; fails_when=page.tsx stops passing isHeld to usePickBest, stops feeding heldRef, or drops the held prop on ReceiverPicker; why_new=the hook tests inject isHeld and held directly; seam=useHeld and ReceiverPicker mocked; no_claim=the better-receiver offer (use-better-receiver tests) or /held's own answer
+  it("tries a receiver another Skywave listener holds last, and tells the table", () => {
+    held.current = new Set([`${listed.host}:${listed.port}`]);
+    render(<ListenPage />);
+    expect(screen.getByLabelText("held").textContent).toBe(`${listed.host}:${listed.port}`);
+    act(() => fireEvent.click(screen.getByRole("button", { name: "pick best" })));
+    expect(radio.tune).toHaveBeenCalledTimes(1);
+    expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: backup.host, port: backup.port }));
   });
 
   // Value: protects=a failed Pick best run leaves no dead receiver saved; fails_when=tuneReceiver saves before the receiver plays; why_new=no test covered a chain that fails; seam=none; no_claim=real browser storage

@@ -2,6 +2,15 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.63.0.0] - 2026-11-26 ([#155](https://github.com/thehashrocket/skywave/issues/155), [#144](https://github.com/thehashrocket/skywave/issues/144))
+
+### Added
+- **Pick best tries receivers another Skywave listener is already on last.** Skywave lets one of its listeners onto each volunteer receiver, and most of its refusals were people landing on a receiver someone else from Skywave was already using. The page now asks the radio service which of the receivers it would pick from are taken (about once a minute while the tab is open, and again when you change receiver), and Pick best puts those at the back of its run instead of spending its tries on them. They are still tried if nothing else works, because the answer can be a minute old. The receiver you're listening to is never pushed back for your own listening.
+- **The receiver table says when another Skywave listener is on a receiver.** Rows near the top of the list for your frequency read "Another Skywave listener is on it", and "Switch to a better receiver?" no longer offers one, since that switch would be refused. If the radio service can't answer, nothing is marked and everything works as before.
+
+### Fixed
+- **The daily load report counts every refusal, not just the ones the service wrote down.** When a burst of refusals hits the same receiver, the service writes one line every 10 seconds and adds how many it held back to the next one. The report counted lines, so it showed fewer refusals than really happened. It now adds those held-back ones in. The refusal numbers in reports from this release on read higher than before for the same traffic, so compare them only with reports from after it.
+
 ## [0.62.0.0] - 2026-11-26 ([#147](https://github.com/thehashrocket/skywave/issues/147))
 
 ### Added

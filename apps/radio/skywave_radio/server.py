@@ -325,7 +325,8 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
         return headers
 
     @app.options("/noise")
-    async def noise_preflight(request: Request) -> Response:
+    @app.options("/held")
+    async def preflight(request: Request) -> Response:
         headers = cors_headers(request)
         if "Access-Control-Allow-Origin" in headers:
             headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
@@ -382,6 +383,36 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
                     for key, s in stats.items()
                 },
             },
+            headers=headers,
+        )
+
+    @app.get("/held")
+    async def held(request: Request) -> Response:
+        """Which of receivers=host:port,... already have as many Skywave listeners
+        as MAX_SESSIONS_PER_RECEIVER allows, so Pick best tries them last and the
+        list marks them (#144, #155: most refusals were this cap).
+
+        Only the receivers asked about are answered, so a receiver typed in by
+        hand is never listed for someone who doesn't already know its address.
+        Listed receivers are public, though: anyone (no token, and CORS binds
+        only browsers) can ask about the whole list and see where Skywave plays
+        now, much as each Kiwi's own user list shows. It changes by the second,
+        so nothing caches it.
+        """
+        headers = cors_headers(request)
+        headers["Cache-Control"] = "no-store"
+        params = request.query_params
+        receivers = parse_receivers(params.get("receivers"))
+        if receivers is None or set(params.keys()) - {"receivers"} or len(params.getlist("receivers")) != 1:
+            return JSONResponse(
+                {"error": f"Needs receivers=host:port,... (1 to {NOISE_MAX_RECEIVERS}), and nothing else."},
+                status_code=status.HTTP_400_BAD_REQUEST,
+                headers=headers,
+            )
+        # Slots counts by (host, port) with the host lowercased, as a tune is keyed.
+        by_receiver = {(host, int(port)): key for key in receivers for host, _, port in [key.rpartition(":")]}
+        return JSONResponse(
+            {"held": [by_receiver[r] for r in slots.held(by_receiver)]},
             headers=headers,
         )
 
