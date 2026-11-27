@@ -18,6 +18,11 @@ export const CATEGORY_HEADINGS: readonly (readonly [SignalCategory, string])[] =
   ["other", "Other"],
 ];
 
+/** "Nov 2026" for a catalog entry's `checked` date (#147), shown with its sources. */
+export function checkedText(checked: string): string {
+  return new Date(`${checked}T00:00:00Z`).toLocaleString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+}
+
 /**
  * "4.625 USB" for a channel, with as many more digits as the kHz has decimals (up
  * to three), so 3363.5 kHz reads 3.3635. A Priyom RTTY slot leads with the

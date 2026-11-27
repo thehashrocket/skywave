@@ -1,11 +1,13 @@
 import { after } from "next/server";
 import {
+  changesBetween,
   describeChanges,
-  diffSchedules,
   mergeSlices,
+  nextFeedRecord,
   parsePriyomEvents,
   priyomSliceUrls,
-  priyomSpan,
+  type PriyomCopy,
+  type PriyomFeedRecord,
   type PriyomTx,
 } from "@/lib/priyom-schedule";
 import { COUNT_MS, HEARD_SHOWN_MS, lastHeard, sharedChannels, type LastHeard } from "@/lib/signal-heard";
@@ -51,6 +53,16 @@ type Options = {
   now?: () => number;
   /** Keeps a background refresh running after the response is sent. */
   defer?: (task: Promise<unknown>) => void;
+  /** Saves each good fetch where every instance can see it (#147), after the response; a failure is only logged. */
+  record?: (copy: PriyomSchedule) => Promise<void>;
+};
+
+/** This instance's view of the feed, for the freshness report (#147). */
+export type PriyomFetchStatus = {
+  /** When the copy being served was fetched, or null with none. */
+  fetchedAt: number | null;
+  /** Why the last fetch failed, while no fetch has succeeded since; null otherwise. */
+  error: string | null;
 };
 
 /**
@@ -65,10 +77,18 @@ type Options = {
  * bundled, since an old one would send Listen to last month's frequencies.
  * Every slice must load: a week with a missing day would show wrong "up next" times.
  */
-export function priyomScheduleSource({ fetchImpl = (...args) => fetch(...args), now = () => Date.now(), defer = after }: Options = {}) {
+export function priyomScheduleSource({
+  fetchImpl = (...args) => fetch(...args),
+  now = () => Date.now(),
+  defer = after,
+  record,
+}: Options = {}) {
   let cached: PriyomSchedule | null = null;
   let inflight: Promise<PriyomSchedule> | null = null;
   let lastFailureAt: number | null = null;
+  let lastError: string | null = null;
+  /** The last good fetch's save, so refreshNow can wait for it. */
+  let lastSave: Promise<void> = Promise.resolve();
 
   async function slice(url: string): Promise<PriyomTx[]> {
     const res = await fetchImpl(url, {
@@ -96,13 +116,20 @@ export function priyomScheduleSource({ fetchImpl = (...args) => fetch(...args), 
    * change, or how often Priyom edits, shows up.
    */
   function logChanges(prev: PriyomSchedule, next: PriyomSchedule) {
-    const a = priyomSpan(prev.fetchedAt);
-    const b = priyomSpan(next.fetchedAt);
-    const changes = diffSchedules(prev.transmissions, next.transmissions, {
-      fromMs: Math.max(a.fromMs, b.fromMs, next.fetchedAt),
-      toMs: Math.min(a.toMs, b.toMs),
-    });
+    const changes = changesBetween(prev, next);
     if (changes.length) console.info("signals.priyom: schedule changed:", describeChanges(changes));
+  }
+
+  /** Records a good fetch after the response (record); outside a request, `after` throws, so it just runs. */
+  function saveCopy(fresh: PriyomSchedule) {
+    if (!record) return;
+    const task = record(fresh).catch((error: unknown) => console.warn("signals.priyom: not recorded:", error));
+    lastSave = task;
+    try {
+      defer(task);
+    } catch {
+      // Not in a request: the task is already running.
+    }
   }
 
   function startRefresh(): Promise<PriyomSchedule> {
@@ -112,10 +139,13 @@ export function priyomScheduleSource({ fetchImpl = (...args) => fetch(...args), 
           if (cached) logChanges(cached, fresh);
           cached = fresh;
           lastFailureAt = null;
+          lastError = null;
+          saveCopy(fresh);
           return fresh;
         },
         (error: unknown) => {
           lastFailureAt = now();
+          lastError = error instanceof Error ? error.message : String(error);
           throw error;
         },
       )
@@ -125,7 +155,9 @@ export function priyomScheduleSource({ fetchImpl = (...args) => fetch(...args), 
     return inflight;
   }
 
-  return async function get(): Promise<PriyomSchedule | null> {
+  const status = (): PriyomFetchStatus => ({ fetchedAt: cached?.fetchedAt ?? null, error: lastError });
+
+  async function get(): Promise<PriyomSchedule | null> {
     const t = now();
     if (cached && t - cached.fetchedAt < TTL_MS) return cached;
     const backingOff = lastFailureAt !== null && t - lastFailureAt < RETRY_AFTER_MS;
@@ -141,11 +173,65 @@ export function priyomScheduleSource({ fetchImpl = (...args) => fetch(...args), 
       console.warn("signals.priyom: no schedule yet:", error);
       return null;
     }
+  }
+
+  /**
+   * The freshness report's read (#147 review, owner D2): fetches now, whatever the cache's
+   * age, and waits for the copy to be saved, so the report judges the feed rather than how
+   * long ago a visitor last caused a fetch. A failed fetch leaves the last copy (or null) and
+   * its error in status(); a failed save is logged and shows as a stale shared record.
+   */
+  async function refreshNow(): Promise<PriyomSchedule | null> {
+    try {
+      await startRefresh();
+    } catch (error) {
+      console.warn("signals.priyom: refresh for the freshness report failed:", error);
+    }
+    await lastSave;
+    return cached;
+  }
+
+  return Object.assign(get, { status, refreshNow });
+}
+
+/** The one row PriyomFeed holds. */
+const FEED_ID = "priyom";
+
+/** The record of Priyom's feed every instance shares (#147), or null before the first good fetch anywhere. */
+export async function readPriyomFeed(db: typeof Db): Promise<PriyomFeedRecord | null> {
+  const row = await db.priyomFeed.findUnique({ where: { id: FEED_ID } });
+  if (!row) return null;
+  return {
+    transmissions: row.transmissions as unknown as PriyomTx[],
+    fetchedAt: row.fetchedAt.getTime(),
+    trackedSince: row.trackedSince.getTime(),
+    changedAt: row.changedAt?.getTime() ?? null,
   };
 }
 
-/** The one cached Priyom schedule for this server. */
-export const getPriyomSchedule = priyomScheduleSource();
+/**
+ * Saves a good fetch to the shared record (nextFeedRecord): the last copy, and
+ * when Priyom last changed a catalog station's slots. Read, compare, write: two
+ * instances saving at once can lose one comparison, which at worst moves a
+ * change to the next fetch, hours later.
+ */
+export async function recordPriyomFetch(db: typeof Db, copy: PriyomCopy): Promise<void> {
+  const prev = await readPriyomFeed(db);
+  const next = nextFeedRecord(prev, copy);
+  if (next === prev) return;
+  const data = {
+    transmissions: next.transmissions as unknown as object,
+    fetchedAt: new Date(next.fetchedAt),
+    trackedSince: new Date(next.trackedSince),
+    changedAt: next.changedAt === null ? null : new Date(next.changedAt),
+  };
+  await db.priyomFeed.upsert({ where: { id: FEED_ID }, create: { id: FEED_ID, ...data }, update: data });
+}
+
+/** The one cached Priyom schedule for this server; each good fetch is recorded in the database (#147). */
+export const getPriyomSchedule = priyomScheduleSource({
+  record: async (copy) => recordPriyomFetch((await import("../db")).db, copy),
+});
 
 /**
  * How long the server keeps a lastHeard answer before reading the reports

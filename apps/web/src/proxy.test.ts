@@ -28,6 +28,14 @@ describe("proxy", () => {
       expect((await proxy(request(path, "Bearer cron-secret"))).status).toBe(401);
   });
 
+  // Value: protects=#147 the weekly GitHub Action, which brings its own bearer secret, reaches /api/signals/freshness on a password-locked Production (the route checks SIGNAL_FRESHNESS_SECRET itself), and only that exact path; fails_when=the gate 401s the Action (no report, the issue goes stale) or the exemption leaks to look-alikes; why_new=#147 route; seam=none; no_claim=the route's own secret check (route.test.ts)
+  it("lets the freshness Action reach its route, and nothing else, past the password", async () => {
+    vi.stubEnv("APP_PASSWORD", "hunter2");
+    expect(passedThrough(await proxy(request("/api/signals/freshness", "Bearer s")))).toBe(true);
+    for (const path of ["/api/signals/freshness/x", "/api/signals/freshnessx", "/api/signals", "/signals/freshness"])
+      expect((await proxy(request(path, "Bearer s"))).status).toBe(401);
+  });
+
   it.each(["/", "/api/trpc/presets.delete", "/_next/static/chunks/app.js", "/worklets/radio-player.js"])(
     "asks for the password on %s",
     async (path) => {

@@ -26,6 +26,8 @@ describe("/signals/[slug]", () => {
     expect(tune.getAttribute("href")).toBe("/?f=4625&m=usb&sig=uvb-76");
     const sources = screen.getByRole("heading", { name: "Read more" }).parentElement!;
     expect(within(sources).getAllByRole("link").length).toBeGreaterThan(0);
+    // #147: when the entry was last checked against those sources (2026-11-24).
+    expect(within(sources).getByText("Details checked Nov 2026")).toBeTruthy();
     expect(document.querySelector('[data-live="uvb-76"]')).toBeTruthy();
   });
 

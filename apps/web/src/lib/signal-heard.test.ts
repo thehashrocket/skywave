@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { HEARD_SHOWN_MS, lastHeard, sharedChannels, type HeardSums } from "./signal-heard";
+import { HEARD_SHOWN_MS, lastHeard, sharedChannels, stationActivity, type AnswerTally, type HeardSums } from "./signal-heard";
+import { findStation, SIGNAL_STATIONS } from "./signal-stations";
 
 const NOW = Date.parse("2026-11-25T12:00:00Z");
 const MIN = 60_000;
@@ -112,5 +113,46 @@ describe("lastHeard", () => {
       NOW,
     );
     expect(out).toEqual({});
+  });
+});
+
+describe("stationActivity", () => {
+  const wwv = findStation("wwv")!;
+  /** `n` answers of `outcome` about `txName` from listener `who`. */
+  const t = (who: string, outcome: string, n = 1, txName = "wwv"): AnswerTally => ({ txName, outcome, listenerId: who, n });
+  const notHeardFrom = (...who: string[]) => who.map((w) => t(w, "not_heard", 2));
+
+  // Value: protects=#147 a station on the air all the time is "suspect" only with 5+ "not heard" answers from 3+ different listeners and no "heard", with the counts right; fails_when=the thresholds drift, or another station's answers or "no_open" count toward it; why_new=#147 possibly-off-the-air signal; seam=none (pure); no_claim=the 60-day database read (the route's)
+  it("calls a station suspect with enough not-heard answers from enough listeners", () => {
+    const tallies = [...notHeardFrom("a", "b", "c"), t("d", "no_open", 9), t("a", "heard", 4, "wwvh")];
+    expect(stationActivity(wwv, tallies)).toEqual({ status: "suspect", heard: 0, notHeard: 6, notHeardListeners: 3 });
+    // 4 not-heard from 3 listeners: not enough answers.
+    expect(stationActivity(wwv, [t("a", "not_heard", 2), t("b", "not_heard"), t("c", "not_heard")])?.status).toBe("ok");
+  });
+
+  // Value: protects=#147 one "heard" in the window clears a station however many say they didn't (bad propagation for some isn't death); fails_when=heard answers are ignored or outvoted; why_new=#147 acceptance; seam=none; no_claim=none
+  it("isn't suspect when anyone heard it", () => {
+    expect(stationActivity(wwv, [...notHeardFrom("a", "b", "c", "d"), t("e", "heard")])).toMatchObject({ status: "ok", heard: 1 });
+  });
+
+  // Value: protects=#147 one or two listeners' repeated "not heard" (a bad receiver, an unlucky evening) can't make a station suspect, however many answers; fails_when=listeners aren't counted, so one person flags a station; why_new=#147 acceptance; seam=none; no_claim=a listener clearing their id to look like many (listenerId is the browser's)
+  it("isn't suspect when the not-heards come from one or two listeners", () => {
+    expect(stationActivity(wwv, [t("a", "not_heard", 20)])).toMatchObject({ status: "ok", notHeard: 20, notHeardListeners: 1 });
+    expect(stationActivity(wwv, [t("a", "not_heard", 10), t("b", "not_heard", 10)])?.status).toBe("ok");
+  });
+
+  // Value: protects=#147 no answers at all reads "quiet" (no evidence), never "suspect" or "ok", and "didn't open" answers aren't answers; fails_when=silence is taken as off the air; why_new=#147 acceptance; seam=none; no_claim=none
+  it("is quiet with no answers", () => {
+    expect(stationActivity(wwv, [])).toEqual({ status: "quiet", heard: 0, notHeard: 0, notHeardListeners: 0 });
+    expect(stationActivity(findStation("the-pip")!, [t("a", "no_open", 3, "the-pip")])?.status).toBe("quiet");
+  });
+
+  // Value: protects=#147 only always-on and day/night stations are judged: irregular, Priyom-scheduled and defunct ones get null whatever the answers, since silence between transmissions proves nothing; fails_when=a numbers station is flagged suspect for being quiet between transmissions; why_new=#147 acceptance; seam=signal-stations catalog; no_claim=none
+  it("never judges irregular, Priyom or defunct stations", () => {
+    for (const s of SIGNAL_STATIONS.filter((s) => !["always", "dayNight"].includes(s.schedule.kind))) {
+      const tallies = ["a", "b", "c", "d"].map((w) => t(w, "not_heard", 3, s.slug));
+      expect(stationActivity(s, tallies), s.slug).toBeNull();
+    }
+    expect(stationActivity({ ...wwv, priyom: "X01" }, notHeardFrom("a", "b", "c"))).toBeNull();
   });
 });

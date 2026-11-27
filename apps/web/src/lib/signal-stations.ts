@@ -5,14 +5,15 @@
  * the time it's asked about, which the page reads from the server-corrected
  * clock (server-clock.ts), as ibp.ts and ghostnet.ts do.
  *
- * Sources: operator pages (NIST) and Wikipedia, checked 2026-11-24, and
- * Priyom (priyom.org, CC BY-NC-SA 4.0) for the numbers stations, read
- * 2026-11-25; each entry links its own, and the panel must credit Priyom.
- * Facts only: blurbs and notes are our own words. Nothing is fetched.
+ * Sources: operator pages (NIST), Wikipedia, and Priyom (priyom.org, CC BY-NC-SA
+ * 4.0) for the numbers stations and the Russian markers; each entry links its
+ * own and says when it was last checked against them (`checked`, #147), and the
+ * panel must credit Priyom. Facts only: blurbs and notes are our own words.
+ * Nothing is fetched. A weekly report (/api/signals/freshness, #147) lists
+ * entries not checked in 180 days.
  *
- * Checked against Priyom 2026-11-25: The Pip's 5448/3756 and Squeaky Wheel's
- * 5367/3363.5, both USB. VE3SUN's list has Squeaky Wheel on 3829.18/3830.45;
- * no other source has that, so it isn't used.
+ * VE3SUN's list has Squeaky Wheel on 3829.18/3830.45; no other source has
+ * that, so it isn't used (Priyom has 5367/3363.5 USB).
  * Still unchecked: day/night switch times. They're unpublished, so `dayNight`
  * follows the sun at the transmitter (owner's choice) and can be wrong for a
  * while around dawn and dusk.
@@ -107,6 +108,13 @@ export type SignalStation = {
   askHint?: string;
   blurb: string;
   sources: readonly string[];
+  /**
+   * "YYYY-MM-DD": the last day someone confirmed this entry's frequencies,
+   * schedule and status against its `sources` (#147). Defunct stations too:
+   * that's when someone confirmed it was still off the air. Bump it whenever
+   * you re-check an entry, even if nothing changed.
+   */
+  checked: string;
 };
 
 const am = (khz: number): SignalChannel => ({ khz, mode: "am" });
@@ -140,6 +148,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     blurb:
       "The US time standard on shortwave: a tick every second and a voice announcing the time each minute, around the clock.",
     eibi: ["WWV Colorado (m.ann.)"],
+    checked: "2026-11-24",
     sources: [
       "https://www.nist.gov/pml/time-and-frequency-division/time-distribution/radio-station-wwv",
       "https://en.wikipedia.org/wiki/WWV_(radio_station)",
@@ -157,6 +166,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     blurb:
       "WWV's sister station in Hawaii, on the same frequencies with a woman's voice, so where both are heard you can tell them apart.",
     eibi: ["WWVH Hawaii (f.ann.)"],
+    checked: "2026-11-24",
     sources: [
       "https://www.nist.gov/pml/time-and-frequency-division/time-distribution/radio-station-wwvh",
       "https://en.wikipedia.org/wiki/WWVH",
@@ -172,6 +182,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     tx: { lat: 55.7269, lon: 38.2082, label: "near Moscow, Russia", confidence: "known" },
     blurb: "Russia's shortwave time and frequency standard: keyed carrier pulses, no voice.",
     eibi: ["RWM Moscow"],
+    checked: "2026-11-24",
     sources: ["https://en.wikipedia.org/wiki/RWM"],
   },
   {
@@ -185,6 +196,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     blurb:
       "A short buzz repeated around the clock since at least 1982, broken now and then by a voice reading Russian code words.",
     eibi: ["The Buzzer"],
+    checked: "2026-11-24",
     sources: ["https://en.wikipedia.org/wiki/UVB-76"],
   },
   {
@@ -197,6 +209,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     tx: { lat: 47.24, lon: 39.71, label: "near Rostov-on-Don, Russia", confidence: "approx" },
     blurb: "A fast, steady pip from a Russian military network, with the odd voice message between the pips.",
     eibi: ["The Pip (Kaplya) Rostov"],
+    checked: "2026-11-25",
     sources: ["https://priyom.org/military-stations/russia/the-pip", "https://en.wikipedia.org/wiki/The_Pip"],
   },
   {
@@ -209,6 +222,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     tx: { lat: 47.24, lon: 39.71, label: "thought to be near Rostov-on-Don, Russia", confidence: "approx" },
     blurb: "The Pip's partner in the same network. Its squeak gave it the name; since 2023 it sends a low-tone pip instead.",
     eibi: ["The Squeaky Wheel"],
+    checked: "2026-11-25",
     sources: ["https://priyom.org/military-stations/russia/the-squeaky-wheel", "https://en.wikipedia.org/wiki/The_Squeaky_Wheel"],
   },
   {
@@ -222,6 +236,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     tx: MOSCOW,
     blurb: "A man's voice reading groups of numbers in English, from the Russian operator Priyom calls \"7\".",
     eibi: ["E07 Russian Spy Numbers"],
+    checked: "2026-11-25",
     sources: ["https://priyom.org/number-stations/english/e07"],
   },
   {
@@ -235,6 +250,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     tx: WARSAW,
     blurb: "A woman's voice reading numbers in English, from the Polish operator Priyom calls \"11\".",
     eibi: ["E11 Polish Spy Numbers"],
+    checked: "2026-11-25",
     sources: ["https://priyom.org/number-stations/english/e11"],
   },
   {
@@ -248,6 +264,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     tx: MOSCOW,
     blurb: "A man's voice reading groups of numbers in English, from the Russian operator Priyom calls \"6\" (S06's operator).",
     eibi: ["E06 Russian Spy Numbers"],
+    checked: "2026-11-25",
     sources: ["https://priyom.org/number-stations/english/e06"],
   },
   {
@@ -264,6 +281,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     tx: MOSCOW,
     blurb: "A man's voice reading groups of numbers in Russian, sent from several sites across Russia.",
     eibi: ["S06 Russian Spy Numbers"],
+    checked: "2026-11-25",
     sources: ["https://priyom.org/number-stations/slavic/s06"],
   },
   {
@@ -277,6 +295,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     tx: WARSAW,
     blurb: "E11's Russian-language counterpart: a woman's voice reading numbers in Russian, from Poland.",
     eibi: ["S11a Polish Spy Numbers"],
+    checked: "2026-11-25",
     sources: ["https://priyom.org/number-stations/slavic/s11a"],
   },
   {
@@ -290,6 +309,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     tx: { lat: 48.48, lon: 135.07, label: "Khabarovsk, Russia", confidence: "approx" },
     blurb: "E07's Spanish-language counterpart: a woman's voice reading numbers in Spanish, sent from Russia's Far East.",
     eibi: ["V07 Russian Spy Numbers"],
+    checked: "2026-11-25",
     sources: ["https://priyom.org/number-stations/other/v07"],
   },
   {
@@ -308,6 +328,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     blurb:
       "The data mode of the Russian operator Priyom calls \"6\" (E06 and S06's): short, fast bursts of two-tone digital data, sent from Russia and Cuba.",
     eibi: ["F06 Russian Spy Numbers"],
+    checked: "2026-11-25",
     sources: ["https://priyom.org/number-stations/digital/f06"],
   },
   {
@@ -320,6 +341,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     schedule: { kind: "irregular", note: RUSSIAN_7_NOTE },
     tx: MOSCOW,
     blurb: "The Morse code station of the Russian operator Priyom calls \"7\" (E07's operator).",
+    checked: "2026-11-25",
     sources: ["https://priyom.org/number-stations/morse/m12"],
   },
   {
@@ -330,6 +352,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     channels: [usb(3_330), usb(7_850), usb(14_670)],
     schedule: { kind: "defunct", ended: "2026-06" },
     blurb: "Canada's time signal from near Ottawa, with announcements in English and French. Its last broadcast was 22 June 2026, after more than a century on the air.",
+    checked: "2026-11-25",
     sources: ["https://en.wikipedia.org/wiki/CHU_(radio_station)"],
   },
   {
@@ -341,6 +364,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     schedule: { kind: "defunct", ended: "2008-07" },
     blurb:
       "Played bars of the English folk song between groups of numbers read by a woman's voice. Traced by listeners to Cyprus; last heard in July 2008.",
+    checked: "2026-11-24",
     sources: ["https://en.wikipedia.org/wiki/Lincolnshire_Poacher_(numbers_station)"],
   },
   {
@@ -351,6 +375,7 @@ export const SIGNAL_STATIONS: readonly SignalStation[] = [
     channels: [],
     schedule: { kind: "defunct", ended: "2009-12" },
     blurb: "Took over part of the Lincolnshire Poacher's role, with another folk song as its signal, until December 2009.",
+    checked: "2026-11-24",
     sources: ["https://en.wikipedia.org/wiki/Cherry_Ripe_(numbers_station)"],
   },
 ];
