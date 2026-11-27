@@ -11,10 +11,13 @@ import { sameSecret } from "@/lib/same-secret";
  * secret, never the site password, and each cron route refuses any call
  * without CRON_SECRET itself. Gating it here too would silently stop the
  * daily RBN skimmer snapshots whenever Production is password-locked (#61, D1).
+ * The weekly freshness report (/api/signals/freshness, #147) is the same: the
+ * GitHub Action brings its own bearer secret, which the route checks.
  */
 export async function proxy(request: NextRequest) {
   const password = process.env.APP_PASSWORD;
-  if (!password || request.nextUrl.pathname.startsWith("/api/cron/")) return NextResponse.next();
+  const path = request.nextUrl.pathname;
+  if (!password || path.startsWith("/api/cron/") || path === "/api/signals/freshness") return NextResponse.next();
   const supplied = basicAuthPassword(request.headers.get("authorization"));
   if (supplied !== null && (await sameSecret(supplied, password))) return NextResponse.next();
   return new NextResponse("Password required.", {

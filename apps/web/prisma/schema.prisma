@@ -181,3 +181,21 @@ model RbnBeaconDay {
   /// [{ call, spots }] for all 18 beacons, in transmission order.
   beacons   Json
 }
+
+/// Priyom's numbers-station schedule as last fetched by any server (#147), so
+/// the weekly freshness report can say when Priyom last changed it: each
+/// server's own copy dies with its instance. One row, id "priyom".
+model PriyomFeed {
+  id            String    @id
+  /// When the first good fetch was recorded: with changedAt null, no change
+  /// has been seen since.
+  trackedSince  DateTime
+  /// When the copy below was fetched.
+  fetchedAt     DateTime
+  /// The last fetch that changed a catalog station's slots (frequency, mode,
+  /// or a slot added or dropped) from the copy before it; null for none yet.
+  changedAt     DateTime?
+  /// The catalog stations' transmissions from that fetch (PriyomTx[], as
+  /// lib/priyom-schedule.ts parses them), for the next fetch to compare with.
+  transmissions Json
+}
