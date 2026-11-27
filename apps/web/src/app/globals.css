@@ -196,6 +196,17 @@ html,
   font-size: 1rem;
   color: var(--muted);
   max-width: 75ch;
+  /* Both versions of the line sit in one cell, so it keeps the taller one's height and the dial
+     never moves when the sentence switches (tuning off 10,000 kHz, or saved tuning loading). */
+  display: grid;
+}
+
+.console-intro > span {
+  grid-area: 1 / 1;
+}
+
+.console-intro > span[aria-hidden] {
+  visibility: hidden;
 }
 
 .wordmark {

@@ -1352,6 +1352,8 @@ export default function ListenPage() {
   // The waterfall opens on the visit's first audio and stays open, so Stop and
   // Listen never resize it again.
   const waterfallOpen = useLatch(radio.heardAudio);
+  // Where the intro line names WWV (#177): the default tuning, 10,000 kHz AM.
+  const onDefaultTuning = freqKhz === DEFAULT_TUNING.freqKhz && mode === DEFAULT_TUNING.mode;
 
   // How wide the waterfall looks. The receiver's own waterfall needs a radio
   // service that streams it; "band" needs the dial in a band, and falls back
@@ -1650,13 +1652,22 @@ export default function ListenPage() {
 
       {/* What skywave is and what Listen will play (#177), on every visit until its first audio,
           which is already the one layout change. Plain text, not a live region: read in order, never
-          announced as the dial moves. "Usually": the schedule is a hint, not a promise WWV is on. */}
+          announced as the dial moves. "Usually": the schedule is a hint, not a promise WWV is on.
+          Both versions share one grid cell, the other hidden, so the line keeps the taller one's
+          height: on a phone they wrap differently, and a switch would move the dial under a finger. */}
       {!waterfallOpen && (
         <p className="console-intro">
-          Shortwave and ham radio through volunteer receivers around the world.{" "}
-          {freqKhz === DEFAULT_TUNING.freqKhz && mode === DEFAULT_TUNING.mode
-            ? "Press Listen: the dial is on 10,000 kHz, where the WWV time signal usually is."
-            : "Press Listen to hear this frequency."}
+          {[true, false].map((wwv) => (
+            <span
+              key={String(wwv)}
+              aria-hidden={wwv !== onDefaultTuning || undefined}
+            >
+              Shortwave and ham radio through volunteer receivers around the world.{" "}
+              {wwv
+                ? "Press Listen: the dial is on 10,000 kHz, where the WWV time signal usually is."
+                : "Press Listen to hear this frequency."}
+            </span>
+          ))}
         </p>
       )}
 
