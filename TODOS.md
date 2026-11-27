@@ -177,6 +177,24 @@ RBN live goes through #69's single connection in the radio service once its logi
 **Priority:** P3
 **Depends on:** #61 Step 1 freeze (not this one); #169 for grouped rows only
 
+### Broadcast probe: edges left after PR #182's final review (#61)
+
+**What:** Close the remaining edges in `apps/radio/spikes/spots/broadcast_wspr_probe.py` found by the PR #182 final reviews (2026-11-27), none reachable from a real block 10 export except where noted:
+- **Station key (owner's D2):** a joined question counts as its own key, so overlapping groups ("A", "A / B", "A / B / C") make more keys than real stations, and the largest-station share is split across them. Consider counting distinct names for the floor and keeping the group key only for de-duplication.
+- **Spots with no distance:** a wspr.live reply with a positive spot count but no distance (rows without coordinates) counts as a scored miss.
+- **Hand-edited exports:** a receiver with an uppercase host or a leading-zero port, or a tx_name repeating one station four times, still loads (block 10 lowercases hosts and stores ports as integers; the page refuses a 4-entry question).
+- **Messages:** a wspr.live outage message hides a missing-column message; exit 3 lumps "retry later" (outage, unsettled windows) with "won't change" (thin data, exploratory window); exit 2 covers both a bad file and a bad command line.
+- **Reporting:** no listener or geographic share is shown (block 10 has no listener ids by design); a bad identity cell on a row that would be set aside still stops the run.
+- **CI:** collecting `apps/radio/spikes` relies on pytest's default import mode (`spikes/spots` has no `__init__.py`; the probe imports its sibling).
+
+**Why:** Each can make the D4 verdict or its message less clear than it should be, but none blocks the first real run now that the probe waits for settled windows.
+
+**Context:** PR #182 review records (2026-11-27 runs 2 and 3). The owner's rule for optional-data work: once queued fixes land, fix only blockers and file the rest here so collection starts.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None; read the probe's first real D4 run first, which may show which edges matter.
+
 ### Randomised exploration in Pick best for #61 (#61)
 
 **What:** On 10–20% of beacon-Listen runs, pick at random among ranks 0–2 instead of rank 0, and flag it in the pick context (bump `PICK_CONTEXT_VERSION`).

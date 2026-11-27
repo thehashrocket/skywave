@@ -314,6 +314,20 @@ def test_summarize_guards_the_window_and_missing_results():
     assert (s["scored"], s["unanswered"], s["decided"]) == (0, 50, False) and s["verdict"].startswith("no verdict: 50 of 50 answers got no usable wspr.live reply")
     s = summarize(_spread(50, 10, 10), {i: None for i in range(49)}, set())
     assert s["unanswered"] == 1 and s["verdict"].startswith("no verdict: 1 of 50")
+    # Value: protects=windows are compared in exact seconds, so a 181-s window is exploratory, not D4's 3 min; fails_when=durations are floored to whole minutes again (181-239 s pass as 3 min); why_new=Codex on PR #182 final review (owner D1 run 3); seam=none; no_claim=none beyond protects
+    a = [answer(line=i, stations=(f"S{i % 10}",), receiver=f"rx{i % 10}.example:8073", window_s=181) for i in range(50)]
+    assert summarize(a, {i: 1000.0 for i in range(50)}, set())["verdict"] == "no D4 verdict: exploratory 3.01667-min window; D4 is decided at 3 min (D21)"
+
+
+# Value: protects=no D4 verdict while any scored answer's window ended under 24 h ago (wspr.live is still filling it in, the rule that already keeps such replies out of the cache), with the time to run again; fails_when=a fresh export gets a final build/stop that late spots could flip; why_new=Codex on PR #182 final review, owner D1 (2026-11-27, run 3); seam=none (now_s parameter, which main leaves to the clock); no_claim=how late wspr.live spots really arrive
+def test_summarize_waits_for_settled_windows():
+    a = _spread(50, 10, 10)
+    end = a[0].end_s
+    dist = {i: 1000.0 for i in range(50)}
+    assert summarize(a, dist, set(), now_s=end + 24 * 3600)["decided"]
+    s = summarize(a, dist, set(), now_s=end + 24 * 3600 - 1)
+    assert not s["decided"] and s["verdict"].startswith("no verdict: 50 scored answers' windows ended under 24 h ago and wspr.live is still filling them in; run again after 2026-11-21 11:59 UTC")
+    assert summarize(a, dist, set(), {i for i in range(50)}, now_s=end)["verdict"] == "no verdict: no answer's band had any WSPR spot in its window"  # quiet answers aren't scored, so they don't hold it back
 
 
 # Value: protects=the CLI as the owner runs it: reads block 10, asks wspr.live per day and band, prints set-asides, shares and D4's verdict; refuses a missing --window-min (no default window to tip D4), a wrong row count, a window that isn't a multiple of 3, and a bad file with exit 2, and ties the verdict to the window; fails_when=argparse wiring, a guard, or the output breaks, or a default window creeps back; why_new=new probe (D4); seam=none (monkeypatches _fetch); no_claim=wspr.live itself

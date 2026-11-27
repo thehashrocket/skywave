@@ -37,7 +37,8 @@ Input: CSV from .local-data/61-step0.sql block 10:
     stations stops the load, since block 10 can't produce one.
 
 Exit status: 0 with a D4 verdict, 3 without one (an exploratory window, too little
-data, a missing column or a wspr.live gap), 2 for an unusable input file.
+data, a missing column, a wspr.live gap, or windows that ended under 24 h ago and may
+still gain late spots), 2 for an unusable input file or a bad command line.
 
     python broadcast_wspr_probe.py --answers ../../../../.local-data/61-broadcasts.csv \\
         --window-min 3 --expect-rows <block 10b's count>
@@ -358,7 +359,7 @@ def run_query(query: str, n: int, end_s: int, cache_dir: Path | None = None, now
     return got
 
 
-def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered: set[int], quiet: set[int] = frozenset()) -> dict:
+def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered: set[int], quiet: set[int] = frozenset(), now_s: float | None = None) -> dict:
     """D4's shares and verdict. `quiet` answers (no spot on the band anywhere in the window:
     a wspr.live gap or a quiet band) are counted apart. The share is taken both without
     them and with them as misses, and gives a verdict only when both readings agree, so
@@ -368,7 +369,11 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
     windows), without the identity columns (an export from before block 10's tx_name,
     receiver and report_id), or under D21's support floor (scored answers, distinct
     stations with a joined question counting once, distinct receivers). `decided` says
-    whether `verdict` is a D4 verdict."""
+    whether `verdict` is a D4 verdict. Nor is there one while any scored answer's window
+    ended less than CACHE_AFTER_S before `now_s` (default: the clock): wspr.live is still
+    filling those windows in, so a late spot could change the share (the same rule that
+    keeps such replies out of the cache)."""
+    now_s = time.time() if now_s is None else now_s
     unanswered = set(unanswered) | {a.line for a in answers if a.line not in dist_m and a.line not in quiet}
     scored = [a for a in answers if a.line not in unanswered and a.line not in quiet]
     getters = (("tx_name", lambda a: a.stations), ("receiver", lambda a: a.receiver), ("report_id", lambda a: a.report_id))
@@ -378,7 +383,8 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
     stations = None if "tx_name" in missing else len(by_station)
     receivers = None if "receiver" in missing else len(by_receiver)
     top = lambda c, n: max(c.values()) / len(scored) if scored and n is not None else None
-    windows = sorted({(a.end_s - a.start_s) // 60 for a in answers})
+    windows = sorted({a.end_s - a.start_s for a in answers})  # seconds, compared exactly
+    unsettled = [a for a in scored if a.end_s > now_s - CACHE_AFTER_S]
     near = {r: [a for a in scored if (d := dist_m.get(a.line)) is not None and d <= r * 1000] for r in RADII_KM}
     by_band: dict[int, list[int]] = {}
     for a in scored:
@@ -396,10 +402,13 @@ def summarize(answers: list[Answer], dist_m: dict[int, float | None], unanswered
         verdict = "no verdict: no answer's band had any WSPR spot in its window"
     elif unanswered:
         verdict = f"no verdict: {len(unanswered)} of {len(answers)} answers got no usable wspr.live reply (missing, not zero); run again"
-    elif windows != [D4_WINDOW_MIN]:  # a property of the run, so it comes before the export's own gaps
-        verdict = f"no D4 verdict: exploratory {', '.join(map(str, windows))}-min window; D4 is decided at {D4_WINDOW_MIN} min (D21)"
+    elif windows != [D4_WINDOW_MIN * 60]:  # a property of the run, so it comes before the export's own gaps
+        verdict = f"no D4 verdict: exploratory {', '.join(f'{w / 60:g}' for w in windows)}-min window; D4 is decided at {D4_WINDOW_MIN} min (D21)"
     elif missing:
         verdict = f"no verdict: this export has no {' or '.join(missing)} column{'s' if len(missing) > 1 else ''}, so D21's floor can't be checked; rerun block 10"
+    elif unsettled:
+        ready = datetime.fromtimestamp(max(a.end_s for a in unsettled) + CACHE_AFTER_S, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        verdict = f"no verdict: {len(unsettled)} scored answers' windows ended under 24 h ago and wspr.live is still filling them in; run again after {ready}"
     elif len(scored) < MIN_ANSWERS or stations < MIN_STATIONS or receivers < MIN_RECEIVERS:
         verdict = (
             f"no verdict: not enough broadcast data ({len(scored)} scored answers, {stations} stations, "
