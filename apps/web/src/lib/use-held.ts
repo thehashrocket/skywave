@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { rankReceivers, type Receiver } from "./kiwi-list";
 import { NOISE_MAX_RECEIVERS, noiseKey } from "./noise-rank";
 
@@ -12,6 +12,15 @@ const SERVICE_URL = process.env.NEXT_PUBLIC_RADIO_WS_URL ?? "ws://localhost:8765
  * filled since still answers with its own refusal (skywave_cap), as before.
  */
 export const HELD_REFRESH_MS = 60_000;
+
+/**
+ * After this page's receiver changes or stops, how long until it asks once
+ * more. The service frees the old slot only once that session has closed its
+ * Kiwi, so the answer to the ask made at once usually still counts it. Closing
+ * takes up to two 2 s timeouts (CLOSE_TIMEOUT_S in kiwi.py), so by this ask
+ * the slot is normally free and the receiver just left stops reading as taken.
+ */
+export const HELD_SETTLE_MS = 5_000;
 
 const NOTHING: ReadonlySet<string> = new Set();
 
@@ -49,7 +58,8 @@ export function parseHeld(body: unknown): ReadonlySet<string> | null {
  * ranks at the dial itself, so its candidates are the ones checked. The sorted
  * key list only changes (and asks again) when the dial crosses a receiver's
  * coverage edge. `playing` is this page's receiver (noiseKey, or null): when it
- * changes, the page asks again, so one it just left stops reading as taken.
+ * changes, the page asks again at once and once more HELD_SETTLE_MS later, so
+ * one it just left stops reading as taken.
  */
 export function useHeld(
   receivers: readonly Receiver[] | undefined,
@@ -62,7 +72,14 @@ export function useHeld(
     [receivers, freqKhz],
   );
   const [held, setHeld] = useState<{ keys: string; set: ReadonlySet<string> }>({ keys: "", set: NOTHING });
+  // The receiver the last ask was made for, to tell a change of it from a change of keys.
+  const askedFor = useRef(playing);
+  // When the ask owed for that change is due (0: none owed). Kept across runs, so a
+  // dial move in the meantime moves it to the new keys instead of dropping it.
+  const settleAt = useRef(0);
   useEffect(() => {
+    if (askedFor.current !== playing) settleAt.current = Date.now() + HELD_SETTLE_MS;
+    askedFor.current = playing;
     if (!keys) return;
     const url = heldUrl(SERVICE_URL, keys.split(","));
     if (!url) return;
@@ -84,9 +101,21 @@ export function useHeld(
         });
     };
     load();
+    const owed = settleAt.current - Date.now();
+    const settle =
+      settleAt.current > 0
+        ? setTimeout(
+            () => {
+              settleAt.current = 0;
+              load();
+            },
+            Math.max(0, owed),
+          )
+        : undefined;
     const timer = setInterval(load, HELD_REFRESH_MS);
     document.addEventListener("visibilitychange", load);
     return () => {
+      clearTimeout(settle);
       clearInterval(timer);
       document.removeEventListener("visibilitychange", load);
       abort?.abort();

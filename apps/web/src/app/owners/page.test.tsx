@@ -38,4 +38,14 @@ describe("/owners", () => {
     expect(text).toContain("Nothing about who was listening is written.");
     expect(text).toContain("25 MB at most");
   });
+
+  // Value: protects=owners, listed or not, are told that skywave's public /held shows whether a skywave listener is on their receiver now (any receiver asked about, not only listed ones), that anyone can ask, and that it says nothing about who (#155 follow-up, owner D8); fails_when=the bullet is dropped or loses the anyone-can-ask or nothing-about-who statements; why_new=/held shipped in v0.63.0.0 without telling owners; seam=none; no_claim=what /held actually answers (test_held.py)
+  it("tells owners that anyone can see whether a skywave listener is on their receiver", () => {
+    const { container } = render(<OwnersPage />);
+    const text = container.querySelector("#owners-what")?.parentElement?.textContent?.replace(/\s+/g, " ");
+    expect(text).toContain("for any receiver it is asked about (listed, or reached by typing its address)");
+    expect(text).toContain("whether a skywave listener is on it now");
+    expect(text).toContain("Anyone can ask.");
+    expect(text).toContain("It says nothing about who is listening.");
+  });
 });
