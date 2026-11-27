@@ -2,7 +2,7 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
-## [0.63.0.0] - 2026-11-26 ([#150](https://github.com/thehashrocket/skywave/issues/150))
+## [0.64.0.0] - 2026-11-26 ([#150](https://github.com/thehashrocket/skywave/issues/150))
 
 ### Added
 - **Say which time station you heard when WWV and WWVH share the dial.** Tuned by hand to 2.5, 5, 10 or 15 MHz, where both are on the air, "Did you hear it?" now asks which one: Heard WWV (a man's voice), Heard WWVH (a woman's voice), Heard both, Heard nothing, Something else / can't tell, or Didn't open. Before, those frequencies asked about whichever EiBi station ranked first there (often PPE or BPM), so the answer couldn't be credited to either time station. Any catalog stations that come to share a frequency later get the same question.
@@ -11,6 +11,22 @@ Notable changes to skywave, newest first. Versions come from `VERSION` (four par
 ### Changed
 - **A listener who chose WWV with Listen is still asked about WWV alone on the frequency that Listen tuned,** and 20 MHz, where only WWV transmits, keeps its single question. Tuned by hand from there to a frequency WWVH shares, they're asked which one they heard.
 - **The weekly signal-stations report doesn't count a station as missing just because the other was louder.** A "not heard" filed beside a "heard" in the same answer never counts toward "possibly off the air", so WWVH isn't flagged in places where WWV drowns it out. It still shows WWVH was answered about. "Heard nothing" counts against both.
+
+## [0.63.1.0] - 2026-11-26 ([#149](https://github.com/thehashrocket/skywave/issues/149))
+
+### Fixed
+- **The Pip and The Squeaky Wheel are named on one frequency at a time.** EiBi lists their winter and summer hours as one row per stretch of months (November to February, March to April, and so on), and skywave only read the end of each stretch. So in November the March–April hours counted too, and for about three hours a day the dial named The Pip on both 3,756 and 5,448 kHz, one of them dead air. The same went for The Squeaky Wheel on 3,364 and 5,367 kHz. Every schedule row with a start and an end date now counts only between them. In this winter's schedule that takes 292 rows off the air outside their months, most of them numbers stations that EiBi lists month by month (E06, E07, E11). One row comes on: VFF Iqaluit Radio on 2,514 kHz, 13:20–14:00 UTC, now shows from 7 January, as EiBi's dates say (probably a slip for July).
+- **A station that runs the season out stays named all season.** When a row's end date is the season's last day, its start date is taken as when the station began, not as the start of a window, so a station that began in January isn't hidden until then.
+- **On 29 February in a leap year, The Pip is still named.** A window that EiBi ends on 28 February now covers the 29th too, so the day doesn't fall between The Pip's November–February and March–April hours and leave both frequencies unnamed.
+
+## [0.63.0.0] - 2026-11-26 ([#155](https://github.com/thehashrocket/skywave/issues/155), [#144](https://github.com/thehashrocket/skywave/issues/144))
+
+### Added
+- **Pick best tries receivers another Skywave listener is already on last.** Skywave lets one of its listeners onto each volunteer receiver, and most of its refusals were people landing on a receiver someone else from Skywave was already using. The page now asks the radio service which of the receivers it would pick from are taken (about once a minute while the tab is open, and again when you change receiver), and Pick best puts those at the back of its run instead of spending its tries on them. They are still tried if nothing else works, because the answer can be a minute old. The receiver you're listening to is never pushed back for your own listening.
+- **The receiver table says when another Skywave listener is on a receiver.** Rows near the top of the list for your frequency read "Another Skywave listener is on it", and "Switch to a better receiver?" no longer offers one, since that switch would be refused. If the radio service can't answer, nothing is marked and everything works as before.
+
+### Fixed
+- **The daily load report counts every refusal, not just the ones the service wrote down.** When a burst of refusals hits the same receiver, the service writes one line every 10 seconds and adds how many it held back to the next one. The report counted lines, so it showed fewer refusals than really happened. It now adds those held-back ones in. The refusal numbers in reports from this release on read higher than before for the same traffic, so compare them only with reports from after it.
 
 ## [0.62.0.0] - 2026-11-26 ([#147](https://github.com/thehashrocket/skywave/issues/147))
 

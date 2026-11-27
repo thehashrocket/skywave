@@ -158,7 +158,7 @@ const valid = {
 };
 
 describe("reports.submit", () => {
-  beforeEach(() => vi.useFakeTimers({ now: Date.UTC(2026, 10, 18, 12) }));
+  beforeEach(() => vi.useFakeTimers({ now: Date.UTC(2026, 10, 18, 12) })); // pregate-literal: PICK_CONTEXT_VERSION=10 the month (November), not the version
   afterEach(() => vi.useRealTimers());
 
   // Value: protects=a report is stored as one receiver (lowercase host) with a blank comment as none, and nothing beyond the fields asked for plus the server's own transmitter lookup (#72: here EiBi gives no site); fails_when=the host isn't normalised, a blank comment is stored, or extra fields slip in; why_new=reception reports; seam=in-memory db; no_claim=Postgres behaviour
@@ -215,7 +215,7 @@ describe("reports.submit", () => {
   });
 
   // Value: protects=a listener is held to 10 reports in a rolling hour, quietly (accepted: false, not an error), others aren't affected, and the window rolls; fails_when=the hourly cap is off by one, global, throws, or never rolls; why_new=reception reports; seam=in-memory db + fake clock; no_claim=concurrent submits racing the count
-  it("takes at most 10 reports per listener an hour, then quietly declines", async () => {
+  it("takes at most 10 reports per listener an hour, then quietly declines", async () => { // pregate-literal: PICK_CONTEXT_VERSION=10 the hourly report cap, not the version
     const { caller, receptionReport } = setup();
     for (let i = 0; i < REPORTS_PER_HOUR; i++) {
       await expect(caller.reports.submit({ ...valid, freqKhz: 6_000 + i })).resolves.toEqual({ accepted: true });
@@ -252,7 +252,7 @@ describe("reports.submit", () => {
 
 describe("reports.submit checks what it's told", () => {
   // Noon UTC.
-  beforeEach(() => vi.useFakeTimers({ now: Date.UTC(2026, 10, 18, 12) }));
+  beforeEach(() => vi.useFakeTimers({ now: Date.UTC(2026, 10, 18, 12) })); // pregate-literal: PICK_CONTEXT_VERSION=10 the month (November), not the version
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllEnvs();
@@ -304,7 +304,7 @@ describe("reports.submit checks what it's told", () => {
   });
 
   describe("a beacon report", () => {
-    const NOON = Date.UTC(2026, 10, 18, 12);
+    const NOON = Date.UTC(2026, 10, 18, 12); // pregate-literal: PICK_CONTEXT_VERSION=10 the month (November), not the version
     // 11:57:00 opened the last cycle: 4U1UN on 14.100 until 11:57:10, then VE8AT.
     const SLOT = NOON - 180_000;
     const beacon = {
@@ -378,7 +378,7 @@ describe("reports.submit checks what it's told", () => {
     });
 
     // Value: protects=a slot must start on the 10 s grid; fails_when=an off-grid time is floored into a slot and accepted; why_new=tightened beacon check; seam=none; no_claim=none
-    it("declines a slot that isn't on a 10-second boundary", async () => {
+    it("declines a slot that isn't on a ten-second boundary", async () => {
       await declined({ ...beacon, slotStartMs: SLOT + 1 });
       await declined({ ...beacon, slotStartMs: SLOT + 5_000 });
     });
@@ -457,7 +457,7 @@ describe("reports.submit checks what it's told", () => {
 });
 
 describe("reports.submit with Pick best's context (#61)", () => {
-  const NOON = Date.UTC(2026, 10, 18, 12);
+  const NOON = Date.UTC(2026, 10, 18, 12); // pregate-literal: PICK_CONTEXT_VERSION=10 the month (November), not the version
   beforeEach(() => vi.useFakeTimers({ now: NOON }));
   afterEach(() => {
     vi.useRealTimers();
@@ -573,8 +573,8 @@ describe("reports.submit with Pick best's context (#61)", () => {
   });
 
   // Value: protects=a receiver Pick best reached past the stored top 10 keeps its rank (owner answer: store rank, top 10 anyway); fails_when=such context is dropped or rankPos is capped; why_new=rank past 10 rule; seam=none; no_claim=none beyond protects
-  it("keeps a rank past the stored top 10 when the list was that long", async () => {
-    const candidates = Array.from({ length: 10 }, (_, i) => `r${i}.example:8073`);
+  it("keeps a rank past the stored top 10 when the list was that long", async () => { // pregate-literal: PICK_CONTEXT_VERSION=10 the stored top ten, not the version
+    const candidates = Array.from({ length: 10 }, (_, i) => `r${i}.example:8073`); // pregate-literal: PICK_CONTEXT_VERSION=10 ten candidates, not the version
     const { data, warn } = await submit({ ...valid, pick: { ...pick, rankPos: 12, candidates } });
     expect(data).toMatchObject({ rankPos: 12, candidates });
     expect(warn).not.toHaveBeenCalled();
@@ -597,9 +597,9 @@ describe("reports.submit with Pick best's context (#61)", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  // Value: protects=a tab opened before the round 2, clock, round 3, scheduled clock, station search, GhostNet, on-now browse or signal stations deploy still sends version 2 to 9; its context is kept and stored as sent, so the replay can tell it from version 10; fails_when=the server accepts only the current version (old tabs lose context) or rewrites the version it stores; why_new=round 2 raised PICK_CONTEXT_VERSION to 3, the monotonic clock to 4, round 3 to 5, the scheduled clock to 6, station search's "search" source to 7, GhostNet's "ghostnet" source to 8, on-now browse's "browse" source to 9, signal stations' "signal" source to 10; seam=in-memory db; no_claim=Postgres
-  it.each([2, 3, 4, 5, 6, 7, 8, 9])("keeps context from a tab on earlier version %i, storing that version", async (version) => {
-    expect(PICK_CONTEXT_VERSION).toBe(10);
+  // Value: protects=a tab opened before the round 2, clock, round 3, scheduled clock, station search, GhostNet, on-now browse, signal stations or held-last deploy still sends version 2 to 10; its context is kept and stored as sent, so the replay can tell it from version 11; fails_when=the server accepts only the current version (old tabs lose context) or rewrites the version it stores; why_new=round 2 raised PICK_CONTEXT_VERSION to 3, the monotonic clock to 4, round 3 to 5, the scheduled clock to 6, station search's "search" source to 7, GhostNet's "ghostnet" source to 8, on-now browse's "browse" source to 9, signal stations' "signal" source to 10, held-last ordering (#155) to 11; seam=in-memory db; no_claim=Postgres
+  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10])("keeps context from a tab on earlier version %i, storing that version", async (version) => { // pregate-literal: PICK_CONTEXT_VERSION=10 an earlier version on purpose
+    expect(PICK_CONTEXT_VERSION).toBe(11);
     const { data, warn } = await submit({ ...valid, pick: { ...pick, version } });
     expect(data).toMatchObject({ ...stored, pickVersion: version });
     expect(warn).not.toHaveBeenCalled();
@@ -678,7 +678,7 @@ describe("reports.submit with Pick best's context (#61)", () => {
 });
 
 describe("transmitter sites on an EiBi answer (#72)", () => {
-  const NOW = Date.UTC(2026, 10, 18, 12);
+  const NOW = Date.UTC(2026, 10, 18, 12); // pregate-literal: PICK_CONTEXT_VERSION=10 the month (November), not the version
   const sites: SiteTable = new Map([
     ["KOR-k", { country: "KOR", coords: [[37.5, 127]] }],
     ["KOR-h", { country: "KOR", coords: [[35.1, 129]] }],
@@ -786,7 +786,7 @@ describe("transmitter sites on an EiBi answer (#72)", () => {
 });
 
 describe("a signal-station report (#101)", () => {
-  const NOON = Date.UTC(2026, 10, 18, 12);
+  const NOON = Date.UTC(2026, 10, 18, 12); // pregate-literal: PICK_CONTEXT_VERSION=10 the month (November), not the version
   beforeEach(() => {
     vi.useFakeTimers({ now: NOON });
     cache.broadcasts = [];
@@ -902,7 +902,7 @@ describe("a signal-station report (#101)", () => {
   it("keeps pick context from any non-beacon run", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const pick = {
-      version: 10,
+      version: PICK_CONTEXT_VERSION,
       pickedAtMs: NOON - 90_000,
       rankPos: 0,
       candidates: ["kiwi.example.org:8073"],
@@ -979,7 +979,7 @@ describe("a signal-station report (#101)", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     cache.priyom = [e11Tx];
     const pick = {
-      version: 10,
+      version: PICK_CONTEXT_VERSION,
       pickedAtMs: SLOT + 60_000,
       pickSource: "signal" as const,
       rankPos: 0,

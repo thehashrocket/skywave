@@ -61,8 +61,9 @@ import { buildShareLink, parseShareLink } from "@/lib/share-link";
 import type { PickSource } from "@/lib/pick-context";
 import { usePickBest, WATCH_MS } from "@/lib/use-pick-best";
 import { LIST_FAILED_TEXT, listFailed, useReceiverList } from "@/lib/use-receiver-list";
-import { rankByNoise } from "@/lib/noise-rank";
+import { noiseKey, rankByNoise } from "@/lib/noise-rank";
 import { useNoise } from "@/lib/use-noise";
+import { useHeld } from "@/lib/use-held";
 import { useBetterReceiver } from "@/lib/use-better-receiver";
 import { useMapAdmission } from "@/lib/use-map-admission";
 import { useListenTracking } from "@/lib/use-listen-tracking";
@@ -677,7 +678,10 @@ export default function ListenPage() {
     if (!undo || !status.host || (status.state !== "listening" && status.state !== "error")) return;
     if (sameReceiver(undo.to, { host: status.host, port: status.port ?? DEFAULT_KIWI_PORT })) switchUndo.current = null;
   }, [status]);
-  const pickBest = usePickBest(status, tuneReceiver, coversDial, provenance, refusal);
+  // Receivers already at Skywave's per-receiver cap (useHeld, below): Pick best tries them last.
+  const heldRef = useRef<ReadonlySet<string>>(new Set());
+  const isHeld = useCallback((r: Receiver) => heldRef.current.has(noiseKey(r)), []);
+  const pickBest = usePickBest(status, tuneReceiver, coversDial, provenance, refusal, isHeld);
   // While Pick best runs (or watches), its run end counts its refusals.
   useListenTracking(status, radio.heardAudio, refusal, !pickBest.settled);
   const {
@@ -696,6 +700,13 @@ export default function ListenPage() {
   // Each receiver's measured noise floor for the dial's band and this UTC
   // hour (issue #67): Pick best prefers a receiver quieter than its usual.
   const noise = useNoise(receivers, freqKhz);
+  // Asked again whenever this page's receiver changes or stops, so one it just left stops reading as taken.
+  const heldMine =
+    (status.state === "listening" || status.state === "connecting") && status.host
+      ? noiseKey({ host: status.host, port: status.port ?? DEFAULT_KIWI_PORT })
+      : null;
+  const held = useHeld(receivers, freqKhz, heldMine);
+  heldRef.current = held;
   const noiseRef = useRef(noise);
   noiseRef.current = noise;
   const lastSavedPin = useRef<Heard | null>(null);
@@ -1225,6 +1236,8 @@ export default function ListenPage() {
     playing: playingNow,
     freqKhz,
     isRefused: pickBest.isRefused,
+    // Never offered (the switch would be refused, skywave_cap), but the switch itself still tries it last.
+    isHeld,
   });
   // The offered receiver first, then the rest that cover the dial, minus the
   // one playing and any it would leave out; the whole list names the way back.
@@ -1731,6 +1744,7 @@ export default function ListenPage() {
           }}
           picking={pickBest.running}
           onStopPicking={stopPicking}
+          held={held}
           map={(list) => (
             <MapPanel
               admitted={mapAdmitted && drawerSeen}

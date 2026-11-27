@@ -109,6 +109,41 @@ describe("ReceiverTable", () => {
     expect(screen.getByRole("button", { name: /alpha\.example:8073/ }).getAttribute("aria-current")).toBeNull();
   });
 
+  // Value: protects=a row another Skywave listener holds says so (matched by noiseKey, so a mixed-case host still matches /held's lowercased key), and the row this page is tuned to never does, though /held counts this page's own session; fails_when=the note is dropped, the row looks up held by receiverKey (case kept), or the tuned-row exclusion goes; why_new=#155 rows had no held marker; seam=none; no_claim=how fresh the held set is (use-held)
+  it("marks rows another Skywave listener holds, but not the one you're tuned to", () => {
+    render(
+      <ReceiverTable
+        receivers={[...receivers, rx("Echo", { host: "ECHO.example" })]}
+        freqKhz={10_000}
+        current={{ host: "charlie.example", port: 8073, phase: "listening" }}
+        sun={null}
+        onChoose={() => {}}
+        held={new Set(["alpha.example:8073", "charlie.example:8073", "echo.example:8073"])}
+      />,
+    );
+    const note = (host: RegExp) =>
+      screen.getByRole("button", { name: host }).querySelector(".receiver-held")?.textContent ?? null;
+    expect(note(/alpha\.example:8073/)).toBe("Another Skywave listener is on it");
+    expect(note(/ECHO\.example:8073/i)).toBe("Another Skywave listener is on it");
+    expect(note(/charlie\.example:8073/)).toBeNull();
+    expect(note(/bravo\.example:8073/)).toBeNull();
+  });
+
+  // Value: protects=the row you're tuned to is never marked held even when the list spells its host in capitals and the service (which lowercases the host it plays) reports it held; fails_when=the tuned-row exclusion compares case-sensitively; why_new=Codex structured review; seam=none; no_claim=none
+  it("never marks your own row held when the list spells its host in capitals", () => {
+    render(
+      <ReceiverTable
+        receivers={[...receivers, rx("Echo", { host: "ECHO.example" })]}
+        freqKhz={10_000}
+        current={{ host: "echo.example", port: 8073, phase: "listening" }}
+        sun={null}
+        onChoose={() => {}}
+        held={new Set(["echo.example:8073"])}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /ECHO\.example:8073/i }).querySelector(".receiver-held")).toBeNull();
+  });
+
   // Value: protects=clicking any cell of a row chooses it; fails_when=the row-level click handler is dropped; why_new=only the name button was clickable; seam=none; no_claim=pointer hit areas
   it("chooses a receiver when any cell of its row is clicked", () => {
     const { onChoose } = setup();
