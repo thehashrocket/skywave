@@ -2623,8 +2623,10 @@ html:has(.tuning-bar:not([hidden])) {
 }
 
 /* Too narrow for the strip between the wordmark and the button (it would stack its links four deep):
-   the strip takes a row of its own, and Listen/Stop keeps the first row's right end (#173). */
-@media (max-width: 720px) {
+   the strip takes a row of its own, and Listen/Stop keeps the first row's right end (#173). In em
+   (720px at the 16px default) so a larger default font, which widens the wordmark, clock and button,
+   moves the switch out with it instead of squeezing the strip's links under the button. */
+@media (max-width: 45em) {
   .console-header {
     grid-template-columns: minmax(0, 1fr) auto;
   }

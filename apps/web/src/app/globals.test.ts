@@ -210,10 +210,11 @@ describe("globals.css", () => {
     expect(header).toMatch(/align-items:\s*start\s*;/);
   });
 
-  // Value: protects=on a small tablet or narrow window the strip gets a row of its own instead of a ~100px column four lines deep, while Listen/Stop keeps the first row's right end; fails_when=the mid-width media block stops giving the button its own auto column or stops putting the strip on a full-width second row, or the ≤520px block stops returning .console-header to the wrapping flex row so phones get the grid instead of #106's stacked header; why_new=headless measure at 521px showed the three-column strip squeezed to ~100px, and nothing else asserts the phone override the owner chose; seam=none; no_claim=jsdom has no layout, so this reads the CSS and does not prove the rendered position or the 720px width is the best cut
+  // Value: protects=on a small tablet or narrow window the strip gets a row of its own instead of a ~100px column four lines deep, while Listen/Stop keeps the first row's right end; fails_when=the mid-width media block stops giving the button its own auto column or stops putting the strip on a full-width second row, or its breakpoint goes back to px so large text squeezes the strip's links under the button, or the ≤520px block stops returning .console-header to the wrapping flex row so phones get the grid instead of #106's stacked header; why_new=headless measure at 521px showed the three-column strip squeezed to ~100px, and nothing else asserts the phone override the owner chose; seam=none; no_claim=jsdom has no layout, so this reads the CSS and does not prove the rendered position or the 720px width is the best cut
   it("gives the header strip its own row between phone and desktop widths", () => {
-    const block = /@media \(max-width: 720px\)\s*\{([\s\S]*?)\n\}/.exec(css)?.[1];
-    expect(block, "the 720px media block").toBeDefined();
+    // In em, so with a larger default font the switch moves out with the wordmark and button.
+    const block = /@media \(max-width: 45em\)\s*\{([\s\S]*?)\n\}/.exec(css)?.[1];
+    expect(block, "the 45em (720px at 16px) media block").toBeDefined();
     expect(block).toMatch(/\.console-header\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto\s*;/);
     // The strip is placed on row 2, not given a two-row template, so a header without one gets no empty row.
     expect(block).not.toMatch(/grid-template-(areas|rows)/);
