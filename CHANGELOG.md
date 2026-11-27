@@ -8,6 +8,11 @@ Notable changes to skywave, newest first. Versions come from `VERSION` (four par
 - **The broadcast coverage check for the receiver-ranking research is stricter about when it decides.** This is the offline script that asks whether WSPR spots cover enough broadcast "Did you hear it?" answers to be worth a second study. It now gives its build-or-stop answer only for a 3-minute spot window, the shortest one, so a pass there holds for any longer window chosen later. Any other window prints its numbers as exploratory, with no verdict. It also gives no verdict until at least 50 answers it could check come from 10 or more different stations and 10 or more different receivers, so one well-covered path can't decide it. Stations are counted by name and receivers by address, from two new columns in the answer export, so a receiver whose listed position moved still counts once; an export made before those columns says to download it again.
 - **The research scripts' tests run with every other radio service test, in CI and in `pnpm test:radio`.** Before, they ran only when someone typed their command by hand.
 
+## [0.64.3.0] - 2026-11-27 ([#173](https://github.com/thehashrocket/skywave/issues/173))
+
+### Fixed
+- **Listen/Stop stays where you pressed it while a receiver connects.** When the header changed from the Auto chip to "Listening via <place> · <host>", a long place and host (such as "Near Tarlee, South Australia · kiwisdr.areg.org.au") pushed Stop down under the wordmark, and it jumped back up when Pick best moved to a receiver with a shorter name. The button now has a place of its own at the right end of the header's first row, and a long line is cut with "…" or wraps its links beside it instead. On a narrow window or a small tablet (720px wide or less at normal text size) the "Listening via" line takes its own row under the wordmark, with the button still top right. With a larger default text size that switch comes sooner, so the links never slide under the button. Phones (520px wide or less) keep today's stacked header.
+
 ## [0.64.2.0] - 2026-11-27 ([#168](https://github.com/thehashrocket/skywave/issues/168))
 
 ### Fixed
