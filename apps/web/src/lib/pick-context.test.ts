@@ -37,6 +37,6 @@ describe("pickContext", () => {
     expect(ctx.candidates).toHaveLength(MAX_CANDIDATES);
     expect(ctx.candidates[0]).toBe("kiwi0.example:8073");
     expect(ctx).toMatchObject({ rankPos: 11, lat: 51.5, lon: -0.1, snr: 18, users: 2, pickSource: "beacon" });
-    expect(pickContext(ranked, rx("Kiwi0.Example", { lat: 10 }), "listen", 14_100, 1_000)).not.toHaveProperty("lat");
+    expect(pickContext(ranked, rx("Kiwi0.Example", { lat: 10 }), "listen", 14_100, 1_000)).not.toHaveProperty("lat"); // pregate-literal: PICK_CONTEXT_VERSION=10 a latitude, not the version
   });
 });

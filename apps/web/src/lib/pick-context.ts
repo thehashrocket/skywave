@@ -49,11 +49,14 @@ export type PickSource = (typeof PICK_SOURCES)[number];
  * transmitter (lib/signal-rank.ts): a panel row's Listen, or header Listen
  * while the dial is on a station the panel or a shared link picked and it's
  * on the air (the two aren't told apart); the pick rules are again those of 6, so
- * group 6 to 10. The server still accepts 2 to 9 from tabs opened before
- * those deploys.
+ * group 6 to 10. 11: a run tries receivers another Skywave listener already
+ * holds (GET /held, #155) after the others, so the order it walks can differ
+ * from `ranked`, whose positions rankPos still counts; the context doesn't
+ * say which were held. Otherwise the pick rules are those of 6: group 6 to 11.
+ * The server still accepts 2 to 10 from tabs opened before those deploys.
  * Raise it whenever what the page records, or when it records it, changes.
  */
-export const PICK_CONTEXT_VERSION = 10;
+export const PICK_CONTEXT_VERSION = 11;
 
 /** How many of the ranked list's receivers a report keeps, best first. */
 export const MAX_CANDIDATES = 10;

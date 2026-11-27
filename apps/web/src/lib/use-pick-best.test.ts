@@ -1096,3 +1096,44 @@ describe("usePickBest", () => {
     expect(hook.result.current.note).toBeNull();
   });
 });
+
+describe("usePickBest with held receivers", () => {
+  // Value: protects=a run tries receivers another Skywave listener holds last, not first and not never, so it doesn't spend its MAX_TOTAL walking past ones the service will refuse (skywave_cap) and still reaches them if the rest fail; fails_when=held receivers keep their rank, are dropped outright, or the order of the free ones changes; why_new=#155: 701 skywave_cap refusals a day; seam=isHeld injected; no_claim=how fresh the held answer is
+  it("tries held receivers last", () => {
+    const tune = vi.fn();
+    const hook = renderHook(
+      ({ status }) => usePickBest(status, tune, undefined, undefined, null, (r) => r.host === "a" || r.host === "c"),
+      { initialProps: { status: { state: "idle" } as RadioStatus } },
+    );
+    act(() => hook.result.current.start(candidates));
+    hook.rerender({ status: fail("b", "busy") });
+    hook.rerender({ status: fail("d", "busy") });
+    expect(tune.mock.calls.map(([r]) => (r as Receiver).host)).toEqual(["b", "d", "a"]);
+  });
+
+  // Value: protects=the receiver this page is playing isn't pushed back as held (it's held by this listener), so Pick best on it retunes in place instead of switching away; fails_when=the playing receiver is demoted like another listener's; why_new=/held counts this page's own session; seam=isHeld injected; no_claim=none
+  it("keeps the receiver this page plays in its place", () => {
+    const tune = vi.fn();
+    const hook = renderHook(({ status }) => usePickBest(status, tune, undefined, undefined, null, () => true), {
+      initialProps: { status: { state: "listening", host: "a", port: 8073 } as RadioStatus },
+    });
+    act(() => hook.result.current.start(candidates));
+    expect(tune.mock.calls.map(([r]) => (r as Receiver).host)).toEqual(["a"]);
+  });
+
+  // Value: protects=only a live session (listening or connecting) is this page's own: a receiver still connecting keeps its place, while one that errored or stopped is demoted like another listener's, since this page no longer holds it; fails_when=connecting is left out of `live`, or any status with a host counts as this page's; why_new=the other test covers listening only; seam=isHeld injected; no_claim=what the service counts for a connecting session
+  it.each([
+    { status: { state: "connecting", host: "a", port: 8073 } as RadioStatus, first: "a" },
+    // "down", not a refusal code: a refusal would drop "a" from the run whatever the live rule says.
+    { status: fail("a", "down"), first: "b" },
+    { status: { state: "stopped", host: "a", port: 8073 } as RadioStatus, first: "b" },
+  ])("treats a $status.state session on the held receiver as this page's only while it's live", ({ status, first }) => {
+    const tune = vi.fn();
+    const hook = renderHook(
+      ({ status }) => usePickBest(status, tune, undefined, undefined, null, (r) => r.host === "a"),
+      { initialProps: { status } },
+    );
+    act(() => hook.result.current.start(candidates));
+    expect((tune.mock.calls[0]![0] as Receiver).host).toBe(first);
+  });
+});

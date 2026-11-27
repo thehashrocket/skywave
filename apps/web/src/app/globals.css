@@ -721,6 +721,13 @@ html,
   color: var(--muted);
 }
 
+/* A row another Skywave listener holds (use-held): shown at every width. */
+.receiver-held {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
 /* Holds its line when empty, so the notice appearing doesn't move the rows. */
 .receivers-updated {
   min-height: 1lh;
