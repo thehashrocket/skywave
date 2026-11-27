@@ -2,6 +2,18 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.62.0.0] - 2026-11-26 ([#147](https://github.com/thehashrocket/skywave/issues/147))
+
+### Added
+- **Each signal station page says when its details were last checked.** Under "Read more", a line like "Details checked Nov 2026" tells you how recently someone confirmed the station's frequencies, schedule and status against the sources listed there. Every station in the catalog carries that date, defunct ones included.
+- **A weekly report lists the signal stations that need a look.** Every Monday a GitHub Action asks the live site what's out of date and keeps one open issue labelled `signal-stations` and `freshness`: it opens the issue when something needs a look, rewrites it the next week, and closes it once nothing is left. The issue lists, as a to-do with links to each station's sources:
+  - stations not checked in 180 days;
+  - always-on stations (time signals and markers) that at least 5 listeners' answers, from at least 3 different listeners, said weren't heard in 60 days, with nobody saying they were;
+  - Priyom trouble: its schedule not loading, the site's copy over a day old, change tracking not saving, no change seen in 45 days, or a catalog numbers station missing from Priyom's week.
+
+  Stations nobody answered about in 60 days are listed for information only. Nothing is hidden or edited automatically. A person checks the sources, fixes the entry and bumps its date. The report is read through a private, secret-protected address, so the Action never holds database credentials. A run that can't reach the site, or is refused, fails without closing the issue.
+- **skywave now remembers when Priyom last changed its numbers-station schedule.** Each time any server fetches Priyom's schedule it saves the copy, notes whether a station's frequencies or times differ from the last one, and keeps that across restarts. The weekly report reads that date. Known limit: the comparison can miss changes Priyom adds at the far end of its week, so the "no change in 45 days" line can be a false alarm. #162 fixes it before it can first appear, around 2027-01-11.
+
 ## [0.61.3.0] - 2026-11-26 ([#153](https://github.com/thehashrocket/skywave/issues/153))
 
 ### Added
