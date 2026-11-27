@@ -65,6 +65,7 @@ vi.mock("./receivers", async (actual) => ({
 
 const { appRouter } = await import("@/server/root");
 const { getSchedule, getSites } = await import("./stations");
+const { getPriyomSchedule } = await import("./signals");
 const { getReceivers } = await import("./receivers");
 
 /** A broadcast between two UTC times ("HHMM"), daily. */
@@ -1129,7 +1130,7 @@ describe("a shared-frequency report (#150)", () => {
     await expect(caller.reports.submitGroup(group)).resolves.toEqual({ accepted: true });
   });
 
-  // Value: protects=a group's rows keep Pick best's context from a non-beacon run, as a single signal answer does, and drop a beacon pick while keeping the answer, logged as reports.submitGroup; fails_when=grouped answers lose #61's pick context, store a beacon pick, or log the drop under reports.submit; why_new=#150 (shared pick handling), #150 review (log name); seam=in-memory db, console.warn spied; no_claim=none
+  // Value: protects=a group's rows keep Pick best's context from a non-beacon run, as a single signal answer does, and drop a beacon pick or malformed context while keeping the answer, each logged as reports.submitGroup; fails_when=grouped answers lose #61's pick context, store a beacon pick, or log either drop under reports.submit; why_new=#150 (shared pick handling), #150 review (log name); seam=in-memory db, console.warn spied; no_claim=none
   it("keeps pick context on every row of a group", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const pick = { version: 10, pickedAtMs: NOON - 90_000, rankPos: 0, candidates: ["kiwi.example.org:8073"], freqKhz: 10_000, snr: 20, users: 1 };
@@ -1144,5 +1145,18 @@ describe("a shared-frequency report (#150)", () => {
     for (const r of rowsOf(receptionReport.createMany)) expect(r).not.toHaveProperty("pickSource");
     // Logged under the procedure that dropped it.
     expect(warn).toHaveBeenLastCalledWith("reports.submitGroup: dropped pick context that doesn't fit the report");
+    // Malformed context too: the answer is kept, the warning names submitGroup.
+    await expect(
+      caller.reports.submitGroup({ ...group, freqKhz: 15_000, pick: { ...pick, freqKhz: 15_000, rankPos: 1.5, pickSource: "search" } }),
+    ).resolves.toEqual({ accepted: true });
+    expect(warn).toHaveBeenCalledWith("reports.submitGroup: dropped malformed pick context:", "rankPos");
+  });
+
+  // Value: protects=a WWV/WWVH answer never waits on Priyom's schedule (a fresh server's first fetch can take 10 s), as a single WWV answer doesn't; fails_when=submitGroup fetches Priyom for every group, so a slow or unreachable Priyom delays or times out answers that don't depend on it; why_new=#150 review; seam=getPriyomSchedule mocked; no_claim=Priyom's latency
+  it("doesn't fetch Priyom's schedule for stations that don't use it", async () => {
+    vi.mocked(getPriyomSchedule).mockClear();
+    const { caller } = setup();
+    await expect(caller.reports.submitGroup(group)).resolves.toEqual({ accepted: true });
+    expect(getPriyomSchedule).not.toHaveBeenCalled();
   });
 });

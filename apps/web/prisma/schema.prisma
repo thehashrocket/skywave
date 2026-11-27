@@ -127,15 +127,17 @@ model ReceptionReport {
   /// 1: no position was known, so EiBi's order was kept.
   askRegion    String?
   /// Shared-frequency answers only (#150): the id one answer's rows share. Tuned
-  /// by hand to a frequency two or more catalog stations are on (WWV and WWVH on
-  /// 2.5, 5, 10 and 15 MHz), the listener is asked which they heard, and the
+  /// by hand to a frequency two or three catalog stations are on (WWV and WWVH on
+  /// 2.5, 5, 10 and 15 MHz), or moved there by hand from another channel a Listen
+  /// tuned, the listener is asked which they heard, and the
   /// answer is filed as one "signal" row per station named: "Heard WWV" files
   /// WWV heard and WWVH not_heard, "Heard both" both heard, "Heard nothing" both
   /// not_heard, "Didn't open" both no_open ("can't tell" files nothing). A
   /// not_heard beside a heard in the same group means "not heard over the
   /// other", weaker evidence than a plain not_heard (#61: the other may only
   /// have been drowned out). Each row repeats the comment and pick context; count
-  /// a group once. The limits count it as one answer. Null on every other row.
+  /// a group once. The listener's hourly limit counts it as one answer; the
+  /// receiver's counts each of its rows. Null on every other row.
   askGroup     String?
 
   @@index([receiverHost, receiverPort, freqKhz])

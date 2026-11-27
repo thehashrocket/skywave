@@ -350,6 +350,16 @@ const optionalText = (max: number) =>
     .optional()
     .transform((s) => s || undefined);
 
+/** Pick best's context, dropped (and logged under `procedure`'s name) when malformed, keeping the answer. */
+const pickField = (procedure: "submit" | "submitGroup") =>
+  pickInput.optional().catch(({ error }) => {
+    console.warn(
+      `reports.${procedure}: dropped malformed pick context:`,
+      error.issues.map((i) => i.path.join(".") || "(root)").join(", "),
+    );
+    return undefined;
+  });
+
 /**
  * An optional marker the page sends with an answer: a bad value is dropped
  * (and logged) rather than failing the whole report, as malformed pick
@@ -384,13 +394,7 @@ const reportInput = z.object({
   outcome: z.enum(OUTCOMES),
   comment: optionalText(COMMENT_MAX),
   // Malformed context is dropped here rather than failing the whole report.
-  pick: pickInput.optional().catch(({ error }) => {
-    console.warn(
-      "reports.submit: dropped malformed pick context:",
-      error.issues.map((i) => i.path.join(".") || "(root)").join(", "),
-    );
-    return undefined;
-  }),
+  pick: pickField("submit"),
 });
 
 export type ReportInput = z.input<typeof reportInput>;
@@ -406,8 +410,9 @@ export type ReportInput = z.input<typeof reportInput>;
  * question (past GROUP_MAX) fails the input check.
  */
 const groupInput = reportInput
-  .pick({ listenerId: true, receiverHost: true, receiverPort: true, freqKhz: true, mode: true, comment: true, pick: true })
+  .pick({ listenerId: true, receiverHost: true, receiverPort: true, freqKhz: true, mode: true, comment: true })
   .extend({
+    pick: pickField("submitGroup"),
     stations: z
       .array(z.object({ slug: z.string().trim().min(1).max(100), slotStartMs: z.number().int().optional() }))
       .min(1)
@@ -624,8 +629,14 @@ export const reportsRouter = router({
     if (!outcomes || outcomes.length === 0) return { accepted: false };
     const columns = await Promise.all(stations.map((s) => signalColumns(s.slug, freqKhz, s.slotStartMs, now)));
     if (columns.some((c) => c === null)) return { accepted: false };
-    // Exactly the stations the question names there, not a set the page chose.
-    const priyom = (await getPriyomSchedule())?.transmissions ?? null;
+    // Exactly the stations the question names there, not a set the page chose. Priyom's
+    // schedule only when a named station runs on it, as for one station's answer: a
+    // WWV/WWVH answer mustn't wait on a fetch it doesn't need (up to 10 s on a fresh
+    // server). So a Priyom station the page left out isn't seen here; none shares a
+    // channel with a catalog station today.
+    const priyom = slugs.some((s) => findStation(s)?.priyom)
+      ? ((await getPriyomSchedule())?.transmissions ?? null)
+      : null;
     if (!askedTogether(slugs, freqKhz, priyom, now)) return { accepted: false };
     const served = await servedList();
     if (!served || !findReceiver(served, receiverHost, receiverPort)) return { accepted: false };

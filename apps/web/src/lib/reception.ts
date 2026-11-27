@@ -107,10 +107,12 @@ function orList(names: readonly string[]): string {
  * names a station Priyom drives (E11, E07...); on a frequency with only one
  * catalog station on the merged dial a signal question is asked instead, and
  * on a frequency several stations share it's rule 1 over the rest. 3 (#150):
- * on a frequency two or more catalog stations are on (WWV and WWVH on 2.5, 5,
- * 10 and 15 MHz) the shared-frequency signal question is asked instead, so no
- * EiBi question is asked there; an EiBi answer there under rule 2 or older
- * comes from a tab opened before #150's deploy. Bump it,
+ * on a frequency two to GROUP_MAX (3) catalog stations are on (WWV and WWVH on
+ * 2.5, 5, 10 and 15 MHz) the shared-frequency signal question is asked instead,
+ * so no EiBi question is asked there; an EiBi answer there under rule 2 or older
+ * comes from a tab opened before #150's deploy. With more than GROUP_MAX catalog
+ * stations on one frequency (none today) the EiBi question is still asked, as
+ * under rule 2. Bump it,
  * and say what changed here, when the choice of station or row changes.
  *
  * EiBi answers with askRule null or 1 about Priyom-driven stations are left out
