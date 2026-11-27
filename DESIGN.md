@@ -294,6 +294,7 @@ Other shadows:
   - Sticky header buttons are 0.85rem muted, with ↕/▲/▼ glyphs shown through `content: … / ""` so screen readers stay on `aria-sort`.
   - Rows have a 50% `--rule` divider and a glass 8% hover, and the name underlines on hover.
   - The tuned row's name and its ● or ○ mark (`.receiver-tuned`) are `--lamp`. Night cells read `--glass`, day cells `--muted`, and the listener count of a full receiver is muted.
+  - A row another Skywave listener holds (`use-held.ts`, #155; never the tuned row) adds "Another Skywave listener is on it" under the name (`.receiver-held`, a 0.85rem `--muted` block, shown at every width).
 - **Map panel** (`MapPanel.tsx`, `.map-panel`):
   - The heading is "Receiver map · N kHz" (Barlow 1.15rem glass), with a `.map-center` pill (rule border, glass text, 44px).
   - `.map-frame` is a deep, rounded, overflow-hidden frame. The canvas fades in over 200ms.
