@@ -37,11 +37,18 @@ jobs:
             echo "::error::SIGNAL_FRESHNESS_SECRET isn't set (Actions secret, and the same value in Vercel)"
             exit 1
           fi
-          # --fail-with-body: a 401 or 502 fails the job with the route's reason,
-          # so an error never reads as "nothing stale" and closes the issue.
-          curl --silent --show-error --fail-with-body --max-time 90 \
-            -H "Authorization: Bearer ${SECRET}" \
-            "${SITE_URL}/api/signals/freshness" > report.json
+          # The header goes in on stdin (-H @-), so the secret never sits in curl's
+          # arguments. Any non-200 fails the job, so an error never reads as
+          # "nothing stale" and closes the issue. Only the status is printed: this
+          # repo's run logs are public, and a 502's reason can name the database.
+          status=$(printf 'Authorization: Bearer %s\n' "$SECRET" |
+            curl --silent --show-error --max-time 90 -H @- -o report.json -w '%{http_code}' \
+              "${SITE_URL}/api/signals/freshness") || { echo "::error::couldn't reach ${SITE_URL}"; exit 1; }
+          case "$status" in
+            200) ;;
+            401) echo "::error::401: SIGNAL_FRESHNESS_SECRET is missing or differs between Actions and Vercel"; exit 1 ;;
+            *) echo "::error::HTTP $status from /api/signals/freshness; the reason is in Vercel's function log (signals.freshness)"; exit 1 ;;
+          esac
           jq -e '.report.empty | type == "boolean"' report.json > /dev/null
           jq -r '.body' report.json > body.md
 

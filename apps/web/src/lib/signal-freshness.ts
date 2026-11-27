@@ -15,6 +15,10 @@ const DAY = 24 * 60 * 60_000;
 
 /** An entry not checked against its sources in this long is listed. */
 export const CHECKED_STALE_MS = 180 * DAY;
+/** This server's Priyom copy older than this means its refreshes aren't landing (they run every 6 hours). */
+export const PRIYOM_COPY_STALE_MS = DAY;
+/** The shared Priyom record not saved by any server in this long means saves are failing or nothing is fetching. */
+export const PRIYOM_RECORD_STALE_MS = 2 * DAY;
 
 /** A catalog entry, as the report names it. */
 type Entry = { slug: string; name: string; sources: readonly string[] };
@@ -29,9 +33,14 @@ export type FreshnessReport = {
   /** Always-on stations with no answers at all in ACTIVITY_WINDOW_MS: no evidence either way, listed for information. */
   quiet: Entry[];
   priyom: {
-    /** This server's fetch: when its copy was fetched (ISO), and why the last try failed while none has succeeded since. */
+    /**
+     * This server's fetch: when its copy was fetched (ISO), and what's wrong with it: no copy, a
+     * refresh failing behind an old copy, or a copy over PRIYOM_COPY_STALE_MS old. Null when fine.
+     */
     fetchedAt: string | null;
     error: string | null;
+    /** What's wrong with the shared record: never saved, or not saved by any server in PRIYOM_RECORD_STALE_MS. Null when fine. */
+    tracking: string | null;
     /** The shared record (any server): when a fetch last changed a catalog station's slots, and since when that's been tracked. */
     changedAt: string | null;
     trackedSince: string | null;
@@ -40,7 +49,7 @@ export type FreshnessReport = {
     /** Catalog designators with no transmissions in this server's copy (null: no copy to look in). */
     missing: (Entry & { designator: string })[] | null;
   };
-  /** Nothing for a person to do: no stale or suspect entry, and Priyom's feed fetched, changing, and listing every designator. */
+  /** Nothing for a person to do: no stale or suspect entry, and Priyom's feed fetched, recorded, changing, and listing every designator. */
   empty: boolean;
 };
 
@@ -52,7 +61,7 @@ export type FreshnessInput = {
   schedule: { transmissions: readonly PriyomTx[] } | null;
   fetch: { fetchedAt: number | null; error: string | null };
   /** The shared record, or null before the first good fetch was recorded. */
-  feed: Pick<PriyomFeedRecord, "trackedSince" | "changedAt"> | null;
+  feed: Pick<PriyomFeedRecord, "trackedSince" | "changedAt" | "fetchedAt"> | null;
   stations?: readonly SignalStation[];
 };
 
@@ -80,15 +89,29 @@ export function freshnessReport({ now, tallies, schedule, fetch, feed, stations 
       )
     : null;
   const unchanged = feed !== null && priyomUnchanged(feed, now);
+  // A server keeps serving its last good copy while refreshes fail (#147 review, owner D1):
+  // the failure and the copy's age are reported, so an old copy can't read as a working feed.
+  let error: string | null = null;
+  if (!schedule) error = fetch.error ?? "no copy of Priyom's schedule yet";
+  else if (fetch.error) error = `${fetch.error} (still serving a copy from ${iso(fetch.fetchedAt) ?? "an unknown time"})`;
+  else if (fetch.fetchedAt === null || now - fetch.fetchedAt > PRIYOM_COPY_STALE_MS)
+    error = `this server's copy is from ${iso(fetch.fetchedAt) ?? "an unknown time"}, over a day old`;
+  // Without the shared record, the 45-day "unchanged" check can't run: say so instead of staying quiet.
+  const tracking = !feed
+    ? "no server has saved a Priyom fetch yet, so changes aren't being tracked"
+    : now - feed.fetchedAt > PRIYOM_RECORD_STALE_MS
+      ? `no server has saved a Priyom fetch since ${iso(feed.fetchedAt)}`
+      : null;
   const priyom = {
     fetchedAt: iso(fetch.fetchedAt),
-    error: schedule ? null : (fetch.error ?? "no copy of Priyom's schedule yet"),
+    error,
+    tracking,
     changedAt: iso(feed?.changedAt ?? null),
     trackedSince: iso(feed?.trackedSince ?? null),
     unchanged,
     missing,
   };
-  const empty = !stale.length && !suspect.length && !priyom.error && !unchanged && !missing?.length;
+  const empty = !stale.length && !suspect.length && !error && !tracking && !unchanged && !missing?.length;
   return { at: new Date(now).toISOString(), stale, suspect, quiet, priyom, empty };
 }
 
@@ -114,6 +137,8 @@ export function freshnessIssueBody(r: FreshnessReport): string {
   const p = r.priyom;
   const priyomLines: string[] = [];
   if (p.error) priyomLines.push(`- [ ] Priyom's schedule isn't loading: ${p.error}. Last good copy on this server: ${p.fetchedAt ?? "none"}. <${PRIYOM_SCHEDULE_PAGE}>`);
+  if (p.tracking)
+    priyomLines.push(`- [ ] Priyom change tracking isn't working: ${p.tracking}. Check the server log for "signals.priyom: not recorded" and the PriyomFeed table.`);
   if (p.unchanged)
     priyomLines.push(
       `- [ ] Priyom's schedule may not be maintained: no change to the catalog stations' slots since ${p.changedAt ? day(p.changedAt) : `tracking began ${day(p.trackedSince!)}`} (over ${DAYS(PRIYOM_UNCHANGED_MS)} days). <${PRIYOM_SCHEDULE_PAGE}>`,

@@ -16,7 +16,7 @@ const input = (over: Partial<FreshnessInput> = {}): FreshnessInput => ({
   tallies: heardAll,
   schedule: { transmissions: allPriyom },
   fetch: { fetchedAt: NOW - 3_600_000, error: null },
-  feed: { trackedSince: NOW - 10 * DAY, changedAt: NOW - 2 * DAY },
+  feed: { trackedSince: NOW - 10 * DAY, changedAt: NOW - 2 * DAY, fetchedAt: NOW - 3_600_000 },
   ...over,
 });
 
@@ -63,10 +63,10 @@ describe("freshnessReport", () => {
     expect(failing.empty).toBe(false);
     expect(freshnessIssueBody(failing)).toContain("Priyom's schedule isn't loading: HTTP 503.");
 
-    const old = freshnessReport(input({ feed: { trackedSince: NOW - 90 * DAY, changedAt: NOW - 46 * DAY } }));
+    const old = freshnessReport(input({ feed: { trackedSince: NOW - 90 * DAY, changedAt: NOW - 46 * DAY, fetchedAt: NOW - 3_600_000 } }));
     expect([old.priyom.unchanged, old.empty]).toEqual([true, false]);
     expect(freshnessIssueBody(old)).toContain("no change to the catalog stations' slots since 2026-10-22");
-    expect(freshnessReport(input({ feed: { trackedSince: NOW - 90 * DAY, changedAt: NOW - 44 * DAY } })).priyom.unchanged).toBe(false);
+    expect(freshnessReport(input({ feed: { trackedSince: NOW - 90 * DAY, changedAt: NOW - 44 * DAY, fetchedAt: NOW - 3_600_000 } })).priyom.unchanged).toBe(false);
 
     const noM12 = freshnessReport(input({ schedule: { transmissions: allPriyom.filter((t) => t.station !== "M12") } }));
     expect(noM12.priyom.missing?.map((s) => s.designator)).toEqual(["M12"]);
@@ -76,14 +76,22 @@ describe("freshnessReport", () => {
   // Value: protects=#147 a server with no Priyom copy and no fetch error yet (nothing tried, or a cold instance) and no shared record still reports Priyom as not loading, so the report isn't empty and the workflow doesn't close the issue; fails_when=the "no copy yet" fallback is dropped, so a feed that never loaded reads as "nothing needs a look"; why_new=the fallback branch had no test; seam=none (pure); no_claim=why the copy is missing
   it("isn't empty with no Priyom copy, even without an error", () => {
     const r = freshnessReport(input({ schedule: null, fetch: { fetchedAt: null, error: null }, feed: null }));
-    expect(r.priyom).toEqual({ fetchedAt: null, error: "no copy of Priyom's schedule yet", changedAt: null, trackedSince: null, unchanged: false, missing: null });
+    expect(r.priyom).toEqual({
+      fetchedAt: null,
+      error: "no copy of Priyom's schedule yet",
+      tracking: "no server has saved a Priyom fetch yet, so changes aren't being tracked",
+      changedAt: null,
+      trackedSince: null,
+      unchanged: false,
+      missing: null,
+    });
     expect(r.empty).toBe(false);
     expect(freshnessIssueBody(r)).toContain("Priyom's schedule isn't loading: no copy of Priyom's schedule yet. Last good copy on this server: none.");
   });
 
   // Value: protects=#147 a feed with no change seen since tracking began over 45 days ago is flagged, and the issue line names when tracking began (there's no change date to give); fails_when=the line prints "since null" / crashes on a null changedAt, or a never-changing feed isn't flagged; why_new=the trackedSince branch of the Priyom line had no test; seam=none; no_claim=none
   it("names when tracking began when no change was ever seen", () => {
-    const r = freshnessReport(input({ feed: { trackedSince: NOW - 46 * DAY, changedAt: null } }));
+    const r = freshnessReport(input({ feed: { trackedSince: NOW - 46 * DAY, changedAt: null, fetchedAt: NOW - 3_600_000 } }));
     expect([r.priyom.unchanged, r.empty]).toEqual([true, false]);
     expect(freshnessIssueBody(r)).toContain("no change to the catalog stations' slots since tracking began 2026-10-22 (over 45 days)");
   });
@@ -95,5 +103,26 @@ describe("freshnessReport", () => {
     const r = freshnessReport(input({ stations: [retired, findStation("e11")!], schedule: { transmissions: [tx("E11")] } }));
     expect([r.priyom.missing, r.empty]).toEqual([[], true]);
     expect(freshnessReport(input({ stations: [e07], schedule: { transmissions: [] } })).priyom.missing?.map((m) => m.designator)).toEqual(["E07"]);
+  });
+
+  // Value: protects=#147 review D1: a server still serving an old copy while its refreshes fail reports the failure, and a copy over a day old is flagged even with no error, so the report isn't empty and the issue stays open; fails_when=a cached copy hides a failing feed again (QA 002: 10-day-old copy, HTTP 503, empty report); why_new=owner chose to fix the stale-copy hole; seam=none (pure); no_claim=how long real instances live
+  it("reports a failing refresh behind an old copy, and a copy over a day old", () => {
+    const failing = freshnessReport(input({ fetch: { fetchedAt: NOW - 10 * DAY, error: "Priyom schedule request failed: HTTP 503" } }));
+    expect(failing.priyom.error).toBe("Priyom schedule request failed: HTTP 503 (still serving a copy from 2026-11-27T15:00:00.000Z)");
+    expect(failing.empty).toBe(false);
+    expect(freshnessIssueBody(failing)).toContain("Priyom's schedule isn't loading: Priyom schedule request failed: HTTP 503");
+    const old = freshnessReport(input({ fetch: { fetchedAt: NOW - DAY - 1, error: null } }));
+    expect([old.priyom.error, old.empty]).toEqual([`this server's copy is from ${new Date(NOW - DAY - 1).toISOString()}, over a day old`, false]);
+    expect(freshnessReport(input({ fetch: { fetchedAt: NOW - DAY, error: null } })).empty).toBe(true);
+  });
+
+  // Value: protects=#147 review D1: a shared record that was never saved, or that no server saved in over 48 hours, is reported (the 45-day unchanged check can't run without it), and one saved 48 hours ago isn't; fails_when=failing saves leave the report empty and the issue closed (QA 003); why_new=owner chose to fix the missing-record hole; seam=none (pure); no_claim=why saves fail
+  it("reports a missing or stale shared Priyom record", () => {
+    const none = freshnessReport(input({ feed: null }));
+    expect([none.priyom.tracking, none.empty]).toEqual(["no server has saved a Priyom fetch yet, so changes aren't being tracked", false]);
+    expect(freshnessIssueBody(none)).toContain("Priyom change tracking isn't working: no server has saved a Priyom fetch yet");
+    const stale = freshnessReport(input({ feed: { trackedSince: NOW - 10 * DAY, changedAt: null, fetchedAt: NOW - 2 * DAY - 1 } }));
+    expect([stale.priyom.tracking, stale.empty]).toEqual([`no server has saved a Priyom fetch since ${new Date(NOW - 2 * DAY - 1).toISOString()}`, false]);
+    expect(freshnessReport(input({ feed: { trackedSince: NOW - 10 * DAY, changedAt: null, fetchedAt: NOW - 2 * DAY } })).empty).toBe(true);
   });
 });
