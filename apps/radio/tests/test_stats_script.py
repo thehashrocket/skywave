@@ -449,6 +449,8 @@ SAR_YESTERDAY = textwrap.dedent(
     20:00:01        all     70.00      0.00     15.00      0.00      0.00     15.00
     20:10:01        all     50.00      0.00      5.00      0.00      0.00     45.00
     19:30:01        all     40.00      0.00     10.00      0.00      0.00     50.00
+    23:20:01        all      0.00      0.00      0.00      0.00      0.00    100.00
+    22:40:01        all     50.00      0.00     10.00      0.00      0.00     40.00
     23:50:01        all      0.00      0.00      0.00      0.00      0.00    100.00
     00:00:01        all      0.00      0.00      0.00      0.00      0.00    100.00
     Average:        all     60.00      0.00      9.75      0.00      0.00     30.25
@@ -456,7 +458,7 @@ SAR_YESTERDAY = textwrap.dedent(
 )
 
 
-# Value: protects=hourly host CPU over the report's 24 h window from the window's own days' sysstat files (by name, header date checked), avg and max per UTC hour, partial end hours labelled, a 00:00 record at a file's end dated to the next day while a clock set back mid-day stays on its day, whole hours with no sample counted in a note, and a missing, unreadable or wrong-date file said, never shown as idle or as invented numbers; fails_when=busy isn't 100 - %idle, the header or Average line is counted, hours or days mix, yesterday's samples are dropped (a run just after midnight showed one row in the 2026-11-28 #155 report), a pre-cut sample is kept, or a leftover file from another month is counted; why_new=GitHub starts the 17:07 run 7-8 h late; seam=fake sar on PATH; no_claim=sysstat's own sampling or that it's enabled on the box
+# Value: protects=hourly host CPU over the report's 24 h window from the window's own days' sysstat files (by name, header date checked), avg and max per UTC hour, partial end hours labelled, a 00:00 record at a file's end dated to the next day while a clock set back mid-day stays on its day, whole hours with no sample counted in a note (and no note when every whole hour has one), and a missing, unreadable or wrong-date file said, never shown as idle or as invented numbers; fails_when=busy isn't 100 - %idle, the header or Average line is counted, hours or days mix, yesterday's samples are dropped (a run just after midnight showed one row in the 2026-11-28 #155 report), a pre-cut sample is kept, or a leftover file from another month is counted; why_new=GitHub starts the 17:07 run 7-8 h late; seam=fake sar on PATH; no_claim=sysstat's own sampling or that it's enabled on the box
 def test_hourly_cpu_from_sar(tmp_path: Path):
     out = run_stats(tmp_path, LOGS, sar=SAR, sar_yesterday=SAR_YESTERDAY).stdout
     cpu = out.split("== host CPU busy % per hour, last 24 h")[1]
@@ -467,8 +469,18 @@ def test_hourly_cpu_from_sar(tmp_path: Path):
     assert "2026-11-25T16" not in cpu
     assert "  2026-11-25T19   50.0 /  50.0\n" in cpu  # set back to 19:30: still the 25th
     assert "2026-11-26T19" not in cpu
-    # Whole hours 2026-11-25T18 .. 2026-11-26T16 (23); samples in 19, 20, 23, 00 and 10.
-    assert "  (no samples in 18 of the window's 23 whole hours; those hours have no row)\n" in cpu
+    assert "  2026-11-25T22   60.0 /  60.0\n" in cpu  # 23:20 back to 22:40: still the 25th
+    assert "2026-11-26T22" not in cpu
+    # Whole hours 2026-11-25T18 .. 2026-11-26T16 (23); samples in 19, 20, 22, 23, 00 and 10.
+    assert "  (no samples in 17 of the window's 23 whole hours; those hours have no row)\n" in cpu
+    # A sample in every whole hour: no gap note.
+    full_y = SAR_YESTERDAY.split("00:00:01        CPU")[0] + "00:00:01        CPU     %user     %nice   %system   %iowait    %steal     %idle\n" + "".join(
+        f"{h:02d}:30:01        all     10.00      0.00      0.00      0.00      0.00     90.00\n" for h in range(18, 24))
+    full_t = SAR.split("00:00:01        CPU")[0] + "00:00:01        CPU     %user     %nice   %system   %iowait    %steal     %idle\n" + "".join(
+        f"{h:02d}:30:01        all     10.00      0.00      0.00      0.00      0.00     90.00\n" for h in range(0, 17))
+    full = run_stats(tmp_path / "f", LOGS, sar=full_t, sar_yesterday=full_y).stdout.split("== host CPU")[1]
+    assert "no samples in" not in full
+    assert "  2026-11-26T16   10.0 /  10.0\n" in full
     assert "2026-11-25T00" not in cpu
     assert "Average" not in cpu
     assert "sysstat's file" not in cpu

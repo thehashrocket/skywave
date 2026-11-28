@@ -256,7 +256,9 @@ main() {
       # say how many, so a gap over the peak doesn't read as a calm day. The
       # two partial end hours can lack a sample legitimately, so they're left out.
       local i h whole=0 missing=0
-      for (( i = 1; i < 24; i++ )); do
+      # Until now's hour, not a fixed 23: cutoff and now are read by separate
+      # date calls, so an hour can turn between them (25 hours apart).
+      for (( i = 1; i <= 25; i++ )); do
         h=$(date -u -d "${cutoff:0:13}:00:00Z + $i hour" +%Y-%m-%dT%H)
         [[ $h < "${now:0:13}" ]] || break
         (( whole += 1 ))
