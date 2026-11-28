@@ -1345,6 +1345,20 @@ export default function ListenPage() {
   );
   // Where audio comes from, as the strip, the status row and the tuning bar all name it.
   const playingPlace = playingNow ? listedPlace || playingNow.host : "";
+  // Back names its receiver the way the strip does: by place when the list has
+  // one, else by host. A list's full name can be 90 characters or more (#176).
+  // When another receiver plays in that same place, the host tells the two apart
+  // (Back can be the one still playing while a switch connects). Screen readers
+  // get the full name too, from the list when Back only remembered the host (a
+  // saved receiver or a shared link).
+  const back = useMemo(() => {
+    if (!backTo) return { text: "", name: "" };
+    const listedBack = findReceiver(receivers, backTo.host, backTo.port);
+    const place = listedBack ? placeName(listedBack.location) : "";
+    const samePlaceElsewhere = place === playingPlace && playingKey !== receiverKey(backTo);
+    const name = (backTo.label === backTo.host && listedBack?.name) || backTo.label;
+    return { text: place && !samePlaceElsewhere ? place : backTo.host, name };
+  }, [backTo, receivers, playingPlace, playingKey]);
   // One wheel notch over the readout. Medium wave channels are 10 kHz apart in
   // the Americas, 9 elsewhere: go by where the receiver playing is, 9 if unknown.
   const wheelStep = tuningStepKhz(freqKhz, mode, inAmericas(playingListed?.lon));
@@ -1352,6 +1366,8 @@ export default function ListenPage() {
   // The waterfall opens on the visit's first audio and stays open, so Stop and
   // Listen never resize it again.
   const waterfallOpen = useLatch(radio.heardAudio);
+  // Where the intro line names WWV (#177): the default tuning, 10,000 kHz AM.
+  const onDefaultTuning = freqKhz === DEFAULT_TUNING.freqKhz && mode === DEFAULT_TUNING.mode;
 
   // How wide the waterfall looks. The receiver's own waterfall needs a radio
   // service that streams it; "band" needs the dial in a band, and falls back
@@ -1606,6 +1622,24 @@ export default function ListenPage() {
         {/* The receiver form's submit button, kept in the strip so it's always in reach. */}
         <PowerButton busy={busy} />
       </header>
+
+      {/* What skywave is and what Listen will play (#177), on every visit until its first audio,
+          which is already the one layout change. Plain text, not a live region: read in order, never
+          announced as the dial moves. "Usually": the schedule is a hint, not a promise WWV is on.
+          Both versions share one grid cell, the other hidden, so the line keeps the taller one's
+          height: on a phone they wrap differently, and a switch would move the dial under a finger. */}
+      {!waterfallOpen && (
+        <p className="console-intro">
+          <span aria-hidden={!onDefaultTuning || undefined}>
+            Shortwave and ham radio through volunteer receivers around the world. Press Listen: the dial is on
+            10,000 kHz, where the WWV time signal usually is.
+          </span>
+          <span aria-hidden={onDefaultTuning || undefined}>
+            Shortwave and ham radio through volunteer receivers around the world. Press Listen to hear this
+            frequency.
+          </span>
+        </p>
+      )}
 
       <section
         id="receiver-drawer"
@@ -1906,6 +1940,8 @@ export default function ListenPage() {
           <button
             type="button"
             className="link-button status-back"
+            // Spoken: the visible words first (so voice control finds it), then the full name.
+            aria-label={back.name === back.text ? undefined : `Back to ${back.text}, ${back.name}`}
             onClick={(e) => {
               // The button flips to the receiver just left; a double-click would switch straight back.
               if (e.detail > 1) return;
@@ -1914,7 +1950,7 @@ export default function ListenPage() {
               else switchTo(backTo, backTo.fromList);
             }}
           >
-            Back to {backTo.label}
+            Back to {back.text}
           </button>
         )}
         {/* The phone stopped the sound while the tab was hidden and wants a tap to start it again (#137). */}

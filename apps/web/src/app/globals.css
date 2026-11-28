@@ -186,6 +186,27 @@ html,
   margin-top: calc(-1 * var(--console-gap));
 }
 
+/* Under the header until the visit's first audio (#177): what skywave is and what Listen plays.
+   Running text, so Atkinson, and muted like the status message, so the dial stays the loud thing. */
+.console-intro {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 1rem;
+  color: var(--muted);
+  max-width: 75ch;
+  /* Both versions of the line sit in one cell, so it keeps the taller one's height and the dial
+     never moves when the sentence switches (tuning off 10,000 kHz, or saved tuning loading). */
+  display: grid;
+}
+
+.console-intro > span {
+  grid-area: 1 / 1;
+}
+
+.console-intro > span[aria-hidden] {
+  visibility: hidden;
+}
+
 .wordmark {
   margin: 0;
   font-family: var(--font-instrument);
@@ -1420,6 +1441,14 @@ html:has(.tuning-bar:not([hidden])) {
   text-align: left;
   overflow-wrap: anywhere;
   min-width: 0;
+}
+
+/* Back stays on one line beside the status; a place too long for it ends in an ellipsis (#176). */
+.status-back.link-button {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* Waterfall */

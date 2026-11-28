@@ -1333,12 +1333,12 @@ describe("ListenPage", () => {
       radio.status = { state: "connecting", host: "kiwi.example", port: 8073 };
       two.rerender(<ListenPage />);
       expect(screen.queryByRole("button", { name: "Back to kiwi.example" })).toBeNull();
-      expect(screen.getByRole("button", { name: "Back to K1VL" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Back to Vermont, K1VL" })).toBeTruthy();
       expect(screen.getByLabelText("map last").textContent).toBe("sdr.k1vl.com:8076");
 
       radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
       two.rerender(<ListenPage />);
-      fireEvent.click(screen.getByRole("button", { name: "Back to K1VL" }));
+      fireEvent.click(screen.getByRole("button", { name: "Back to Vermont, K1VL" }));
       expect(radio.tune).toHaveBeenLastCalledWith({
         host: "sdr.k1vl.com",
         port: 8076,
@@ -1347,6 +1347,40 @@ describe("ListenPage", () => {
         source: "list",
       });
       view.unmount();
+    });
+
+    // Value: protects=the Back link names the last receiver by its place (or host when the list has none), on one line, while its accessible name keeps the full receiver name; fails_when=the label goes back to the list's full name, or the short label replaces the accessible name too; why_new=design critique 2026-11-27: a 90-character Back link outweighed the status beside it; seam=which receiver Back targets is covered by the existing Back tests; no_claim=does not check the place text itself, which comes from the receiver list
+    it("names Back by place, keeping the full name for screen readers", () => {
+      const view = heardTwo();
+      fireEvent.click(screen.getByRole("button", { name: "Back to kiwi.example" }));
+      radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
+      view.rerender(<ListenPage />);
+      const back = screen.getByRole("button", { name: `Back to ${listed.location}, ${listed.name}` });
+      expect(back.textContent).toBe(`Back to ${listed.location}`);
+      expect(back.className).toContain("status-back");
+
+      // A listed receiver with no place reads by its host, the full name still spoken.
+      receiverList.data = { receivers: [{ ...listed, location: "" }, backup] };
+      view.rerender(<ListenPage />);
+      const byHost = screen.getByRole("button", { name: `Back to ${listed.host}, ${listed.name}` });
+      expect(byHost.textContent).toBe(`Back to ${listed.host}`);
+
+      // Back to a receiver in the place playing reads by host, so the two can be told apart (owner D1).
+      receiverList.data = {
+        receivers: [listed, { ...backup, host: "kiwi.example", port: 8073, location: listed.location }],
+      };
+      view.rerender(<ListenPage />);
+      const samePlace = screen.getByRole("button", { name: `Back to ${listed.host}, ${listed.name}` });
+      expect(samePlace.textContent).toBe(`Back to ${listed.host}`);
+      view.unmount();
+    });
+
+    // Value: protects=Back restored from a saved receiver (only its host remembered) still gives screen readers the list's full name; fails_when=the accessible name falls back to the stored host label; why_new=Codex review of #185: saved receivers and shared links store only the host; seam=none; no_claim=shared links take the same path (label = host) but aren't driven here
+    it("speaks a saved receiver's full name from the list", () => {
+      localStorage.setItem("skywave.receiver", JSON.stringify({ host: listed.host, port: String(listed.port) }));
+      render(<ListenPage />);
+      const back = screen.getByRole("button", { name: `Back to ${listed.location}, ${listed.name}` });
+      expect(back.textContent).toBe(`Back to ${listed.location}`);
     });
 
     // Value: protects=Back to an https-only receiver dials it over wss again; fails_when=the remembered receiver drops its secure flag, so Back dials ws:// and the receiver never answers; why_new=the Back test only covers a plain typed receiver and a listed one; seam=none; no_claim=the service's TLS (radio tests)
@@ -1379,7 +1413,7 @@ describe("ListenPage", () => {
       radio.tuning = true;
       view.rerender(<ListenPage />);
       // The button now offers the receiver just left; the second click lands there.
-      fireEvent.click(screen.getByRole("button", { name: "Back to K1VL" }), { detail: 2 });
+      fireEvent.click(screen.getByRole("button", { name: "Back to Vermont, K1VL" }), { detail: 2 });
       expect(radio.tune).toHaveBeenCalledTimes(1);
       expect(radio.tune).not.toHaveBeenCalledWith(expect.objectContaining({ host: "sdr.k1vl.com" }));
     });
@@ -1430,7 +1464,7 @@ describe("ListenPage", () => {
       radio.status = { state: "listening", host: "kiwi.example", port: 8073 };
       view.rerender(<ListenPage />);
       radio.tune.mockClear();
-      fireEvent.click(screen.getByRole("button", { name: "Back to K1VL" }));
+      fireEvent.click(screen.getByRole("button", { name: "Back to Vermont, K1VL" }));
       expect(radio.tune).toHaveBeenLastCalledWith(expect.objectContaining({ host: "sdr.k1vl.com", source: "list" }));
     });
 
@@ -1458,7 +1492,7 @@ describe("ListenPage", () => {
       fireEvent.click(screen.getByRole("button", { name: "Listen" }));
       radio.status = { state: "error", code: "down", message: "down", host: "third.example", port: 8076 };
       two.rerender(<ListenPage />);
-      expect(screen.getByRole("button", { name: "Back to K1VL" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Back to Vermont, K1VL" })).toBeTruthy();
     });
 
     // Value: protects=Back keeps pointing at the earlier receiver through retunes and errors on this one; fails_when=previous updates on any listening status, not only a new receiver; why_new=testing specialist gap; seam=none; no_claim=none beyond protects
@@ -1480,7 +1514,7 @@ describe("ListenPage", () => {
       radio.status = { state: "idle" };
       view.rerender(<ListenPage />);
       expect(screen.getByRole("button", { name: "Back to kiwi.example" })).toBeTruthy();
-      expect(screen.queryByRole("button", { name: "Back to K1VL" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Back to Vermont, K1VL" })).toBeNull();
     });
 
     // Value: protects=from the click until the service answers, Back offers the receiver being left, never the one being tuned; fails_when=backTo reads the service's status (still the old receiver) instead of the pending choice; why_new=the Back tests only check the connecting phase once the service has named the new receiver, with tuning false; seam=none; no_claim=how long the service takes to answer
@@ -1491,7 +1525,7 @@ describe("ListenPage", () => {
       radio.tuning = true;
       view.rerender(<ListenPage />);
       expect(screen.queryByRole("button", { name: "Back to kiwi.example" })).toBeNull();
-      expect(screen.getByRole("button", { name: "Back to K1VL" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Back to Vermont, K1VL" })).toBeTruthy();
     });
 
     // Value: protects=Back never offers a receiver that refuses apps (it plays ~10 s first); fails_when=the no_apps handler leaves it as the last receiver heard; why_new=red team R2; seam=none; no_claim=the service's no_apps detection (radio tests)
@@ -1503,7 +1537,7 @@ describe("ListenPage", () => {
       fireEvent.click(screen.getByRole("button", { name: "Listen" }));
       radio.status = { state: "listening", host: "third.example", port: 8076 };
       view.rerender(<ListenPage />);
-      expect(screen.queryByRole("button", { name: "Back to K1VL" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Back to Vermont, K1VL" })).toBeNull();
       expect(screen.getByRole("button", { name: "Back to kiwi.example" })).toBeTruthy();
     });
 
@@ -2006,6 +2040,51 @@ describe("ListenPage", () => {
       expect(dial().hasAttribute("data-compact")).toBe(true);
     });
 
+    // Value: protects=a first-time visitor reads what skywave is and what Listen will play before pressing it, and the WWV sentence shows only while the dial is on the default 10,000 kHz AM; fails_when=the intro is dropped, stays after the first audio, names WWV on another frequency or without "usually", or both versions reach screen readers; why_new=design critique 2026-11-27: the page never says what it is; seam=the waterfallOpen latch has its own tests, and the strip's shortened line is checked in Waterfall.test; no_claim=does not check that WWV is actually audible on the receiver picked, or the held height (CSS, browser check)
+    it("says what skywave is and what Listen plays until the first audio (#177)", () => {
+      const intro = () => document.querySelector(".console-intro");
+      // What a reader gets: the one version not hidden. The other keeps the line's height (CSS), so
+      // a switch can't move the dial on a phone; it must stay out of the accessibility tree.
+      const shown = () => {
+        const parts = [...intro()!.children];
+        expect(parts).toHaveLength(2);
+        const visible = parts.filter((s) => !s.hasAttribute("aria-hidden"));
+        expect(visible).toHaveLength(1);
+        return visible[0]!.textContent;
+      };
+      const view = render(<ListenPage />);
+      // Between the header and the drawer, plain text in reading order: not a live region.
+      expect(intro()!.previousElementSibling!.tagName).toBe("HEADER");
+      expect(intro()!.nextElementSibling!.id).toBe("receiver-drawer");
+      expect(intro()!.hasAttribute("aria-live")).toBe(false);
+      expect(intro()!.hasAttribute("role")).toBe(false);
+      expect(shown()).toBe(
+        "Shortwave and ham radio through volunteer receivers around the world. " +
+          "Press Listen: the dial is on 10,000 kHz, where the WWV time signal usually is.",
+      );
+      // Off the default frequency, or in another mode, it names no station.
+      fireEvent.keyDown(document.body, { key: "ArrowRight" });
+      expect(shown()).toBe(
+        "Shortwave and ham radio through volunteer receivers around the world. Press Listen to hear this frequency.",
+      );
+      fireEvent.keyDown(document.body, { key: "ArrowLeft" });
+      expect(shown()).toContain("WWV time signal usually is");
+      fireEvent.keyDown(document.body, { key: "u" });
+      expect((screen.getByRole("radio", { name: "USB" }) as HTMLInputElement).checked).toBe(true);
+      expect(shown()).not.toContain("WWV");
+      // Connecting isn't audio yet; the first audio takes it away, and Stop doesn't bring it back.
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(intro()).not.toBeNull();
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      expect(intro()).toBeNull();
+      radio.status = { state: "stopped" };
+      radio.heardAudio = false;
+      view.rerender(<ListenPage />);
+      expect(intro()).toBeNull();
+    });
+
     // Value: protects=the audio spectrum joins the controls with the visit's first audio (the one layout change, with the waterfall) and stays through Stop, moving only while audio plays; fails_when=it shows before any audio (back on the first screen a new visitor sees), leaves on Stop, or moves while stopped; why_new=audio spectrum; seam=AudioSpectrum mocked; no_claim=the drawing (AudioSpectrum tests)
     it("adds the audio spectrum on first audio, moving only while it plays", () => {
       const spectrum = () => screen.queryByLabelText("audio spectrum")?.textContent ?? null;
@@ -2215,7 +2294,8 @@ describe("ListenPage", () => {
       radio.status = { state: "error", code: "busy", message: "full", host: listed.host, port: listed.port };
       view.rerender(<ListenPage />);
       listening(view, backup.host, backup.port);
-      fireEvent.click(screen.getByRole("button", { name: "Back to K1VL" }));
+      // Backup is in Vermont too, so Back names K1VL by host (#176 D1).
+      fireEvent.click(screen.getByRole("button", { name: "Back to sdr.k1vl.com, K1VL" }));
       expect(chip()).toBe("Auto (best for this frequency)");
       cleanup();
 

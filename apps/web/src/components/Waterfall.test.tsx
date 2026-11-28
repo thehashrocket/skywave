@@ -59,11 +59,11 @@ describe("Waterfall", () => {
     }
   });
 
-  // Value: protects=before the visit's first audio the waterfall is a short strip pointing at Listen, and once open it says what it's waiting for (design D7); fails_when=the strip text or the open flag is dropped; why_new=Waterfall had no test; seam=none; no_claim=the strip's height (CSS, browser check)
-  it("is a strip pointing at Listen until it has opened", () => {
+  // Value: protects=before the visit's first audio the waterfall is a short strip saying a blank receiver picks the best one (the intro above the dial says "Press Listen", #177), and once open it says what it's waiting for (design D7); fails_when=the strip text or the open flag is dropped, or the strip goes back to repeating "Press Listen"; why_new=Waterfall had no test; seam=none; no_claim=the strip's height (CSS, browser check)
+  it("is a short strip until it has opened", () => {
     const view = show();
     expect(view.container.querySelector(".waterfall")!.hasAttribute("data-open")).toBe(false);
-    expect(screen.getByText(/Press Listen to hear the band/)).toBeTruthy();
+    expect(view.container.querySelector(".waterfall-empty")!.textContent).toBe("A blank receiver picks the best one.");
     cleanup();
     // A tune under way says so instead of asking for Listen (review finding).
     show({ connecting: true });
