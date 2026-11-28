@@ -40,6 +40,30 @@
 **Priority:** P3
 **Depends on:** None
 
+### Pick best: spread listeners on one frequency across the top receivers (#144 cause 2)
+
+**What:** If the receiver log still shows `busy` (`too_busy=N`) and `same_source` as a large share after the badp remap, spread runs on the same frequency over the best few receivers (near-ties first) instead of always walking the ranked list from the top.
+
+**Why:** #144's "herding" cause: everyone on a popular frequency gets the same ranked list. Deferred by the owner (2026-11-27) until the data shows it still matters. `skywave_cap` (one Skywave listener per receiver) and trying held receivers last (v0.63) already cover most of it; what's left is the up-to-a-minute-old `/held` answer.
+
+**Context:** `apps/web/src/lib/use-pick-best.ts` (`start`, candidate order). Changing the order a run walks needs `PICK_CONTEXT_VERSION` 12 in `apps/web/src/lib/pick-context.ts` and a note for #61's queries, which group versions 6 to 11 as one rule set.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** A few daily load reports after the badp remap ships. Compare only reports from after that deploy: `badp=1` (about 205 a day) moves from `password` to `busy` then, so `busy` rises from the label alone (`deploy/README.md`, Receiver log).
+
+### record_window.py: stop retrying receivers that answer badp=1 or same_source
+
+**What:** In `apps/radio/scripts/record_window.py`, give up on a receiver (as for `REFUSALS`) when its `KiwiError` is `same_source` (a Kiwi's `badp=5`: one connection per address) or is `busy` with `detail == "badp=1"` (no free channel without a password), instead of retrying it every `RETRY_S` until the window ends. A `busy` from `too_busy=N` is still retried.
+
+**Why:** Since the badp remap (#144), `badp=1` is `busy`, not `password`, so the script no longer gives up on it, and `badp=5` is `same_source`; the script retries anything not in `REFUSALS`. `badp=1` is also what a receiver that takes nobody without a password sends, forever, so the script would redial it every 20 s for a whole window. The owner chose to give up on both, as the script did for `badp=1` before (2026-11-27). Moved out of the #144 PR by the owner (2026-11-27): the pre-gate needs a test lane for the script, and an empty-lane declaration (`"apps/radio/scripts/record_window.py": []` in `.gstack/pregate.json`) only counts once it is on main.
+
+**Context:** Land the `.gstack/pregate.json` declaration in its own PR first, or add a test that names the script, then make the one-line change.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None
+
 ### Receiver log: review notes from #144
 
 **What:** Notes the #144 reviews left open, all about the log or analytics, none about audio:
@@ -49,6 +73,7 @@
 - A `skywave_cap` met on Pick best's way back isn't counted in `radio_refused`; a run restored from the back-forward cache never reports its real end (pagehide already reported it).
 - `page.tsx`: `draftRef` is now unused, and `otherThan`'s doc comment sits on `sameReceiver`.
 - `hostguard.py:195`: the resolver's `HOSTNAME_RE.match` should be `fullmatch` like the log's (a trailing newline only fails the lookup today).
+- A tab opened before a release gets `busy` for Skywave's own cap (`for_page` in `session.py`), and the receiver log writes that same `code=busy` (with `detail=skywave_cap=N`), so `stats.sh`, which counts by code, puts those refusals under `busy` until old tabs close. Pre-existing since #157; logging the real code while the old tab still gets `busy` would keep the counts honest (owner, 2026-11-27: note it here).
 - `config.py`'s `receiver_log` comment and `server.py`'s `attach_receiver_log` docstring still say the file is written "also" and stdout is used "only" when unset; the file replaces stdout once attached.
 
 **Why:** The log exists to tell the causes of `busy`/`unreachable` apart (#144); history a client can wash out, or counts that miss a path, weaken that.

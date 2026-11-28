@@ -2,6 +2,16 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.64.21.0] - 2026-11-28 ([#144](https://github.com/thehashrocket/skywave/issues/144))
+
+### Changed
+- **Pick best says when a receiver played before turning you away.** If a receiver refuses in the 15 seconds after it starts playing, the note now reads "… filled up after a few seconds; trying …" instead of the same "was full" note as a receiver that never played. When that refusal ends the run, the "Tried 3 receivers and none worked" message starts with the same sentence, so it no longer reads as if nothing played.
+- **A receiver that is full for listeners without a password is called full, not password-protected.** A Kiwi sends the same answer when a password is wrong and when every free channel needs one, and Skywave never sends a password. Those receivers were reported as "requires a password"; they now say "has no free channels without a password", and Pick best calls them full. Since this changes the label, the daily load report's `busy` count rises and `password` drops to about none from this release on (about 205 refusals a day moved over when it shipped), so compare `busy` only with reports from after it.
+
+### Fixed
+- **Pick best no longer spends a try on a receiver that only refuses a second Skywave listener.** Some owners allow one connection per address, and every Skywave listener shares the radio service's address. That refusal used to read as "full" and use up one of Pick best's 3 tries; it now has its own reason, "turned away a second listener from Skywave's address", costs no try, and isn't held against the receiver for 15 minutes, since it clears as soon as the other listener leaves. A tab opened before this release still gets the old "full" answer. The receiver log records the new reason either way.
+- **The page for receiver owners lists this refusal among the ones the server's log keeps.**
+
 ## [0.64.18.0] - 2026-11-28 ([#155](https://github.com/thehashrocket/skywave/issues/155))
 
 ### Fixed
