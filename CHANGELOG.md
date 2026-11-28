@@ -7,6 +7,12 @@ Notable changes to skywave, newest first. Versions come from `VERSION` (four par
 ### Added
 - **The receiver-ranking research counts a "WWV or WWVH?" answer once.** Since the page started asking which of the two stations sharing a frequency you heard, each answer is stored as one row per station. The research's queries counted rows, so every such answer counted twice, its Pick best details twice, and a "Didn't open" twice, doubling receiver failures. A new shared set of views, used by every research query, gives one row per answer for answer counts, picks and outcomes, naming the stations it asked about. For counts by station it marks a station that wasn't heard while the other one was as "not heard over the other", apart from a plain "not heard", since a station drowned out by the other may still have been on the air. That is the same rule the app's weekly report already uses, and a test keeps the two in step.
 
+## [0.64.14.0] - 2026-11-28 ([#178](https://github.com/thehashrocket/skywave/issues/178))
+
+### Fixed
+- **After Stop, the open waterfall says nothing is playing instead of promising to fill in.** It used to read "The waterfall fills in once you're listening." over a picture that had already filled, in faint text that was hard to read on it. It now reads "Nothing is playing. Press Listen to resume." (true after Stop and after an error alike), or "Tuning in…" while a receiver connects, on the same dark chip as the wide waterfall's notes. The short strip before your first Listen is unchanged.
+- **Decoded RTTY text is readable.** The decode panel's "RTTY" title and the decoded text were dark ink on the page's dark teal, about 1.1:1. They now use the page's normal light text.
+
 ## [0.64.13.0] - 2026-11-28 ([#61](https://github.com/thehashrocket/skywave/issues/61))
 
 ### Changed

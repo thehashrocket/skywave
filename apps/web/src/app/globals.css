@@ -1584,8 +1584,9 @@ html:has(.tuning-bar:not([hidden])) {
   pointer-events: none;
 }
 
-/* Over a picture (the wide view, held still for a scan), the words need a ground. */
-.waterfall[data-wide] .waterfall-empty > span {
+/* Over a picture (the wide view, held still for a scan; the open audio waterfall after Stop), the words need a ground. */
+.waterfall[data-wide] .waterfall-empty > span,
+.waterfall[data-open] .waterfall-empty > span {
   padding: 4px 12px;
   border-radius: var(--radius-knob);
   background: var(--enamel-deep);
@@ -3156,7 +3157,7 @@ body:has(> .analytics-consent) {
 .decode-title {
   font-family: var(--font-instrument);
   font-weight: 500;
-  color: var(--ink);
+  color: var(--text);
 }
 
 .decode-actions {
@@ -3204,7 +3205,7 @@ body:has(> .analytics-consent) {
   line-height: 1.4;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: var(--ink);
+  color: var(--text);
   border: 1px solid var(--rule);
   border-radius: var(--radius-knob);
 }
