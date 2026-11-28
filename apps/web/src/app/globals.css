@@ -1655,6 +1655,13 @@ html:has(.tuning-bar:not([hidden])) {
   outline-offset: 2px;
 }
 
+/* A focused segment sits above the lifted pressed one, so its whole focus ring shows beside it. */
+.span-step:focus-visible,
+.tuning-bar-mode:focus-visible {
+  position: relative;
+  z-index: 2;
+}
+
 .waterfall-axis {
   position: relative;
   /* Tick labels sit on the first line; the caption flows below them and can wrap. */

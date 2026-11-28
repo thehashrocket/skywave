@@ -135,6 +135,14 @@ describe("globals.css", () => {
     expect(z(ruleBody(".mode input")), ".mode input above the lifted span").toBeGreaterThan(1);
   });
 
+  // Value: protects=a keyboard-focused tuning-bar or span segment shows its whole lamp focus ring beside the lifted pressed one (seen covered on one side in a browser, 2026-11-28); fails_when=the :focus-visible lift is dropped or its z-index falls to or below the pressed segment's; why_new=owner D6 after the read-only review found the D5 lift hid one side of the ring; seam=none; no_claim=painting order in a real browser (source text only; checked by hand once)
+  it("lifts a focused segment above the pressed one so its focus ring shows whole", () => {
+    const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const selector of [".tuning-bar-mode:focus-visible", ".span-step:focus-visible"]) {
+      expect(declares(text, selector, /position:\s*relative\s*;[\s\S]*z-index:\s*([2-9]|\d{2,})\s*;/), `${selector} above the pressed segment`).toBe(true);
+    }
+  });
+
   // Value: protects=an invalid call sign marks its field with a 2px lamp edge (border plus inset ring), clearly heavier than the 1px --rule-strong at rest; fails_when=the inset ring is dropped or recoloured, leaving a 1px lamp border only 2.2:1 from the resting border; why_new=#174 brightened the resting border and owner D1 (2026-11-28) chose the ring; seam=none; no_claim=IdentField's error line and aria-invalid wiring (IdentField tests); not rendered pixels
   it("gives an invalid call-sign field a 2px lamp edge", () => {
     const body = ruleBody('.ident-field input[aria-invalid="true"]');
