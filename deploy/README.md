@@ -133,7 +133,7 @@ On the box, as `deploy` or root:
 It prints the host's CPU count, load and memory, whether a reboot is pending,
 the `MAX_*` limits from `apps/radio/.env`, both containers' CPU and memory, the
 browser and Kiwi sockets open right now, `/ws` sessions opened per UTC hour over
-the last 24 h, and refusals by code and the most listeners seen per hour from the
+the last 24 h (accepted handshakes only, not refused ones), and refusals by code and the most listeners seen per hour from the
 receiver log (#144). It reads that log from the `RECEIVER_LOG` file and its
 rotated copies inside the container, plus any receiver lines in the container's
 own logs (where they go if the file can't be opened), and keeps the last 24 h.
@@ -218,8 +218,9 @@ and installs nothing.
 
 ### Daily load log
 
-`.github/workflows/radio-stats.yml` runs `stats.sh` every day at 17:07 UTC
-(after the 10:00-16:00 UTC peak) and posts the output as a comment on the open
+`.github/workflows/radio-stats.yml` runs `stats.sh` every day, scheduled for
+17:07 UTC (after the 10:00-16:00 UTC peak; GitHub has started it hours late, so
+each report's `window=` line says which 24 h it covers), and posts the output as a comment on the open
 issue labelled `radio-load`. A Claude scheduled task reads that issue each
 morning and only raises something when it changes: peaks near `MAX_SESSIONS`,
 `full` refusals, sessions per hour climbing, hourly CPU near 100%, a pending
