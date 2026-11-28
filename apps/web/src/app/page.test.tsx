@@ -277,6 +277,20 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
+/**
+ * The way to the beacon and GhostNet strips since #175: "change" opens the drawer (unless it's
+ * open already), then the strip's summary unfolds it. The toggle is fired by hand, as jsdom's own
+ * summary activation is asynchronous.
+ */
+function openDrawerStrip(strip: "beacons" | "ghostnet") {
+  const change = screen.getByRole("button", { name: "Change receiver" });
+  if (change.getAttribute("aria-expanded") !== "true") act(() => fireEvent.click(change));
+  const details = document.querySelector<HTMLDetailsElement>(`details.${strip}`)!;
+  if (details.open) return;
+  details.open = true;
+  act(() => fireEvent(details, new Event("toggle")));
+}
+
 describe("ListenPage", () => {
   // Value: protects=the "How skywave uses it" link to /owners opens a new tab, so reading it never unmounts the player and cuts the audio; fails_when=target="_blank" is dropped or the link is swapped for a same-tab next/link; why_new=new link on the listening page; seam=none; no_claim=browser tab behavior (jsdom doesn't navigate)
   it("opens the owners page in a new tab so what's playing keeps playing", () => {
@@ -2811,7 +2825,7 @@ describe("ListenPage", () => {
       };
       receiverList.data = { receivers: [{ ...listed, lat: 44.3, lon: -72.6 }] };
       const view = render(<ListenPage />);
-      act(() => fireEvent.click(screen.getByRole("button", { name: "GhostNet" })));
+      openDrawerStrip("ghostnet");
       act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to North America net, JS8Call on 7.107 MHz USB" })));
       radio.status = { state: "listening", host: listed.host, port: listed.port, freqKhz: 7_107, mode: "usb" };
       radio.heardAudio = true;
@@ -2844,7 +2858,7 @@ describe("ListenPage", () => {
       // Now the list has nothing that covers 7,107 kHz, so GhostNet Listen can't start a run.
       receiverList.data = { receivers: [{ ...listed, lat: 44.3, lon: -72.6, maxKhz: 7_000 }] };
       view.rerender(<ListenPage />);
-      act(() => fireEvent.click(screen.getByRole("button", { name: "GhostNet" })));
+      openDrawerStrip("ghostnet");
       radio.tune.mockClear();
       act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to North America net, JS8Call on 7.107 MHz USB" })));
       expect(radio.tune).not.toHaveBeenCalled();
@@ -3779,7 +3793,7 @@ describe("ListenPage", () => {
       resetServerClock();
     });
 
-    const openGhostNet = () => act(() => fireEvent.click(screen.getByRole("button", { name: "GhostNet" })));
+    const openGhostNet = () => openDrawerStrip("ghostnet");
 
     // Value: protects=Listen on the RTTY slot turns the decoder on (and a JS8 Listen doesn't), so the strip's "text shows under the waterfall" holds; fails_when=listenToGhostNet stops calling setDecode for RTTY or calls it for other slots; why_new=RTTY decoding (#92); seam=useRadio mocked, real GhostNetStrip; no_claim=whether the 7.077 dial reading is right (TODOS.md)
     it("turns the decoder on for the RTTY slot only", () => {
@@ -3839,16 +3853,15 @@ describe("ListenPage", () => {
       expect(screen.getByRole("button", { name: NA_JS8 }).getAttribute("aria-pressed")).toBe("false");
     });
 
-    // Value: protects=the header's GhostNet opens the drawer with the strip open and focused, and leaves beacon mode and a beacon pick alone (owner D14, D15); fails_when=it toggles beacon mode, ends the pick, or focus stays put; why_new=new header link; seam=MapPanel/picker/radio mocked; no_claim=scrolling in a browser
-    it("opens and focuses the strip from the header without touching beacons", () => {
+    // Value: protects=unfolding the GhostNet strip leaves beacon mode and a beacon pick alone (owner D14, D15); fails_when=changeGhostNet toggles beacon mode or ends the pick; why_new=kept from the header link's test when the link went (#175); seam=MapPanel/picker/radio mocked; no_claim=focus (the strip is unfolded from its own summary now)
+    it("opens the strip without touching beacons", () => {
       render(<ListenPage />);
-      act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+      openDrawerStrip("beacons");
       act(() => fireEvent.click(screen.getByRole("button", { name: /^Listen to \S+ on 14\.100 MHz$/ })));
       const selected = screen.getByLabelText("map beacons").textContent;
       expect(selected).toMatch(/^on, selected \S+$/);
       openGhostNet();
       expect(document.querySelector<HTMLDetailsElement>("details.ghostnet")!.open).toBe(true);
-      expect(document.activeElement).toBe(document.querySelector("details.ghostnet > summary"));
       expect(screen.getByLabelText("map beacons").textContent).toBe(selected);
     });
 
@@ -3895,7 +3908,7 @@ describe("ListenPage", () => {
       );
       render(<ListenPage />);
       if (openFirst) openGhostNet();
-      act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+      openDrawerStrip("beacons");
       act(() => fireEvent.click(screen.getByRole("button", { name: /^Listen to \S+ on 14\.100 MHz$/ })));
       expect(screen.getByText("Checking the time with the server…")).toBeTruthy();
       if (!openFirst) openGhostNet();
@@ -4058,7 +4071,7 @@ describe("ListenPage", () => {
       render(<ListenPage />);
       // Opened first, so only listenAt's own bumps can drop the wait.
       openGhostNet();
-      act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+      openDrawerStrip("beacons");
       act(() => fireEvent.click(screen.getByRole("button", { name: /^Listen to \S+ on 14\.100 MHz$/ })));
       expect(screen.getByText("Checking the time with the server…")).toBeTruthy();
       act(() => fireEvent.click(screen.getByRole("button", { name: NA_JS8 })));
@@ -4076,7 +4089,7 @@ describe("ListenPage", () => {
       slowClock();
       render(<ListenPage />);
       openGhostNet();
-      act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+      openDrawerStrip("beacons");
       act(() => fireEvent.click(screen.getByRole("button", { name: /^Listen to \S+ on 14\.100 MHz$/ })));
       expect(screen.getByText("Checking the time with the server…")).toBeTruthy();
       const details = document.querySelector<HTMLDetailsElement>("details.ghostnet")!;
@@ -4393,23 +4406,27 @@ describe("ListenPage", () => {
       expect(radio.retune).toHaveBeenLastCalledWith(expect.objectContaining({ freqKhz: 14_100, mode: "cw" }));
     });
 
-    // Value: protects=the beacons are one click from the main screen: the header's IBP beacons opens the drawer with the strip expanded (beacon mode on) and focus on it; fails_when=the control is missing, opens a shut strip, leaves the drawer inert, or leaves focus behind; why_new=beacon entry point (owner: it was behind change and a folded details); seam=MapPanel/radio mocked, real BeaconStrip; no_claim=where it sits visually (CSS, browser check)
-    it("opens the drawer with the beacon strip from the header", () => {
+    // Value: protects=the header strip carries only the receiver and "change", so Listen is the one action in that row, and both schedule strips stay reachable through the drawer; fails_when=a feature link is added back to .tuned-to, or the drawer loses the beacon or GhostNet strip; why_new=design critique 2026-11-27: three equal amber links beside Listen; seam=the strips' own behavior is in GhostNetStrip.test.tsx and the beacon tests; no_claim=does not measure how many listeners find GhostNet afterwards
+    it("keeps the header to the receiver and change, with both strips in the drawer", () => {
       render(<ListenPage />);
+      const strip = document.querySelector<HTMLElement>(".tuned-to")!;
+      expect(within(strip).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([
+        "Change receiver",
+      ]);
       const drawer = document.getElementById("receiver-drawer")!;
-      const strip = document.querySelector<HTMLDetailsElement>("details.beacons")!;
+      const beacons = drawer.querySelector<HTMLDetailsElement>("details.beacons")!;
+      const ghostNet = drawer.querySelector<HTMLDetailsElement>("details.ghostnet")!;
       expect(drawer.hasAttribute("inert")).toBe(true);
-      expect(strip.open).toBe(false);
-      const entry = screen.getByRole("button", { name: "IBP beacons" });
-      // In the header strip, beside "change".
-      expect(entry.closest(".console-header")).not.toBeNull();
-      act(() => fireEvent.click(entry));
+      expect([beacons.open, ghostNet.open]).toEqual([false, false]);
+
+      openDrawerStrip("beacons");
       expect(drawer.hasAttribute("inert")).toBe(false);
-      expect(screen.getByRole("button", { name: "Change receiver" }).getAttribute("aria-expanded")).toBe("true");
-      expect(strip.open).toBe(true);
       expect(screen.getByLabelText("map beacons").textContent).toBe("on, selected none");
       expect(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })).toBeTruthy();
-      expect(document.activeElement).toBe(strip.querySelector("summary"));
+      // Folded, GhostNet's summary still carries its status tail, in the drawer.
+      expect(ghostNet.querySelector(".ghostnet-tail")!.textContent).toMatch(/on now|next in/);
+      openDrawerStrip("ghostnet");
+      expect(ghostNet.open).toBe(true);
     });
 
     /** Listens to 4U1UN on 14.100 through London, then waits for its next full turn (12:03:00) to be asked about. */
@@ -4417,7 +4434,7 @@ describe("ListenPage", () => {
       // The prompt's gap and close counts, which earlier tests' prompts (at real times) would set.
       sessionStorage.clear();
       const view = render(<ListenPage />);
-      act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+      openDrawerStrip("beacons");
       act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
       radio.status = { state: "listening", host: london.host, port: london.port, freqKhz: 14_100, mode: "cw" };
       radio.heardAudio = true;
@@ -4506,7 +4523,7 @@ describe("ListenPage", () => {
       it("says when the picked beacon is on, missed and next, then asks in the same place", () => {
         sessionStorage.clear();
         const view = render(<ListenPage />);
-        act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+        openDrawerStrip("beacons");
         act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
         // 12:00:03: its turn is on, but no audio yet, so this turn won't be asked about.
         expect(watchLine()!.textContent).toBe(
@@ -4549,7 +4566,7 @@ describe("ListenPage", () => {
       function listenWithCounts(counts: { lastShownMs: number; dismissals: number }) {
         sessionStorage.setItem("skywave.receptionPrompt", JSON.stringify(counts));
         const view = render(<ListenPage />);
-        act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+        openDrawerStrip("beacons");
         act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
         radio.status = { state: "listening", host: london.host, port: london.port, freqKhz: 14_100, mode: "cw" };
         radio.heardAudio = true;
@@ -4583,7 +4600,7 @@ describe("ListenPage", () => {
       it("says Connecting… instead of no question while the receiver connects", () => {
         sessionStorage.clear();
         const view = render(<ListenPage />);
-        act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+        openDrawerStrip("beacons");
         act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
         radio.status = { state: "connecting", host: london.host, port: london.port, freqKhz: 14_100, mode: "cw" };
         view.rerender(<ListenPage />);
@@ -4605,7 +4622,7 @@ describe("ListenPage", () => {
       // Value: protects=the pick (and its line and mark) ends when the listener changes receiver themselves, as it does on a retune off the band; fails_when=a stale pick keeps a line or prompt about a beacon the listener walked away from; why_new=beacon watch line (owner: until retune or receiver change); seam=as above; no_claim=none
       it("drops the pick when the listener changes receiver or retunes", () => {
         render(<ListenPage />);
-        act(() => fireEvent.click(screen.getByRole("button", { name: "IBP beacons" })));
+        openDrawerStrip("beacons");
         act(() => fireEvent.click(screen.getByRole("button", { name: "Listen to 4U1UN on 14.100 MHz" })));
         expect(pickedRow()).not.toBeNull();
         act(() => fireEvent.click(screen.getByRole("button", { name: "map listen" })));

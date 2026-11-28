@@ -2,13 +2,18 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
-## [0.64.8.0] - 2026-11-27 ([#177](https://github.com/thehashrocket/skywave/issues/177))
+## [Unreleased]
 
 ### Added
 - **The first screen says what skywave is and what Listen will play.** Until the first sound of a visit, a line under the header reads "Shortwave and ham radio through volunteer receivers around the world." With the dial on 10,000 kHz AM, where it starts, it adds "Press Listen: the dial is on 10,000 kHz, where the WWV time signal usually is." On any other frequency or mode it says "Press Listen to hear this frequency." It shows on every visit, not only the first, and goes away once audio arrives; Stop doesn't bring it back. Screen readers read it in place, and it isn't announced as you tune. Its height stays the same whichever sentence shows, so on a phone the dial doesn't move when you tune off 10,000 kHz or when your saved frequency loads.
 
 ### Changed
 - **The waterfall strip no longer repeats "Press Listen".** Before the first sound it now reads just "A blank receiver picks the best one." "Tuning in…" while a receiver connects is unchanged.
+
+## [0.64.9.0] - 2026-11-27 ([#175](https://github.com/thehashrocket/skywave/issues/175))
+
+### Changed
+- **The header shows where you're listening, "change" and Listen, and nothing else.** IBP beacons and GhostNet no longer sit in the header as links beside Listen. Both are still in the receiver drawer under the map, folded, as before: press **change**, then their heading to open them, with the mouse or the keyboard. GhostNet's heading still says what's on ("· North America net on now", "· next in 2d 16h") while folded. On a phone the header is one row shorter, so the dial comes up higher.
 
 ## [0.64.6.0] - 2026-11-27 ([#179](https://github.com/thehashrocket/skywave/issues/179))
 

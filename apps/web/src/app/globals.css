@@ -161,9 +161,7 @@ html,
   color: var(--muted);
 }
 
-.tuned-to-change,
-.tuned-to-beacons,
-.tuned-to-ghostnet {
+.tuned-to-change {
   white-space: nowrap;
 }
 
@@ -2664,10 +2662,10 @@ html:has(.tuning-bar:not([hidden])) {
   }
 }
 
-/* Too narrow for the strip between the wordmark and the button (it would stack its links four deep):
+/* Too narrow for the strip between the wordmark and the button (it would wrap to a few words a line):
    the strip takes a row of its own, and Listen/Stop keeps the first row's right end (#173). In em
    (720px at the 16px default) so a larger default font, which widens the wordmark, clock and button,
-   moves the switch out with it instead of squeezing the strip's links under the button. */
+   moves the switch out with it instead of squeezing the strip under the button. */
 @media (max-width: 45em) {
   .console-header {
     grid-template-columns: minmax(0, 1fr) auto;
@@ -2888,8 +2886,6 @@ html:has(.tuning-bar:not([hidden])) {
   .power,
   .receiver-switch,
   .tuned-to-change,
-  .tuned-to-beacons,
-  .tuned-to-ghostnet,
   .span-step,
   .presets-save button,
   .receiver-choose,
