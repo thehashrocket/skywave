@@ -6152,3 +6152,38 @@ def test_mode_change_keeps_the_mark():
     after_mode, after_freq = run_with_fake(body)
     assert after_mode[-1]["markHz"] == 2125
     assert "markHz" not in after_freq[-1]
+
+
+# Value: protects=the container's Docker log (10 MB x 5) keeps a whole day of "WebSocket /ws" lines, which deploy/stats.sh counts sessions per hour from, because the per-minute /held polls (up to 100 receivers a line), /noise and the health check no longer fill it in hours; fails_when=the filter is dropped, not installed by create_app, matches on the query string, or hides failed polls or other paths, or a record not in uvicorn's 5-arg shape raises or is dropped; why_new=the 2026-11-28 #155 report's session counts reached back only to 18:14 after /held (#166) shipped; seam=the real uvicorn.access logger fed uvicorn's own access-line format and args (h11_impl/httptools_impl), caplog on the root; no_claim=uvicorn's dictConfig keeping the filter at run time (it configures before importing the app) or that WebSocket lines stay on uvicorn.error
+def test_polled_paths_stay_out_of_the_access_log(caplog):
+    import logging
+
+    create_app(settings())
+    access = logging.getLogger("uvicorn.access")
+    caplog.set_level(logging.INFO, logger="uvicorn.access")
+    fmt = '%s - "%s %s HTTP/%s" %d'
+    many = ",".join(f"kiwi{i}.example.org%3A8073" for i in range(100))
+    quiet = [
+        ("GET", f"/held?receivers={many}", 200),
+        ("GET", f"/noise?receivers={many}&band=40m", 200),
+        ("GET", "/healthz", 200),
+        ("OPTIONS", "/held?receivers=a%3A1", 204),
+    ]
+    kept = [
+        ("GET", "/held?receivers=bad", 400),  # a failed poll is still worth a line
+        ("GET", "/noise?receivers=a%3A1&band=40m", 503),
+        ("GET", "/heldx", 404),
+        ("GET", "/elsewhere?x=/held", 200),
+        ("POST", "/held", 405),
+    ]
+    for method, path, code in quiet + kept:
+        access.info(fmt, "203.0.113.45:0", method, path, "1.1", code)
+    # Not uvicorn's 5-arg shape (another arity, or none): kept, and the filter
+    # doesn't raise, since a raising filter would raise into the request.
+    access.info("%s - %s %s %s %d %s", "203.0.113.45:0", "GET", "/held", "1.1", 200, "x")
+    access.info("plain line")
+    logged = [r.getMessage() for r in caplog.records if r.name == "uvicorn.access"]
+    assert len(logged) == len(kept) + 2
+    assert "plain line" in logged
+    for method, path, code in kept:
+        assert any(f'"{method} {path} HTTP/1.1" {code}' in line for line in logged)

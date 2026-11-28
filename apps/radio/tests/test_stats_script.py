@@ -102,11 +102,11 @@ case "$1" in
 esac
 """
 
-# A fixed "now" (17:07 UTC, when the workflow runs), so the 24 h cut is stable.
+# A fixed "now" (17:07 UTC, when the workflow runs, or FAKE_NOW), so the 24 h cut
+# is stable; stats.sh derives the cut from it with the real date -d.
 FAKE_DATE = """#!/usr/bin/env bash
-for a in "$@"; do [ "$a" = "24 hours ago" ] && { echo 2026-11-25T17:07:00; exit 0; }; done
 for a in "$@"; do [ "$a" = -d ] && exec /bin/date "$@"; done
-echo 2026-11-26T17:07:00Z
+echo "${FAKE_NOW:-2026-11-26T17:07:00Z}"
 """
 
 
@@ -114,6 +114,7 @@ def run_stats(
     tmp_path: Path,
     logs: str,
     sar: str | None = None,
+    sar_yesterday: str | None = None,
     receivers: str | None = None,
     files: dict[str, str] | None = None,
     **env_extra: str,
@@ -147,7 +148,21 @@ def run_stats(
         (tmp_path / name).write_text(text)
     if sar is not None:
         fake_sar = bin_dir / "sar"
-        fake_sar.write_text(f"#!/usr/bin/env bash\ncat <<'OUT'\n{sar}OUT\n")
+        # stats.sh opens each day's file by name (sar -f .../saDD): sa25 is
+        # yesterday (2026-11-25), sa26 today, any other saDD the file
+        # sar_saDD (pass it in files=); a missing one fails, as sar does.
+        (tmp_path / "sar_today").write_text(sar)
+        if sar_yesterday is not None:
+            (tmp_path / "sar_yesterday").write_text(sar_yesterday)
+        fake_sar.write_text(
+            '#!/usr/bin/env bash\n'
+            'for a; do last=$a; done\n'
+            'case "$last" in */sa25) f="$FAKE_DIR/sar_yesterday" ;; */sa26) f="$FAKE_DIR/sar_today" ;; *) f="$FAKE_DIR/sar_${last##*/}" ;; esac\n'
+            '[ -n "${FAKE_NO_SAR_TODAY:-}" ] && [ "${last##*/}" = sa26 ] && f=/nonexistent\n'
+            '[ "$S_TIME_FORMAT" = ISO ] || { echo "stats.sh must set S_TIME_FORMAT=ISO" >&2; exit 9; }\n'
+            '[ -f "$f" ] || { echo "Cannot open $last: No such file or directory" >&2; exit 2; }\n'
+            'cat "$f"\n'
+        )
         fake_sar.chmod(fake_sar.stat().st_mode | stat.S_IEXEC)
 
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_DIR": str(tmp_path), **env_extra}
@@ -253,7 +268,7 @@ def test_failed_exec_and_logs_keep_reporting(tmp_path: Path):
     # Nothing was read, so it must not read as a quiet day.
     assert "(couldn't read the receiver log file or the container's logs)" in out.stdout
     assert "no receiver-log lines" not in out.stdout
-    assert "  10:00   65.0 /  80.0" in out.stdout
+    assert "  2026-11-26T10   65.0 /  80.0" in out.stdout
 
 
 # Value: protects=when only the receiver log file can't be read, the container-log receiver lines are still counted, as the message promises; fails_when=a failed file read discards or blanks the container-log events; why_new=the failure test fails both reads at once, so it can't see this; seam=fake docker on PATH; no_claim=docker's real error output
@@ -337,7 +352,7 @@ def test_drop_notes_only_day_keeps_reporting(tmp_path: Path):
     )
     assert out.returncode == 0, out.stderr
     assert "    (none)" in out.stdout.split("by event and code:")[1]
-    assert "  10:00   65.0 /  80.0" in out.stdout
+    assert "  2026-11-26T10   65.0 /  80.0" in out.stdout
 
 
 # Value: protects=a failed receiver-file read keeps docker's daemon error (with the container id) out of the output the monitoring key sees; fails_when=the receiver-file docker exec loses its own 2>/dev/null; why_new=other tests check stdout only; seam=fake docker on PATH; no_claim=docker's real daemon wording
@@ -412,7 +427,7 @@ def test_receiver_file_cap_is_noted(tmp_path: Path):
 # `sar -u` as LC_ALL=C prints it: a header, 10-minute samples, then an Average line.
 SAR = textwrap.dedent(
     """\
-    Linux 6.8.0-149-generic (skywave-radio) 11/26/2026 _x86_64_ (1 CPU)
+    Linux 6.8.0-149-generic (skywave-radio) 	2026-11-26 	_x86_64_	(1 CPU)
 
     00:00:01        CPU     %user     %nice   %system   %iowait    %steal     %idle
     00:10:01        all     10.00      0.00      5.00      0.00      0.00     85.00
@@ -424,12 +439,66 @@ SAR = textwrap.dedent(
 )
 
 
-# Value: protects=hourly host CPU in the daily load log, avg and max of sysstat's 10-minute samples per UTC hour, so a short peak isn't averaged away; fails_when=busy isn't 100 - %idle, the header or Average line is counted, or hours mix; why_new=the radio-stats workflow (issue #153) needs CPU history, not one reading; seam=fake sar on PATH; no_claim=sysstat's own sampling or that it's enabled on the box
+# Yesterday's file (sar -1): one sample before the 2026-11-25T17:07 cut, the rest after.
+SAR_YESTERDAY = textwrap.dedent(
+    """\
+    Linux 6.8.0-149-generic (skywave-radio) 	2026-11-25 	_x86_64_	(1 CPU)
+
+    00:00:01        CPU     %user     %nice   %system   %iowait    %steal     %idle
+    16:50:01        all     90.00      0.00      9.00      0.00      0.00      1.00
+    17:10:01        all     30.00      0.00     10.00      0.00      0.00     60.00
+    20:00:01        all     70.00      0.00     15.00      0.00      0.00     15.00
+    20:10:01        all     50.00      0.00      5.00      0.00      0.00     45.00
+    19:30:01        all     40.00      0.00     10.00      0.00      0.00     50.00
+    23:20:01        all      0.00      0.00      0.00      0.00      0.00    100.00
+    22:40:01        all     50.00      0.00     10.00      0.00      0.00     40.00
+    23:50:01        all      0.00      0.00      0.00      0.00      0.00    100.00
+    00:00:01        all      0.00      0.00      0.00      0.00      0.00    100.00
+    Average:        all     60.00      0.00      9.75      0.00      0.00     30.25
+    """
+)
+
+
+# Value: protects=hourly host CPU over the report's 24 h window from the window's own days' sysstat files (by name, header date checked), avg and max per UTC hour, partial end hours labelled, a 00:00 record at a file's end dated to the next day while a clock set back mid-day stays on its day, whole hours with no sample counted in a note (and no note when every whole hour has one), and a missing, unreadable or wrong-date file said, never shown as idle or as invented numbers; fails_when=busy isn't 100 - %idle, the header or Average line is counted, hours or days mix, yesterday's samples are dropped (a run just after midnight showed one row in the 2026-11-28 #155 report), a pre-cut sample is kept, or a leftover file from another month is counted; why_new=GitHub starts the 17:07 run 7-8 h late; seam=fake sar on PATH; no_claim=sysstat's own sampling or that it's enabled on the box
 def test_hourly_cpu_from_sar(tmp_path: Path):
-    out = run_stats(tmp_path, LOGS, sar=SAR).stdout
-    assert "  00:00   22.5 /  30.0" in out
-    assert "  10:00   65.0 /  80.0" in out
-    assert "Average" not in out.split("== host CPU")[1]
+    out = run_stats(tmp_path, LOGS, sar=SAR, sar_yesterday=SAR_YESTERDAY).stdout
+    cpu = out.split("== host CPU busy % per hour, last 24 h")[1]
+    assert "  2026-11-25T17   40.0 /  40.0  (from 17:07)\n" in cpu  # 16:50 is before the cut
+    assert "  2026-11-25T20   70.0 /  85.0\n" in cpu
+    assert "  2026-11-26T00   15.0 /  30.0\n" in cpu  # 15 and 30 today, plus yesterday's 00:00 record (0)
+    assert "  2026-11-26T10   65.0 /  80.0\n" in cpu
+    assert "2026-11-25T16" not in cpu
+    assert "  2026-11-25T19   50.0 /  50.0\n" in cpu  # set back to 19:30: still the 25th
+    assert "2026-11-26T19" not in cpu
+    assert "  2026-11-25T22   60.0 /  60.0\n" in cpu  # 23:20 back to 22:40: still the 25th
+    assert "2026-11-26T22" not in cpu
+    # Whole hours 2026-11-25T18 .. 2026-11-26T16 (23); samples in 19, 20, 22, 23, 00 and 10.
+    assert "  (no samples in 17 of the window's 23 whole hours; those hours have no row)\n" in cpu
+    # A sample in every whole hour: no gap note.
+    full_y = SAR_YESTERDAY.split("00:00:01        CPU")[0] + "00:00:01        CPU     %user     %nice   %system   %iowait    %steal     %idle\n" + "".join(
+        f"{h:02d}:30:01        all     10.00      0.00      0.00      0.00      0.00     90.00\n" for h in range(18, 24))
+    full_t = SAR.split("00:00:01        CPU")[0] + "00:00:01        CPU     %user     %nice   %system   %iowait    %steal     %idle\n" + "".join(
+        f"{h:02d}:30:01        all     10.00      0.00      0.00      0.00      0.00     90.00\n" for h in range(0, 17))
+    full = run_stats(tmp_path / "f", LOGS, sar=full_t, sar_yesterday=full_y).stdout.split("== host CPU")[1]
+    assert "no samples in" not in full
+    assert "  2026-11-26T16   10.0 /  10.0\n" in full
+    assert "2026-11-25T00" not in cpu
+    assert "Average" not in cpu
+    assert "sysstat's file" not in cpu
+    # No file for yesterday (sysstat enabled today): say so, count today.
+    missing = run_stats(tmp_path / "b", LOGS, sar=SAR).stdout.split("== host CPU")[1]
+    assert "  (couldn't read sysstat's file for 2026-11-25; its hours aren't counted)" in missing
+    assert "  2026-11-26T10   65.0 /  80.0\n" in missing
+    # A leftover saDD from another month (collection stopped): not counted as yesterday.
+    stale = SAR_YESTERDAY.replace("2026-11-25", "2026-10-25")
+    old = run_stats(tmp_path / "c", LOGS, sar=SAR, sar_yesterday=stale).stdout.split("== host CPU")[1]
+    assert "  (sysstat's file for 2026-11-25 is from another date; its hours aren't counted)" in old
+    assert "2026-11-25T20" not in old
+    # Today's file unreadable: said too, not silently dropped.
+    no_today = run_stats(tmp_path / "d", LOGS, sar=SAR, sar_yesterday=SAR_YESTERDAY, FAKE_NO_SAR_TODAY="1")
+    cpu_d = no_today.stdout.split("== host CPU")[1]
+    assert "  (couldn't read sysstat's file for 2026-11-26; its hours aren't counted)" in cpu_d
+    assert "  2026-11-25T20   70.0 /  85.0\n" in cpu_d
 
 
 # The refusal throttle as session.py writes it: one line per receiver and code
@@ -453,3 +522,60 @@ def test_counts_refusals_the_throttle_held_back(tmp_path: Path):
     assert "    8  event=refused code=skywave_cap" in section  # 1 + (1 + 4) + 2
     assert "    1  event=listening code=-" in section
     assert "2026-11-26T15  11" in out.stdout
+
+
+# The cut is 2026-11-25T17:07 and the report runs at 2026-11-26T17:07 (FAKE_DATE):
+# the 17:30 lines are in the window's partial first hour, the 2026-11-26 17:01
+# ones in its partial last hour, the 18:05 ones in a whole hour.
+EDGE_LOGS = textwrap.dedent(
+    f"""\
+    2026-11-25T17:30:00.000000000Z INFO:     {BROWSER_IP}:0 - "WebSocket /ws?token={TOKEN}" [accepted]
+    2026-11-25T18:05:00.000000000Z INFO:     {BROWSER_IP}:0 - "WebSocket /ws?token={TOKEN}" [accepted]
+    2026-11-26T17:01:00.000000000Z INFO:     {BROWSER_IP}:0 - "WebSocket /ws?token={TOKEN}" [accepted]
+    2026-11-25T18:06:00.000000000Z INFO:     {BROWSER_IP}:0 - "WebSocket /ws" 403
+    2026-11-25T18:07:00.000000000Z INFO:     {BROWSER_IP}:0 - "WebSocket /ws?x=[accepted]" 403
+    """
+)
+EDGE_RECEIVERS = textwrap.dedent(
+    f"""\
+    2026-11-25 17:30:00,000 event=refused host={KIWI_HOST} port=8073 code=full detail=- audio_s=0.0 listeners=14
+    2026-11-25 18:05:00,000 event=listening host={KIWI_HOST} port=8073 code=- detail=- audio_s=0.0 listeners=3
+    2026-11-26 17:01:00,000 event=listening host={KIWI_HOST} port=8073 code=- detail=- audio_s=0.0 listeners=5
+    """
+)
+
+
+# Value: protects=the per-hour tables (sessions opened, most listeners) keep the window's partial first and last hours and label them "(from HH:MM)" and "(so far, to HH:MM)", the report states its exact window= (runs start hours late, so neighbouring reports overlap or leave gaps), and an empty table says "(none)"; fails_when=a partial end hour is dropped (the 17:07-17:59 gap both #155 adversarial reviewers found) or loses its label, the window= line goes, a refused (403) handshake counts as a session opened (even one whose query string says [accepted]), or an empty table goes blank; why_new=the 2026-11-28 #155 report showed 25 unlabeled rows for "last 24 h"; seam=fake docker and date on PATH; no_claim=docker's own --since 24h cut
+def test_hourly_tables_label_the_partial_end_hours(tmp_path: Path):
+    out = run_stats(tmp_path, EDGE_LOGS, receivers=EDGE_RECEIVERS)
+    assert out.returncode == 0, out.stderr
+    # Runs aren't exactly 24 h apart, so the report says which 24 h it covers.
+    assert "window=2026-11-25T17:07:00Z..2026-11-26T17:07:00Z\n" in out.stdout
+    sessions = out.stdout.split("== /ws sessions")[1].split("== receiver log")[0]
+    assert "  2026-11-25T17  1  (from 17:07)\n" in sessions
+    assert "  2026-11-25T18  1\n" in sessions
+    assert "  2026-11-26T17  1  (so far, to 17:07)\n" in sessions
+    listeners = out.stdout.split("most listeners per hour:")[1].split("== host CPU")[0]
+    assert "    2026-11-25T17  14  (from 17:07)\n" in listeners
+    assert "    2026-11-25T18  3\n" in listeners
+    assert "    2026-11-26T17  5  (so far, to 17:07)\n" in listeners
+    # Nothing to list: each table says so rather than going blank.
+    drops_only = "2026-11-26 12:00:00,000 event=dropped lines=3\n"
+    empty = run_stats(tmp_path / "b", "", receivers=drops_only).stdout
+    assert "  (none)" in empty.split("== /ws sessions")[1].split("== receiver log")[0]
+    assert "    (none)" in empty.split("most listeners per hour:")[1].split("== host CPU")[0]
+
+
+# Value: protects=a run at midnight UTC (GitHub starts the 17:07 job late) reads the clock once and derives the cut from it, so its window is exactly the previous day and the CPU section reads that day's sysstat file in full; fails_when=the cut and now come from separate clock reads (a turn of midnight between them read the wrong two day files) or the window drifts from 24 h; why_new=the #155 final-head review found the two-read race; seam=fake date (FAKE_NOW) and sar on PATH; no_claim=the real timing of two date calls
+def test_midnight_run_reads_the_previous_day_whole(tmp_path: Path):
+    header_27 = "Linux 6.8.0-149-generic (skywave-radio) \t2026-11-27 \t_x86_64_\t(1 CPU)\n"
+    out = run_stats(
+        tmp_path, LOGS, sar=SAR, files={"sar_sa27": header_27}, FAKE_NOW="2026-11-27T00:00:00Z"
+    ).stdout
+    assert "window=2026-11-26T00:00:00Z..2026-11-27T00:00:00Z\n" in out
+    cpu = out.split("== host CPU")[1]
+    assert "  2026-11-26T00   22.5 /  30.0  (from 00:00)\n" in cpu
+    assert "  2026-11-26T10   65.0 /  80.0\n" in cpu
+    assert "sysstat's file" not in cpu
+    # Whole hours 2026-11-26T01 .. T23; only 10 has samples.
+    assert "  (no samples in 22 of the window's 23 whole hours; those hours have no row)\n" in cpu
