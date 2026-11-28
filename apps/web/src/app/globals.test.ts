@@ -79,6 +79,31 @@ describe("globals.css", () => {
     expect(contrast(token("--ham"), token("--glass-shade"))).toBeLessThan(4.5);
   });
 
+  // Value: protects=brass outline buttons (Pick best, Stop, Save) keep their text at WCAG AA (4.5:1) on both the page and a raised panel; fails_when=an outline button's color goes back to --brass, or --enamel-raised or the brass token is retuned below 4.5:1; why_new=design critique 2026-11-27 measured --brass on --enamel-raised at 4.3:1; seam=the filled Listen button uses --ink on --brass and is not covered here; no_claim=reads token values and rules, not rendered pixels or hover states
+  it("keeps outline-button text at WCAG AA contrast on the page and on panels", () => {
+    for (const selector of [".pick-best", ".power-on", ".presets-save button"]) {
+      const color = /(?:^|[\s;])color:\s*var\((--[\w-]+)\)/.exec(ruleBody(selector))?.[1];
+      expect(color, `${selector} color`).toBeDefined();
+      for (const bg of ["--enamel", "--enamel-raised"]) {
+        expect(contrast(token(color!), token(bg)), `${selector} ${color} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+    // The bar bites: plain --brass, the buttons' border, is under AA on a raised panel.
+    expect(contrast(token("--brass"), token("--enamel-raised"))).toBeLessThan(4.5);
+  });
+
+  // Value: protects=text fields, selects and idle mode segments have a boundary of at least 3:1 (WCAG 1.4.11) against the page, a raised panel and their own deep fill; fails_when=those rules go back to --rule, or --rule-strong drops under 3:1 on any of the three enamel tones; why_new=design critique 2026-11-27 measured --rule at 1.38:1 to 2.10:1; seam=--rule itself stays for dividers and the map and is not asserted here; no_claim=does not cover focus rings, which are --lamp and already pass
+  it("gives fields, selects and idle mode segments a 3:1 boundary", () => {
+    const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const controls = [".field input", ".field select", ".select-button", ".presets-save input", ".mode span", ".span-step", ".tuning-bar-mode"];
+    for (const selector of controls) {
+      expect(declares(text, selector, /border:\s*1px solid var\(--rule-strong\)\s*;/), `${selector} border`).toBe(true);
+    }
+    for (const bg of ["--enamel", "--enamel-raised", "--enamel-deep"]) {
+      expect(contrast(token("--rule-strong"), token(bg)), `--rule-strong on ${bg}`).toBeGreaterThanOrEqual(3);
+    }
+  });
+
   // Value: protects=the gutter is as tall as the glass and its row labels sit on their band rows, for the full dial and the compact one; fails_when=a Dial.tsx layout's H or band rows change, or .dial-glass min-width stops reading --glass-min, and the gutter's --dial-aspect or label positions are not updated; why_new=nothing tied the CSS to Dial.tsx geometry (the compact layout added a second one); seam=none; no_claim=real layout (jsdom has no container queries; source text only)
   it("sizes the dial gutter and places its labels from Dial.tsx's geometry", () => {
     const dial = readFileSync(new URL("../components/Dial.tsx", import.meta.url), "utf8").replace(/\s+/g, "");

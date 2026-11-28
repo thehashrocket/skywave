@@ -3,6 +3,7 @@
   --enamel-deep: #0b1e24;
   --enamel-raised: #1b3f4a;
   --rule: #2b5560;
+  --rule-strong: #5a919b; /* control boundaries (fields, idle segments): >= 3:1 on every enamel tone, where --rule is 1.4–2.1:1 */
   --glass: #d4e6d8;
   --glass-shade: #b9d3c2;
   --ink: #1b2a2f;
@@ -15,7 +16,7 @@
   --lamp: #f2c55c;
   --danger: #f08a7e;
   /* Shades with one job each. */
-  --brass-bright: #d3ad5e; /* Listen under the pointer */
+  --brass-bright: #d3ad5e; /* Listen under the pointer; outline-button text (--brass is 4.3:1 on --enamel-raised, this is 5.34:1) */
   --brass-ink: #6b5226; /* broadcast band labels on the dial glass */
   --ham-ink: #265a56; /* ham band labels on the dial glass: --ham is 3.65:1 at the glass's darker foot, this is 4.9:1 */
   --meter-mid: #6fb29e; /* the S-meter gradient's midpoint */
@@ -303,7 +304,7 @@ html,
   font: inherit;
   color: var(--text);
   background: var(--enamel-deep);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--rule-strong);
   border-radius: var(--radius-panel);
   padding: 8px 10px;
   min-width: 0;
@@ -335,7 +336,7 @@ html,
 
 .power-on {
   background: transparent;
-  color: var(--brass);
+  color: var(--brass-bright);
 }
 
 .power-on:hover {
@@ -482,7 +483,7 @@ html,
   border-radius: var(--radius-knob);
   border: 1px solid var(--brass);
   background: transparent;
-  color: var(--brass);
+  color: var(--brass-bright);
   cursor: pointer;
 }
 
@@ -1101,7 +1102,7 @@ html,
   font-weight: 600;
   font-size: 1.1rem;
   color: var(--muted);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--rule-strong);
   margin-left: -1px;
 }
 
@@ -1207,7 +1208,7 @@ html:has(.tuning-bar:not([hidden])) {
   padding: 6px 11px;
   color: var(--muted);
   background: transparent;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--rule-strong);
   margin-left: -1px;
   cursor: pointer;
 }
@@ -1611,7 +1612,7 @@ html:has(.tuning-bar:not([hidden])) {
   font-size: 0.85rem;
   color: var(--muted);
   background: none;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--rule-strong);
   margin-left: -1px;
   cursor: pointer;
 }
@@ -2089,7 +2090,7 @@ html:has(.tuning-bar:not([hidden])) {
   border-radius: var(--radius-knob);
   border: 1px solid var(--brass);
   background: transparent;
-  color: var(--brass);
+  color: var(--brass-bright);
   cursor: pointer;
 }
 
