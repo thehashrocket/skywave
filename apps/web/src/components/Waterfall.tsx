@@ -223,9 +223,11 @@ export function Waterfall({ mode, sampleRate, active, expanded, connecting, subs
         <div className="waterfall-center" />
         {!(active && expanded) && (
           <p className="waterfall-empty">
-            {expanded
-              ? "The waterfall fills in once you're listening."
-              : connecting || active
+            {expanded ? (
+              // Over the picture already drawn, so on a chip like the wide view's notes. "Nothing is
+              // playing" is true after Stop and after an error alike, so the line needn't know which (#178).
+              <span>{connecting ? "Tuning in…" : "Nothing is playing. Press Listen to resume."}</span>
+            ) : connecting || active
                 ? "Tuning in…"
                 : "A blank receiver picks the best one."}
           </p>

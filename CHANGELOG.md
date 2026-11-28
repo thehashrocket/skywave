@@ -2,6 +2,12 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.64.14.0] - 2026-11-28 ([#178](https://github.com/thehashrocket/skywave/issues/178))
+
+### Fixed
+- **After Stop, the open waterfall says nothing is playing instead of promising to fill in.** It used to read "The waterfall fills in once you're listening." over a picture that had already filled, in faint text that was hard to read on it. It now reads "Nothing is playing. Press Listen to resume." (true after Stop and after an error alike), or "Tuning in…" while a receiver connects, on the same dark chip as the wide waterfall's notes. The short strip before your first Listen is unchanged.
+- **Decoded RTTY text is readable.** The decode panel's "RTTY" title and the decoded text were dark ink on the page's dark teal, about 1.1:1. They now use the page's normal light text.
+
 ## [0.64.13.0] - 2026-11-28 ([#61](https://github.com/thehashrocket/skywave/issues/61))
 
 ### Changed
