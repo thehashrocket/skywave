@@ -326,15 +326,17 @@ class Slots:
     def refusal(self, receiver: Hashable, owner: Hashable | None) -> str | None:
         """Why a new slot on `receiver` for `owner` would be refused, or None.
 
-        "receiver", "owner" or "full" (the overall limit), checked in that
-        order: a full receiver is the one answer another receiver can fix.
+        "full" (the overall limit), "receiver" or "owner", checked in that
+        order: when Skywave is full no other receiver would help, so that is
+        the answer (and the receiver log counts it as skywave_full, #146);
+        otherwise a full receiver is the one answer another receiver can fix.
         """
+        if self.active >= self.limit:
+            return "full"
         if self.receiver_full(receiver):
             return "receiver"
         if owner is not None and self.per_owner is not None and self._owners.get(owner, 0) >= self.per_owner:
             return "owner"
-        if self.active >= self.limit:
-            return "full"
         return None
 
     def receiver_full(self, receiver: Hashable) -> bool:

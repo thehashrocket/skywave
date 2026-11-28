@@ -43,7 +43,7 @@
 ### Receiver log: review notes from #144
 
 **What:** Notes the #144 reviews left open, all about the log or analytics, none about audio:
-- Kiwi errors (a fast `unreachable`) and `listening` lines aren't throttled, and the refusal throttle is per connection, so a page looping tunes or reconnecting can rotate the 25 MB history out. A service-wide limit per (host, port, code) would close it.
+- Kiwi errors (a fast `unreachable`) and `listening` lines aren't throttled, and the refusal throttle is per connection, so a page looping tunes or reconnecting can rotate the 25 MB history out. Since #146 that includes `skywave_full`: while Skywave is full, every open connection can write one line per 10 s. A service-wide limit per (host, port, code) would close it.
 - `close()` skips `flush_refused_counts()` if `stop()` raises: wrap it in `try`/`finally`.
 - Once the file is attached, a failing disk prints a traceback per line from the writer thread and the lines go nowhere; shutdown can wait on a stalled disk while the queue drains.
 - A `skywave_cap` met on Pick best's way back isn't counted in `radio_refused` (a `skywave_full` there is, since #146); a run restored from the back-forward cache never reports its real end (pagehide already reported it).
