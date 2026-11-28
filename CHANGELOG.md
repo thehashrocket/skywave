@@ -2,7 +2,7 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
-## [Unreleased]
+## [0.64.11.0] - 2026-11-28 ([#177](https://github.com/thehashrocket/skywave/issues/177))
 
 ### Added
 - **The first screen says what skywave is and what Listen will play.** Until the first sound of a visit, a line under the header reads "Shortwave and ham radio through volunteer receivers around the world." With the dial on 10,000 kHz AM, where it starts, it adds "Press Listen: the dial is on 10,000 kHz, where the WWV time signal usually is." On any other frequency or mode it says "Press Listen to hear this frequency." It shows on every visit, not only the first, and goes away once audio arrives; Stop doesn't bring it back. Screen readers read it in place, and it isn't announced as you tune. Its height stays the same whichever sentence shows, so on a phone the dial doesn't move when you tune off 10,000 kHz or when your saved frequency loads.
