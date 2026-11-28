@@ -79,6 +79,77 @@ describe("globals.css", () => {
     expect(contrast(token("--ham"), token("--glass-shade"))).toBeLessThan(4.5);
   });
 
+  // Value: protects=brass outline buttons (Pick best, Stop, Save) keep their text at WCAG AA (4.5:1) on the page and a raised panel, at rest and over their 12% brass hover tint; fails_when=an outline button's color goes back to --brass, a hover tint gets stronger, or --enamel-raised or a brass token is retuned so either case drops below 4.5:1 (hover on a panel is 4.51:1 today); why_new=design critique 2026-11-27 measured --brass on --enamel-raised at 4.3:1, and no test read the hover tints; seam=the filled Listen button uses --ink on --brass and is not covered here; no_claim=reads token values and rules (alpha-blended by hand), not rendered pixels or the disabled state
+  it("keeps outline-button text at WCAG AA contrast on the page and on panels, hovered too", () => {
+    const hex = (rgb: number[]) => `#${rgb.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`;
+    const channels = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+    for (const [selector, hover] of [
+      [".pick-best", ".pick-best:hover:not(:disabled)"],
+      [".power-on", ".power-on:hover"],
+      [".presets-save button", ".presets-save button:hover:not(:disabled)"],
+    ] as const) {
+      const color = /(?:^|[\s;])color:\s*var\((--[\w-]+)\)/.exec(ruleBody(selector))?.[1];
+      expect(color, `${selector} color`).toBeDefined();
+      const tint = /background:\s*rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/.exec(ruleBody(hover));
+      expect(tint, `${hover} tint`).not.toBeNull();
+      const [r, g, b, a] = tint!.slice(1).map(Number) as [number, number, number, number];
+      for (const bg of ["--enamel", "--enamel-raised"]) {
+        expect(contrast(token(color!), token(bg)), `${selector} ${color} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+        const hovered = hex(channels(token(bg)).map((v, i) => v * (1 - a) + [r, g, b][i]! * a));
+        expect(contrast(token(color!), hovered), `${hover} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+    // The bar bites: plain --brass, the buttons' border, is under AA on a raised panel.
+    expect(contrast(token("--brass"), token("--enamel-raised"))).toBeLessThan(4.5);
+  });
+
+  // Value: protects=text fields, selects and idle mode segments have a boundary of at least 3:1 (WCAG 1.4.11) against the page, a raised panel and their own deep fill, and no deep-fill field is left on --rule; fails_when=a listed rule goes back to --rule or a later rule overrides it with --rule, a new deep-fill well ships with a --rule border, or --rule-strong drops under 3:1 on any enamel tone; why_new=design critique 2026-11-27 measured --rule at 1.38:1 to 2.10:1, and review found .reception-comment missed by a selector list; seam=none; no_claim=does not cover focus rings (--lamp) or wells with no deep fill
+  it("gives fields, selects and idle mode segments a 3:1 boundary", () => {
+    const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const rules = [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, sel, body]) => ({ sels: sel!.split(",").map((s) => s.trim()), body: body! }));
+    const controls = [".field input", ".field select", ".select-button", ".presets-save input", ".reception-comment", ".mode span", ".span-step", ".tuning-bar-mode"];
+    for (const selector of controls) {
+      expect(declares(text, selector, /border:\s*1px solid var\(--rule-strong\)\s*;/), `${selector} border`).toBe(true);
+      const undone = rules.some((r) => r.sels.includes(selector) && /border(?:-color)?:[^;]*var\(--rule\)/.test(r.body));
+      expect(undone, `${selector} set back to --rule by another rule`).toBe(false);
+    }
+    // Any deep-fill well with a 1px --rule border is a missed field, except these non-field surfaces (owner scope, #174).
+    const notFields = new Set([".receiver-switch", ".chip", ".analytics-consent"]);
+    const missed = rules
+      .filter((r) => /background:\s*var\(--enamel-deep\)/.test(r.body) && /border:\s*1px solid var\(--rule\)/.test(r.body))
+      .flatMap((r) => r.sels)
+      .filter((s) => !notFields.has(s));
+    expect(missed, "deep-fill wells still on --rule").toEqual([]);
+    for (const bg of ["--enamel", "--enamel-raised", "--enamel-deep"]) {
+      expect(contrast(token("--rule-strong"), token(bg)), `--rule-strong on ${bg}`).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  // Value: protects=a pressed mode, tuning-bar or span segment keeps its whole glass edge over the next segment's --rule-strong border (they overlap by 1px), and a mode's hidden radio stays the click target above its lifted span; fails_when=a pressed rule loses its position or z-index, or the radio's z-index drops to or below the span's; why_new=#174 brightened the idle border into a visible seam and owner D5 (2026-11-28) chose to lift the pressed segment; seam=none; no_claim=painting order in a real browser (source text only)
+  it("lifts a pressed segment over its neighbour's border, under the mode radio", () => {
+    const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const z = (body: string) => Number(/z-index:\s*(\d+)\s*;/.exec(body)?.[1] ?? NaN);
+    for (const selector of [".mode input:checked + span", '.tuning-bar-mode[aria-pressed="true"]', '.span-step[aria-pressed="true"]']) {
+      expect(declares(text, selector, /position:\s*relative\s*;[\s\S]*z-index:\s*1\s*;/), `${selector} lifted`).toBe(true);
+    }
+    expect(z(ruleBody(".mode input")), ".mode input above the lifted span").toBeGreaterThan(1);
+  });
+
+  // Value: protects=a keyboard-focused tuning-bar or span segment shows its whole lamp focus ring beside the lifted pressed one (seen covered on one side in a browser, 2026-11-28); fails_when=the :focus-visible lift is dropped or its z-index falls to or below the pressed segment's; why_new=owner D6 after the read-only review found the D5 lift hid one side of the ring; seam=none; no_claim=painting order in a real browser (source text only; checked by hand once)
+  it("lifts a focused segment above the pressed one so its focus ring shows whole", () => {
+    const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const selector of [".tuning-bar-mode:focus-visible", ".span-step:focus-visible"]) {
+      expect(declares(text, selector, /position:\s*relative\s*;[\s\S]*z-index:\s*([2-9]|\d{2,})\s*;/), `${selector} above the pressed segment`).toBe(true);
+    }
+  });
+
+  // Value: protects=an invalid call sign marks its field with a 2px lamp edge (border plus inset ring), clearly heavier than the 1px --rule-strong at rest; fails_when=the inset ring is dropped or recoloured, leaving a 1px lamp border only 2.2:1 from the resting border; why_new=#174 brightened the resting border and owner D1 (2026-11-28) chose the ring; seam=none; no_claim=IdentField's error line and aria-invalid wiring (IdentField tests); not rendered pixels
+  it("gives an invalid call-sign field a 2px lamp edge", () => {
+    const body = ruleBody('.ident-field input[aria-invalid="true"]');
+    expect(body).toMatch(/border-color:\s*var\(--lamp\)\s*;/);
+    expect(body).toMatch(/box-shadow:\s*inset 0 0 0 1px var\(--lamp\)\s*;/);
+  });
+
   // Value: protects=the gutter is as tall as the glass and its row labels sit on their band rows, for the full dial and the compact one; fails_when=a Dial.tsx layout's H or band rows change, or .dial-glass min-width stops reading --glass-min, and the gutter's --dial-aspect or label positions are not updated; why_new=nothing tied the CSS to Dial.tsx geometry (the compact layout added a second one); seam=none; no_claim=real layout (jsdom has no container queries; source text only)
   it("sizes the dial gutter and places its labels from Dial.tsx's geometry", () => {
     const dial = readFileSync(new URL("../components/Dial.tsx", import.meta.url), "utf8").replace(/\s+/g, "");
