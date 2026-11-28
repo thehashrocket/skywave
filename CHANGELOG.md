@@ -12,6 +12,11 @@ Notable changes to skywave, newest first. Versions come from `VERSION` (four par
 ### Changed
 - **The report says exactly which 24 hours it covers, and labels its partial hours.** A new `window=` line gives the start and end, since late runs mean two neighbouring reports can overlap or leave a gap. In the per-hour tables (sessions, most listeners, host CPU), the first and last hours read "(from HH:MM)" and "(so far, to HH:MM)" so a partial hour doesn't look quiet, and an empty table says so instead of going blank. These change what the numbers mean, so compare only reports from after this release is deployed.
 
+## [0.64.15.0] - 2026-11-28 ([#169](https://github.com/thehashrocket/skywave/issues/169))
+
+### Added
+- **The receiver-ranking research counts a "WWV or WWVH?" answer once.** Since the page started asking which of the two stations sharing a frequency you heard, each answer is stored as one row per station. The research's queries counted rows, so every such answer counted twice, its Pick best details twice, and a "Didn't open" twice, doubling receiver failures. A new shared set of views, used by every research query, gives one row per answer for answer counts, picks and outcomes, naming the stations it asked about. For counts by station it marks a station that wasn't heard while the other one was as "not heard over the other", apart from a plain "not heard", since a station drowned out by the other may still have been on the air. That is the same rule the app's weekly report already uses, and a test keeps the two in step.
+
 ## [0.64.14.0] - 2026-11-28 ([#178](https://github.com/thehashrocket/skywave/issues/178))
 
 ### Fixed
