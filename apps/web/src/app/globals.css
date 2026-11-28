@@ -429,7 +429,7 @@ html,
   font: inherit;
   color: var(--text);
   background: var(--enamel-deep);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--rule-strong);
   border-radius: var(--radius-panel);
   padding: 2px 8px;
   width: min(320px, 100%);
@@ -3222,6 +3222,8 @@ body:has(> .analytics-consent) {
   color: var(--muted);
 }
 
+/* Invalid reads as a 2px lamp edge (border plus an inset ring, so nothing moves): against the 1px --rule-strong at rest, a lamp border alone is only 2.2:1. */
 .ident-field input[aria-invalid="true"] {
   border-color: var(--lamp);
+  box-shadow: inset 0 0 0 1px var(--lamp);
 }
