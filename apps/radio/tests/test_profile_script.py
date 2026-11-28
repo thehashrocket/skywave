@@ -39,15 +39,23 @@ case "$1 $2" in
     [[ -n "${FAKE_STATS_FAIL:-}" ]] && exit 1
     # FAKE_STATS_HANG_SAMPLING: a stalled Docker daemon once py-spy samples.
     [[ -n "${FAKE_STATS_HANG_SAMPLING:-}" && -e "$FAKE_DIR/spy-started" ]] && exec /bin/sleep 30
-    echo "radioid 30.00%"; echo "caddyid 10.00%" ;;
+    # FAKE_RADIO_CPU_SAMPLING: the radio's CPU % once py-spy samples (30 before).
+    if [[ -n "${FAKE_RADIO_CPU_SAMPLING:-}" && -e "$FAKE_DIR/spy-started" ]]; then
+      echo "radioid ${FAKE_RADIO_CPU_SAMPLING}%"
+    else
+      echo "radioid 30.00%"
+    fi
+    echo "caddyid 10.00%" ;;
   *) echo "unexpected docker call: $*" >&2; exit 9 ;;
 esac
 """
 
 # Collapsed stacks as py-spy --threads --format raw writes them:
 # "thread;frame;...;leaf count". recv appears at two lines; the noise
-# thread's _work recurses.
-RAW = textwrap.dedent(
+# thread's _work recurses. The 100 work samples come first; then samples of
+# threads that were only waiting, which --nonblocking keeps: 300 on a queue,
+# 20 in a selector, and 100 of the uvloop event loop with no Python above it.
+WORK_RAW = textwrap.dedent(
     """\
     thread (0x1);main (server.py:1);recv (kiwi.py:454);parse_snd (kiwi.py:177) 30
     thread (0x1);main (server.py:1);recv (kiwi.py:454) 6
@@ -56,6 +64,14 @@ RAW = textwrap.dedent(
     thread (0x2);_work (noise.py:310);_work (noise.py:320);execute (sqlite) 10
     """
 )
+WAITING_RAW = textwrap.dedent(
+    """\
+    thread (0x3);Thread._bootstrap (threading.py:1012);Queue.get (queue.py:180);Condition.wait (threading.py:359) 300
+    thread (0x4);BaseEventLoop._run_once (asyncio/base_events.py:1990);_PollLikeSelector.select (selectors.py:452) 20
+    thread (0x1);<module> (uvicorn:8);Runner.run (asyncio/runners.py:118) 100
+    """
+)
+RAW = WORK_RAW + WAITING_RAW
 
 # Prints py-spy's "Sampling process" line once it starts sampling, like the
 # real one. FAKE_SPY_WARN: also says it fell behind, as the real one does on stderr.
@@ -77,8 +93,10 @@ if [[ -n "${FAKE_SPY_LATE:-}" ]]; then
   /bin/sleep 1; grep -c $'\\tprofile\\t' "$FAKE_DIR/out/samples.tsv" >"$FAKE_DIR/rows-at-sampling"
 fi
 # FAKE_SPY_QUIET: never prints the "Sampling process" line (a py-spy whose output changed).
-[[ -n "${FAKE_SPY_QUIET:-}" ]] || echo "py-spy> Sampling process 20 times a second. Press Control-C to exit."
+# The marker comes first, so a fake that changes once sampling starts already has
+# when the script, seeing the line below, takes its first profile tick.
 : >"$FAKE_DIR/spy-started"
+[[ -n "${FAKE_SPY_QUIET:-}" ]] || echo "py-spy> Sampling process 20 times a second. Press Control-C to exit."
 if [[ -n "${FAKE_SPY_HANG:-}" ]]; then echo $$ >"$FAKE_DIR/spy-pid"; exec /bin/sleep 120; fi
 # FAKE_SPY_BEHIND_HANG: keeps falling further behind, saying so again and again.
 if [[ -n "${FAKE_SPY_BEHIND_HANG:-}" ]]; then
@@ -217,7 +235,7 @@ def run_profile(tmp_path: Path, *args: str, spy: bool = True, **fake_env: str):
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
 
-# Value: protects=the Step 0 numbers for issue #153: steal and CPU averages per window (vmstat's since-boot row dropped), listeners from /healthz, radio/caddy CPU, rows per phase, busy share, self time per function and inclusive time per function and thread, and the --nonblocking accuracy caveat; fails_when=the caveat is dropped, the since-boot row is averaged in, columns are misread, self time counts outer frames, a frame is split by line, or recursion is counted twice; why_new=new script; seam=fake docker/py-spy/vmstat/curl/free/sleep on PATH; no_claim=real py-spy attaching across the container boundary, real vmstat column order, tick timing (sleep is faked)
+# Value: protects=the Step 0 numbers for issue #153: steal and CPU averages per window (vmstat's since-boot row dropped), listeners from /healthz, radio/caddy CPU, rows per phase, waiting / event-loop / Python-work split with work as a share of one core and its gap to the measured radio_cpu (uvloop's C work, which looks like idle), self time per function and inclusive time per function and thread over the work samples only, and the --nonblocking accuracy caveat; fails_when=the caveat is dropped, the since-boot row is averaged in, columns are misread, waiting samples (queue waits, select, a bare Runner.run) are ranked as work again, the gap line is dropped or misreads radio_cpu, self time counts outer frames, a frame is split by line, or recursion is counted twice; why_new=new script; seam=fake docker/py-spy/vmstat/curl/free/sleep on PATH; no_claim=real py-spy attaching across the container boundary, real vmstat column order, tick timing (sleep is faked)
 def test_summary(tmp_path: Path):
     result, out = run_profile(tmp_path, "30")
     assert result.returncode == 0, result.stderr
@@ -228,7 +246,13 @@ def test_summary(tmp_path: Path):
     assert "the host was" not in summary
     assert "aborted" not in summary
     assert "py-spy warnings" not in summary
-    assert "100 non-idle samples of about 600 per thread (17% busy, all threads)" in summary
+    assert "== py-spy: 520 samples, about 600 per thread" in summary
+    assert "       320  ( 61.5%)  waiting: blocked on a queue, lock or select" in summary
+    assert "       100  ( 19.2%)  event loop in C: uvloop waiting" in summary
+    assert "       100  ( 19.2%)  Python work: about 17% of one core" in summary
+    # Fake docker stats read the radio at 30%: 30 - 16.7 is C time no Python sample shows.
+    assert "radio_cpu over the same window: 30.0%, so about 13% of one core went to C code" in summary
+    assert (out / "radio-work.raw").read_text() == WORK_RAW
     # --nonblocking samples can be garbled, so the summary says how far to trust close entries.
     assert "pick a hot\n  spot only if it clearly leads" in summary
     self_time = summary.split("by self time")[1].split("== top 25")[0]
@@ -236,6 +260,8 @@ def test_summary(tmp_path: Path):
     assert "  30.0%  parse_snd (kiwi.py)" in self_time
     assert "  10.0%  recv (kiwi.py)" in self_time  # 6 + 4 samples at two lines, one row
     assert "main (server.py)" not in self_time  # never innermost
+    for waiting in ("Condition.wait", "select (selectors.py)", "Runner.run"):
+        assert waiting not in summary.split("by self time")[1]  # neither table
     inclusive = summary.split("by inclusive time")[1]
     for line in (
         "90.0%  thread (0x1)",
@@ -248,6 +274,77 @@ def test_summary(tmp_path: Path):
         assert f"  {line}" in inclusive
     rows = (out / "samples.tsv").read_text().splitlines()
     assert len(rows) == 1 + 60 // 5 + 30 // 5  # header, baseline, profile
+
+
+# Value: protects=a profile of a quiet radio (every sample waiting, as with no listeners) still gets its whole summary, saying there is nothing to rank, instead of empty tables or an awk divide-by-zero ending the summary early; fails_when=the empty-work check is removed or the tables divide by a zero work count; why_new=the waiting/work split can leave no work samples, which the old summary never could; seam=fake py-spy writing only waiting samples; no_claim=how often a real run has no work at all
+def test_a_profile_with_no_work_says_so(tmp_path: Path):
+    cmd, env = setup(tmp_path)
+    (tmp_path / "raw").write_text(WAITING_RAW)
+    result = subprocess.run([*cmd, "30"], capture_output=True, text=True, env=env, timeout=30)
+    assert result.returncode == 0, result.stderr
+    summary = (tmp_path / "out" / "summary.txt").read_text()
+    assert "         0  (  0.0%)  Python work: about 0% of one core" in summary
+    assert "== no Python work samples, so nothing to rank (was anyone listening?)" in summary
+    assert "by self time" not in summary
+    assert "saved in" in result.stdout
+
+
+# Value: protects=each waiting pattern is sorted out by the innermost frame only: a thread join (Thread.join on Python 3.13, the radio's image, and Thread._wait_for_tstate_lock before), a bare selector select and a dns thread stuck in hostguard's _getaddrinfo are waiting, while Python work running under the event loop (Runner.run as an outer frame) or in threading.py's other functions is still ranked as work; fails_when=the Thread.join, _wait_for_tstate_lock or _getaddrinfo alternative or the bare-select branch is dropped, the Runner.run or threading.py checks match any frame or any threading.py function instead of the exact innermost one (which would drop every event-loop callback from the tables); why_new=test_summary's fixture has only Condition.wait, a dotted select and a bare Runner.run, and none of its work samples run under Runner.run as real event-loop work does; seam=fake py-spy on PATH; no_claim=py-spy's real frame names on every Python version
+def test_work_under_the_event_loop_is_still_work(tmp_path: Path):
+    cmd, env = setup(tmp_path)
+    work = textwrap.dedent(
+        """\
+        thread (0x1);<module> (uvicorn:8);Runner.run (asyncio/runners.py:118);on_message (session.py:90) 7
+        thread (0x7);Thread._bootstrap (threading.py:1012);Condition.notify (threading.py:400) 3
+        """
+    )
+    waiting = textwrap.dedent(
+        """\
+        thread (0x5);Thread._bootstrap (threading.py:1012);Thread.join (threading.py:1119);Thread._wait_for_tstate_lock (threading.py:1139) 40
+        thread (0x6);select (selectors.py:469) 5
+        thread (0x1);<module> (uvicorn:8);Runner.run (asyncio/runners.py:118) 45
+        thread (0x8): dns;Thread.run (threading.py:992);_run_lookup (skywave_radio/hostguard.py:120);_getaddrinfo (skywave_radio/hostguard.py:113) 20
+        thread (0x9);Thread._bootstrap (threading.py:1012);Thread.join (threading.py:1094) 30
+        """
+    )
+    (tmp_path / "raw").write_text(work + waiting)
+    result = subprocess.run([*cmd, "30"], capture_output=True, text=True, env=env, timeout=30)
+    assert result.returncode == 0, result.stderr
+    out = tmp_path / "out"
+    summary = (out / "summary.txt").read_text()
+    assert "        95  ( 63.3%)  waiting: blocked on a queue, lock or select" in summary
+    assert "        45  ( 30.0%)  event loop in C" in summary
+    assert "        10  (  6.7%)  Python work: about 2% of one core" in summary
+    assert "passes one core" not in summary
+    assert (out / "radio-work.raw").read_text() == work
+    self_time = summary.split("by self time")[1].split("== top 25")[0]
+    assert "  70.0%  on_message (session.py)" in self_time
+    assert "  30.0%  Condition.notify (threading.py)" in self_time
+
+
+# Value: protects=a summary whose Python work passes one core (impossible for one process's GIL) warns that some of it is threads blocked in C or waiting for the GIL, so the C share reads low; fails_when=the warning is dropped or its busy > want test is inverted; why_new=every other fixture keeps Python work under one core; seam=fake py-spy on PATH; no_claim=which real threads block in C (only the patterns profile.sh knows are sorted out)
+def test_python_work_past_one_core_is_flagged(tmp_path: Path):
+    cmd, env = setup(tmp_path)
+    (tmp_path / "raw").write_text(
+        "thread (0x1);main (server.py:1);send (session.py:577) 400\n"
+        "thread (0x2);stuck (resolver.py:9) 300\n"
+    )
+    result = subprocess.run([*cmd, "30"], capture_output=True, text=True, env=env, timeout=30)
+    assert result.returncode == 0, result.stderr
+    summary = (tmp_path / "out" / "summary.txt").read_text()
+    assert "       700  (100.0%)  Python work: about 117% of one core" in summary
+    assert "warning: Python work passes one core, so some of it is threads blocked in C or waiting\n  for the GIL" in summary
+
+
+# Value: protects=the gap line measures Python work against the radio's CPU during the profile window only, and never prints a negative C share when Python work reads higher than docker stats (both are estimates); fails_when=the radio_cpu average takes in baseline rows, or the clamp at 0 is dropped; why_new=the other fakes read the radio at 30% in both windows and well above its Python work, so neither branch shows; seam=fake docker stats reading a lower radio CPU once py-spy samples; no_claim=how far real docker stats and py-spy disagree
+def test_gap_uses_the_profile_window_and_never_goes_negative(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30", FAKE_RADIO_CPU_SAMPLING="10.00")
+    assert result.returncode == 0, result.stderr
+    summary = (out / "summary.txt").read_text()
+    assert "listeners=7.0  radio_cpu=30.0%  caddy_cpu=10.0%  (12 rows)" in summary
+    assert "listeners=7.0  radio_cpu=10.0%  caddy_cpu=10.0%  (6 rows)" in summary
+    # Python work is 100 of 600 samples (17%), above the 10% docker stats read.
+    assert "radio_cpu over the same window: 10.0%, so about 0% of one core went to C code" in summary
 
 
 # Value: protects=the profiler settings the owner approved for production (--nonblocking and never --native, so the radio is never paused; per function, per thread, 20 Hz, the requested window, the radio's host PID) and that py-spy starts only after the baseline window, with vmstat covering each window; fails_when=a flag is dropped, the rate or duration drifts, py-spy overlaps the baseline, or a vmstat count drifts from its window; why_new=new script; seam=fake py-spy and vmstat on PATH; no_claim=py-spy's own flag parsing
@@ -366,7 +463,7 @@ def test_no_address_is_not_profiled_without_force(tmp_path: Path):
     assert "the /healthz watchdog that stops py-spy" in (out / "summary.txt").read_text()
 
 
-# Value: protects=a forced run survives a /healthz that doesn't answer, failing docker stats and no radio address: those columns read "-", the profile still finishes, and the summary says the run had no watchdog; fails_when=a "|| true" is dropped under set -euo pipefail, or the unguarded note goes; why_new=test_summary only feeds healthy fakes; seam=fake docker/curl on PATH; no_claim=real /healthz or docker stats output formats
+# Value: protects=a forced run survives a /healthz that doesn't answer, failing docker stats and no radio address: those columns read "-", the profile still finishes, the summary says the run had no watchdog, and the event loop's C share is called unknown rather than measured against 0%; fails_when=a "|| true" is dropped under set -euo pipefail, the unguarded note goes, or a missing radio_cpu reads as 0; why_new=test_summary only feeds healthy fakes; seam=fake docker/curl on PATH; no_claim=real /healthz or docker stats output formats
 def test_failed_samples_degrade_to_dashes(tmp_path: Path):
     result, out = run_profile(tmp_path, "--force", "30", FAKE_CURL_FAIL="1", FAKE_STATS_FAIL="1", FAKE_NO_IP="1")
     assert result.returncode == 0, result.stderr
@@ -375,6 +472,8 @@ def test_failed_samples_degrade_to_dashes(tmp_path: Path):
     assert summary.count("listeners=-  radio_cpu=-%  caddy_cpu=-%") == 2
     assert "unguarded run" in summary
     assert "by self time" in summary  # the profile itself still ran
+    # No radio_cpu to compare with: says so, not a gap against 0%.
+    assert "radio_cpu wasn't read during the profile, so the event loop's C share is unknown." in summary
     rows = (out / "samples.tsv").read_text().splitlines()
     assert len(rows) == 1 + 60 // 5 + 30 // 5
 
@@ -491,13 +590,15 @@ def test_never_signals_the_radio(tmp_path: Path, fake_env: dict[str, str], abort
         radio.wait()
 
 
-# Value: protects=the radio gets its core back when py-spy starves it: exactly two /healthz probes in a row without an answer, 1 s apart, stop py-spy; fails_when=the watchdog is removed, needs more misses, or probes less often; why_new=owner-approved watchdog; trigger and cadence pinned after the specialist showed 6 misses still passed; seam=fake py-spy that hangs, fake curl that fails once sampling starts and logs failed probes; no_claim=that real /healthz misses mean py-spy is the cause
+# Value: protects=the radio gets its core back when py-spy starves it: exactly two /healthz probes in a row without an answer, 1 s apart, stop py-spy, and the aborted summary says its C share reads high and isn't grounds for a --native run; fails_when=the watchdog is removed, needs more misses, or probes less often, or the abort caveat is dropped; why_new=owner-approved watchdog; trigger and cadence pinned after the specialist showed 6 misses still passed; seam=fake py-spy that hangs, fake curl that fails once sampling starts and logs failed probes; no_claim=that real /healthz misses mean py-spy is the cause
 @pytest.mark.timeout(30)
 def test_watchdog_stops_py_spy_when_the_radio_stops_answering(tmp_path: Path):
     result, summary = _run_and_reap_spy(tmp_path, ["30"], 25, FAKE_SPY_HANG="1", FAKE_CURL_FAIL_ONCE_SAMPLING="1")
     assert result.returncode == 0, result.stderr
     assert "== aborted: the radio stopped answering /healthz" in summary
     assert "reads low" in summary
+    # An aborted window overstates the C share, so the summary says not to act on it.
+    assert "don't decide on a --native run from this one" in summary
     # Exactly two failed probes, then it acted; probes 1 s apart.
     assert len((tmp_path / "probes-failed").read_text().splitlines()) == 2
     assert "1" in (tmp_path / "sleeps").read_text().split()

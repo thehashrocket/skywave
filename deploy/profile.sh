@@ -36,8 +36,9 @@
 # This script installs nothing and changes nothing on the box. Everything goes
 # to one new folder ($PROFILE_OUT, which must not exist yet, or by default a
 # fresh /var/tmp/skywave-profile-<UTC time>-XXXXXX): summary.txt, samples.tsv,
-# vmstat-*.txt and radio.raw (collapsed stacks: open it at
-# https://www.speedscope.app for the flame graph).
+# vmstat-*.txt, radio.raw (collapsed stacks: open it at
+# https://www.speedscope.app for the flame graph) and radio-work.raw (the same
+# without the samples of threads that were only waiting).
 set -euo pipefail
 
 BASELINE_S=60
@@ -379,8 +380,9 @@ main() {
     echo
     if [[ -s "$out/aborted" ]]; then
       echo "== aborted: $(cat "$out/aborted")"
-      echo "  The busy % below is against the whole window, so it reads low, and the"
-      echo "  profile averages above include time after py-spy stopped."
+      echo "  Python work's share of one core below is against the whole window, so it"
+      echo "  reads low, and the profile averages above include time after py-spy stopped,"
+      echo "  so the C share below reads high: don't decide on a --native run from this one."
       echo
     fi
     if ((spy != 0)) || [[ ! -s "$out/radio.raw" ]]; then
@@ -409,31 +411,81 @@ main() {
       fi
       # Collapsed stacks: "frame;frame;...;leaf count". Frames are keyed
       # without their line number, and are Python-level (--nonblocking): time
-      # inside C code is charged to the Python line that called it. py-spy
-      # leaves out idle samples, so the count against duration x rate says how
-      # busy the process was, summed over its threads (it can pass 100%).
-      # Shares below are of those non-idle samples: a thread's share times that
-      # busy % is its share of one core, which for the event loop should
-      # roughly match the baseline radio_cpu.
-      awk -v want=$((seconds * RATE_HZ)) '{ n = $NF; total += n }
-           END { printf "== py-spy: %d non-idle samples of about %d per thread (%.0f%% busy, all threads)\n", total, want, 100 * total / want }' "$out/radio.raw"
+      # inside C code is charged to the Python line that called it.
+      # --nonblocking also keeps samples of threads that are only waiting
+      # (py-spy can't check a thread's state without pausing it; the first
+      # production run, 2026-11-28, was ~95% such samples), so each sample is
+      # sorted by its innermost frame:
+      #   waiting:     blocked on a queue, lock or join (the logging and
+      #                noise-store threads, mostly; a join is Thread.join on
+      #                Python 3.13, _wait_for_tstate_lock before), in a
+      #                selector's select, or a "dns" thread in getaddrinfo
+      #                (hostguard.py's _getaddrinfo, which can hang for long)
+      #   event loop:  Runner.run with nothing above it. The loop is uvloop
+      #                (uvicorn[standard]), C code, so this is the loop waiting
+      #                in epoll, or its own C work (socket reads, timers) before
+      #                it calls back into Python. Not all idle, so shown apart.
+      #   Python work: everything else, written to radio-work.raw, and the only
+      #                samples the tables rank. Against duration x rate it is
+      #                about the share of one core spent in Python (and the C
+      #                it calls), to compare with radio_cpu.
+      # The radio's measured CPU over the profile window (docker stats, every
+      # thread, C included), empty if never read: the yardstick for Python work.
+      local radio_cpu
+      radio_cpu=$(awk -F'\t' '$2 == "profile" && $4 != "-" { r += $4; n++ }
+                              END { if (n) printf "%.1f", r / n }' "$out/samples.tsv")
+      awk -v want=$((seconds * RATE_HZ)) -v work="$out/radio-work.raw" -v cpu="$radio_cpu" '
+           BEGIN { printf "" >work }
+           { n = $NF; total += n; line = $0; sub(/ [0-9]+$/, "", line)
+             k = split(line, f, ";"); leaf = f[k]; sub(/:[0-9]+\)$/, ")", leaf)
+             if (leaf ~ /^(Condition\.wait|Thread\.join|Thread\._wait_for_tstate_lock) \(threading\.py\)$/ ||
+                 leaf ~ /(^|\.)select \(selectors\.py\)$/ ||
+                 leaf ~ /^_getaddrinfo \((.*\/)?hostguard\.py\)$/) waiting += n
+             else if (leaf == "Runner.run (asyncio/runners.py)") loop += n
+             else { busy += n; print >work } }
+           END {
+             printf "== py-spy: %d samples, about %d per thread\n", total, want
+             printf "  --nonblocking keeps samples of threads that are only waiting, so they are sorted out first:\n"
+             printf "  %8d  (%5.1f%%)  waiting: blocked on a queue, lock or select\n", waiting, 100 * waiting / total
+             printf "  %8d  (%5.1f%%)  event loop in C: uvloop waiting for sockets, or its own reads and timers\n", loop, 100 * loop / total
+             printf "  %8d  (%5.1f%%)  Python work: about %.0f%% of one core\n", busy, 100 * busy / total, 100 * busy / want
+             # One process holds one GIL, so more than a core of Python work
+             # means some of it is threads blocked in C or waiting for the GIL.
+             if (busy > want)
+               printf "  warning: Python work passes one core, so some of it is threads blocked in C or waiting\n  for the GIL; the C share below reads low.\n"
+             # A bare Runner.run sample looks the same whether uvloop is idle
+             # or busy in C, so the gap to the measured CPU is what tells them
+             # apart: a wide one is C work with no Python above it.
+             if (cpu == "") {
+               printf "  radio_cpu wasn'"'"'t read during the profile, so the event loop'"'"'s C share is unknown.\n"
+             } else {
+               gap = cpu - 100 * busy / want; if (gap < 0) gap = 0
+               printf "  radio_cpu over the same window: %.1f%%, so about %.0f%% of one core went to C code with no\n", cpu, gap
+               printf "  Python above it (uvloop'"'"'s socket reads and writes, timers). If that is a large part of\n"
+               printf "  radio_cpu, the tables below miss it, and a --native run is what splits it.\n"
+             }
+           }' "$out/radio.raw"
       echo "  --nonblocking: the radio keeps running while a sample is read, so some samples"
       echo "  are garbled or charged to the wrong function. Trust the overall shape; pick a hot"
       echo "  spot only if it clearly leads, and run again if the top entries are close."
-      # Self time: only the innermost frame of each sample.
-      echo "== top 20 functions by self time (% of non-idle samples; C time shows under its Python caller)"
-      awk '{ n = $NF; total += n; sub(/ [0-9]+$/, ""); k = split($0, f, ";"); leaf = f[k]
-             sub(/:[0-9]+\)$/, ")", leaf); self[leaf] += n }
-           END { for (s in self) printf "%6.1f%%  %s\n", 100 * self[s] / total, s }' "$out/radio.raw" \
-        | sort -rn | awk 'NR <= 20' | sed 's/^/  /'
-      # Inclusive time: every frame on the stack, once per sample even when it
-      # recurses. This is what names a path (send, Kiwi receive, scans, audio).
-      echo "== top 25 functions by inclusive time (% of non-idle samples)"
-      awk '{ n = $NF; total += n; sub(/ [0-9]+$/, ""); k = split($0, f, ";"); delete seen
-             for (i = 1; i <= k; i++) { fr = f[i]; sub(/:[0-9]+\)$/, ")", fr)
-               if (!(fr in seen)) { seen[fr] = 1; inc[fr] += n } } }
-           END { for (s in inc) printf "%6.1f%%  %s\n", 100 * inc[s] / total, s }' "$out/radio.raw" \
-        | sort -rn | awk 'NR <= 25' | sed 's/^/  /'
+      if [[ ! -s "$out/radio-work.raw" ]]; then
+        echo "== no Python work samples, so nothing to rank (was anyone listening?)"
+      else
+        # Self time: only the innermost frame of each sample.
+        echo "== top 20 functions by self time (% of Python work samples; C time shows under its Python caller)"
+        awk '{ n = $NF; total += n; sub(/ [0-9]+$/, ""); k = split($0, f, ";"); leaf = f[k]
+               sub(/:[0-9]+\)$/, ")", leaf); self[leaf] += n }
+             END { for (s in self) printf "%6.1f%%  %s\n", 100 * self[s] / total, s }' "$out/radio-work.raw" \
+          | sort -rn | awk 'NR <= 20' | sed 's/^/  /'
+        # Inclusive time: every frame on the stack, once per sample even when it
+        # recurses. This is what names a path (send, Kiwi receive, scans, audio).
+        echo "== top 25 functions by inclusive time (% of Python work samples)"
+        awk '{ n = $NF; total += n; sub(/ [0-9]+$/, ""); k = split($0, f, ";"); delete seen
+               for (i = 1; i <= k; i++) { fr = f[i]; sub(/:[0-9]+\)$/, ")", fr)
+                 if (!(fr in seen)) { seen[fr] = 1; inc[fr] += n } } }
+             END { for (s in inc) printf "%6.1f%%  %s\n", 100 * inc[s] / total, s }' "$out/radio-work.raw" \
+          | sort -rn | awk 'NR <= 25' | sed 's/^/  /'
+      fi
     fi
   } | tee "$out/summary.txt"
   echo
