@@ -15,7 +15,7 @@ import { DecodePanel } from "@/components/DecodePanel";
 import { IdentField } from "@/components/IdentField";
 import { AudioSpectrum } from "@/components/AudioSpectrum";
 import { BeaconStrip, focusBeaconStrip } from "@/components/BeaconStrip";
-import { focusGhostNetStrip, GhostNetStrip, type GhostPick } from "@/components/GhostNetStrip";
+import { GhostNetStrip, type GhostPick } from "@/components/GhostNetStrip";
 import { focusSignalStations, SignalStations } from "@/components/SignalStations";
 import { onKhz } from "@/lib/signal-panel";
 import { rankForSignal } from "@/lib/signal-rank";
@@ -1551,27 +1551,6 @@ export default function ListenPage() {
   );
   const thanks = <span>Thanks for the report.</span>;
 
-  // The header's "IBP beacons": the drawer, with the beacon strip open and focused.
-  const [beaconFocus, setBeaconFocus] = useState(0);
-  const openBeacons = () => {
-    setDrawerOpen(true);
-    changeBeaconMode(true);
-    setBeaconFocus((n) => n + 1);
-  };
-  // After the render that opens them: the drawer is inert until then.
-  useEffect(() => {
-    if (beaconFocus) focusBeaconStrip();
-  }, [beaconFocus]);
-  // The header's "GhostNet": the same, for the GhostNet strip (owner D14, D15).
-  const [ghostNetFocus, setGhostNetFocus] = useState(0);
-  const openGhostNet = () => {
-    setDrawerOpen(true);
-    changeGhostNet(true);
-    setGhostNetFocus((n) => n + 1);
-  };
-  useEffect(() => {
-    if (ghostNetFocus) focusGhostNetStrip();
-  }, [ghostNetFocus]);
   // A bar Listen that ends in a receiver's error (full, blocked, unreachable), once Pick best
   // has nothing left to try, takes focus to the status row that says so. Not once it plays or
   // ends idle, not after any other listener action since (a map pick, a beacon Listen, Stop),
@@ -1636,26 +1615,6 @@ export default function ListenPage() {
             }}
           >
             change
-          </button>
-          <button
-            type="button"
-            className="link-button inline tuned-to-beacons"
-            aria-controls="receiver-drawer"
-            onClick={(e) => {
-              if (e.detail <= 1) openBeacons();
-            }}
-          >
-            IBP beacons
-          </button>
-          <button
-            type="button"
-            className="link-button inline tuned-to-ghostnet"
-            aria-controls="receiver-drawer"
-            onClick={(e) => {
-              if (e.detail <= 1) openGhostNet();
-            }}
-          >
-            GhostNet
           </button>
         </div>
         {/* The receiver form's submit button, kept in the strip so it's always in reach. */}
