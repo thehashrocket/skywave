@@ -125,6 +125,16 @@ describe("globals.css", () => {
     }
   });
 
+  // Value: protects=a pressed mode, tuning-bar or span segment keeps its whole glass edge over the next segment's --rule-strong border (they overlap by 1px), and a mode's hidden radio stays the click target above its lifted span; fails_when=a pressed rule loses its position or z-index, or the radio's z-index drops to or below the span's; why_new=#174 brightened the idle border into a visible seam and owner D5 (2026-11-28) chose to lift the pressed segment; seam=none; no_claim=painting order in a real browser (source text only)
+  it("lifts a pressed segment over its neighbour's border, under the mode radio", () => {
+    const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const z = (body: string) => Number(/z-index:\s*(\d+)\s*;/.exec(body)?.[1] ?? NaN);
+    for (const selector of [".mode input:checked + span", '.tuning-bar-mode[aria-pressed="true"]', '.span-step[aria-pressed="true"]']) {
+      expect(declares(text, selector, /position:\s*relative\s*;[\s\S]*z-index:\s*1\s*;/), `${selector} lifted`).toBe(true);
+    }
+    expect(z(ruleBody(".mode input")), ".mode input above the lifted span").toBeGreaterThan(1);
+  });
+
   // Value: protects=an invalid call sign marks its field with a 2px lamp edge (border plus inset ring), clearly heavier than the 1px --rule-strong at rest; fails_when=the inset ring is dropped or recoloured, leaving a 1px lamp border only 2.2:1 from the resting border; why_new=#174 brightened the resting border and owner D1 (2026-11-28) chose the ring; seam=none; no_claim=IdentField's error line and aria-invalid wiring (IdentField tests); not rendered pixels
   it("gives an invalid call-sign field a 2px lamp edge", () => {
     const body = ruleBody('.ident-field input[aria-invalid="true"]');

@@ -1089,6 +1089,7 @@ html,
 
 .mode input {
   position: absolute;
+  z-index: 2; /* stays the click target above its lifted checked span */
   opacity: 0;
   inset: 0;
   margin: 0;
@@ -1118,8 +1119,11 @@ html,
   border-radius: 0 var(--radius-knob) var(--radius-knob) 0;
 }
 
+/* Lifted so its glass edge paints over the next segment's --rule-strong border (they overlap by 1px). */
 .mode input:checked + span,
 .tuning-bar-mode[aria-pressed="true"] {
+  position: relative;
+  z-index: 1;
   background: var(--glass);
   border-color: var(--glass);
   color: var(--ink);
@@ -1627,6 +1631,8 @@ html:has(.tuning-bar:not([hidden])) {
 }
 
 .span-step[aria-pressed="true"] {
+  position: relative;
+  z-index: 1;
   background: var(--glass);
   border-color: var(--glass);
   color: var(--ink);
