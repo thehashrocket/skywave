@@ -908,7 +908,12 @@ class ListenSession:
         """A receiver_log line for a refusal that dialed no Kiwi (ours, or a
         lookup's), at most once per REFUSED_LOG_INTERVAL_S for the same
         receiver, code and event; flush_refused_counts() writes what's left at close."""
-        which = (loggable_host(host), port, code, event)
+        if code == "skywave_full":
+            # Skywave being full says nothing about the receiver, and it's
+            # refused before the host is checked: one key per session, so a
+            # page naming ever-new hosts can't fill the log (#146 review D1).
+            host, port = MANY_RECEIVERS, None
+        which = (MANY_RECEIVERS if host is MANY_RECEIVERS else loggable_host(host), port, code, event)
         if which not in self._refused_logged and len(self._refused_logged) >= REFUSED_LOG_KEYS:
             which = (MANY_RECEIVERS, None, code, event)
             host, port = MANY_RECEIVERS, None

@@ -123,11 +123,29 @@ async def test_our_overall_limit_is_its_own_code_for_pages_that_know_it(lines, e
     assert sent[-1]["message"].startswith("Skywave is full right now.")
     assert sent[-1]["message"].endswith("Try again in a few minutes.")
     assert lines()[-1] == (
-        "event=refused host=other.example port=8073 code=skywave_full detail=max_sessions=1 audio_s=0.0 listeners=1"
+        "event=refused host=<many> port=- code=skywave_full detail=max_sessions=1 audio_s=0.0 listeners=1"
     )
     assert slots.active == 1
     await first.close()
     await second.close()
+
+
+# Value: protects=while Skywave is full, a page naming ever-new hosts writes one skywave_full line per throttle window, with the rest counted in suppressed=N, so one client can't fill RECEIVER_LOG or the report with made-up hosts (#146 review D1); fails_when=skywave_full is throttled per host again, or the held-back refusals are dropped instead of counted; why_new=the full refusal comes before any host check, so any string could open a new log key; seam=none; no_claim=stats.sh's own sum (test_stats_script.py)
+async def test_full_refusals_share_one_log_key_whatever_the_host(lines):
+    slots = Slots(1, per_receiver=1)
+    first, _ = session(slots)
+    second, sent = session(slots)
+    await first.handle(tune("kiwi.example"))
+    await listening(first)
+    for i in range(5):
+        await second.handle(tune(f"made-up-{i}.example", codes=["skywave_full"]))
+    assert [m.get("code") for m in sent[-5:]] == ["skywave_full"] * 5
+    full = [line for line in lines() if "code=skywave_full" in line]
+    assert full == ["event=refused host=<many> port=- code=skywave_full detail=max_sessions=1 audio_s=0.0 listeners=1"]
+    await second.close()  # flushes the 4 held back
+    full = [line for line in lines() if "code=skywave_full" in line]
+    assert full[-1] == "event=refused host=<many> port=- code=skywave_full detail=throttled audio_s=0.0 listeners=1 suppressed=4"
+    await first.close()
 
 
 # Value: protects=refusals that are about the request or the listener's own connection (the per-address limit, an unknown message) write no receiver-log line, so its refused counts hold only receivers and Skywave's own limits (#146 log_code gate); fails_when=BadRequest.log_code defaults to something for uncoded errors, or the gate logs every BadRequest; why_new=log_code replaced the code check that kept uncoded refusals out of the log, and nothing pinned that; seam=none; no_claim=what stats.sh does with the lines
