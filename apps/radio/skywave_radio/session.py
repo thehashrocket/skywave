@@ -851,7 +851,7 @@ class ListenSession:
                 )
             if isinstance(taken, str):
                 # Logged as skywave_full for every page, so the load report can
-                # count who was turned away (#146). A page from before that code
+                # count the refused tunes (#146). A page from before that code
                 # would read it as a receiver's answer and move Pick best on, so
                 # it gets the old uncoded error.
                 raise BadRequest(

@@ -107,7 +107,7 @@ async def test_our_cap_is_its_own_code_for_pages_that_know_it(lines, extra, code
     await second.close()
 
 
-# Value: protects=Skywave's overall limit (MAX_SESSIONS) answers skywave_full only to a page that lists that code and the old uncoded error to an older open tab, says "full" in plain words, and logs skywave_full either way so the load report counts who was turned away (#146); fails_when=old tabs get the new code (their Pick best would move on to another receiver), new ones stay uncoded, or the refusal isn't logged; why_new=the overall limit was uncoded and never logged, so analytics mixed it with lost connections; seam=none; no_claim=production MAX_SESSIONS
+# Value: protects=Skywave's overall limit (MAX_SESSIONS) answers skywave_full only to a page that lists that code and the old uncoded error to an older open tab, says "full" in plain words, and logs skywave_full either way so the load report counts the refused tunes (#146); fails_when=old tabs get the new code (their Pick best would move on to another receiver), new ones stay uncoded, or the refusal isn't logged; why_new=the overall limit was uncoded and never logged, so analytics mixed it with lost connections; seam=none; no_claim=production MAX_SESSIONS
 @pytest.mark.parametrize(
     "extra,code",
     [({"codes": ["skywave_cap", "skywave_full"]}, "skywave_full"), ({"codes": ["skywave_cap"]}, None), ({}, None)],
