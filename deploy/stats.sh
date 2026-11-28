@@ -112,8 +112,9 @@ main() {
     echo "  (couldn't read the container's logs)"
   else
     # Accepted only: uvicorn logs a refused handshake as '"WebSocket /ws" 403'.
-    grep -F '"WebSocket /ws' <<<"$logs" | grep -F '[accepted]' | cut -c1-13 | sort | uniq -c | awk '{print $2, $1}' | hour_rows "  " \
-      | grep . || echo "  (none)"
+    # Anchored at the end: the path in the line carries the client's query string.
+    grep -E '"WebSocket /ws[^"]*" \[accepted\]$' <<<"$logs" | cut -c1-13 | sort | uniq -c \
+      | awk '{print $2, $1}' | hour_rows "  " | grep . || echo "  (none)"
   fi
 
   # Receiver-log lines (#144): refusals by code and the most listeners seen per
@@ -203,33 +204,50 @@ main() {
   fi
 
   # Host CPU by hour over the same window, from sysstat's samples (every 10 min
-  # once it's enabled: see deploy/README.md). sysstat keeps one file per day
-  # (the box keeps UTC): yesterday's (sar -1) from the cutoff on, then today's.
-  # A run just after midnight (GitHub starts it hours late) would otherwise
-  # show one row and none of the previous day's peak.
+  # once it's enabled: see deploy/README.md). sysstat keeps one file per UTC
+  # day; the window spans two, read by the window's own dates (not sar's
+  # "today", which moves if this run crosses midnight). A run just after
+  # midnight (GitHub starts it hours late) needs yesterday's for the peak.
   echo
   echo "== host CPU busy % per hour, last 24 h (UTC; avg / max of 10-min samples)"
   if ! command -v sar >/dev/null; then
     echo "  (sysstat not installed)"
   else
-    # shellcheck disable=SC2016  # awk's own $1/$2/$NF, not the shell's
-    local to_cpu='
-      $1 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ && $2 == "all" {
-        ts = day "T" $1; if (ts < cutoff) next
-        h = substr(ts, 1, 13); busy = 100 - $NF
-        n[h]++; sum[h] += busy; if (busy > max[h]) max[h] = busy }
-      END { for (h in n) printf "%s %5.1f / %5.1f\n", h, sum[h] / n[h], max[h] }'
-    # The window always starts on yesterday's date. A missing file for it says
-    # so, so its hours don't read as idle; today's has no samples yet just
-    # after midnight, which the rows show by themselves.
-    local cpu_yesterday="" cpu_today=""
-    cpu_yesterday=$(LC_ALL=C sar -u -1 2>/dev/null) \
-      || echo "  (couldn't read sysstat's file for ${cutoff:0:10}; only ${now:0:10} is counted)"
-    cpu_today=$(LC_ALL=C sar -u 2>/dev/null) || true
-    {
-      awk -v day="${cutoff:0:10}" -v cutoff="$cutoff" "$to_cpu" <<<"$cpu_yesterday"
-      awk -v day="${now:0:10}" -v cutoff="$cutoff" "$to_cpu" <<<"$cpu_today"
-    } | sort | hour_rows "  " | grep . || echo "  (no samples in the window)"
+    # One day's samples from $cutoff on, as "YYYY-MM-DDTHH busy" lines. Exit 3:
+    # no file or sar failed; 4: the file is from another date (a leftover of
+    # the same day of the month after collection stopped).
+    cpu_samples() {
+      local day=$1 file out
+      file=/var/log/sysstat/sa${day//-/}                    # HISTORY > 28 names
+      [[ -e $file ]] || file=/var/log/sysstat/sa${day:8:2}  # the default saDD
+      out=$(S_TIME_FORMAT=ISO LC_ALL=C sar -u -f "$file" 2>/dev/null) || return 3
+      # shellcheck disable=SC2016  # awk's own $1/$2/$NF, not the shell's
+      awk -v day="$day" -v next_day="$(date -u -d "$day + 1 day" +%Y-%m-%d)" -v cutoff="$cutoff" '
+        NR == 1 { for (i = 1; i <= NF; i++)
+                    if ($i ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) fday = $i
+                  if (fday != day) { stale = 1; exit }
+                  d = day; next }
+        $1 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ && $2 == "all" {
+          # Times only go up within a day; one going back is the next day
+          # (sysstat can end a file with a 00:00 record).
+          if ($1 < last) d = next_day
+          last = $1
+          ts = d "T" $1; if (ts >= cutoff) print substr(ts, 1, 13), 100 - $NF }
+        END { if (stale) exit 4 }' <<<"$out"
+    }
+    local day samples="" got
+    for day in "${cutoff:0:10}" "${now:0:10}"; do
+      if got=$(cpu_samples "$day"); then
+        samples+=$got$'\n'
+      elif (( $? == 4 )); then
+        echo "  (sysstat's file for $day is from another date; its hours aren't counted)"
+      else
+        echo "  (couldn't read sysstat's file for $day; its hours aren't counted)"
+      fi
+    done
+    awk 'NF == 2 { n[$1]++; sum[$1] += $2; if (!($1 in max) || $2 > max[$1]) max[$1] = $2 }
+         END { for (h in n) printf "%s %5.1f / %5.1f\n", h, sum[h] / n[h], max[h] }' <<<"$samples" \
+      | sort | hour_rows "  " | grep . || echo "  (no samples in the window)"
   fi
 }
 

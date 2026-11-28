@@ -148,14 +148,18 @@ def run_stats(
         (tmp_path / name).write_text(text)
     if sar is not None:
         fake_sar = bin_dir / "sar"
-        # `sar -u -1` reads yesterday's file; without one it fails, as sar does.
+        # stats.sh opens each day's file by name (sar -f .../saDD): sa25 is
+        # yesterday (2026-11-25), sa26 today; a missing one fails, as sar does.
         (tmp_path / "sar_today").write_text(sar)
         if sar_yesterday is not None:
             (tmp_path / "sar_yesterday").write_text(sar_yesterday)
         fake_sar.write_text(
             '#!/usr/bin/env bash\n'
-            'case " $* " in *" -1 "*) f="$FAKE_DIR/sar_yesterday" ;; *) f="$FAKE_DIR/sar_today" ;; esac\n'
-            '[ -f "$f" ] || { echo "Cannot open /var/log/sysstat/sa25" >&2; exit 1; }\n'
+            'for a; do last=$a; done\n'
+            'case "$last" in */sa25) f="$FAKE_DIR/sar_yesterday" ;; */sa26) f="$FAKE_DIR/sar_today" ;; *) f=/nonexistent ;; esac\n'
+            '[ -n "${FAKE_NO_SAR_TODAY:-}" ] && [ "${last##*/}" = sa26 ] && f=/nonexistent\n'
+            '[ "$S_TIME_FORMAT" = ISO ] || { echo "stats.sh must set S_TIME_FORMAT=ISO" >&2; exit 9; }\n'
+            '[ -f "$f" ] || { echo "Cannot open $last: No such file or directory" >&2; exit 2; }\n'
             'cat "$f"\n'
         )
         fake_sar.chmod(fake_sar.stat().st_mode | stat.S_IEXEC)
@@ -422,7 +426,7 @@ def test_receiver_file_cap_is_noted(tmp_path: Path):
 # `sar -u` as LC_ALL=C prints it: a header, 10-minute samples, then an Average line.
 SAR = textwrap.dedent(
     """\
-    Linux 6.8.0-149-generic (skywave-radio) 11/26/2026 _x86_64_ (1 CPU)
+    Linux 6.8.0-149-generic (skywave-radio) 	2026-11-26 	_x86_64_	(1 CPU)
 
     00:00:01        CPU     %user     %nice   %system   %iowait    %steal     %idle
     00:10:01        all     10.00      0.00      5.00      0.00      0.00     85.00
@@ -437,33 +441,45 @@ SAR = textwrap.dedent(
 # Yesterday's file (sar -1): one sample before the 2026-11-25T17:07 cut, the rest after.
 SAR_YESTERDAY = textwrap.dedent(
     """\
-    Linux 6.8.0-149-generic (skywave-radio) 11/25/2026 _x86_64_ (1 CPU)
+    Linux 6.8.0-149-generic (skywave-radio) 	2026-11-25 	_x86_64_	(1 CPU)
 
     00:00:01        CPU     %user     %nice   %system   %iowait    %steal     %idle
     16:50:01        all     90.00      0.00      9.00      0.00      0.00      1.00
     17:10:01        all     30.00      0.00     10.00      0.00      0.00     60.00
     20:00:01        all     70.00      0.00     15.00      0.00      0.00     15.00
     20:10:01        all     50.00      0.00      5.00      0.00      0.00     45.00
+    00:00:01        all      0.00      0.00      0.00      0.00      0.00    100.00
     Average:        all     60.00      0.00      9.75      0.00      0.00     30.25
     """
 )
 
 
-# Value: protects=hourly host CPU over the report's 24 h window (yesterday's sysstat file from the cut on, then today's), avg and max of 10-minute samples per UTC hour, partial end hours labelled, and a missing yesterday file said, not shown as idle; fails_when=busy isn't 100 - %idle, the header or Average line is counted, hours or days mix, yesterday's samples are dropped (a run just after midnight showed one row in the 2026-11-28 #155 report) or a pre-cut sample is kept; why_new=GitHub starts the 17:07 run 7-8 h late; seam=fake sar on PATH; no_claim=sysstat's own sampling or that it's enabled on the box
+# Value: protects=hourly host CPU over the report's 24 h window from the window's own days' sysstat files (by name, header date checked), avg and max per UTC hour, partial end hours labelled, a 00:00 record at a file's end dated to the next day, and a missing, unreadable or wrong-date file said, never shown as idle or as invented numbers; fails_when=busy isn't 100 - %idle, the header or Average line is counted, hours or days mix, yesterday's samples are dropped (a run just after midnight showed one row in the 2026-11-28 #155 report), a pre-cut sample is kept, or a leftover file from another month is counted; why_new=GitHub starts the 17:07 run 7-8 h late; seam=fake sar on PATH; no_claim=sysstat's own sampling or that it's enabled on the box
 def test_hourly_cpu_from_sar(tmp_path: Path):
     out = run_stats(tmp_path, LOGS, sar=SAR, sar_yesterday=SAR_YESTERDAY).stdout
     cpu = out.split("== host CPU busy % per hour, last 24 h")[1]
     assert "  2026-11-25T17   40.0 /  40.0  (from 17:07)\n" in cpu  # 16:50 is before the cut
     assert "  2026-11-25T20   70.0 /  85.0\n" in cpu
-    assert "  2026-11-26T00   22.5 /  30.0\n" in cpu
+    assert "  2026-11-26T00   15.0 /  30.0\n" in cpu  # 15 and 30 today, plus yesterday's 00:00 record (0)
     assert "  2026-11-26T10   65.0 /  80.0\n" in cpu
     assert "2026-11-25T16" not in cpu
+    assert "2026-11-25T00" not in cpu
     assert "Average" not in cpu
-    assert "couldn't read sysstat" not in cpu
+    assert "sysstat's file" not in cpu
     # No file for yesterday (sysstat enabled today): say so, count today.
     missing = run_stats(tmp_path / "b", LOGS, sar=SAR).stdout.split("== host CPU")[1]
-    assert "  (couldn't read sysstat's file for 2026-11-25; only 2026-11-26 is counted)" in missing
+    assert "  (couldn't read sysstat's file for 2026-11-25; its hours aren't counted)" in missing
     assert "  2026-11-26T10   65.0 /  80.0\n" in missing
+    # A leftover saDD from another month (collection stopped): not counted as yesterday.
+    stale = SAR_YESTERDAY.replace("2026-11-25", "2026-10-25")
+    old = run_stats(tmp_path / "c", LOGS, sar=SAR, sar_yesterday=stale).stdout.split("== host CPU")[1]
+    assert "  (sysstat's file for 2026-11-25 is from another date; its hours aren't counted)" in old
+    assert "2026-11-25T20" not in old
+    # Today's file unreadable: said too, not silently dropped.
+    no_today = run_stats(tmp_path / "d", LOGS, sar=SAR, sar_yesterday=SAR_YESTERDAY, FAKE_NO_SAR_TODAY="1")
+    cpu_d = no_today.stdout.split("== host CPU")[1]
+    assert "  (couldn't read sysstat's file for 2026-11-26; its hours aren't counted)" in cpu_d
+    assert "  2026-11-25T20   70.0 /  85.0\n" in cpu_d
 
 
 # The refusal throttle as session.py writes it: one line per receiver and code
@@ -498,6 +514,7 @@ EDGE_LOGS = textwrap.dedent(
     2026-11-25T18:05:00.000000000Z INFO:     {BROWSER_IP}:0 - "WebSocket /ws?token={TOKEN}" [accepted]
     2026-11-26T17:01:00.000000000Z INFO:     {BROWSER_IP}:0 - "WebSocket /ws?token={TOKEN}" [accepted]
     2026-11-25T18:06:00.000000000Z INFO:     {BROWSER_IP}:0 - "WebSocket /ws" 403
+    2026-11-25T18:07:00.000000000Z INFO:     {BROWSER_IP}:0 - "WebSocket /ws?x=[accepted]" 403
     """
 )
 EDGE_RECEIVERS = textwrap.dedent(
@@ -509,7 +526,7 @@ EDGE_RECEIVERS = textwrap.dedent(
 )
 
 
-# Value: protects=the per-hour tables (sessions opened, most listeners) keep the window's partial first and last hours and label them "(from HH:MM)" and "(so far, to HH:MM)", the report states its exact window= (runs start hours late, so neighbouring reports overlap or leave gaps), and an empty table says "(none)"; fails_when=a partial end hour is dropped (the 17:07-17:59 gap both #155 adversarial reviewers found) or loses its label, the window= line goes, a refused (403) handshake counts as a session opened, or an empty table goes blank; why_new=the 2026-11-28 #155 report showed 25 unlabeled rows for "last 24 h"; seam=fake docker and date on PATH; no_claim=docker's own --since 24h cut
+# Value: protects=the per-hour tables (sessions opened, most listeners) keep the window's partial first and last hours and label them "(from HH:MM)" and "(so far, to HH:MM)", the report states its exact window= (runs start hours late, so neighbouring reports overlap or leave gaps), and an empty table says "(none)"; fails_when=a partial end hour is dropped (the 17:07-17:59 gap both #155 adversarial reviewers found) or loses its label, the window= line goes, a refused (403) handshake counts as a session opened (even one whose query string says [accepted]), or an empty table goes blank; why_new=the 2026-11-28 #155 report showed 25 unlabeled rows for "last 24 h"; seam=fake docker and date on PATH; no_claim=docker's own --since 24h cut
 def test_hourly_tables_label_the_partial_end_hours(tmp_path: Path):
     out = run_stats(tmp_path, EDGE_LOGS, receivers=EDGE_RECEIVERS)
     assert out.returncode == 0, out.stderr
