@@ -2,6 +2,11 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.64.12.0] - 2026-11-27 ([#176](https://github.com/thehashrocket/skywave/issues/176))
+
+### Changed
+- **The Back link names the receiver you left by its place, on one line.** After a receiver change, the status row used to offer the receiver's full list name, which can run to 90 characters or more ("Back to 2-30MHZ SDR #1, VK5ARG Remote Receiver Site | Near Tarlee, South Australia"), louder than the "Listening" beside it. It now reads the way the header strip names a receiver: "Back to Near Tarlee, South Australia", or "Back to <host>" for a receiver the list doesn't know or gives no place. When the receiver playing is in that same place, Back names the other one by its host, so the two can be told apart. The link stays on one line and ends in "…" if it's still too long. Screen readers and voice control still get the full name ("Back to Near Tarlee, South Australia, 2-30MHZ SDR #1, …"), taken from the receiver list when Back comes from your saved receiver or a shared link, and Back tunes the same receiver it did before.
+
 ## [0.64.9.0] - 2026-11-27 ([#175](https://github.com/thehashrocket/skywave/issues/175))
 
 ### Changed
