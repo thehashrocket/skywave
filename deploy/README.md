@@ -97,7 +97,7 @@ A Kiwi's `badp` refusals log under these codes: `badp=1` as `busy` (every free
 channel needs a password; Skywave sends none), `badp=5` as `same_source` (the
 owner allows one connection per address, and every Skywave listener shares the
 Droplet's), and any other value as `password` (the firmware sends those only to
-admin connections, so expect none). Up to v0.64.18 `badp=1` was logged as
+admin connections, so expect none). Before v0.64.21 `badp=1` was logged as
 `password` and `badp=5` as `busy`; read older lines' `detail` to tell them apart.
 
 So `busy` in the daily load report jumps on the first day after that change
@@ -200,6 +200,19 @@ hot spot only if it clearly leads, and if two entries are close, run the
 profile again to confirm. A `--native` run, which has to pause the radio for every
 sample, is a separate, deliberate step if C code turns out to dominate.
 
+`--nonblocking` also can't tell a waiting thread from a busy one, so py-spy
+keeps samples of the logging and noise-store threads blocked on their queues,
+and of the event loop sitting in epoll (the first run on the Droplet was about
+95% of those). The summary sorts samples into waiting, event loop in C (uvloop
+waiting, or its own socket reads and timers), and Python work, and ranks only
+the Python work. Python work against the window is about the share of one core
+the radio spent in Python (and the C it calls). A bare event-loop sample looks
+the same whether uvloop is idle or busy writing to sockets, so the summary
+prints the gap between Python work and the measured `radio_cpu`: that gap is C
+work with no Python above it, which the tables can't show. If it is a large
+part of `radio_cpu`, a `--native` run is what splits it. `radio-work.raw` is
+the flame graph without the waiting samples.
+
 py-spy still uses CPU on the radio's single core, so it isn't attached at all
 when the baseline shows the host over 70% busy or couldn't measure it (pass
 `--force` before the window to profile anyway; the summary then warns if the
@@ -221,11 +234,12 @@ printed first thing.
 Output goes to a new `/var/tmp/skywave-profile-<time>-XXXXXX/` (or a
 `PROFILE_OUT` that doesn't exist yet): `summary.txt` (averages, py-spy's own
 warnings if it fell behind, the top functions by self time, and by inclusive
-time with each thread's share), the raw samples, and `radio.raw`, collapsed
-stacks you can open at https://www.speedscope.app for the flame graph. Shares
-are of py-spy's non-idle samples: a thread's share times the summary's
-"% busy" is its share of one core, which for the event loop should roughly
-match the baseline `radio_cpu`. High steal means a shared-CPU plan is taking
+time with each thread's share), the raw samples, `radio.raw`, collapsed
+stacks you can open at https://www.speedscope.app for the flame graph, and
+`radio-work.raw`, the same without the waiting samples. The tables' shares are
+of the Python work samples only (see above); the summary's "Python work: about
+N% of one core" line and the gap to `radio_cpu` under it say how much of the
+radio's CPU that is. High steal means a shared-CPU plan is taking
 time from the box: try a dedicated-CPU plan before changing code. Unlike
 `stats.sh` it needs root and is not for the monitoring key; it changes nothing
 and installs nothing.
