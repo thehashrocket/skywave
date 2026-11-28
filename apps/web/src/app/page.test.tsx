@@ -1361,6 +1361,14 @@ describe("ListenPage", () => {
       view.unmount();
     });
 
+    // Value: protects=Back restored from a saved receiver (only its host remembered) still gives screen readers the list's full name; fails_when=the accessible name falls back to the stored host label; why_new=Codex review of #185: saved receivers and shared links store only the host; seam=none; no_claim=shared links take the same path (label = host) but aren't driven here
+    it("speaks a saved receiver's full name from the list", () => {
+      localStorage.setItem("skywave.receiver", JSON.stringify({ host: listed.host, port: String(listed.port) }));
+      render(<ListenPage />);
+      const back = screen.getByRole("button", { name: `Back to ${listed.location}, ${listed.name}` });
+      expect(back.textContent).toBe(`Back to ${listed.location}`);
+    });
+
     // Value: protects=Back to an https-only receiver dials it over wss again; fails_when=the remembered receiver drops its secure flag, so Back dials ws:// and the receiver never answers; why_new=the Back test only covers a plain typed receiver and a listed one; seam=none; no_claim=the service's TLS (radio tests)
     it("goes back to a secure receiver securely", () => {
       const view = render(<ListenPage />);
