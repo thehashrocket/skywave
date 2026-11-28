@@ -138,8 +138,9 @@ receiver log (#144). It reads that log from the `RECEIVER_LOG` file and its
 rotated copies inside the container, plus any receiver lines in the container's
 own logs (where they go if the file can't be opened), and keeps the last 24 h.
 The per-hour tables' first and last hours are partial, so they are labelled
-"(from HH:MM)" and "(so far, to HH:MM)": the next day's report starts where
-this one stops, so every minute is in exactly one row.
+"(from HH:MM)" and "(so far, to HH:MM)". The `window=` line gives the exact 24 h
+the report covers: GitHub can start the scheduled run hours late, so two
+neighbouring reports can overlap or leave a gap between them.
 Session counts come from the container's own logs, which a deploy that recreates
 the container deletes; on such a day the report says "since <time>; earlier
 hours were in the previous container". To keep a day of sessions in those logs,

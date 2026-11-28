@@ -4,6 +4,8 @@
 # that issue each morning and flags trends; see deploy/README.md.
 #
 # 17:07 UTC, after the busiest hours (10:00-16:00 UTC), so the day's peaks are in.
+# That's a target: GitHub has started these runs 7-8 h late (00:25-00:58 UTC),
+# so each report's window= line says which 24 h it actually covers.
 name: Radio stats
 
 on:

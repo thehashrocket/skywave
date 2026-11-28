@@ -474,10 +474,12 @@ EDGE_RECEIVERS = textwrap.dedent(
 )
 
 
-# Value: protects=the per-hour tables (sessions opened, most listeners) keep the window's partial first and last hours and label them "(from HH:MM)" and "(so far, to HH:MM)", so with the next day's report every minute is in exactly one row, and an empty table says "(none)"; fails_when=a partial end hour is dropped (the 17:07-17:59 gap both #155 adversarial reviewers found) or loses its label, or an empty table goes blank; why_new=the 2026-11-28 #155 report showed 25 unlabeled rows for "last 24 h"; seam=fake docker and date on PATH; no_claim=docker's own --since 24h cut
+# Value: protects=the per-hour tables (sessions opened, most listeners) keep the window's partial first and last hours and label them "(from HH:MM)" and "(so far, to HH:MM)", the report states its exact window= (runs start hours late, so neighbouring reports overlap or leave gaps), and an empty table says "(none)"; fails_when=a partial end hour is dropped (the 17:07-17:59 gap both #155 adversarial reviewers found) or loses its label, the window= line goes, or an empty table goes blank; why_new=the 2026-11-28 #155 report showed 25 unlabeled rows for "last 24 h"; seam=fake docker and date on PATH; no_claim=docker's own --since 24h cut
 def test_hourly_tables_label_the_partial_end_hours(tmp_path: Path):
     out = run_stats(tmp_path, EDGE_LOGS, receivers=EDGE_RECEIVERS)
     assert out.returncode == 0, out.stderr
+    # Runs aren't exactly 24 h apart, so the report says which 24 h it covers.
+    assert "window=2026-11-25T17:07:00Z..2026-11-26T17:07:00Z\n" in out.stdout
     sessions = out.stdout.split("== /ws sessions")[1].split("== receiver log")[0]
     assert "  2026-11-25T17  1  (from 17:07)\n" in sessions
     assert "  2026-11-25T18  1\n" in sessions

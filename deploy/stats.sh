@@ -31,9 +31,10 @@ main() {
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
   # Per-hour rows ("YYYY-MM-DDTHH N" on stdin, sorted), indented by $1. The
-  # window's first and last hours are partial, so they say from or to when:
-  # the next day's report starts where this one stops, so every minute is in
-  # exactly one row of one report (dropping the first hour would lose it).
+  # window's first and last hours are partial, so they say from or to when
+  # rather than read as quiet hours. Runs aren't exactly 24 h apart (GitHub
+  # starts scheduled runs late, by hours), so neighbouring reports can overlap
+  # or leave a gap: the window= line says what this one covers.
   hour_rows() {
     awk -v ind="$1" -v first="${cutoff:0:13}" -v from="${cutoff:11:5}" \
         -v last="${now:0:13}" -v to="${now:11:5}" '
@@ -44,6 +45,7 @@ main() {
   }
 
   echo "== $now $(hostname)"
+  echo "window=${cutoff}Z..$now"
   echo "cpus=$(nproc)  load=$(cut -d' ' -f1-3 /proc/loadavg)  up=$(uptime -p | sed 's/^up //')"
   free -m | awk '/^Mem:/ {printf "mem_total=%sMB  mem_used=%sMB  mem_available=%sMB\n", $2, $3, $7}'
   [[ -f /var/run/reboot-required ]] && echo "reboot_required=yes" || echo "reboot_required=no"
