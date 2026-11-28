@@ -18,6 +18,8 @@ export const MAX_ATTEMPTS = 3; // README "Using it" quotes this number.
 const WHY_SKIPPED: Record<RadioErrorCode, string> = {
   busy: "was full",
   skywave_cap: "already has a Skywave listener",
+  // Never shown: a run stops on it rather than moving on.
+  skywave_full: "wasn't tried because Skywave is full",
   no_apps: "only takes listeners on its own web page",
   down: "is down",
   unreachable: "didn't answer",
@@ -70,10 +72,10 @@ const MAX_TOTAL = 6; // README "Using it" quotes this number too.
 /**
  * How a run ended, for the `pick_best_end` analytics event (#144): it played
  * (and the watch ended without a refusal), it gave up after its tries, the
- * service failed it (an uncoded error), or the listener stopped it or chose
- * something else first.
+ * service failed it (an uncoded error), Skywave was full (skywave_full, #146),
+ * or the listener stopped it or chose something else first.
  */
-export type PickOutcome = "played" | "gave_up" | "service" | "stopped";
+export type PickOutcome = "played" | "gave_up" | "service" | "full" | "stopped";
 
 /**
  * Some receivers refuse only after playing for a while: one whose owner allows
@@ -273,6 +275,9 @@ export function usePickBest(
     // Skywave's own cap isn't a receiver failing: one radio_refused per run, not per receiver.
     const capped = c.codes.filter((code) => code === "skywave_cap").length;
     if (capped) track("radio_refused", { code: "skywave_cap", receivers: capped, source: "pick_best" });
+    // A run ends on the first skywave_full, so there's at most one.
+    if (c.codes.includes("skywave_full"))
+      track("radio_refused", { code: "skywave_full", receivers: 1, source: "pick_best" });
   }, []);
 
   /** How a run that the listener ended (or replaced) counts: played if it was only being watched. */
@@ -458,7 +463,13 @@ export function usePickBest(
       if (status.host !== undefined && (status.host.toLowerCase() !== back.host.toLowerCase() || status.port !== back.port))
         return;
       if (status.state === "listening") return finish(`${why} Back on ${back.name}.`);
-      if (status.state === "error") return finish(`${why} Couldn't get back to ${back.name}.`);
+      if (status.state === "error") {
+        // The run sent its end before turning back, and listen tracking leaves
+        // errors during a run to it: Skywave filling up meanwhile counts here.
+        if (status.code === "skywave_full")
+          track("radio_refused", { code: "skywave_full", receivers: 1, source: "pick_best" });
+        return finish(`${why} Couldn't get back to ${back.name}.`);
+      }
       return;
     }
     const current = c.tried[c.tried.length - 1]!;
@@ -499,6 +510,13 @@ export function usePickBest(
     // connection): it can't tune anything else right now either, so stop
     // without trying to go back. One of them, a lookup still stuck on an
     // earlier dead name, says when to try the same receiver again; do that once.
+    // Skywave being full (skywave_full) is coded but about the service too.
+    if (status.code === "skywave_full") {
+      c.codes.push(status.code);
+      report(c, "full");
+      drop();
+      return finish();
+    }
     if (!status.code) {
       if (!status.retryAfterMs || c.retried) {
         // The run ends on the service's failure, not on a choice that played.

@@ -201,7 +201,8 @@ describe("usePickBest", () => {
     });
   });
 
-  it.each(RADIO_ERROR_CODES.filter((c) => c !== "busy"))("retries on %s", (code) => {
+  // skywave_full is the service's, not the receiver's: a run stops on it (see pick_best_end below).
+  it.each(RADIO_ERROR_CODES.filter((c) => c !== "busy" && c !== "skywave_full"))("retries on %s", (code) => {
     const { hook, report, tuned } = setup();
     act(() => hook.result.current.start(candidates));
     report(fail("a", code));
@@ -676,6 +677,26 @@ describe("usePickBest", () => {
     expect(hook.result.current.note).toBe("Tried 1 receiver and it didn't work. Couldn't get back to home.example.");
   });
 
+  // Value: protects=Skywave filling up while a failed run goes back (skywave_full on the way back) is counted once in radio_refused, since the run already reported and listen tracking leaves errors mid-run to it (#146 review); fails_when=the way-back error path tracks nothing, or tracks a receiver's own refusal there too; why_new=review found the gap; seam=none (mocked track); no_claim=the same gap for skywave_cap (TODOS.md)
+  it("counts Skywave being full on the way back as radio_refused", () => {
+    const refusals = () => track.mock.calls.filter(([name]) => name === "radio_refused").map(([, props]) => props);
+    const { hook, report } = setup();
+    report({ state: "listening", host: "home.example", port: 8073 });
+    act(() => hook.result.current.start([rx("a")]));
+    report(fail("a", "busy"));
+    track.mockClear();
+    report({ state: "error", code: "skywave_full", host: "home.example", port: 8073, message: "full" });
+    expect(refusals()).toEqual([{ code: "skywave_full", receivers: 1, source: "pick_best" }]);
+    expect(hook.result.current.note).toBe("Tried 1 receiver and it didn't work. Couldn't get back to home.example.");
+    const second = setup();
+    second.report({ state: "listening", host: "home.example", port: 8073 });
+    act(() => second.hook.result.current.start([rx("a")]));
+    second.report(fail("a", "busy"));
+    track.mockClear();
+    second.report(fail("home.example", "busy"));
+    expect(refusals()).toEqual([]);
+  });
+
   it("doesn't go back to a receiver it already tried", () => {
     const { hook, report, tuned } = setup();
     report({ state: "listening", host: "a", port: 8073 });
@@ -896,6 +917,22 @@ describe("usePickBest", () => {
       report({ state: "listening", host: "b", port: 8073 });
       act(() => vi.advanceTimersByTime(WATCH_MS));
       expect(refusals()).toEqual([]);
+    });
+
+    // Value: protects=Skywave being full (skywave_full, #146) ends a run at once like the service's own failure, without trying another receiver or striking the one asked for, and reports outcome full with one radio_refused; fails_when=the coded error moves the run on (every receiver would be refused too), counts as service, marks the receiver refused, or sends no or several radio_refused; why_new=the limit was uncoded, so runs it ended read as service failures; seam=none (mocked track); no_claim=the service's side (test_receiver_log.py)
+    it("stops at once when Skywave is full, and reports it as full", () => {
+      const refusals = () => track.mock.calls.filter(([name]) => name === "radio_refused").map(([, props]) => props);
+      const { hook, report, tuned } = setup();
+      act(() => hook.result.current.start(candidates));
+      report(fail("a", "busy"));
+      report(fail("b", "skywave_full"));
+      expect(tuned()).toEqual(["a", "b"]);
+      expect(hook.result.current.note).toBeNull();
+      expect(ends()).toEqual([{ outcome: "full", codes: "busy,skywave_full" }]);
+      expect(refusals()).toEqual([{ code: "skywave_full", receivers: 1, source: "pick_best" }]);
+      // b said nothing about itself: the next run may try it again.
+      act(() => hook.result.current.start([rx("b")]));
+      expect(tuned()).toEqual(["a", "b", "b"]);
     });
 
     it("reports a run that played once its watch ends, codes and all", () => {

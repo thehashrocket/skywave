@@ -895,7 +895,7 @@ def test_listener_limit_counts_receiver_connections():
 
     statuses = run_with_fake(body)
     assert statuses[-1]["state"] == "error"
-    assert "listener limit" in statuses[-1]["message"]
+    assert "Skywave is full right now" in statuses[-1]["message"]
 
 
 def test_slot_freed_when_session_hits_time_limit():

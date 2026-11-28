@@ -10,12 +10,19 @@ import type { RadioRefusal, RadioStatus } from "./use-radio";
  *   (heardAudio), not when the socket opens: a Kiwi can accept and stay silent.
  *   A retune on the same receiver doesn't count again; a different receiver does.
  * - radio_error: each error status, with its code ("service" for our own,
- *   uncoded ones: the listener limit, a lost connection). Pick best hunting past
- *   full Kiwis sends several "busy"; unique visitors per code is the useful view.
- *   Skywave's own cap (skywave_cap) isn't a receiver failing, so it never counts
- *   here: before/after comparisons of radio_error need no filter (#144).
+ *   uncoded ones: a lost connection, a bad request, and the listener limit from a
+ *   service older than skywave_full). Pick best hunting past full Kiwis sends
+ *   several "busy"; unique visitors per code is the useful view. Skywave's own
+ *   limits (skywave_cap, skywave_full) aren't a receiver or the service failing,
+ *   so they never count here (#144, #146). Comparing "service" across the
+ *   skywave_full deploy: before it, "service" included Skywave being full; after,
+ *   pages that know the code send that as radio_refused skywave_full instead
+ *   (tabs opened earlier keep the old way until they reload), so "service" falls
+ *   for bookkeeping alone. Add radio_refused skywave_full back in to compare, or
+ *   use the receiver log's skywave_full count (deploy/stats.sh).
  * - radio_refused: Skywave turned down a receiver for its own cap (skywave_cap),
- *   as an error status or as a refused switch with the old station playing on.
+ *   as an error status or as a refused switch with the old station playing on,
+ *   or turned a listener away because it was full (skywave_full, #146).
  *   Once per listener action: `picking` (a Pick best run or its watch) leaves it
  *   to the run, which sends one at its end with how many receivers it met.
  */
@@ -45,7 +52,8 @@ export function useListenTracking(
 
   useEffect(() => {
     if (status.state !== "error") return;
-    if (status.code !== "skywave_cap") track("radio_error", { code: status.code ?? "service" });
+    if (status.code !== "skywave_cap" && status.code !== "skywave_full")
+      track("radio_error", { code: status.code ?? "service" });
     else if (!pickingRef.current) track("radio_refused", { code: status.code, receivers: 1, source: "listener" });
   }, [status]);
 

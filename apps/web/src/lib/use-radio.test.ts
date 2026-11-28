@@ -254,7 +254,7 @@ describe("useRadio", () => {
     await act(() => result.current.tune({ ...tuning, host: "other.example" }));
 
     expect(FakeSocket.instances).toHaveLength(1);
-    expect(ws!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap"], ...tuning, host: "other.example" });
+    expect(ws!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning, host: "other.example" });
   });
 
   // Value: protects=a tune superseded by Stop can't report its own late failure over the new state; fails_when=the generation check in tune()'s ensureAudio catch is removed; why_new=only the success branches were tested; seam=none; no_claim=real AudioContext errors
@@ -294,7 +294,7 @@ describe("useRadio", () => {
     });
 
     expect(FakeSocket.instances).toHaveLength(1);
-    expect(FakeSocket.instances[0]!.sent).toEqual([{ type: "tune", codes: ["skywave_cap"], ...tuning, host: "newer.example" }]);
+    expect(FakeSocket.instances[0]!.sent).toEqual([{ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning, host: "newer.example" }]);
   });
 
   // Value: protects=a dropped socket ends anything waiting on it, like a Pick best chain; fails_when=onclose keeps the old coded error object; why_new=only a drop while listening was covered; seam=none; no_claim=real server restarts
@@ -329,7 +329,7 @@ describe("useRadio", () => {
 
     expect(result.current.status.state).toBe("connecting");
     expect(result.current.status.host).toBe("other.example");
-    expect(fresh.sent).toEqual([{ type: "tune", codes: ["skywave_cap"], ...tuning, host: "other.example" }]);
+    expect(fresh.sent).toEqual([{ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning, host: "other.example" }]);
   });
 
   // Value: protects=after a receiver error the same socket takes the next tune; fails_when=an error status leaves the socket unusable or opens a second one; why_new=state matrix error x tune; seam=none; no_claim=server behaviour
@@ -340,14 +340,14 @@ describe("useRadio", () => {
     act(() => ws!.status("error", { message: "full", code: "busy", host: "kiwi.example", port: 8073 }));
     await act(() => result.current.tune({ ...tuning, host: "other.example" }));
     expect(FakeSocket.instances).toHaveLength(1);
-    expect(ws!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap"], ...tuning, host: "other.example" });
+    expect(ws!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning, host: "other.example" });
   });
 
   // Value: protects=the service sends a wss tune when the receiver is secure; fails_when=Tuning drops `secure` on the way to the socket; why_new=wss dialing; seam=none; no_claim=the service's TLS
   it("sends secure on the tune when the receiver needs wss", async () => {
     const { result } = renderHook(() => useRadio());
     await act(() => result.current.tune({ ...tuning, secure: true }));
-    expect(FakeSocket.instances[0]!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap"], ...tuning, secure: true });
+    expect(FakeSocket.instances[0]!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning, secure: true });
   });
 
   // Value: protects=the saved call sign rides on a tune that connects, and a dial retune leaves it off (the service keeps the name a connection joined with); fails_when=sendTune drops the ident, sends a refused one, or adds it to retunes; why_new=issue #108; seam=jsdom localStorage; no_claim=what the service does with it (radio test_ident.py)
@@ -357,13 +357,13 @@ describe("useRadio", () => {
       const { result } = renderHook(() => useRadio());
       await act(() => result.current.tune(tuning));
       const ws = FakeSocket.instances[0]!;
-      expect(ws.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap"], ...tuning, ident: "N0CALL" });
+      expect(ws.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning, ident: "N0CALL" });
       act(() => ws.status("listening", { host: tuning.host, port: tuning.port }));
       act(() => result.current.retune({ ...tuning, freqKhz: tuning.freqKhz + 5 }));
-      expect(ws.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap"], ...tuning, freqKhz: tuning.freqKhz + 5, retune: true });
+      expect(ws.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning, freqKhz: tuning.freqKhz + 5, retune: true });
       localStorage.setItem("skywave.ident", "bad;name");
       await act(() => result.current.tune({ ...tuning, host: "other.example" }));
-      expect(ws.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap"], ...tuning, host: "other.example" });
+      expect(ws.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning, host: "other.example" });
     } finally {
       localStorage.removeItem("skywave.ident");
     }
@@ -390,7 +390,7 @@ describe("useRadio", () => {
     expect(result.current.status).toEqual(before);
     await act(() => result.current.tune(tuning));
     expect(FakeSocket.instances).toHaveLength(2);
-    expect(FakeSocket.instances[1]!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap"], ...tuning });
+    expect(FakeSocket.instances[1]!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning });
   });
 
   // Value: protects=a Listen that crosses the service's idle hang-up isn't lost: the page sends it again on a new socket; fails_when=onclose drops a pending tune on the idle code; why_new=owner D2 (round 3a coverage audit); seam=none; no_claim=real network timing
@@ -402,7 +402,7 @@ describe("useRadio", () => {
     await act(() => result.current.tune(tuning)); // Listen again on the still-open socket
     await act(async () => ws!.finishClose(IDLE_CLOSE_CODE)); // the hang-up crosses it
     expect(FakeSocket.instances).toHaveLength(2);
-    expect(FakeSocket.instances[1]!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap"], ...tuning });
+    expect(FakeSocket.instances[1]!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning });
     expect(result.current.tuning).toBe(true);
   });
 
@@ -416,7 +416,7 @@ describe("useRadio", () => {
     act(() => result.current.retune({ ...tuning, freqKhz: tuning.freqKhz + 5 }));
     await act(async () => ws!.finishClose(IDLE_CLOSE_CODE));
     expect(FakeSocket.instances).toHaveLength(2);
-    expect(FakeSocket.instances[1]!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap"], ...tuning, freqKhz: tuning.freqKhz + 5 });
+    expect(FakeSocket.instances[1]!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning, freqKhz: tuning.freqKhz + 5 });
   });
 
   // Value: protects=a dial move on a playing receiver is marked as a retune, so a service whose session just ended opens no Kiwi channel for it; fails_when=retune() sends a plain tune; why_new=TODOS "Dial retunes never open a Kiwi channel"; seam=none; no_claim=the service's handling (radio tests)
@@ -426,7 +426,7 @@ describe("useRadio", () => {
     const [ws] = FakeSocket.instances;
     act(() => ws!.status("listening", { host: tuning.host, port: tuning.port }));
     act(() => result.current.retune({ ...tuning, freqKhz: tuning.freqKhz + 5 }));
-    expect(ws!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap"], ...tuning, freqKhz: tuning.freqKhz + 5, retune: true });
+    expect(ws!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning, freqKhz: tuning.freqKhz + 5, retune: true });
   });
 
   // Value: protects=a dial move standing in for a Listen still waiting on its answer can start the session; fails_when=it carries retune and the service, with nothing playing yet, ignores it; why_new=TODOS "Dial retunes never open a Kiwi channel"; seam=none; no_claim=none beyond protects
@@ -435,7 +435,7 @@ describe("useRadio", () => {
     await act(() => result.current.tune(tuning));
     const [ws] = FakeSocket.instances;
     act(() => result.current.retune({ ...tuning, freqKhz: tuning.freqKhz + 5 }));
-    expect(ws!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap"], ...tuning, freqKhz: tuning.freqKhz + 5 });
+    expect(ws!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning, freqKhz: tuning.freqKhz + 5 });
   });
 
   // Value: protects=a Listen followed by Stop, then the idle hang-up, opens no new socket and stays stopped: the retry never restarts audio the listener just stopped; fails_when=stop() leaves the crossed tune pending for onclose; why_new=review (testing, state matrix closing x idle-close); seam=none; no_claim=none beyond protects
@@ -647,7 +647,7 @@ describe("useRadio", () => {
     act(() => ws!.status("connecting", { host: "kiwi.example" }));
     await act(() => result.current.tune({ ...tuning, host: "other.example" }));
     expect(FakeSocket.instances).toHaveLength(1);
-    expect(ws!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap"], ...tuning, host: "other.example" });
+    expect(ws!.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning, host: "other.example" });
   });
 
   // Value: protects=Stop after a receiver error tells the service and clears the error; fails_when=stop() skips an errored session; why_new=state matrix error x stop; seam=none; no_claim=none beyond protects
@@ -1050,7 +1050,7 @@ describe("useRadio", () => {
         await pending;
       });
       const [ws] = FakeSocket.instances;
-      expect(ws!.sent).toEqual([{ type: "tune", codes: ["skywave_cap"], ...tuning, freqKhz: 7_100, mode: "lsb" }]);
+      expect(ws!.sent).toEqual([{ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning, freqKhz: 7_100, mode: "lsb" }]);
     });
 
     // Value: protects=a dial move made while a switch waits on audio, and already answered by the service, isn't undone by the switch's own late send; fails_when=tune() sends its click-time tuning after its tune was answered; why_new=Claude adversarial (PR 2a /ship), TODO "Don't let a late tune undo a dial move made mid-switch"; seam=a stalled AudioContext.resume; no_claim=how often browsers stall resume
@@ -1076,7 +1076,7 @@ describe("useRadio", () => {
         finishResume();
         await pending;
       });
-      expect(ws.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap"], ...other, freqKhz: 7_100 });
+      expect(ws.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap", "skywave_full"], ...other, freqKhz: 7_100 });
     });
 
     // Value: protects=a switch whose socket dropped still tunes on the new one, at the dial's newest frequency; fails_when=the skip checks "a dial move went out" rather than "on this socket", or the dropped socket's cleanup loses the dial move so the click-time frequency goes out; why_new=the skip's per-socket condition was untested (PR 2b review); frequency from TODO "Keep a dial move made mid-switch when the connection drops"; seam=a stalled AudioContext.resume; no_claim=what the page shows for the dropped socket
@@ -1102,7 +1102,7 @@ describe("useRadio", () => {
         await pending;
       });
       const fresh = FakeSocket.instances[1]!;
-      expect(fresh.sent).toEqual([{ type: "tune", codes: ["skywave_cap"], ...other, freqKhz: 7_100 }]);
+      expect(fresh.sent).toEqual([{ type: "tune", codes: ["skywave_cap", "skywave_full"], ...other, freqKhz: 7_100 }]);
     });
 
     // Value: protects=going back to a receiver still sends that tune when a late answer for it (from earlier dial moves) arrives mid-switch; fails_when=the late-send skip treats any answer naming the receiver as this tune's answer, so "Back to A" leaves the service on B; why_new=red team (PR 2b ship); seam=a stalled AudioContext.resume; no_claim=service ordering
@@ -1128,7 +1128,7 @@ describe("useRadio", () => {
         finishResume();
         await pending;
       });
-      expect(ws.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap"], ...tuning });
+      expect(ws.sent.at(-1)).toEqual({ type: "tune", codes: ["skywave_cap", "skywave_full"], ...tuning });
     });
 
     // Value: protects=first audio means sound from this receiver; fails_when=spectrum rows, junk frames or the last receiver's audio count; why_new=R7 first-audio gate; seam=none; no_claim=none beyond protects

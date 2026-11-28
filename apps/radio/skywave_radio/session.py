@@ -239,7 +239,11 @@ SendBytes = Callable[[bytes], Awaitable[None]]
 class BadRequest(Exception):
     """A message we refuse. `code`, when set, is about the receiver named by
     `host`/`port` (like a KiwiError's), so the browser can move on to another
-    one; uncoded means the request or this service, and Pick best stops."""
+    one; uncoded means the request or this service, and Pick best stops. The
+    one exception is skywave_full (this service at MAX_SESSIONS, #146): coded
+    so the page can tell it from a failure, but Pick best stops on it too.
+
+    `code` is what the page is sent; `log_code` is what the receiver log gets."""
 
     def __init__(
         self,
@@ -249,11 +253,13 @@ class BadRequest(Exception):
         host: str | None = None,
         port: int | None = None,
         detail: str | None = None,
+        log_code: str | None = None,
     ):
         super().__init__(message)
         self.code = code
         # For the receiver log only, like KiwiError.detail.
         self.detail = detail
+        self.log_code = log_code or code
         self.host = host
         self.port = port
 
@@ -608,9 +614,8 @@ class ListenSession:
                 shown = f" {kind[:40]!r}" if isinstance(kind, str) else ""
                 raise BadRequest(f"Unknown message type{shown}.")
         except BadRequest as e:
-            if e.code is not None:
-                # Ours, about one receiver (our per-receiver cap, an owner's opt-out).
-                self._log_refused(e.host, e.port, e.code, detail=e.detail)
+            if e.log_code is not None:
+                self._log_refused(e.host, e.port, e.log_code, detail=e.detail)
             await self._status("error", message=str(e), code=e.code, host=e.host, port=e.port)
             if self._pump_owns_receiver():
                 # Refused before anything changed: the session still plays. The
@@ -704,8 +709,10 @@ class ListenSession:
         secure = msg.get("secure") is True
         # A page that lists "skywave_cap" in `codes` knows that code; an older
         # one (a tab left open) gets "busy" for our cap, as before (#144).
+        # Likewise "skywave_full" (#146): an older page gets it uncoded.
         codes = msg.get("codes")
         knows_cap = isinstance(codes, list) and "skywave_cap" in codes
+        knows_full = isinstance(codes, list) and "skywave_full" in codes
         # Same receiver means same address dialed under the same rule: a list
         # tune of an address a typed tune reached privately must restart, but
         # with private hosts off (production) the two are one receiver.
@@ -843,9 +850,18 @@ class ListenSession:
                     "the most Skywave plays for one connection. Stop one to listen here."
                 )
             if isinstance(taken, str):
+                # Logged as skywave_full for every page, so the load report can
+                # count who was turned away (#146). A page from before that code
+                # would read it as a receiver's answer and move Pick best on, so
+                # it gets the old uncoded error.
                 raise BadRequest(
-                    "Skywave is at its listener limit right now. Each listener takes a channel "
-                    "on a volunteer's receiver, so it keeps the number small. Try again in a few minutes."
+                    "Skywave is full right now. Each listener uses a channel on a volunteer's "
+                    "receiver, so Skywave keeps the number small. Try again in a few minutes.",
+                    code="skywave_full" if knows_full else None,
+                    host=host,
+                    port=port,
+                    detail=f"max_sessions={self._slots.limit}",
+                    log_code="skywave_full",
                 )
             lease = taken
         self._lease = lease

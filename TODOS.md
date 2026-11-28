@@ -46,7 +46,7 @@
 - Kiwi errors (a fast `unreachable`) and `listening` lines aren't throttled, and the refusal throttle is per connection, so a page looping tunes or reconnecting can rotate the 25 MB history out. A service-wide limit per (host, port, code) would close it.
 - `close()` skips `flush_refused_counts()` if `stop()` raises: wrap it in `try`/`finally`.
 - Once the file is attached, a failing disk prints a traceback per line from the writer thread and the lines go nowhere; shutdown can wait on a stalled disk while the queue drains.
-- A `skywave_cap` met on Pick best's way back isn't counted in `radio_refused`; a run restored from the back-forward cache never reports its real end (pagehide already reported it).
+- A `skywave_cap` met on Pick best's way back isn't counted in `radio_refused` (a `skywave_full` there is, since #146); a run restored from the back-forward cache never reports its real end (pagehide already reported it).
 - `page.tsx`: `draftRef` is now unused, and `otherThan`'s doc comment sits on `sameReceiver`.
 - `hostguard.py:195`: the resolver's `HOSTNAME_RE.match` should be `fullmatch` like the log's (a trailing newline only fails the lookup today).
 - `config.py`'s `receiver_log` comment and `server.py`'s `attach_receiver_log` docstring still say the file is written "also" and stdout is used "only" when unset; the file replaces stdout once attached.

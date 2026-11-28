@@ -63,7 +63,7 @@ copies, which the README's "One process" rule forbids).
 ## Receiver log
 
 The radio service writes one line per receiver outcome (#144): every error a
-Listen ends on, each refusal of its own (`skywave_cap`, `blocked`), and every
+Listen ends on, each refusal of its own (`skywave_cap`, `skywave_full`, `blocked`), and every
 receiver that starts playing, with the service's load at the time (#146). In
 production it goes to `/data/receivers.log` on the `radio_data` volume
 (`RECEIVER_LOG` in `docker-compose.prod.yml`), rotated at 5 MB with 4 old files
