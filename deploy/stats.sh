@@ -111,7 +111,8 @@ main() {
   if (( ! logs_ok )); then
     echo "  (couldn't read the container's logs)"
   else
-    grep 'WebSocket /ws' <<<"$logs" | cut -c1-13 | sort | uniq -c | awk '{print $2, $1}' | hour_rows "  " \
+    # Accepted only: uvicorn logs a refused handshake as '"WebSocket /ws" 403'.
+    grep -F '"WebSocket /ws' <<<"$logs" | grep -F '[accepted]' | cut -c1-13 | sort | uniq -c | awk '{print $2, $1}' | hour_rows "  " \
       | grep . || echo "  (none)"
   fi
 
