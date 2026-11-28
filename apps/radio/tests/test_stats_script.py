@@ -114,6 +114,7 @@ def run_stats(
     tmp_path: Path,
     logs: str,
     sar: str | None = None,
+    sar_yesterday: str | None = None,
     receivers: str | None = None,
     files: dict[str, str] | None = None,
     **env_extra: str,
@@ -147,7 +148,16 @@ def run_stats(
         (tmp_path / name).write_text(text)
     if sar is not None:
         fake_sar = bin_dir / "sar"
-        fake_sar.write_text(f"#!/usr/bin/env bash\ncat <<'OUT'\n{sar}OUT\n")
+        # `sar -u -1` reads yesterday's file; without one it fails, as sar does.
+        (tmp_path / "sar_today").write_text(sar)
+        if sar_yesterday is not None:
+            (tmp_path / "sar_yesterday").write_text(sar_yesterday)
+        fake_sar.write_text(
+            '#!/usr/bin/env bash\n'
+            'case " $* " in *" -1 "*) f="$FAKE_DIR/sar_yesterday" ;; *) f="$FAKE_DIR/sar_today" ;; esac\n'
+            '[ -f "$f" ] || { echo "Cannot open /var/log/sysstat/sa25" >&2; exit 1; }\n'
+            'cat "$f"\n'
+        )
         fake_sar.chmod(fake_sar.stat().st_mode | stat.S_IEXEC)
 
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_DIR": str(tmp_path), **env_extra}
@@ -253,7 +263,7 @@ def test_failed_exec_and_logs_keep_reporting(tmp_path: Path):
     # Nothing was read, so it must not read as a quiet day.
     assert "(couldn't read the receiver log file or the container's logs)" in out.stdout
     assert "no receiver-log lines" not in out.stdout
-    assert "  10:00   65.0 /  80.0" in out.stdout
+    assert "  2026-11-26T10   65.0 /  80.0" in out.stdout
 
 
 # Value: protects=when only the receiver log file can't be read, the container-log receiver lines are still counted, as the message promises; fails_when=a failed file read discards or blanks the container-log events; why_new=the failure test fails both reads at once, so it can't see this; seam=fake docker on PATH; no_claim=docker's real error output
@@ -337,7 +347,7 @@ def test_drop_notes_only_day_keeps_reporting(tmp_path: Path):
     )
     assert out.returncode == 0, out.stderr
     assert "    (none)" in out.stdout.split("by event and code:")[1]
-    assert "  10:00   65.0 /  80.0" in out.stdout
+    assert "  2026-11-26T10   65.0 /  80.0" in out.stdout
 
 
 # Value: protects=a failed receiver-file read keeps docker's daemon error (with the container id) out of the output the monitoring key sees; fails_when=the receiver-file docker exec loses its own 2>/dev/null; why_new=other tests check stdout only; seam=fake docker on PATH; no_claim=docker's real daemon wording
@@ -424,12 +434,36 @@ SAR = textwrap.dedent(
 )
 
 
-# Value: protects=hourly host CPU in the daily load log, avg and max of sysstat's 10-minute samples per UTC hour, so a short peak isn't averaged away; fails_when=busy isn't 100 - %idle, the header or Average line is counted, or hours mix; why_new=the radio-stats workflow (issue #153) needs CPU history, not one reading; seam=fake sar on PATH; no_claim=sysstat's own sampling or that it's enabled on the box
+# Yesterday's file (sar -1): one sample before the 2026-11-25T17:07 cut, the rest after.
+SAR_YESTERDAY = textwrap.dedent(
+    """\
+    Linux 6.8.0-149-generic (skywave-radio) 11/25/2026 _x86_64_ (1 CPU)
+
+    00:00:01        CPU     %user     %nice   %system   %iowait    %steal     %idle
+    16:50:01        all     90.00      0.00      9.00      0.00      0.00      1.00
+    17:10:01        all     30.00      0.00     10.00      0.00      0.00     60.00
+    20:00:01        all     70.00      0.00     15.00      0.00      0.00     15.00
+    20:10:01        all     50.00      0.00      5.00      0.00      0.00     45.00
+    Average:        all     60.00      0.00      9.75      0.00      0.00     30.25
+    """
+)
+
+
+# Value: protects=hourly host CPU over the report's 24 h window (yesterday's sysstat file from the cut on, then today's), avg and max of 10-minute samples per UTC hour, partial end hours labelled, and a missing yesterday file said, not shown as idle; fails_when=busy isn't 100 - %idle, the header or Average line is counted, hours or days mix, yesterday's samples are dropped (a run just after midnight showed one row in the 2026-11-28 #155 report) or a pre-cut sample is kept; why_new=GitHub starts the 17:07 run 7-8 h late; seam=fake sar on PATH; no_claim=sysstat's own sampling or that it's enabled on the box
 def test_hourly_cpu_from_sar(tmp_path: Path):
-    out = run_stats(tmp_path, LOGS, sar=SAR).stdout
-    assert "  00:00   22.5 /  30.0" in out
-    assert "  10:00   65.0 /  80.0" in out
-    assert "Average" not in out.split("== host CPU")[1]
+    out = run_stats(tmp_path, LOGS, sar=SAR, sar_yesterday=SAR_YESTERDAY).stdout
+    cpu = out.split("== host CPU busy % per hour, last 24 h")[1]
+    assert "  2026-11-25T17   40.0 /  40.0  (from 17:07)\n" in cpu  # 16:50 is before the cut
+    assert "  2026-11-25T20   70.0 /  85.0\n" in cpu
+    assert "  2026-11-26T00   22.5 /  30.0\n" in cpu
+    assert "  2026-11-26T10   65.0 /  80.0\n" in cpu
+    assert "2026-11-25T16" not in cpu
+    assert "Average" not in cpu
+    assert "couldn't read sysstat" not in cpu
+    # No file for yesterday (sysstat enabled today): say so, count today.
+    missing = run_stats(tmp_path / "b", LOGS, sar=SAR).stdout.split("== host CPU")[1]
+    assert "  (couldn't read sysstat's file for 2026-11-25; only 2026-11-26 is counted)" in missing
+    assert "  2026-11-26T10   65.0 /  80.0\n" in missing
 
 
 # The refusal throttle as session.py writes it: one line per receiver and code

@@ -41,7 +41,7 @@ main() {
       { note = ""
         if ($1 == first) note = "  (from " from ")"
         else if ($1 == last) note = "  (so far, to " to ")"
-        printf "%s%s  %s%s\n", ind, $1, $2, note }'
+        printf "%s%s  %s%s\n", ind, $1, substr($0, length($1) + 2), note }'
   }
 
   echo "== $now $(hostname)"
@@ -201,19 +201,34 @@ main() {
       | grep . || echo "    (none)"
   fi
 
-  # Host CPU by hour, from sysstat's samples (every 10 min once it's enabled:
-  # see deploy/README.md). The box keeps UTC, so this is today's UTC day so far.
+  # Host CPU by hour over the same window, from sysstat's samples (every 10 min
+  # once it's enabled: see deploy/README.md). sysstat keeps one file per day
+  # (the box keeps UTC): yesterday's (sar -1) from the cutoff on, then today's.
+  # A run just after midnight (GitHub starts it hours late) would otherwise
+  # show one row and none of the previous day's peak.
   echo
-  echo "== host CPU busy % per hour, today (UTC; avg / max of 10-min samples)"
+  echo "== host CPU busy % per hour, last 24 h (UTC; avg / max of 10-min samples)"
   if ! command -v sar >/dev/null; then
     echo "  (sysstat not installed)"
   else
-    LC_ALL=C sar -u 2>/dev/null | awk '
+    # shellcheck disable=SC2016  # awk's own $1/$2/$NF, not the shell's
+    local to_cpu='
       $1 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ && $2 == "all" {
-        h = substr($1, 1, 2); busy = 100 - $NF
+        ts = day "T" $1; if (ts < cutoff) next
+        h = substr(ts, 1, 13); busy = 100 - $NF
         n[h]++; sum[h] += busy; if (busy > max[h]) max[h] = busy }
-      END { for (h in n) printf "  %s:00  %5.1f / %5.1f\n", h, sum[h] / n[h], max[h] }' | sort \
-      | grep . || echo "  (no samples yet today)"
+      END { for (h in n) printf "%s %5.1f / %5.1f\n", h, sum[h] / n[h], max[h] }'
+    # The window always starts on yesterday's date. A missing file for it says
+    # so, so its hours don't read as idle; today's has no samples yet just
+    # after midnight, which the rows show by themselves.
+    local cpu_yesterday="" cpu_today=""
+    cpu_yesterday=$(LC_ALL=C sar -u -1 2>/dev/null) \
+      || echo "  (couldn't read sysstat's file for ${cutoff:0:10}; only ${now:0:10} is counted)"
+    cpu_today=$(LC_ALL=C sar -u 2>/dev/null) || true
+    {
+      awk -v day="${cutoff:0:10}" -v cutoff="$cutoff" "$to_cpu" <<<"$cpu_yesterday"
+      awk -v day="${now:0:10}" -v cutoff="$cutoff" "$to_cpu" <<<"$cpu_today"
+    } | sort | hour_rows "  " | grep . || echo "  (no samples in the window)"
   fi
 }
 

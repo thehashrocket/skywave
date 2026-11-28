@@ -240,7 +240,8 @@ It needs, once:
 3. **Hourly CPU (optional).** As root: `apt-get install -y sysstat`, set
    `ENABLED="true"` in `/etc/default/sysstat`, then
    `systemctl enable --now sysstat`. It samples every 10 minutes; `stats.sh`
-   shows each hour's average and maximum. Without it that section says
+   shows each hour's average and maximum over the report's 24 h window,
+   reading yesterday's file (`sar -1`) as well as today's. Without it that section says
    "(sysstat not installed)".
 4. **Try it:** Actions → Radio stats → Run workflow.
 
