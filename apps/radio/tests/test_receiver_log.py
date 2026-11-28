@@ -130,6 +130,22 @@ async def test_our_overall_limit_is_its_own_code_for_pages_that_know_it(lines, e
     await second.close()
 
 
+# Value: protects=refusals that are about the request or the listener's own connection (the per-address limit, an unknown message) write no receiver-log line, so its refused counts hold only receivers and Skywave's own limits (#146 log_code gate); fails_when=BadRequest.log_code defaults to something for uncoded errors, or the gate logs every BadRequest; why_new=log_code replaced the code check that kept uncoded refusals out of the log, and nothing pinned that; seam=none; no_claim=what stats.sh does with the lines
+async def test_uncoded_refusals_write_no_receiver_log_line(lines):
+    slots = Slots(10, per_receiver=5, per_owner=1)
+    first, _ = session(slots, owner="203.0.113.7")
+    second, sent = session(slots, owner="203.0.113.7")
+    await first.handle(tune("a.example"))
+    await listening(first)
+    before = lines()
+    await second.handle(tune("b.example"))
+    await second.handle({"type": "nonsense"})
+    assert [(m["state"], m.get("code")) for m in sent[-2:]] == [("error", None), ("error", None)]
+    assert lines() == before
+    await first.close()
+    await second.close()
+
+
 # Value: protects=a host from the browser reaches the log only as a checked hostname or IP address (#144 D5); fails_when=loggable_host passes free text, newlines (an IPv6 zone included) or non-strings; why_new=new rule; zone rows from the final review (owner D1); seam=none; no_claim=none beyond protects
 @pytest.mark.parametrize(
     "host,shown",
