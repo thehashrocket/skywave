@@ -40,7 +40,11 @@ case "$1 $2" in
     # FAKE_STATS_HANG_SAMPLING: a stalled Docker daemon once py-spy samples.
     [[ -n "${FAKE_STATS_HANG_SAMPLING:-}" && -e "$FAKE_DIR/spy-started" ]] && exec /bin/sleep 30
     # FAKE_RADIO_CPU_SAMPLING: the radio's CPU % once py-spy samples (30 before).
-    if [[ -n "${FAKE_RADIO_CPU_SAMPLING:-}" && -e "$FAKE_DIR/spy-started" ]]; then
+    # FAKE_RADIO_STATS_THIN: once py-spy samples, only every third call has the radio's row.
+    if [[ -n "${FAKE_RADIO_STATS_THIN:-}" && -e "$FAKE_DIR/spy-started" ]]; then
+      echo x >>"$FAKE_DIR/thin-calls"
+      (( $(wc -l <"$FAKE_DIR/thin-calls") % 3 == 1 )) && echo "radioid 30.00%"
+    elif [[ -n "${FAKE_RADIO_CPU_SAMPLING:-}" && -e "$FAKE_DIR/spy-started" ]]; then
       echo "radioid ${FAKE_RADIO_CPU_SAMPLING}%"
     else
       echo "radioid 30.00%"
@@ -235,7 +239,7 @@ def run_profile(tmp_path: Path, *args: str, spy: bool = True, **fake_env: str):
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
 
-# Value: protects=the Step 0 numbers for issue #153: steal and CPU averages per window (vmstat's since-boot row dropped), listeners from /healthz, radio/caddy CPU, rows per phase, waiting / event-loop / Python-work split with work as a share of one core and its gap to the measured radio_cpu (uvloop's C work, which looks like idle), self time per function and inclusive time per function and thread over the work samples only, and the --nonblocking accuracy caveat; fails_when=the caveat is dropped, the since-boot row is averaged in, columns are misread, waiting samples (queue waits, select, a bare Runner.run) are ranked as work again, the gap line is dropped or misreads radio_cpu, self time counts outer frames, a frame is split by line, or recursion is counted twice; why_new=new script; seam=fake docker/py-spy/vmstat/curl/free/sleep on PATH; no_claim=real py-spy attaching across the container boundary, real vmstat column order, tick timing (sleep is faked)
+# Value: protects=the Step 0 numbers for issue #153: steal and CPU averages per window (vmstat's since-boot row dropped), listeners from /healthz, radio/caddy CPU, rows per phase, waiting / event-loop / Python-work split with work as a share of one core and its gap to the measured radio_cpu with how many readings back it (uvloop's C work, which looks like idle), self time per function and inclusive time per function and thread over the work samples only, and the --nonblocking accuracy caveat; fails_when=the caveat is dropped, the since-boot row is averaged in, columns are misread, waiting samples (queue waits, select, a bare Runner.run) are ranked as work again, the gap line is dropped or misreads radio_cpu, self time counts outer frames, a frame is split by line, or recursion is counted twice; why_new=new script; seam=fake docker/py-spy/vmstat/curl/free/sleep on PATH; no_claim=real py-spy attaching across the container boundary, real vmstat column order, tick timing (sleep is faked)
 def test_summary(tmp_path: Path):
     result, out = run_profile(tmp_path, "30")
     assert result.returncode == 0, result.stderr
@@ -251,7 +255,7 @@ def test_summary(tmp_path: Path):
     assert "       100  ( 19.2%)  event loop in C: uvloop waiting" in summary
     assert "       100  ( 19.2%)  Python work: about 17% of one core" in summary
     # Fake docker stats read the radio at 30%: 30 - 16.7 is C time no Python sample shows.
-    assert "radio_cpu over the same window: 30.0%, so about 13% of one core went to C code" in summary
+    assert "radio_cpu over the same window: 30.0% (6/6 readings), so about 13% of one core went to C code" in summary
     assert (out / "radio-work.raw").read_text() == WORK_RAW
     # --nonblocking samples can be garbled, so the summary says how far to trust close entries.
     assert "pick a hot\n  spot only if it clearly leads" in summary
@@ -322,6 +326,15 @@ def test_work_under_the_event_loop_is_still_work(tmp_path: Path):
     assert "  30.0%  Condition.notify (threading.py)" in self_time
 
 
+# Value: protects=a gap line backed by few docker stats readings says so: the readings count shows and, under half the window's ticks, a warning that radio_cpu and the C share are thin; fails_when=the count is dropped, counts every row instead of the answered ones, or the under-half warning is removed or inverted; why_new=adversarial review finding: one or two readings could stand in for the window unseen; seam=fake docker stats answering the radio on every third call once py-spy samples; no_claim=how often real docker stats times out on the Droplet
+def test_thin_radio_cpu_readings_are_flagged(tmp_path: Path):
+    result, out = run_profile(tmp_path, "30", FAKE_RADIO_STATS_THIN="1")
+    assert result.returncode == 0, result.stderr
+    summary = (out / "summary.txt").read_text()
+    assert "radio_cpu over the same window: 30.0% (2/6 readings)" in summary
+    assert "warning: docker stats answered under half the window's ticks, so radio_cpu and the C share are thin." in summary
+
+
 # Value: protects=a summary whose Python work passes one core (impossible for one process's GIL) warns that some of it is threads blocked in C or waiting for the GIL, so the C share reads low; fails_when=the warning is dropped or its busy > want test is inverted; why_new=every other fixture keeps Python work under one core; seam=fake py-spy on PATH; no_claim=which real threads block in C (only the patterns profile.sh knows are sorted out)
 def test_python_work_past_one_core_is_flagged(tmp_path: Path):
     cmd, env = setup(tmp_path)
@@ -344,7 +357,7 @@ def test_gap_uses_the_profile_window_and_never_goes_negative(tmp_path: Path):
     assert "listeners=7.0  radio_cpu=30.0%  caddy_cpu=10.0%  (12 rows)" in summary
     assert "listeners=7.0  radio_cpu=10.0%  caddy_cpu=10.0%  (6 rows)" in summary
     # Python work is 100 of 600 samples (17%), above the 10% docker stats read.
-    assert "radio_cpu over the same window: 10.0%, so about 0% of one core went to C code" in summary
+    assert "radio_cpu over the same window: 10.0% (6/6 readings), so about 0% of one core went to C code" in summary
 
 
 # Value: protects=the profiler settings the owner approved for production (--nonblocking and never --native, so the radio is never paused; per function, per thread, 20 Hz, the requested window, the radio's host PID) and that py-spy starts only after the baseline window, with vmstat covering each window; fails_when=a flag is dropped, the rate or duration drifts, py-spy overlaps the baseline, or a vmstat count drifts from its window; why_new=new script; seam=fake py-spy and vmstat on PATH; no_claim=py-spy's own flag parsing

@@ -431,10 +431,12 @@ main() {
       #                it calls), to compare with radio_cpu.
       # The radio's measured CPU over the profile window (docker stats, every
       # thread, C included), empty if never read: the yardstick for Python work.
-      local radio_cpu
-      radio_cpu=$(awk -F'\t' '$2 == "profile" && $4 != "-" { r += $4; n++ }
-                              END { if (n) printf "%.1f", r / n }' "$out/samples.tsv")
-      awk -v want=$((seconds * RATE_HZ)) -v work="$out/radio-work.raw" -v cpu="$radio_cpu" '
+      # Also how many readings that is, out of the window's ticks: a docker
+      # stats that timed out on most of them leaves a thin average.
+      local radio_cpu cpu_reads
+      read -r radio_cpu cpu_reads < <(awk -F'\t' '$2 == "profile" { ticks++ } $2 == "profile" && $4 != "-" { r += $4; n++ }
+                              END { if (n) printf "%.1f %d/%d\n", r / n, n, ticks; else print "" }' "$out/samples.tsv") || true
+      awk -v want=$((seconds * RATE_HZ)) -v work="$out/radio-work.raw" -v cpu="$radio_cpu" -v reads="$cpu_reads" '
            BEGIN { printf "" >work }
            { n = $NF; total += n; line = $0; sub(/ [0-9]+$/, "", line)
              k = split(line, f, ";"); leaf = f[k]; sub(/:[0-9]+\)$/, ")", leaf)
@@ -460,7 +462,10 @@ main() {
                printf "  radio_cpu wasn'"'"'t read during the profile, so the event loop'"'"'s C share is unknown.\n"
              } else {
                gap = cpu - 100 * busy / want; if (gap < 0) gap = 0
-               printf "  radio_cpu over the same window: %.1f%%, so about %.0f%% of one core went to C code with no\n", cpu, gap
+               split(reads, rd, "/")
+               printf "  radio_cpu over the same window: %.1f%% (%s readings), so about %.0f%% of one core went to C code with no\n", cpu, reads, gap
+               if (rd[1] * 2 < rd[2])
+                 printf "  warning: docker stats answered under half the window'"'"'s ticks, so radio_cpu and the C share are thin.\n"
                printf "  Python above it (uvloop'"'"'s socket reads and writes, timers). If that is a large part of\n"
                printf "  radio_cpu, the tables below miss it, and a --native run is what splits it.\n"
              }
