@@ -2,6 +2,11 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.64.9.0] - 2026-11-27 ([#175](https://github.com/thehashrocket/skywave/issues/175))
+
+### Changed
+- **The header shows where you're listening, "change" and Listen, and nothing else.** IBP beacons and GhostNet no longer sit in the header as links beside Listen. Both are still in the receiver drawer under the map, folded, as before: press **change**, then their heading to open them, with the mouse or the keyboard. GhostNet's heading still says what's on ("· North America net on now", "· next in 2d 16h") while folded. On a phone the header is one row shorter, so the dial comes up higher.
+
 ## [0.64.6.0] - 2026-11-27 ([#179](https://github.com/thehashrocket/skywave/issues/179))
 
 ### Changed
