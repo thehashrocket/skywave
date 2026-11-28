@@ -10,6 +10,11 @@ Notable changes to skywave, newest first. Versions come from `VERSION` (four par
 - **The coverage check waits until wspr.live has caught up.** Spots reach wspr.live late, so it gives no verdict while any answer's window ended less than 24 hours ago, whether that window had spots or none yet. It usually prints when to run it again; if every recent window is still empty, it says no band had a spot.
 - **The research scripts' tests run with every other radio service test, in CI and in `pnpm test:radio`.** Before, they ran only when someone typed their command by hand.
 
+## [0.64.9.0] - 2026-11-27 ([#175](https://github.com/thehashrocket/skywave/issues/175))
+
+### Changed
+- **The header shows where you're listening, "change" and Listen, and nothing else.** IBP beacons and GhostNet no longer sit in the header as links beside Listen. Both are still in the receiver drawer under the map, folded, as before: press **change**, then their heading to open them, with the mouse or the keyboard. GhostNet's heading still says what's on ("· North America net on now", "· next in 2d 16h") while folded. On a phone the header is one row shorter, so the dial comes up higher.
+
 ## [0.64.6.0] - 2026-11-27 ([#179](https://github.com/thehashrocket/skywave/issues/179))
 
 ### Changed
