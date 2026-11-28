@@ -102,11 +102,11 @@ case "$1" in
 esac
 """
 
-# A fixed "now" (17:07 UTC, when the workflow runs), so the 24 h cut is stable.
+# A fixed "now" (17:07 UTC, when the workflow runs, or FAKE_NOW), so the 24 h cut
+# is stable; stats.sh derives the cut from it with the real date -d.
 FAKE_DATE = """#!/usr/bin/env bash
-for a in "$@"; do [ "$a" = "24 hours ago" ] && { echo 2026-11-25T17:07:00; exit 0; }; done
 for a in "$@"; do [ "$a" = -d ] && exec /bin/date "$@"; done
-echo 2026-11-26T17:07:00Z
+echo "${FAKE_NOW:-2026-11-26T17:07:00Z}"
 """
 
 
@@ -149,14 +149,15 @@ def run_stats(
     if sar is not None:
         fake_sar = bin_dir / "sar"
         # stats.sh opens each day's file by name (sar -f .../saDD): sa25 is
-        # yesterday (2026-11-25), sa26 today; a missing one fails, as sar does.
+        # yesterday (2026-11-25), sa26 today, any other saDD the file
+        # sar_saDD (pass it in files=); a missing one fails, as sar does.
         (tmp_path / "sar_today").write_text(sar)
         if sar_yesterday is not None:
             (tmp_path / "sar_yesterday").write_text(sar_yesterday)
         fake_sar.write_text(
             '#!/usr/bin/env bash\n'
             'for a; do last=$a; done\n'
-            'case "$last" in */sa25) f="$FAKE_DIR/sar_yesterday" ;; */sa26) f="$FAKE_DIR/sar_today" ;; *) f=/nonexistent ;; esac\n'
+            'case "$last" in */sa25) f="$FAKE_DIR/sar_yesterday" ;; */sa26) f="$FAKE_DIR/sar_today" ;; *) f="$FAKE_DIR/sar_${last##*/}" ;; esac\n'
             '[ -n "${FAKE_NO_SAR_TODAY:-}" ] && [ "${last##*/}" = sa26 ] && f=/nonexistent\n'
             '[ "$S_TIME_FORMAT" = ISO ] || { echo "stats.sh must set S_TIME_FORMAT=ISO" >&2; exit 9; }\n'
             '[ -f "$f" ] || { echo "Cannot open $last: No such file or directory" >&2; exit 2; }\n'
@@ -563,3 +564,18 @@ def test_hourly_tables_label_the_partial_end_hours(tmp_path: Path):
     empty = run_stats(tmp_path / "b", "", receivers=drops_only).stdout
     assert "  (none)" in empty.split("== /ws sessions")[1].split("== receiver log")[0]
     assert "    (none)" in empty.split("most listeners per hour:")[1].split("== host CPU")[0]
+
+
+# Value: protects=a run at midnight UTC (GitHub starts the 17:07 job late) reads the clock once and derives the cut from it, so its window is exactly the previous day and the CPU section reads that day's sysstat file in full; fails_when=the cut and now come from separate clock reads (a turn of midnight between them read the wrong two day files) or the window drifts from 24 h; why_new=the #155 final-head review found the two-read race; seam=fake date (FAKE_NOW) and sar on PATH; no_claim=the real timing of two date calls
+def test_midnight_run_reads_the_previous_day_whole(tmp_path: Path):
+    header_27 = "Linux 6.8.0-149-generic (skywave-radio) \t2026-11-27 \t_x86_64_\t(1 CPU)\n"
+    out = run_stats(
+        tmp_path, LOGS, sar=SAR, files={"sar_sa27": header_27}, FAKE_NOW="2026-11-27T00:00:00Z"
+    ).stdout
+    assert "window=2026-11-26T00:00:00Z..2026-11-27T00:00:00Z\n" in out
+    cpu = out.split("== host CPU")[1]
+    assert "  2026-11-26T00   22.5 /  30.0  (from 00:00)\n" in cpu
+    assert "  2026-11-26T10   65.0 /  80.0\n" in cpu
+    assert "sysstat's file" not in cpu
+    # Whole hours 2026-11-26T01 .. T23; only 10 has samples.
+    assert "  (no samples in 22 of the window's 23 whole hours; those hours have no row)\n" in cpu

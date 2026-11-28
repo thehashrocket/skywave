@@ -24,11 +24,12 @@ main() {
   fi
 
   # The last 24 h starts here. Every timestamp below is put in this same form
-  # (YYYY-MM-DDTHH:MM:SS, UTC) and compared to it as text.
-  local cutoff
-  cutoff=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%S)
-  local now
+  # (YYYY-MM-DDTHH:MM:SS, UTC) and compared to it as text. The clock is read
+  # once and the cutoff derived from it, so the window is exactly 24 h and its
+  # two days are the ones the CPU section reads, even if midnight turns mid-run.
+  local now cutoff
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  cutoff=$(date -u -d "$now - 24 hours" +%Y-%m-%dT%H:%M:%S)
 
   # Per-hour rows ("YYYY-MM-DDTHH N" on stdin, sorted), indented by $1. The
   # window's first and last hours are partial, so they say from or to when
@@ -256,11 +257,8 @@ main() {
       # say how many, so a gap over the peak doesn't read as a calm day. The
       # two partial end hours can lack a sample legitimately, so they're left out.
       local i h whole=0 missing=0
-      # Until now's hour, not a fixed 23: cutoff and now are read by separate
-      # date calls, so an hour can turn between them (25 hours apart).
-      for (( i = 1; i <= 25; i++ )); do
+      for (( i = 1; i < 24; i++ )); do
         h=$(date -u -d "${cutoff:0:13}:00:00Z + $i hour" +%Y-%m-%dT%H)
-        [[ $h < "${now:0:13}" ]] || break
         (( whole += 1 ))
         grep -q "^$h " <<<"$rows" || (( missing += 1 ))
       done
