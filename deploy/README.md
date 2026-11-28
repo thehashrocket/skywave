@@ -225,7 +225,7 @@ warnings if it fell behind, the top functions by self time, and by inclusive
 time with each thread's share), the raw samples, `radio.raw`, collapsed
 stacks you can open at https://www.speedscope.app for the flame graph, and
 `radio-work.raw`, the same without the waiting samples. The tables' shares are
-of the Python work samples only (see below); the summary's "Python work: about
+of the Python work samples only (see above); the summary's "Python work: about
 N% of one core" line and the gap to `radio_cpu` under it say how much of the
 radio's CPU that is. High steal means a shared-CPU plan is taking
 time from the box: try a dedicated-CPU plan before changing code. Unlike
