@@ -24,11 +24,29 @@ main() {
   fi
 
   # The last 24 h starts here. Every timestamp below is put in this same form
-  # (YYYY-MM-DDTHH:MM:SS, UTC) and compared to it as text.
-  local cutoff
-  cutoff=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%S)
+  # (YYYY-MM-DDTHH:MM:SS, UTC) and compared to it as text. The clock is read
+  # once and the cutoff derived from it, so the window is exactly 24 h and its
+  # two days are the ones the CPU section reads, even if midnight turns mid-run.
+  local now cutoff
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  cutoff=$(date -u -d "$now - 24 hours" +%Y-%m-%dT%H:%M:%S)
 
-  echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) $(hostname)"
+  # Per-hour rows ("YYYY-MM-DDTHH N" on stdin, sorted), indented by $1. The
+  # window's first and last hours are partial, so they say from or to when
+  # rather than read as quiet hours. Runs aren't exactly 24 h apart (GitHub
+  # starts scheduled runs late, by hours), so neighbouring reports can overlap
+  # or leave a gap: the window= line says what this one covers.
+  hour_rows() {
+    awk -v ind="$1" -v first="${cutoff:0:13}" -v from="${cutoff:11:5}" \
+        -v last="${now:0:13}" -v to="${now:11:5}" '
+      { note = ""
+        if ($1 == first) note = "  (from " from ")"
+        else if ($1 == last) note = "  (so far, to " to ")"
+        printf "%s%s  %s%s\n", ind, $1, substr($0, length($1) + 2), note }'
+  }
+
+  echo "== $now $(hostname)"
+  echo "window=${cutoff}Z..$now"
   echo "cpus=$(nproc)  load=$(cut -d' ' -f1-3 /proc/loadavg)  up=$(uptime -p | sed 's/^up //')"
   free -m | awk '/^Mem:/ {printf "mem_total=%sMB  mem_used=%sMB  mem_available=%sMB\n", $2, $3, $7}'
   [[ -f /var/run/reboot-required ]] && echo "reboot_required=yes" || echo "reboot_required=no"
@@ -94,8 +112,10 @@ main() {
   if (( ! logs_ok )); then
     echo "  (couldn't read the container's logs)"
   else
-    grep 'WebSocket /ws' <<<"$logs" | cut -c1-13 | sort | uniq -c | awk '{printf "  %s  %s\n", $2, $1}' \
-      || echo "  (none)"
+    # Accepted only: uvicorn logs a refused handshake as '"WebSocket /ws" 403'.
+    # Anchored at the end: the path in the line carries the client's query string.
+    grep -E '"WebSocket /ws[^"]*" \[accepted\]$' <<<"$logs" | cut -c1-13 | sort | uniq -c \
+      | awk '{print $2, $1}' | hour_rows "  " | grep . || echo "  (none)"
   fi
 
   # Receiver-log lines (#144): refusals by code and the most listeners seen per
@@ -180,22 +200,71 @@ main() {
     echo "  most listeners per hour:"
     awk '{ h = substr($1, 1, 13); for (i = 2; i <= NF; i++) if ($i ~ /^listeners=/) {
              split($i, a, "="); if (a[2] + 0 > m[h]) m[h] = a[2] + 0 } }
-         END { for (h in m) print h, m[h] }' <<<"$events" | sort | awk '{printf "    %s  %s\n", $1, $2}'
+         END { for (h in m) print h, m[h] }' <<<"$events" | sort | hour_rows "    " \
+      | grep . || echo "    (none)"
   fi
 
-  # Host CPU by hour, from sysstat's samples (every 10 min once it's enabled:
-  # see deploy/README.md). The box keeps UTC, so this is today's UTC day so far.
+  # Host CPU by hour over the same window, from sysstat's samples (every 10 min
+  # once it's enabled: see deploy/README.md). sysstat keeps one file per UTC
+  # day; the window spans two, read by the window's own dates (not sar's
+  # "today", which moves if this run crosses midnight). A run just after
+  # midnight (GitHub starts it hours late) needs yesterday's for the peak.
   echo
-  echo "== host CPU busy % per hour, today (UTC; avg / max of 10-min samples)"
+  echo "== host CPU busy % per hour, last 24 h (UTC; avg / max of 10-min samples)"
   if ! command -v sar >/dev/null; then
     echo "  (sysstat not installed)"
   else
-    LC_ALL=C sar -u 2>/dev/null | awk '
-      $1 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ && $2 == "all" {
-        h = substr($1, 1, 2); busy = 100 - $NF
-        n[h]++; sum[h] += busy; if (busy > max[h]) max[h] = busy }
-      END { for (h in n) printf "  %s:00  %5.1f / %5.1f\n", h, sum[h] / n[h], max[h] }' | sort \
-      | grep . || echo "  (no samples yet today)"
+    # One day's samples from $cutoff on, as "YYYY-MM-DDTHH busy" lines. Exit 3:
+    # no file or sar failed; 4: the file is from another date (a leftover of
+    # the same day of the month after collection stopped).
+    cpu_samples() {
+      local day=$1 file out
+      file=/var/log/sysstat/sa${day//-/}                    # HISTORY > 28 names
+      [[ -e $file ]] || file=/var/log/sysstat/sa${day:8:2}  # the default saDD
+      out=$(S_TIME_FORMAT=ISO LC_ALL=C sar -u -f "$file" 2>/dev/null) || return 3
+      # shellcheck disable=SC2016  # awk's own $1/$2/$NF, not the shell's
+      awk -v day="$day" -v next_day="$(date -u -d "$day + 1 day" +%Y-%m-%d)" -v cutoff="$cutoff" '
+        NR == 1 { for (i = 1; i <= NF; i++)
+                    if ($i ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) fday = $i
+                  if (fday != day) { stale = 1; exit }
+                  d = day; next }
+        $1 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ && $2 == "all" {
+          # sysstat can end a file with a 00:00 record of the next day. Only a
+          # wrap from 23:xx to 00:xx is that; any other step back (the clock
+          # was set back) stays on this day, so its hours keep their date.
+          if ($1 < last && last >= "23:" && $1 < "01:") d = next_day
+          last = $1
+          ts = d "T" $1; if (ts >= cutoff) print substr(ts, 1, 13), 100 - $NF }
+        END { if (stale) exit 4 }' <<<"$out"
+    }
+    local day samples="" got
+    for day in "${cutoff:0:10}" "${now:0:10}"; do
+      if got=$(cpu_samples "$day"); then
+        samples+=$got$'\n'
+      elif (( $? == 4 )); then
+        echo "  (sysstat's file for $day is from another date; its hours aren't counted)"
+      else
+        echo "  (couldn't read sysstat's file for $day; its hours aren't counted)"
+      fi
+    done
+    local rows
+    rows=$(awk 'NF == 2 { n[$1]++; sum[$1] += $2; if (!($1 in max) || $2 > max[$1]) max[$1] = $2 }
+         END { for (h in n) printf "%s %5.1f / %5.1f\n", h, sum[h] / n[h], max[h] }' <<<"$samples" | sort)
+    if [[ -z $rows ]]; then
+      echo "  (no samples in the window)"
+    else
+      # A whole hour with no sample (box down, collection stopped) has no row;
+      # say how many, so a gap over the peak doesn't read as a calm day. The
+      # two partial end hours can lack a sample legitimately, so they're left out.
+      local i h whole=0 missing=0
+      for (( i = 1; i < 24; i++ )); do
+        h=$(date -u -d "${cutoff:0:13}:00:00Z + $i hour" +%Y-%m-%dT%H)
+        (( whole += 1 ))
+        grep -q "^$h " <<<"$rows" || (( missing += 1 ))
+      done
+      (( missing == 0 )) || echo "  (no samples in $missing of the window's $whole whole hours; those hours have no row)"
+      hour_rows "  " <<<"$rows"
+    fi
   fi
 }
 

@@ -133,13 +133,22 @@ On the box, as `deploy` or root:
 It prints the host's CPU count, load and memory, whether a reboot is pending,
 the `MAX_*` limits from `apps/radio/.env`, both containers' CPU and memory, the
 browser and Kiwi sockets open right now, `/ws` sessions opened per UTC hour over
-the last 24 h, and refusals by code and the most listeners seen per hour from the
+the last 24 h (accepted handshakes only: one refused at the handshake for its
+site or token isn't counted, one closed for too many sockets from one address
+is), and refusals by code and the most listeners seen per hour from the
 receiver log (#144). It reads that log from the `RECEIVER_LOG` file and its
 rotated copies inside the container, plus any receiver lines in the container's
 own logs (where they go if the file can't be opened), and keeps the last 24 h.
+The per-hour tables' first and last hours are partial, so they are labelled
+"(from HH:MM)" and "(so far, to HH:MM)". The `window=` line gives the exact 24 h
+the report covers: GitHub can start the scheduled run hours late, so two
+neighbouring reports can overlap or leave a gap between them.
 Session counts come from the container's own logs, which a deploy that recreates
 the container deletes; on such a day the report says "since <time>; earlier
-hours were in the previous container". When Docker's own log cap (10 MB x 5),
+hours were in the previous container". To keep a day of sessions in those logs,
+the service leaves successful `/held`, `/noise` and `/healthz` requests out of
+its access log (each open page polls `/held` every minute, #155); failed ones
+are still logged. When Docker's own log cap (10 MB x 5),
 or the receiver log's (5 MB x 5), has already dropped lines from inside the
 24 h, it says how far back that log reaches. A section it can't read (say the
 container is restarting) says so and the rest of the report still prints.
@@ -211,8 +220,9 @@ and installs nothing.
 
 ### Daily load log
 
-`.github/workflows/radio-stats.yml` runs `stats.sh` every day at 17:07 UTC
-(after the 10:00-16:00 UTC peak) and posts the output as a comment on the open
+`.github/workflows/radio-stats.yml` runs `stats.sh` every day, scheduled for
+17:07 UTC (after the 10:00-16:00 UTC peak; GitHub has started it hours late, so
+each report's `window=` line says which 24 h it covers), and posts the output as a comment on the open
 issue labelled `radio-load`. A Claude scheduled task reads that issue each
 morning and only raises something when it changes: peaks near `MAX_SESSIONS`,
 `full` refusals, sessions per hour climbing, hourly CPU near 100%, a pending
@@ -233,7 +243,10 @@ It needs, once:
 3. **Hourly CPU (optional).** As root: `apt-get install -y sysstat`, set
    `ENABLED="true"` in `/etc/default/sysstat`, then
    `systemctl enable --now sysstat`. It samples every 10 minutes; `stats.sh`
-   shows each hour's average and maximum. Without it that section says
+   shows each hour's average and maximum over the report's 24 h window,
+   reading both days' files by date and saying so when one is missing or from
+   another date, and how many whole hours have no samples (box down, collection
+   stopped). Without it that section says
    "(sysstat not installed)".
 4. **Try it:** Actions → Radio stats → Run workflow.
 

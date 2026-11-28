@@ -68,6 +68,35 @@ RECEIVER_LOG_BACKUPS = 4
 # file stalled) new lines are dropped and counted, so the log can't grow the
 # service's memory until it is killed (owner D2): about 2 MB of records.
 RECEIVER_LOG_QUEUE = 10_000
+# Polled paths whose successful replies uvicorn's access log leaves out: every
+# open page asks /held each minute and /noise every 10 minutes, each line
+# carrying up to NOISE_MAX_RECEIVERS receivers, and Docker's health check asks
+# /healthz every 30 s. Those lines filled the container's 10 MB x 5 log in
+# about 6 h (#155), rotating out the "WebSocket /ws" lines deploy/stats.sh
+# counts sessions from (uvicorn.error, which this doesn't touch). Failures are
+# still logged.
+QUIET_ACCESS_PATHS = frozenset({"/healthz", "/noise", "/held"})
+
+
+class _QuietPolls(logging.Filter):
+    """Drops uvicorn.access lines for a 2xx/3xx GET or OPTIONS on QUIET_ACCESS_PATHS."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # uvicorn's access line: (client, method, path?query, http_version, status).
+        args = record.args
+        if not isinstance(args, tuple) or len(args) != 5:
+            return True
+        _client, method, path, _version, status_code = args
+        return not (
+            method in ("GET", "OPTIONS")
+            and isinstance(path, str)
+            and path.partition("?")[0] in QUIET_ACCESS_PATHS
+            and isinstance(status_code, int)
+            and status_code < 400
+        )
+
+
+_QUIET_POLLS = _QuietPolls()
 
 
 class _DroppingQueueHandler(QueueHandler):
@@ -237,6 +266,9 @@ def create_app(settings: Settings | None = None, **session_kwargs) -> FastAPI:
     settings = settings or Settings.from_env()
     check_settings(settings)
     attach_receiver_log(settings.receiver_log)
+    # uvicorn sets up its loggers before it imports the app, so a filter added
+    # here survives. It is one shared instance, so a second create_app adds nothing.
+    logging.getLogger("uvicorn.access").addFilter(_QUIET_POLLS)
     # Every socket cleanup, from creation until it finishes (track_cleanup):
     # held so it isn't garbage-collected mid-run, and so shutdown can wait on it.
     cleanups: set[asyncio.Task[None]] = set()
