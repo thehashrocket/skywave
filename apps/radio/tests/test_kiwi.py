@@ -50,13 +50,16 @@ async def test_handshake_and_iq_stream():
     assert abs(freq - 1500) < 30
 
 
-# Value: protects=each refusal keeps its code for the browser and its raw Kiwi value in detail for the receiver log (#144); fails_when=a code changes or detail drops the badp value; why_new=detail is new, the codes were covered; seam=none; no_claim=real Kiwi badp meanings (FakeKiwi)
+# Value: protects=each refusal keeps its code for the browser and its raw Kiwi value in detail for the receiver log, with badp mapped by the firmware's meaning: 1 is full for listeners without a password, 5 is Skywave's shared address (#144); fails_when=a code changes, badp=1 reads as a locked receiver, badp=5 reads as full, or detail drops the badp value; why_new=badp=1/5 remapped after reading rx/rx_cmd.h; seam=none; no_claim=real Kiwi firmware (FakeKiwi sends the MSG)
 @pytest.mark.parametrize(
     "reject,code,detail",
     [
-        (b"MSG badp=1", "password", "badp=1"),
-        # A second stream under another timestamp: refused, not a password problem.
-        (b"MSG badp=5", "busy", "badp=5"),
+        # BADP_TRY_AGAIN: we send no password, so every free channel needs one.
+        (b"MSG badp=1", "busy", "badp=1"),
+        # BADP_NO_MULTIPLE_CONNS: another stream from our address.
+        (b"MSG badp=5", "same_source", "badp=5"),
+        # Admin-only values (or undefined ones) keep the old label.
+        (b"MSG badp=3", "password", "badp=3"),
         (b"MSG down", "down", None),
         # The redirect's URL is the Kiwi's text: it stays out of detail.
         (b"MSG redirect=http%3A%2F%2Fother.example%3A8073", "redirect", None),

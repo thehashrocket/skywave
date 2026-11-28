@@ -439,12 +439,28 @@ class KiwiConnection:
                 )
             most = f" ({value} listeners max)" if value else ""
             raise KiwiError("busy", f"{self.host} is full{most}. Try another receiver.", detail=refusal_detail(name, value))
-        if name == "badp" and value == "5":
-            # A second stream from the same listener under another timestamp.
+        # badp values, from the KiwiSDR firmware (rx/rx_cmd.h, rx_cmd.cpp
+        # CMD_AUTH). A listener without a password only ever gets 0, 1 or 5;
+        # 2-4, 6 and 7 are for admin connections (#144).
+        if name == "badp" and value == "1":
+            # BADP_TRY_AGAIN: a wrong password, or every free channel needs
+            # one. We send none, so the receiver is full for the public.
             raise KiwiError(
-                "busy", f"{self.host} refused another connection from this listener.", detail=refusal_detail(name, value)
+                "busy",
+                f"{self.host} has no free channels without a password. Try another receiver.",
+                detail=refusal_detail(name, value),
+            )
+        if name == "badp" and value == "5":
+            # BADP_NO_MULTIPLE_CONNS: the owner allows one connection per IP
+            # address (no_dup_ip), and every Skywave listener shares ours. The
+            # receiver may have room; it just won't take a second one from us.
+            raise KiwiError(
+                "same_source",
+                f"{self.host} turned away a second listener from Skywave's address. Try another receiver.",
+                detail=refusal_detail(name, value),
             )
         if name == "badp" and value not in (None, "0"):
+            # Admin-only values, or ones the firmware doesn't define.
             raise KiwiError("password", f"{self.host} requires a password.", detail=refusal_detail(name, value))
         if name == "down":
             raise KiwiError("down", f"{self.host} is down right now.")

@@ -18,6 +18,7 @@ export const MAX_ATTEMPTS = 3; // README "Using it" quotes this number.
 const WHY_SKIPPED: Record<RadioErrorCode, string> = {
   busy: "was full",
   skywave_cap: "already has a Skywave listener",
+  same_source: "turned away a second listener from Skywave's address",
   no_apps: "only takes listeners on its own web page",
   down: "is down",
   unreachable: "didn't answer",
@@ -41,10 +42,12 @@ const ADDRESS_CODES = new Set<RadioErrorCode>(["dns", "blocked", "invalid"]);
 
 /**
  * Failures that don't use up one of the MAX_ATTEMPTS tries: the address ones
- * above, and the radio service's own per-receiver cap (skywave_cap), which
- * knocks on no one's receiver and says nothing about whether it has room (#144).
+ * above, the radio service's own per-receiver cap (skywave_cap), which knocks
+ * on no one's receiver, and a receiver that takes one connection per address
+ * turning away a second Skywave listener (same_source). Neither says whether
+ * the receiver has room (#144).
  */
-const FREE_CODES = new Set<RadioErrorCode>([...ADDRESS_CODES, "skywave_cap"]);
+const FREE_CODES = new Set<RadioErrorCode>([...ADDRESS_CODES, "skywave_cap", "same_source"]);
 
 /**
  * A receiver that refused is left out of new runs for this long, the age the
@@ -58,9 +61,23 @@ export const REFUSED_MS = LIST_MAX_AGE_MS; // README "Using it" quotes this numb
  * Only the receiver's own answers count as a refusal. Drops and timeouts can be
  * one network blip, address and setup errors aren't about the volunteer's
  * receiver, and "down"/"unreachable" can be the radio service's own network
- * (its ScanCache doesn't remember drops or timeouts either).
+ * (its ScanCache doesn't remember drops or timeouts either). same_source lasts
+ * only while another Skywave listener is on it, so it isn't remembered.
  */
 const REFUSALS = new Set<RadioErrorCode>(["busy", "no_apps", "password"]);
+
+/**
+ * How the note describes a refusal that came after the receiver had already
+ * played (during the WATCH_MS watch), so the listener knows why the audio
+ * stopped and that it wasn't their doing (#144). Only REFUSALS get there.
+ */
+const REFUSED_LATE: Partial<Record<RadioErrorCode, string>> = {
+  busy: "filled up",
+  no_apps: "turned away apps like Skywave",
+};
+function refusedAfterPlaying(name: string, code: RadioErrorCode): string {
+  return `${name} ${REFUSED_LATE[code] ?? "refused"} after a few seconds`;
+}
 
 const refusedKey = (r: { host: string; port?: number }) =>
   receiverKey({ host: r.host.toLowerCase(), port: r.port ?? DEFAULT_KIWI_PORT });
@@ -413,19 +430,24 @@ export function usePickBest(
     return false;
   }, [finish, goBack, drop, reportLeft]);
 
-  /** Receiver `current` of run `c` failed with `code`: try the next candidate, or give up. */
+  /**
+   * Receiver `current` of run `c` failed with `code`: try the next candidate,
+   * or give up. `late`: it refused after it had played (during the watch).
+   */
   const moveOn = useCallback(
-    (c: Chain, current: Receiver, code: RadioErrorCode) => {
+    (c: Chain, current: Receiver, code: RadioErrorCode, late = false) => {
       c.codes.push(code);
       if (!FREE_CODES.has(code)) c.strikes++;
       const tried = new Set(c.tried.map(receiverKey));
       // The dial may have moved since the run started; skip what no longer fits.
       const next = c.candidates.find((r) => !tried.has(receiverKey(r)) && acceptsRef.current(r));
       if (!next || c.strikes >= MAX_ATTEMPTS || c.tried.length >= MAX_TOTAL) {
-        const summary =
+        const tally =
           c.tried.length === 1
             ? "Tried 1 receiver and it didn't work."
             : `Tried ${c.tried.length} receivers and none worked.`;
+        // Audio that stopped on its own needs saying, or "none worked" reads as wrong.
+        const summary = late ? `${refusedAfterPlaying(current.name, code)}. ${tally}` : tally;
         report(c, "gave_up");
         if (goBack(c, summary)) return;
         // Out of receivers and nowhere to go back to: the last one tried refused, so nothing was chosen.
@@ -434,7 +456,8 @@ export function usePickBest(
       }
       c.tried.push(next);
       c.retried = false;
-      setNote(`${current.name} ${WHY_SKIPPED[code]}; trying ${next.name}…`);
+      const why = late ? refusedAfterPlaying(current.name, code) : `${current.name} ${WHY_SKIPPED[code]}`;
+      setNote(`${why}; trying ${next.name}…`);
       tuneCandidate(c, next);
     },
     [tuneCandidate, finish, goBack, drop, report],
@@ -462,6 +485,7 @@ export function usePickBest(
       return;
     }
     const current = c.tried[c.tried.length - 1]!;
+    const late = c.watchTimer !== undefined;
     if (c.watchTimer) {
       // Dial and mode retunes of that receiver keep the watch; its own refusal
       // (full, no apps, password) picks the run up again, moving on as for any
@@ -513,7 +537,7 @@ export function usePickBest(
       }, status.retryAfterMs);
       return;
     }
-    moveOn(c, current, status.code);
+    moveOn(c, current, status.code, late);
   }, [status, tune, finish, drop, report, moveOn]);
 
   // A candidate the service refused while the station before it plays on (a

@@ -54,7 +54,8 @@ def test_radio_file_runs_under_radio_pytest():
     need_venv()
     result = run(CHEAP_PY)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "1 passed" in result.stdout
+    # CHEAP_PY (test_error_codes.py) holds two tests since #144 added the NEW_CODES check.
+    assert "2 passed" in result.stdout
 
 
 def test_failing_radio_run_exits_1():

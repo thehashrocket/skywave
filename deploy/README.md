@@ -93,6 +93,18 @@ A line reads `event=error host=kiwi.example port=8073 code=busy detail=too_busy=
 audio_s=3.2 listeners=6`. `detail` holds only the Kiwi's own numbers, an HTTP
 status, an error class name or a fixed word; no listener names or addresses.
 
+A Kiwi's `badp` refusals log under these codes: `badp=1` as `busy` (every free
+channel needs a password; Skywave sends none), `badp=5` as `same_source` (the
+owner allows one connection per address, and every Skywave listener shares the
+Droplet's), and any other value as `password` (the firmware sends those only to
+admin connections, so expect none). Before v0.64.21 `badp=1` was logged as
+`password` and `badp=5` as `busy`; read older lines' `detail` to tell them apart.
+
+So `busy` in the daily load report jumps on the first day after that change
+from the new label alone: the `badp=1` refusals, about 205 a day when it
+shipped, move from `password` to `busy`, and `password` drops to about none.
+Judge the `busy` trend only from reports after the deploy, not across it.
+
 ## Later deploys: GitHub Actions
 
 `Deploy radio` runs after `CI` passes on a push to `main`, and by hand from
