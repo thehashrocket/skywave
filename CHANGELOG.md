@@ -2,6 +2,16 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.64.16.0] - 2026-11-28 ([#155](https://github.com/thehashrocket/skywave/issues/155))
+
+### Fixed
+- **The daily load report counts a whole day of listening sessions again.** Every open page asks the radio service which receivers already have a Skywave listener once a minute, and the service logged each of those requests with up to 100 receivers in it. On the server those lines were 99% of its 50 MB log, which filled in about six hours and pushed out the session lines the report counts. The service no longer logs successful polls of that list, of the noise levels or of its health check; failed ones are still logged.
+- **The report's host CPU section covers the same 24 hours as the rest of the report.** It used to show only the current UTC day so far, and GitHub starts the daily run hours late (around 00:30 UTC instead of 17:07), so it usually showed one row and none of the busy hours. It now reads both days' sysstat files by date and says when one is missing or left over from another date, instead of showing those hours as idle or counting old numbers.
+- **The report counts only WebSocket sessions that were actually opened.** A refused connection, such as one from the wrong site, no longer counts as a session.
+
+### Changed
+- **The report says exactly which 24 hours it covers, and labels its partial hours.** A new `window=` line gives the start and end, since late runs mean two neighbouring reports can overlap or leave a gap. In the per-hour tables (sessions, most listeners, host CPU), the first and last hours read "(from HH:MM)" and "(so far, to HH:MM)" so a partial hour doesn't look quiet, and an empty table says so instead of going blank. These change what the numbers mean, so compare only reports from after this release is deployed.
+
 ## [0.64.14.0] - 2026-11-28 ([#178](https://github.com/thehashrocket/skywave/issues/178))
 
 ### Fixed
