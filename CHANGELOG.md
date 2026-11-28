@@ -9,6 +9,12 @@ Notable changes to skywave, newest first. Versions come from `VERSION` (four par
 - **Every "Skywave is full" refusal is counted, apart from receiver failures.** The radio service writes each one to its receiver log as `skywave_full` (one line per connection every 10 seconds, with the repeats added up), so the daily load report shows how often listeners were turned away. Before, these refusals weren't logged at all.
 - **Analytics count Skywave being full as `radio_refused` (code `skywave_full`), not as a `radio_error` "service" failure,** and a Pick best run that ends on it reports the outcome `full` instead of `service`. Both "service" counts drop after this release for that reason alone, so to compare with earlier numbers, add the `skywave_full` refusals back in or use the receiver log's count.
 
+## [0.64.19.0] - 2026-11-28 ([#153](https://github.com/thehashrocket/skywave/issues/153))
+
+### Fixed
+- **The radio's CPU profile summary shows the work the radio actually does, not threads sitting idle.** The live profiler can't tell a waiting thread from a busy one without pausing the radio, so the first profile on the server, on 2026-11-28, was about 95% samples of idle threads, and its tables ranked "waiting on a queue" and "event loop sleeping" as the top costs. `deploy/profile.sh` now sorts every sample into three rows: waiting (threads blocked on a queue, lock, join, socket wait or a stuck address lookup), the event loop's own C code, and Python work. Its top-function tables rank only the Python work, which is also saved as `radio-work.raw` for a flame graph.
+- **The summary checks itself against the radio's measured CPU.** It prints Python work as a share of one core next to the CPU Docker measured over the same window, and the gap between them, which is the event loop's own C work (socket reads and writes, timers) that the tables can't show. It says how many CPU readings the gap rests on, and warns when they cover under half the window, when Python work passes one core (which one process can't do, so some of it is threads blocked in C), and when the run was cut short, so a skewed run doesn't send you to a profiler mode that pauses the radio.
+
 ## [0.64.18.0] - 2026-11-28 ([#155](https://github.com/thehashrocket/skywave/issues/155))
 
 ### Fixed
