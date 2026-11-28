@@ -95,6 +95,18 @@
 **Priority:** P4
 **Depends on:** Running more than one radio service process
 
+### Tell a listener with two radios playing to stop one, even while Skywave is full
+
+**What:** In `Slots.refusal` (`apps/radio/skywave_radio/session.py`), check the per-address limit (`MAX_SESSIONS_PER_IP`) before the overall limit: owner, then full, then receiver.
+
+**Why:** Since #146, "full" is checked first. A listener who already has two radios playing and opens a third while Skywave is full is told "Skywave is full… try again in a few minutes", when stopping one of their own tabs would let them listen. That refusal is also counted as `skywave_full`, though the listener is already being served.
+
+**Context:** Raised by the native adversarial reviewer in the #146 /gstack-ship run (2026-11-28); the owner chose to ship and defer it. Rare: it needs both limits at once, and it changes only the message and one count, never audio. Add a `test_listener_caps.py` case next to `test_slots_full_beats_the_receiver_and_owner_caps`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** Nothing
+
 ## Web app
 
 ### Signal stations: verify the seed catalog before the panel ships (#98 follow-up)
