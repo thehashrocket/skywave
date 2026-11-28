@@ -2,6 +2,14 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.64.17.0] - 2026-11-28 ([#174](https://github.com/thehashrocket/skywave/issues/174))
+
+### Changed
+- Pick best receiver, Stop and the presets Save button draw their text in a brighter brass, so it reads at WCAG AA on the raised panels (5.3:1, was 4.3:1), hovered too (#174).
+- Text fields, selects, the Languages button, the reception prompt's comment box and the idle mode, tuning-bar and span segments have a brighter border (`--rule-strong`) that meets the 3:1 a control's edge needs (WCAG 1.4.11). Dividers, table lines and the map keep `--rule` (#174).
+- An invalid call sign marks its field with a 2px yellow edge, since a 1px yellow border was hard to tell from the brighter resting border (#174).
+- A pressed mode or span segment covers the border of the segment beside it, and a keyboard-focused segment shows its whole focus ring next to the pressed one (#174).
+
 ## [0.64.15.0] - 2026-11-28 ([#169](https://github.com/thehashrocket/skywave/issues/169))
 
 ### Added
