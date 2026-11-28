@@ -2,6 +2,11 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.64.15.0] - 2026-11-28 ([#169](https://github.com/thehashrocket/skywave/issues/169))
+
+### Added
+- **The receiver-ranking research counts a "WWV or WWVH?" answer once.** Since the page started asking which of the two stations sharing a frequency you heard, each answer is stored as one row per station. The research's queries counted rows, so every such answer counted twice, its Pick best details twice, and a "Didn't open" twice, doubling receiver failures. A new shared set of views, used by every research query, gives one row per answer for answer counts, picks and outcomes, naming the stations it asked about. For counts by station it marks a station that wasn't heard while the other one was as "not heard over the other", apart from a plain "not heard", since a station drowned out by the other may still have been on the air. That is the same rule the app's weekly report already uses, and a test keeps the two in step.
+
 ## [0.64.13.0] - 2026-11-28 ([#61](https://github.com/thehashrocket/skywave/issues/61))
 
 ### Changed
