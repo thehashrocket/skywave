@@ -2,7 +2,7 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
-## [0.64.10.0] - 2026-11-28 ([#61](https://github.com/thehashrocket/skywave/issues/61))
+## [0.64.13.0] - 2026-11-28 ([#61](https://github.com/thehashrocket/skywave/issues/61))
 
 ### Changed
 - **The broadcast coverage check for the receiver-ranking research is stricter about when it decides.** This is the offline script that asks whether WSPR spots cover enough broadcast "Did you hear it?" answers to be worth a second study. It now gives its build-or-stop answer only for a 3-minute spot window, the shortest one, so a pass there holds for any longer window chosen later. Any other window prints its numbers as exploratory, with no verdict. It also gives no verdict until at least 50 answers it could check come from 10 or more different stations and 10 or more different receivers, so one well-covered path can't decide it. Stations are counted by name and receivers by address, from new columns in the answer export, so a receiver whose listed position moved still counts once, and a question that named two or three stations counts once. An export made before those columns says to download it again.
