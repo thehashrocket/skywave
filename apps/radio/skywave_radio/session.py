@@ -135,6 +135,16 @@ SCAN_CACHE_S = 600.0
 # are kept: a dropped connection or a timeout says nothing about the next try.
 SCAN_REFUSAL_CACHE_S = 60.0
 SCAN_REFUSALS = frozenset({"busy", "no_apps", "password", "down"})
+# Error codes a page built before them doesn't know: it would read one as the
+# service's own failure and stop Pick best, so it gets "busy" instead, as
+# before (#144). A page lists the ones it knows in a tune's `codes`. Keep in
+# step with NEW_CODES in apps/web/src/lib/use-radio.ts.
+NEW_CODES = frozenset({"skywave_cap", "same_source"})
+
+
+def for_page(code: str, known: frozenset[str]) -> str:
+    """`code` as a page that knows the NEW_CODES in `known` should get it."""
+    return "busy" if code in NEW_CODES and code not in known else code
 # Receivers the shared cache remembers at most; the soonest to expire goes first.
 SCAN_CACHE_MAX = 500
 # A listener's next sweep waits this long after the last; a request sooner
@@ -702,10 +712,10 @@ class ListenSession:
 
         public_only = msg.get("source") == "list"
         secure = msg.get("secure") is True
-        # A page that lists "skywave_cap" in `codes` knows that code; an older
-        # one (a tab left open) gets "busy" for our cap, as before (#144).
+        # The NEW_CODES this page knows; an older one (a tab left open) gets
+        # "busy" for the rest (for_page).
         codes = msg.get("codes")
-        knows_cap = isinstance(codes, list) and "skywave_cap" in codes
+        known = frozenset(c for c in codes if isinstance(c, str)) if isinstance(codes, list) else frozenset()
         # Same receiver means same address dialed under the same rule: a list
         # tune of an address a typed tune reached privately must restart, but
         # with private hosts off (production) the two are one receiver.
@@ -776,7 +786,7 @@ class ListenSession:
         receiver = (host, port)
         current = self._lease
         if (
-            knows_cap
+            "skywave_cap" in known
             and self._pump_owns_receiver()
             and self._slots.receiver_full(receiver)
             and not (current is not None and current.receiver == receiver)
@@ -788,7 +798,7 @@ class ListenSession:
             # the tune as usual. An error status followed by that status would
             # be merged into one render on the page and lost (owner D8). An
             # older page gets the old order below: stop, then "busy".
-            await self._refuse_switch(self._receiver_full(host, port, knows_cap))
+            await self._refuse_switch(self._receiver_full(host, port, known))
             return
 
         if self._freq_khz and freq != self._freq_khz:
@@ -831,11 +841,11 @@ class ListenSession:
         if handing_over:
             if not self._slots.move(lease, receiver):
                 self._slots.release(lease)
-                raise self._receiver_full(host, port, knows_cap)
+                raise self._receiver_full(host, port, known)
         else:
             taken = self._slots.acquire(receiver, self._owner)
             if taken == "receiver":
-                raise self._receiver_full(host, port, knows_cap)
+                raise self._receiver_full(host, port, known)
             if taken == "owner":
                 n = self._slots.per_owner
                 raise BadRequest(
@@ -854,7 +864,8 @@ class ListenSession:
         self._ending_target = None
         self._ident = listener_ident(msg.get("ident"), self.settings.ident)
         self._pump = self._slot_holder = asyncio.create_task(
-            self._run(host, port, public_only=public_only, secure=secure), name=f"{host}:{port}"
+            self._run(host, port, public_only=public_only, secure=secure, known_codes=known),
+            name=f"{host}:{port}",
         )
         self.idle_since = None
         # A done callback, not a finally in _run: a task cancelled before it
@@ -932,16 +943,15 @@ class ListenSession:
         )
         await self._status("listening" if self._listening else "connecting")
 
-    def _receiver_full(self, host: str, port: int, knows_cap: bool) -> BadRequest:
+    def _receiver_full(self, host: str, port: int, known: frozenset[str]) -> BadRequest:
         # Its own code, not "busy" (#144): the receiver itself may have room, and
-        # Pick best moves on without spending one of its tries. A page from
-        # before that code would read it as our own failure and stop Pick best,
-        # so it gets "busy" (one try spent, as before); the log says which.
+        # Pick best moves on without spending one of its tries. An older page
+        # gets "busy" (one try spent, as before); the log says which.
         n = self._slots.per_receiver
         return BadRequest(
             f"{host} already has {n} Skywave listener{'' if n == 1 else 's'}, the most Skywave puts on "
             "one volunteer's receiver. Try another receiver.",
-            code="skywave_cap" if knows_cap else "busy",
+            code=for_page("skywave_cap", known),
             host=host,
             port=port,
             detail=f"skywave_cap={n}",
@@ -980,7 +990,15 @@ class ListenSession:
                     pass
         return True
 
-    async def _run(self, host: str, port: int, *, public_only: bool = False, secure: bool = False) -> None:
+    async def _run(
+        self,
+        host: str,
+        port: int,
+        *,
+        public_only: bool = False,
+        secure: bool = False,
+        known_codes: frozenset[str] = frozenset(),
+    ) -> None:
         await self._status("connecting", host=host)
         # How this pump ended, for the browser. Sent only once its Kiwi sockets
         # are closed and its slot is free, so a reconnect on "Stopped" or an
@@ -1087,7 +1105,9 @@ class ListenSession:
                 cancelled = True
                 raise asyncio.CancelledError from e
             self._log_receiver("error", host, port, code=e.code, detail=e.detail, audio_s=audio_s)
-            ending = self._status_payload("error", message=str(e), code=e.code)
+            # An older page gets "busy" for a code it doesn't know (same_source);
+            # the log above keeps the real one.
+            ending = self._status_payload("error", message=str(e), code=for_page(e.code, known_codes))
         except asyncio.CancelledError:
             cancelled = True
             raise

@@ -53,7 +53,7 @@ export default function OwnersPage() {
             <li>
               <strong>skywave&rsquo;s server keeps a short log of each receiver&rsquo;s answers:</strong> your
               receiver&rsquo;s address and port, whether it played or how it refused (full, a password, no apps,
-              unreachable), how long audio played, and how many skywave listeners there were in all. Nothing about
+              a second connection from the same address, unreachable), how long audio played, and how many skywave listeners there were in all. Nothing about
               who was listening is written. The log is replaced as it grows (25 MB at most) and is used only to
               find out why receivers refuse, so skywave can ask less of them.
             </li>

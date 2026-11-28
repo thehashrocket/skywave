@@ -28,6 +28,8 @@ export const RADIO_ERROR_CODES = [
   "busy",
   // The service already has its most listeners on that receiver (MAX_SESSIONS_PER_RECEIVER).
   "skywave_cap",
+  // The receiver allows one connection per address, and every Skywave listener shares ours (a Kiwi's badp=5).
+  "same_source",
   "no_apps",
   "down",
   "unreachable",
@@ -48,7 +50,7 @@ const KNOWN_CODES: ReadonlySet<string> = new Set(RADIO_ERROR_CODES);
  * Codes the service sends only to a page that lists them on its tune: a page
  * built before one would read it as the service's own failure (#144).
  */
-const NEW_CODES: readonly RadioErrorCode[] = ["skywave_cap"];
+const NEW_CODES: readonly RadioErrorCode[] = ["skywave_cap", "same_source"];
 // How long a new connection to the radio service may take to open.
 const CONNECT_TIMEOUT_MS = 10_000;
 // The service closes a socket left idle (nothing playing, no messages) with

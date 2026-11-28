@@ -107,6 +107,34 @@ async def test_our_cap_is_its_own_code_for_pages_that_know_it(lines, extra, code
     await second.close()
 
 
+class SameSource(QuietClient):
+    """Refuses at connect the way a Kiwi with no_dup_ip turns away a second stream from our address."""
+
+    async def connect(self):
+        raise KiwiError("same_source", "kiwi.example turned away a second listener from Skywave's address.", detail="badp=5")
+
+
+# Value: protects=a Kiwi's badp=5 reaches a page that lists same_source under that code, an older open tab as busy (as before, so its Pick best moves on instead of stopping), and the log keeps same_source either way (#144); fails_when=old tabs get the new code, new ones still get busy, or the log writes the downgraded code; why_new=badp=5 was sent as busy; seam=none (stand-in Kiwi client); no_claim=real Kiwi no_dup_ip
+@pytest.mark.parametrize(
+    "extra,code",
+    [
+        ({"codes": ["skywave_cap", "same_source"]}, "same_source"),
+        ({"codes": ["skywave_cap"]}, "busy"),
+        ({}, "busy"),
+        ({"codes": "same_source"}, "busy"),
+    ],
+)
+async def test_same_source_is_its_own_code_for_pages_that_know_it(lines, extra, code):
+    s, sent = session(Slots(10, per_receiver=1))
+    s._client_factory = SameSource
+    await s.handle(tune("kiwi.example", **extra))
+    await until(lambda: any(m.get("state") == "error" for m in sent))
+    error = next(m for m in sent if m.get("state") == "error")
+    assert error["code"] == code
+    assert lines()[-1] == "event=error host=kiwi.example port=8073 code=same_source detail=badp=5 audio_s=0.0 listeners=1"
+    await s.close()
+
+
 # Value: protects=a host from the browser reaches the log only as a checked hostname or IP address (#144 D5); fails_when=loggable_host passes free text, newlines (an IPv6 zone included) or non-strings; why_new=new rule; zone rows from the final review (owner D1); seam=none; no_claim=none beyond protects
 @pytest.mark.parametrize(
     "host,shown",

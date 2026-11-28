@@ -80,11 +80,11 @@ describe("usePickBest", () => {
     beforeEach(() => vi.useFakeTimers());
     afterEach(() => vi.useRealTimers());
 
-    // Value: protects=a receiver that refuses on its own account within the watch (no apps ~10 s in, or full, as a live Kiwi did at 10 s, or a password) sends the run on to the next one, with its note; fails_when=the run ends for good on listening, or only no_apps moves on and a late "full" leaves the listener on an error; why_new=live probe 2026-10-21 (no_apps at 10.8 s); browser check 2026-11-10 (a Kiwi played, then said busy at 10.7 s, and Pick best stopped); seam=none; no_claim=live Kiwi timing (status sequence)
+    // Value: protects=a receiver that refuses on its own account within the watch (no apps ~10 s in, or full, as a live Kiwi did at 10 s, or a password) sends the run on to the next one, with a note that says it played first (#144: a listener heard audio stop and blamed Skywave); fails_when=the run ends for good on listening, only no_apps moves on and a late "full" leaves the listener on an error, or the note reads as if the receiver never played; why_new=live probe 2026-10-21 (no_apps at 10.8 s); browser check 2026-11-10 (a Kiwi played, then said busy at 10.7 s, and Pick best stopped); late wording from #144's YouTube report; seam=none; no_claim=live Kiwi timing (status sequence)
     it.each<[RadioErrorCode, string]>([
-      ["no_apps", "A only takes listeners on its own web page; trying B…"],
-      ["busy", "A was full; trying B…"],
-      ["password", "A needs a password; trying B…"],
+      ["no_apps", "A turned away apps like Skywave after a few seconds; trying B…"],
+      ["busy", "A filled up after a few seconds; trying B…"],
+      ["password", "A refused after a few seconds; trying B…"],
     ])("moves on when the receiver refuses (%s) within the watch, looking finished until then", (code, note) => {
       const { hook, report, tuned } = setup();
       act(() => hook.result.current.start(candidates));
@@ -96,6 +96,20 @@ describe("usePickBest", () => {
       expect(tuned()).toEqual(["a", "b"]);
       expect(hook.result.current.running).toBe(true);
       expect(hook.result.current.note).toBe(note);
+    });
+
+    // Value: protects=a run that gives up on a refusal after audio says the last receiver played first, so "none worked" doesn't contradict what the listener just heard (#144 YouTube report); fails_when=the give-up note drops the late refusal or says it for one that never played; why_new=#144; seam=none; no_claim=live Kiwi timing
+    it("says the last receiver played first when a late refusal ends the run", () => {
+      const { hook, report } = setup();
+      act(() => hook.result.current.start(candidates));
+      report(fail("a", "busy"));
+      report(fail("b", "busy"));
+      report(listening("c"));
+      act(() => vi.advanceTimersByTime(5_000));
+      report(fail("c", "busy"));
+      expect(hook.result.current.note).toBe(
+        "C filled up after a few seconds. Tried 3 receivers and none worked. Pick one from the list.",
+      );
     });
 
     // Value: protects=settled stays false through the whole watch (a late refusal can still switch receivers) and turns true, re-rendering, when the watch runs out; fails_when=settled follows running, or the watch's expiry changes only a ref; why_new=band scan waits for it (eng review D14, Codex O4); seam=none; no_claim=live Kiwi timing
@@ -165,9 +179,10 @@ describe("usePickBest", () => {
       report(fail("a", "no_apps"));
       expect(tuned()).toEqual(["a", "home.example"]);
       expect(hook.result.current.running).toBe(false);
-      expect(hook.result.current.note).toBe("Tried 1 receiver and it didn't work. Going back to home.example…");
+      const why = "A turned away apps like Skywave after a few seconds. Tried 1 receiver and it didn't work.";
+      expect(hook.result.current.note).toBe(`${why} Going back to home.example…`);
       report(listening("home.example"));
-      expect(hook.result.current.note).toBe("Tried 1 receiver and it didn't work. Back on home.example.");
+      expect(hook.result.current.note).toBe(`${why} Back on home.example.`);
     });
 
     // Value: protects=Stop picking during the watch ends it without redialing what played before the run and without asking the page to stop the receiver that plays, and a later refusal starts nothing; fails_when=stop() goes back to the fallback, returns false (the page then stops the radio) or leaves the watch running; why_new=hidden watch; ship review (maintainability, plan audit partial); seam=none; no_claim=page Stop wiring
@@ -828,6 +843,20 @@ describe("usePickBest", () => {
     hook.rerender({ status: { state: "listening", host: "other.example", port: 8073 }, refusal: null });
     expect(hook.result.current.note).toBe("Tried 1 receiver and it didn't work. Back on Other.Example.");
     expect(hook.result.current.settled).toBe(true);
+  });
+
+  // Value: protects=a receiver turning away a second listener from Skywave's shared address (a Kiwi's badp=5) moves the run on without spending a try and isn't remembered as refused, since it clears once the other listener leaves (#144); fails_when=same_source counts as a strike, joins REFUSALS, or reads as full; why_new=badp=5 used to arrive as busy; seam=none; no_claim=which pages the service sends the code to (radio test_receiver_log.py)
+  it("doesn't count or remember a receiver turning away Skywave's shared address", () => {
+    const many = ["a", "b", "c", "d", "e"].map(rx);
+    const { hook, report, tuned } = setup();
+    act(() => hook.result.current.start(many));
+    report(fail("a", "same_source"));
+    expect(hook.result.current.note).toBe("A turned away a second listener from Skywave's address; trying B…");
+    expect(hook.result.current.isRefused(rx("a"))).toBe(false);
+    report(fail("b", "busy"));
+    report(fail("c", "busy"));
+    // Two strikes: D is still tried.
+    expect(tuned()).toEqual(["a", "b", "c", "d"]);
   });
 
   // Value: protects=our cap isn't remembered as the receiver refusing, so it isn't hidden from runs for 15 minutes; fails_when=skywave_cap joins REFUSALS; why_new=new code; seam=none; no_claim=none beyond protects
