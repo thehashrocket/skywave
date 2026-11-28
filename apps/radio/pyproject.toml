@@ -25,4 +25,5 @@ packages = ["skywave_radio"]
 asyncio_mode = "auto"
 # A broken deadline should fail a test, not hang the run.
 timeout = 60
-testpaths = ["tests"]
+# spikes: the #61 probes' and replay's tests run in CI too (eng review 2026-11-27, D7).
+testpaths = ["tests", "spikes"]

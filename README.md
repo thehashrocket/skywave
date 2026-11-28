@@ -182,7 +182,7 @@ Google Tag Manager loads only where `NEXT_PUBLIC_GTM_ID` is set (set it for Prod
 ## Tests
 
 ```bash
-pnpm test:radio     # DSP math, a fake Kiwi for the protocol, end-to-end WebSocket sessions, the band scan and waterfall client, scripts/pregate-run.sh, deploy/stats.sh and deploy/profile.sh (against fake docker; stats.sh's tests run on Linux only)
+pnpm test:radio     # DSP math, a fake Kiwi for the protocol, end-to-end WebSocket sessions, the band scan and waterfall client, scripts/pregate-run.sh, deploy/stats.sh and deploy/profile.sh (against fake docker; stats.sh's tests run on Linux only), and the #61 research probes in apps/radio/spikes
 pnpm test:web       # password gate, preset + receiver APIs, the station schedule, receiver ranking and Pick best, sun position, the receiver map (logic, style, panel and adapter wiring, worker route), band/S-meter math, the audio worklet's buffer
 pnpm typecheck
 ```
