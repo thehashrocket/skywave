@@ -7,6 +7,14 @@ Notable changes to skywave, newest first. Versions come from `VERSION` (four par
 ### Changed
 - **The Back link names the receiver you left by its place, on one line.** After a receiver change, the status row used to offer the receiver's full list name, which can run to 90 characters or more ("Back to 2-30MHZ SDR #1, VK5ARG Remote Receiver Site | Near Tarlee, South Australia"), louder than the "Listening" beside it. It now reads the way the header strip names a receiver: "Back to Near Tarlee, South Australia", or "Back to <host>" for a receiver the list doesn't know or gives no place. When the receiver playing is in that same place, Back names the other one by its host, so the two can be told apart. The link stays on one line and ends in "…" if it's still too long. Screen readers and voice control still get the full name ("Back to Near Tarlee, South Australia, 2-30MHZ SDR #1, …"), taken from the receiver list when Back comes from your saved receiver or a shared link, and Back tunes the same receiver it did before.
 
+## [0.64.11.0] - 2026-11-28 ([#177](https://github.com/thehashrocket/skywave/issues/177))
+
+### Added
+- **The first screen says what skywave is and what Listen will play.** Until the first sound of a visit, a line under the header reads "Shortwave and ham radio through volunteer receivers around the world." With the dial on 10,000 kHz AM, where it starts, it adds "Press Listen: the dial is on 10,000 kHz, where the WWV time signal usually is." On any other frequency or mode it says "Press Listen to hear this frequency." It shows on every visit, not only the first, and goes away once audio arrives; Stop doesn't bring it back. Screen readers read it in place, and it isn't announced as you tune. Its height stays the same whichever sentence shows, so on a phone the dial doesn't move when you tune off 10,000 kHz or when your saved frequency loads.
+
+### Changed
+- **The waterfall strip no longer repeats "Press Listen".** Before the first sound it now reads just "A blank receiver picks the best one." "Tuning in…" while a receiver connects is unchanged.
+
 ## [0.64.9.0] - 2026-11-27 ([#175](https://github.com/thehashrocket/skywave/issues/175))
 
 ### Changed

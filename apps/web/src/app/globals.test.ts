@@ -268,4 +268,11 @@ describe("globals.css", () => {
       expect(declares(touch, selector, /min-height:\s*44px\s*;/), `${selector} at 44px on touch`).toBe(true);
     }
   });
+
+  // Value: protects=the intro line (#177) keeps its taller version's height and shows one version, so the dial doesn't move 24px on a phone when the sentence switches (tuning off 10,000 kHz, saved tuning loading); fails_when=.console-intro stops being a grid, its spans leave the shared cell, or the aria-hidden version stops being hidden; why_new=the fix added the held height and nothing read its rules; seam=none; no_claim=jsdom has no layout, so this reads the CSS and does not measure the line
+  it("holds the intro line at its taller version's height, showing one version", () => {
+    expect(ruleBody(".console-intro")).toMatch(/display:\s*grid\s*;/);
+    expect(ruleBody(".console-intro > span")).toMatch(/grid-area:\s*1\s*\/\s*1\s*;/);
+    expect(ruleBody(".console-intro > span[aria-hidden]")).toMatch(/visibility:\s*hidden\s*;/);
+  });
 });

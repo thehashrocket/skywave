@@ -2040,6 +2040,51 @@ describe("ListenPage", () => {
       expect(dial().hasAttribute("data-compact")).toBe(true);
     });
 
+    // Value: protects=a first-time visitor reads what skywave is and what Listen will play before pressing it, and the WWV sentence shows only while the dial is on the default 10,000 kHz AM; fails_when=the intro is dropped, stays after the first audio, names WWV on another frequency or without "usually", or both versions reach screen readers; why_new=design critique 2026-11-27: the page never says what it is; seam=the waterfallOpen latch has its own tests, and the strip's shortened line is checked in Waterfall.test; no_claim=does not check that WWV is actually audible on the receiver picked, or the held height (CSS, browser check)
+    it("says what skywave is and what Listen plays until the first audio (#177)", () => {
+      const intro = () => document.querySelector(".console-intro");
+      // What a reader gets: the one version not hidden. The other keeps the line's height (CSS), so
+      // a switch can't move the dial on a phone; it must stay out of the accessibility tree.
+      const shown = () => {
+        const parts = [...intro()!.children];
+        expect(parts).toHaveLength(2);
+        const visible = parts.filter((s) => !s.hasAttribute("aria-hidden"));
+        expect(visible).toHaveLength(1);
+        return visible[0]!.textContent;
+      };
+      const view = render(<ListenPage />);
+      // Between the header and the drawer, plain text in reading order: not a live region.
+      expect(intro()!.previousElementSibling!.tagName).toBe("HEADER");
+      expect(intro()!.nextElementSibling!.id).toBe("receiver-drawer");
+      expect(intro()!.hasAttribute("aria-live")).toBe(false);
+      expect(intro()!.hasAttribute("role")).toBe(false);
+      expect(shown()).toBe(
+        "Shortwave and ham radio through volunteer receivers around the world. " +
+          "Press Listen: the dial is on 10,000 kHz, where the WWV time signal usually is.",
+      );
+      // Off the default frequency, or in another mode, it names no station.
+      fireEvent.keyDown(document.body, { key: "ArrowRight" });
+      expect(shown()).toBe(
+        "Shortwave and ham radio through volunteer receivers around the world. Press Listen to hear this frequency.",
+      );
+      fireEvent.keyDown(document.body, { key: "ArrowLeft" });
+      expect(shown()).toContain("WWV time signal usually is");
+      fireEvent.keyDown(document.body, { key: "u" });
+      expect((screen.getByRole("radio", { name: "USB" }) as HTMLInputElement).checked).toBe(true);
+      expect(shown()).not.toContain("WWV");
+      // Connecting isn't audio yet; the first audio takes it away, and Stop doesn't bring it back.
+      radio.status = { state: "listening", host: listed.host, port: listed.port };
+      view.rerender(<ListenPage />);
+      expect(intro()).not.toBeNull();
+      radio.heardAudio = true;
+      view.rerender(<ListenPage />);
+      expect(intro()).toBeNull();
+      radio.status = { state: "stopped" };
+      radio.heardAudio = false;
+      view.rerender(<ListenPage />);
+      expect(intro()).toBeNull();
+    });
+
     // Value: protects=the audio spectrum joins the controls with the visit's first audio (the one layout change, with the waterfall) and stays through Stop, moving only while audio plays; fails_when=it shows before any audio (back on the first screen a new visitor sees), leaves on Stop, or moves while stopped; why_new=audio spectrum; seam=AudioSpectrum mocked; no_claim=the drawing (AudioSpectrum tests)
     it("adds the audio spectrum on first audio, moving only while it plays", () => {
       const spectrum = () => screen.queryByLabelText("audio spectrum")?.textContent ?? null;
