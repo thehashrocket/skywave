@@ -63,7 +63,7 @@ copies, which the README's "One process" rule forbids).
 ## Receiver log
 
 The radio service writes one line per receiver outcome (#144): every error a
-Listen ends on, each refusal of its own (`skywave_cap`, `blocked`), and every
+Listen ends on, each refusal of its own (`skywave_cap`, `skywave_full`, `blocked`), and every
 receiver that starts playing, with the service's load at the time (#146). In
 production it goes to `/data/receivers.log` on the `radio_data` volume
 (`RECEIVER_LOG` in `docker-compose.prod.yml`), rotated at 5 MB with 4 old files
@@ -80,7 +80,10 @@ receiver and code on each browser connection, so a page retrying in a loop
 can't rotate the history out. The next line written for it adds
 `suppressed=N`, and a connection that closes writes what it still held back
 (`detail=throttled`). Past 256 receivers on one connection, the rest share one
-`host=<many>` line per code. Counting lines undercounts these bursts; add up
+`host=<many>` line per code. `skywave_full` (Skywave at `MAX_SESSIONS`, #146) is
+about Skywave rather than the receiver, so it is always written as
+`host=<many> port=-`: one line per connection every 10 seconds, whatever
+receivers the page names. Counting lines undercounts these bursts; add up
 `suppressed` to get them all. `stats.sh` does: each line counts 1 plus its
 `suppressed=N`, and a `detail=throttled` line counts only its N.
 
@@ -239,7 +242,7 @@ and installs nothing.
 each report's `window=` line says which 24 h it covers), and posts the output as a comment on the open
 issue labelled `radio-load`. A Claude scheduled task reads that issue each
 morning and only raises something when it changes: peaks near `MAX_SESSIONS`,
-`full` refusals, sessions per hour climbing, hourly CPU near 100%, a pending
+`skywave_full` refusals, sessions per hour climbing, hourly CPU near 100%, a pending
 reboot. The repo is public, so that issue is too: it holds counts and limits,
 nothing else from the box.
 

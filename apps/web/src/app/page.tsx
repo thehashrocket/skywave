@@ -1961,7 +1961,13 @@ export default function ListenPage() {
         )}
         {/* Only once nothing else is handling the error: not during a run, nor its watch for a late refusal. */}
         {/* Only a receiver's own (coded) error: the service rejecting a tune, a down service or blocked audio isn't the receiver's fault. */}
-        {status.state === "error" && status.host && status.code && !starting && pickBest.settled && (
+        {/* Skywave being full (skywave_full) is coded but not the receiver's: every other receiver would be refused too (#146). */}
+        {status.state === "error" &&
+          status.host &&
+          status.code &&
+          status.code !== "skywave_full" &&
+          !starting &&
+          pickBest.settled && (
           <button
             type="button"
             className="link-button status-pick"

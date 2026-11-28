@@ -107,6 +107,63 @@ async def test_our_cap_is_its_own_code_for_pages_that_know_it(lines, extra, code
     await second.close()
 
 
+# Value: protects=Skywave's overall limit (MAX_SESSIONS) answers skywave_full only to a page that lists that code and the old uncoded error to an older open tab, says "full" in plain words, and logs skywave_full either way so the load report counts the refused tunes (#146); fails_when=old tabs get the new code (their Pick best would move on to another receiver), new ones stay uncoded, or the refusal isn't logged; why_new=the overall limit was uncoded and never logged, so analytics mixed it with lost connections; seam=none; no_claim=production MAX_SESSIONS
+@pytest.mark.parametrize(
+    "extra,code",
+    [({"codes": ["skywave_cap", "skywave_full"]}, "skywave_full"), ({"codes": ["skywave_cap"]}, None), ({}, None)],
+)
+async def test_our_overall_limit_is_its_own_code_for_pages_that_know_it(lines, extra, code):
+    slots = Slots(1, per_receiver=1)
+    first, _ = session(slots)
+    second, sent = session(slots)
+    await first.handle(tune("kiwi.example"))
+    await listening(first)
+    await second.handle(tune("other.example", **extra))
+    assert (sent[-1]["state"], sent[-1].get("code")) == ("error", code)
+    assert sent[-1]["message"].startswith("Skywave is full right now.")
+    assert sent[-1]["message"].endswith("Try again in a few minutes.")
+    assert lines()[-1] == (
+        "event=refused host=<many> port=- code=skywave_full detail=max_sessions=1 audio_s=0.0 listeners=1"
+    )
+    assert slots.active == 1
+    await first.close()
+    await second.close()
+
+
+# Value: protects=while Skywave is full, a page naming ever-new hosts writes one skywave_full line per throttle window, with the rest counted in suppressed=N, so one client can't fill RECEIVER_LOG or the report with made-up hosts (#146 review D1); fails_when=skywave_full is throttled per host again, or the held-back refusals are dropped instead of counted; why_new=the full refusal comes before any host check, so any string could open a new log key; seam=none; no_claim=stats.sh's own sum (test_stats_script.py)
+async def test_full_refusals_share_one_log_key_whatever_the_host(lines):
+    slots = Slots(1, per_receiver=1)
+    first, _ = session(slots)
+    second, sent = session(slots)
+    await first.handle(tune("kiwi.example"))
+    await listening(first)
+    for i in range(5):
+        await second.handle(tune(f"made-up-{i}.example", codes=["skywave_full"]))
+    assert [m.get("code") for m in sent[-5:]] == ["skywave_full"] * 5
+    full = [line for line in lines() if "code=skywave_full" in line]
+    assert full == ["event=refused host=<many> port=- code=skywave_full detail=max_sessions=1 audio_s=0.0 listeners=1"]
+    await second.close()  # flushes the 4 held back
+    full = [line for line in lines() if "code=skywave_full" in line]
+    assert full[-1] == "event=refused host=<many> port=- code=skywave_full detail=throttled audio_s=0.0 listeners=1 suppressed=4"
+    await first.close()
+
+
+# Value: protects=refusals that are about the request or the listener's own connection (the per-address limit, an unknown message) write no receiver-log line, so its refused counts hold only receivers and Skywave's own limits (#146 log_code gate); fails_when=BadRequest.log_code defaults to something for uncoded errors, or the gate logs every BadRequest; why_new=log_code replaced the code check that kept uncoded refusals out of the log, and nothing pinned that; seam=none; no_claim=what stats.sh does with the lines
+async def test_uncoded_refusals_write_no_receiver_log_line(lines):
+    slots = Slots(10, per_receiver=5, per_owner=1)
+    first, _ = session(slots, owner="203.0.113.7")
+    second, sent = session(slots, owner="203.0.113.7")
+    await first.handle(tune("a.example"))
+    await listening(first)
+    before = lines()
+    await second.handle(tune("b.example"))
+    await second.handle({"type": "nonsense"})
+    assert [(m["state"], m.get("code")) for m in sent[-2:]] == [("error", None), ("error", None)]
+    assert lines() == before
+    await first.close()
+    await second.close()
+
+
 # Value: protects=a host from the browser reaches the log only as a checked hostname or IP address (#144 D5); fails_when=loggable_host passes free text, newlines (an IPv6 zone included) or non-strings; why_new=new rule; zone rows from the final review (owner D1); seam=none; no_claim=none beyond protects
 @pytest.mark.parametrize(
     "host,shown",

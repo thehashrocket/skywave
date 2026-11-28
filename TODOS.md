@@ -43,10 +43,10 @@
 ### Receiver log: review notes from #144
 
 **What:** Notes the #144 reviews left open, all about the log or analytics, none about audio:
-- Kiwi errors (a fast `unreachable`) and `listening` lines aren't throttled, and the refusal throttle is per connection, so a page looping tunes or reconnecting can rotate the 25 MB history out. A service-wide limit per (host, port, code) would close it.
+- Kiwi errors (a fast `unreachable`) and `listening` lines aren't throttled, and the refusal throttle is per connection, so a page looping tunes or reconnecting can rotate the 25 MB history out. Since #146 that includes `skywave_full`: while Skywave is full, every open connection can write one line per 10 s. A service-wide limit per (host, port, code) would close it.
 - `close()` skips `flush_refused_counts()` if `stop()` raises: wrap it in `try`/`finally`.
 - Once the file is attached, a failing disk prints a traceback per line from the writer thread and the lines go nowhere; shutdown can wait on a stalled disk while the queue drains.
-- A `skywave_cap` met on Pick best's way back isn't counted in `radio_refused`; a run restored from the back-forward cache never reports its real end (pagehide already reported it).
+- A `skywave_cap` met on Pick best's way back isn't counted in `radio_refused` (a `skywave_full` there is, since #146); a run restored from the back-forward cache never reports its real end (pagehide already reported it).
 - `page.tsx`: `draftRef` is now unused, and `otherThan`'s doc comment sits on `sameReceiver`.
 - `hostguard.py:195`: the resolver's `HOSTNAME_RE.match` should be `fullmatch` like the log's (a trailing newline only fails the lookup today).
 - `config.py`'s `receiver_log` comment and `server.py`'s `attach_receiver_log` docstring still say the file is written "also" and stdout is used "only" when unset; the file replaces stdout once attached.
@@ -94,6 +94,18 @@
 **Effort:** M
 **Priority:** P4
 **Depends on:** Running more than one radio service process
+
+### Tell a listener with two radios playing to stop one, even while Skywave is full
+
+**What:** In `Slots.refusal` (`apps/radio/skywave_radio/session.py`), check the per-address limit (`MAX_SESSIONS_PER_IP`) before the overall limit: owner, then full, then receiver.
+
+**Why:** Since #146, "full" is checked first. A listener who already has two radios playing and opens a third while Skywave is full is told "Skywave is full… try again in a few minutes", when stopping one of their own tabs would let them listen. That refusal is also counted as `skywave_full`, though the listener is already being served.
+
+**Context:** Raised by the native adversarial reviewer in the #146 /gstack-ship run (2026-11-28); the owner chose to ship and defer it. Rare: it needs both limits at once, and it changes only the message and one count, never audio. Add a `test_listener_caps.py` case next to `test_slots_full_beats_the_receiver_and_owner_caps`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** Nothing
 
 ## Web app
 

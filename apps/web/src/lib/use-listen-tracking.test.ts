@@ -79,4 +79,17 @@ describe("useListenTracking", () => {
     hook.rerender({ status: { ...capped, host: "c.example" }, refusal: refusal(2), picking: true });
     expect(track.mock.calls).toEqual([]);
   });
+
+  // Value: protects=Skywave being full (skywave_full, #146) counts as radio_refused, never radio_error, so lost connections and capacity refusals can be told apart; inside a Pick best run it's left to the run; fails_when=skywave_full reaches radio_error, isn't counted, or a run's is counted twice; why_new=the full refusal was uncoded and counted as radio_error "service"; seam=mocked track; no_claim=Vercel ingestion
+  it("counts Skywave being full as radio_refused, never radio_error", () => {
+    const full: RadioStatus = { state: "error", code: "skywave_full", host: "b.example", port: 8073, message: "full" };
+    const hook = renderHook(({ status, picking }) => useListenTracking(status, false, null, picking), {
+      initialProps: { status: full, picking: false },
+    });
+    expect(track.mock.calls).toEqual([["radio_refused", { code: "skywave_full", receivers: 1, source: "listener" }]]);
+    track.mockClear();
+    hook.rerender({ status: { state: "connecting" }, picking: true });
+    hook.rerender({ status: { ...full }, picking: true });
+    expect(track.mock.calls).toEqual([]);
+  });
 });

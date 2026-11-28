@@ -82,6 +82,15 @@ def test_slots_overall_limit_still_applies():
     assert slots.acquire(("b", 8073), "y") == "full"
 
 
+# Value: protects=while Skywave is full, a receiver that already has a Skywave listener (or an address at its own cap) is refused as "full", so the page says Skywave is full and the receiver log counts skywave_full, not skywave_cap (#146 review D3); fails_when=the per-receiver or per-owner check runs before the overall limit again; why_new=the order was receiver-first, so a full service hid behind skywave_cap on held receivers; seam=none; no_claim=how Pick best orders held receivers (use-pick-best.test.ts)
+def test_slots_full_beats_the_receiver_and_owner_caps():
+    slots = Slots(1, per_receiver=1, per_owner=1)
+    assert not isinstance(slots.acquire(("a", 8073), "x"), str)
+    assert slots.acquire(("a", 8073), "y") == "full"
+    assert slots.acquire(("b", 8073), "x") == "full"
+    assert not slots.receiver_full(("b", 8073))  # /held is unaffected
+
+
 def test_slots_move_respects_the_new_receivers_cap():
     slots = Slots(10, per_receiver=1)
     a = slots.acquire(("a", 8073), None)

@@ -3126,6 +3126,14 @@ describe("ListenPage", () => {
       expect(radio.tune).toHaveBeenCalledWith(expect.objectContaining({ host: backup.host }));
     });
 
+    // Value: protects=Skywave being full (skywave_full, #146) offers no Pick best link, since every receiver would be refused the same way; fails_when=the link shows for any coded error naming a host; why_new=skywave_full is the one coded error not about the receiver (review finding); seam=list hook mocked; no_claim=the service's side
+    it("offers no Pick best link when Skywave is full", () => {
+      radio.status = { state: "error", code: "skywave_full", message: "Skywave is full right now.", host: "typed.example", port: 8073 };
+      render(<ListenPage />);
+      expect(message()).toBe("Skywave is full right now.");
+      expect(screen.queryByRole("button", { name: "Pick best receiver" })).toBeNull();
+    });
+
     // Value: protects=after an error, choosing a receiver hides the error link while that tune starts, so Pick best can't override the choice (red-team review); fails_when=the link ignores starting; why_new=review finding; seam=list hook mocked; no_claim=none beyond protects
     it("hides the error link while a chosen receiver connects", () => {
       radio.status = { state: "error", code: "busy", message: "full", host: "typed.example", port: 8073 };

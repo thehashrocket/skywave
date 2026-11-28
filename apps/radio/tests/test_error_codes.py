@@ -25,4 +25,4 @@ def test_web_knows_every_error_code_the_service_sends():
     assert block, "RADIO_ERROR_CODES not found in use-radio.ts"
     known = set(re.findall(r'"([a-z_]+)"', block.group(1)))
     assert sent == known
-    assert {"busy", "dns", "blocked", "skywave_cap"} <= sent
+    assert {"busy", "dns", "blocked", "skywave_cap", "skywave_full"} <= sent

@@ -2,6 +2,13 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.64.20.0] - 2026-11-28 ([#146](https://github.com/thehashrocket/skywave/issues/146))
+
+### Changed
+- **When Skywave is at its listener limit, the page says so plainly.** The message now reads "Skywave is full right now. Each listener uses a channel on a volunteer's receiver, so Skywave keeps the number small. Try again in a few minutes." Pick best stops at once instead of trying other receivers that would be refused the same way, and the "Pick best receiver" link isn't offered after it. While Skywave is full, that is the answer even for a receiver another Skywave listener already has, since no other receiver would help. A tab opened before this release keeps the old behaviour until it reloads.
+- **Every "Skywave is full" refusal is counted, apart from receiver failures.** The radio service writes each one to its receiver log as `skywave_full` (one line per connection every 10 seconds, with the repeats added up), so the daily load report shows how often listeners were turned away. Before, these refusals weren't logged at all.
+- **Analytics count Skywave being full as `radio_refused` (code `skywave_full`), not as a `radio_error` "service" failure,** and a Pick best run that ends on it reports the outcome `full` instead of `service`. Both "service" counts drop after this release for that reason alone, so to compare with earlier numbers, add the `skywave_full` refusals back in or use the receiver log's count.
+
 ## [0.64.19.0] - 2026-11-28 ([#153](https://github.com/thehashrocket/skywave/issues/153))
 
 ### Fixed

@@ -28,6 +28,9 @@ export const RADIO_ERROR_CODES = [
   "busy",
   // The service already has its most listeners on that receiver (MAX_SESSIONS_PER_RECEIVER).
   "skywave_cap",
+  // The service is at its overall listener limit (MAX_SESSIONS, #146). Not about
+  // any receiver: Pick best stops on it, as on an uncoded error.
+  "skywave_full",
   "no_apps",
   "down",
   "unreachable",
@@ -48,7 +51,7 @@ const KNOWN_CODES: ReadonlySet<string> = new Set(RADIO_ERROR_CODES);
  * Codes the service sends only to a page that lists them on its tune: a page
  * built before one would read it as the service's own failure (#144).
  */
-const NEW_CODES: readonly RadioErrorCode[] = ["skywave_cap"];
+const NEW_CODES: readonly RadioErrorCode[] = ["skywave_cap", "skywave_full"];
 // How long a new connection to the radio service may take to open.
 const CONNECT_TIMEOUT_MS = 10_000;
 // The service closes a socket left idle (nothing playing, no messages) with
@@ -63,8 +66,9 @@ export type RadioStatus = {
   state: RadioState;
   message?: string;
   /**
-   * Why an error happened. Errors from our side (listener limit, bad request)
-   * have none, and neither do codes from a newer radio service than this build.
+   * Why an error happened. Errors from our side (a bad request, a lost
+   * connection) have none, and neither do codes from a newer radio service than
+   * this build; our listener limits have their own (skywave_cap, skywave_full).
    */
   code?: RadioErrorCode;
   /** On an uncoded error: the same receiver may work if tried again after this long. */
