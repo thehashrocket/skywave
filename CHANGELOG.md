@@ -2,7 +2,7 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
-## [Unreleased]
+## [0.64.18.0] - 2026-11-28 ([#155](https://github.com/thehashrocket/skywave/issues/155))
 
 ### Fixed
 - **The daily load report counts a whole day of listening sessions again.** Every open page asks the radio service which receivers already have a Skywave listener once a minute, and the service logged each of those requests with up to 100 receivers in it. On the server those lines were 99% of its 50 MB log, which filled in about six hours and pushed out the session lines the report counts. The service no longer logs successful polls of that list, of the noise levels or of its health check; failed ones are still logged.
