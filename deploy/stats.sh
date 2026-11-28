@@ -228,9 +228,10 @@ main() {
                   if (fday != day) { stale = 1; exit }
                   d = day; next }
         $1 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ && $2 == "all" {
-          # Times only go up within a day; one going back is the next day
-          # (sysstat can end a file with a 00:00 record).
-          if ($1 < last) d = next_day
+          # sysstat can end a file with a 00:00 record of the next day. Only a
+          # wrap from 23:xx to 00:xx is that; any other step back (the clock
+          # was set back) stays on this day, so its hours keep their date.
+          if ($1 < last && last >= "23:" && $1 < "01:") d = next_day
           last = $1
           ts = d "T" $1; if (ts >= cutoff) print substr(ts, 1, 13), 100 - $NF }
         END { if (stale) exit 4 }' <<<"$out"
@@ -245,9 +246,25 @@ main() {
         echo "  (couldn't read sysstat's file for $day; its hours aren't counted)"
       fi
     done
-    awk 'NF == 2 { n[$1]++; sum[$1] += $2; if (!($1 in max) || $2 > max[$1]) max[$1] = $2 }
-         END { for (h in n) printf "%s %5.1f / %5.1f\n", h, sum[h] / n[h], max[h] }' <<<"$samples" \
-      | sort | hour_rows "  " | grep . || echo "  (no samples in the window)"
+    local rows
+    rows=$(awk 'NF == 2 { n[$1]++; sum[$1] += $2; if (!($1 in max) || $2 > max[$1]) max[$1] = $2 }
+         END { for (h in n) printf "%s %5.1f / %5.1f\n", h, sum[h] / n[h], max[h] }' <<<"$samples" | sort)
+    if [[ -z $rows ]]; then
+      echo "  (no samples in the window)"
+    else
+      # A whole hour with no sample (box down, collection stopped) has no row;
+      # say how many, so a gap over the peak doesn't read as a calm day. The
+      # two partial end hours can lack a sample legitimately, so they're left out.
+      local i h whole=0 missing=0
+      for (( i = 1; i < 24; i++ )); do
+        h=$(date -u -d "${cutoff:0:13}:00:00Z + $i hour" +%Y-%m-%dT%H)
+        [[ $h < "${now:0:13}" ]] || break
+        (( whole += 1 ))
+        grep -q "^$h " <<<"$rows" || (( missing += 1 ))
+      done
+      (( missing == 0 )) || echo "  (no samples in $missing of the window's $whole whole hours; those hours have no row)"
+      hour_rows "  " <<<"$rows"
+    fi
   fi
 }
 

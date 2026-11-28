@@ -133,7 +133,9 @@ On the box, as `deploy` or root:
 It prints the host's CPU count, load and memory, whether a reboot is pending,
 the `MAX_*` limits from `apps/radio/.env`, both containers' CPU and memory, the
 browser and Kiwi sockets open right now, `/ws` sessions opened per UTC hour over
-the last 24 h (accepted handshakes only, not refused ones), and refusals by code and the most listeners seen per hour from the
+the last 24 h (accepted handshakes only: one refused at the handshake for its
+site or token isn't counted, one closed for too many sockets from one address
+is), and refusals by code and the most listeners seen per hour from the
 receiver log (#144). It reads that log from the `RECEIVER_LOG` file and its
 rotated copies inside the container, plus any receiver lines in the container's
 own logs (where they go if the file can't be opened), and keeps the last 24 h.
@@ -243,7 +245,8 @@ It needs, once:
    `systemctl enable --now sysstat`. It samples every 10 minutes; `stats.sh`
    shows each hour's average and maximum over the report's 24 h window,
    reading both days' files by date and saying so when one is missing or from
-   another date. Without it that section says
+   another date, and how many whole hours have no samples (box down, collection
+   stopped). Without it that section says
    "(sysstat not installed)".
 4. **Try it:** Actions → Radio stats → Run workflow.
 

@@ -448,13 +448,15 @@ SAR_YESTERDAY = textwrap.dedent(
     17:10:01        all     30.00      0.00     10.00      0.00      0.00     60.00
     20:00:01        all     70.00      0.00     15.00      0.00      0.00     15.00
     20:10:01        all     50.00      0.00      5.00      0.00      0.00     45.00
+    19:30:01        all     40.00      0.00     10.00      0.00      0.00     50.00
+    23:50:01        all      0.00      0.00      0.00      0.00      0.00    100.00
     00:00:01        all      0.00      0.00      0.00      0.00      0.00    100.00
     Average:        all     60.00      0.00      9.75      0.00      0.00     30.25
     """
 )
 
 
-# Value: protects=hourly host CPU over the report's 24 h window from the window's own days' sysstat files (by name, header date checked), avg and max per UTC hour, partial end hours labelled, a 00:00 record at a file's end dated to the next day, and a missing, unreadable or wrong-date file said, never shown as idle or as invented numbers; fails_when=busy isn't 100 - %idle, the header or Average line is counted, hours or days mix, yesterday's samples are dropped (a run just after midnight showed one row in the 2026-11-28 #155 report), a pre-cut sample is kept, or a leftover file from another month is counted; why_new=GitHub starts the 17:07 run 7-8 h late; seam=fake sar on PATH; no_claim=sysstat's own sampling or that it's enabled on the box
+# Value: protects=hourly host CPU over the report's 24 h window from the window's own days' sysstat files (by name, header date checked), avg and max per UTC hour, partial end hours labelled, a 00:00 record at a file's end dated to the next day while a clock set back mid-day stays on its day, whole hours with no sample counted in a note, and a missing, unreadable or wrong-date file said, never shown as idle or as invented numbers; fails_when=busy isn't 100 - %idle, the header or Average line is counted, hours or days mix, yesterday's samples are dropped (a run just after midnight showed one row in the 2026-11-28 #155 report), a pre-cut sample is kept, or a leftover file from another month is counted; why_new=GitHub starts the 17:07 run 7-8 h late; seam=fake sar on PATH; no_claim=sysstat's own sampling or that it's enabled on the box
 def test_hourly_cpu_from_sar(tmp_path: Path):
     out = run_stats(tmp_path, LOGS, sar=SAR, sar_yesterday=SAR_YESTERDAY).stdout
     cpu = out.split("== host CPU busy % per hour, last 24 h")[1]
@@ -463,6 +465,10 @@ def test_hourly_cpu_from_sar(tmp_path: Path):
     assert "  2026-11-26T00   15.0 /  30.0\n" in cpu  # 15 and 30 today, plus yesterday's 00:00 record (0)
     assert "  2026-11-26T10   65.0 /  80.0\n" in cpu
     assert "2026-11-25T16" not in cpu
+    assert "  2026-11-25T19   50.0 /  50.0\n" in cpu  # set back to 19:30: still the 25th
+    assert "2026-11-26T19" not in cpu
+    # Whole hours 2026-11-25T18 .. 2026-11-26T16 (23); samples in 19, 20, 23, 00 and 10.
+    assert "  (no samples in 18 of the window's 23 whole hours; those hours have no row)\n" in cpu
     assert "2026-11-25T00" not in cpu
     assert "Average" not in cpu
     assert "sysstat's file" not in cpu
