@@ -2,6 +2,12 @@
 
 Notable changes to skywave, newest first. Versions come from `VERSION` (four parts, `MAJOR.MINOR.PATCH.MICRO`); /ship bumps it and writes each release's entry here. Before 0.44.0.0 the numbers were assigned afterwards, one per merged PR (minor for a feature, patch for a fix, micro for docs, chores and dependency bumps).
 
+## [0.64.19.0] - 2026-11-28 ([#153](https://github.com/thehashrocket/skywave/issues/153))
+
+### Fixed
+- **The radio's CPU profile summary shows the work the radio actually does, not threads sitting idle.** The live profiler can't tell a waiting thread from a busy one without pausing the radio, so the first profile on the server, on 2026-11-28, was about 95% samples of idle threads, and its tables ranked "waiting on a queue" and "event loop sleeping" as the top costs. `deploy/profile.sh` now sorts every sample into three rows: waiting (threads blocked on a queue, lock, join, socket wait or a stuck address lookup), the event loop's own C code, and Python work. Its top-function tables rank only the Python work, which is also saved as `radio-work.raw` for a flame graph.
+- **The summary checks itself against the radio's measured CPU.** It prints Python work as a share of one core next to the CPU Docker measured over the same window, and the gap between them, which is the event loop's own C work (socket reads and writes, timers) that the tables can't show. It says how many CPU readings the gap rests on, and warns when they cover under half the window, when Python work passes one core (which one process can't do, so some of it is threads blocked in C), and when the run was cut short, so a skewed run doesn't send you to a profiler mode that pauses the radio.
+
 ## [0.64.18.0] - 2026-11-28 ([#155](https://github.com/thehashrocket/skywave/issues/155))
 
 ### Fixed
