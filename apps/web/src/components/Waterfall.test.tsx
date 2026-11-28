@@ -59,7 +59,7 @@ describe("Waterfall", () => {
     }
   });
 
-  // Value: protects=before the visit's first audio the waterfall is a short strip saying a blank receiver picks the best one (the intro above the dial says "Press Listen", #177), and once open it says what it's waiting for (design D7); fails_when=the strip text or the open flag is dropped, or the strip goes back to repeating "Press Listen"; why_new=Waterfall had no test; seam=none; no_claim=the strip's height (CSS, browser check)
+  // Value: protects=before the visit's first audio the waterfall is a short strip saying a blank receiver picks the best one (the intro above the dial says "Press Listen", #177), and opens on the flag (its open text is the next test, #178); fails_when=the strip text or the open flag is dropped, or the strip goes back to repeating "Press Listen"; why_new=Waterfall had no test; seam=none; no_claim=the strip's height (CSS, browser check)
   it("is a short strip until it has opened", () => {
     const view = show();
     expect(view.container.querySelector(".waterfall")!.hasAttribute("data-open")).toBe(false);
@@ -78,7 +78,19 @@ describe("Waterfall", () => {
     cleanup();
     const open = show({ expanded: true });
     expect(open.container.querySelector(".waterfall")!.hasAttribute("data-open")).toBe(true);
-    expect(screen.getByText("The waterfall fills in once you're listening.")).toBeTruthy();
+  });
+
+  // Value: protects=an open waterfall with nothing playing says so and how to resume, and says "Tuning in…" while a receiver connects, instead of promising to fill a picture that is already full; fails_when=the old "fills in once you're listening" line comes back, or the connecting and stopped states share one line again; why_new=design critique 2026-11-27: the line was false after Stop; seam=the strip's text before the first audio is asserted separately; no_claim=jsdom does not render the chip, so its contrast over the picture is not checked
+  it("says nothing is playing on an open waterfall, or that it's tuning in", () => {
+    const stopped = show({ expanded: true });
+    // In a span: the chip's ground hangs on it, as on the wide view's notes.
+    expect(stopped.container.querySelector(".waterfall-empty > span")!.textContent).toBe(
+      "Nothing is playing. Press Listen to resume.",
+    );
+    expect(stopped.container.textContent).not.toContain("fills in once you're listening");
+    cleanup();
+    const connecting = show({ expanded: true, connecting: true });
+    expect(connecting.container.querySelector(".waterfall-empty > span")!.textContent).toBe("Tuning in…");
   });
 
   // Value: protects=screen readers get the click sentence and touch screens a tap one that readers skip (design D16, eng review code quality); fails_when=the tap sentence is announced or the click sentence is removed; why_new=the hint was a hover title only; seam=none; no_claim=which sentence shows for which pointer (CSS)

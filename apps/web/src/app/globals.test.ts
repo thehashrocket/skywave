@@ -275,4 +275,21 @@ describe("globals.css", () => {
     expect(ruleBody(".console-intro > span")).toMatch(/grid-area:\s*1\s*\/\s*1\s*;/);
     expect(ruleBody(".console-intro > span[aria-hidden]")).toMatch(/visibility:\s*hidden\s*;/);
   });
+
+  // Value: protects=the open audio waterfall's "Nothing is playing" / "Tuning in…" line (#178) sits on the same dark chip as the wide view's notes, over the picture left after Stop; fails_when=the data-open selector leaves the chip rule, or the chip loses its --enamel-deep ground; why_new=Waterfall.test checks the span exists but jsdom applies no CSS and nothing read this rule; seam=none; no_claim=jsdom has no layout, so this reads the CSS and does not prove the chip's contrast over every picture
+  it("puts the open waterfall's empty line on the wide view's chip", () => {
+    for (const selector of [".waterfall[data-wide] .waterfall-empty > span", ".waterfall[data-open] .waterfall-empty > span"]) {
+      const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+      expect(declares(text, selector, /background:\s*var\(--enamel-deep\)\s*;/), `${selector} on the chip`).toBe(true);
+    }
+  });
+
+  // Value: protects=the Decode RTTY title and decoded text stay >= 4.5:1 on the page's --enamel ground (#178); fails_when=.decode-title or .decode-text goes back to --ink (dark ink meant for the dial glass, ~1.1:1 here) or a token is retuned below AA; why_new=no test read the decode panel's colours; seam=none; no_claim=computed from :root hex values on the body's --enamel only; source text, not rendering
+  it("keeps the decode panel's title and text at WCAG AA contrast on the page", () => {
+    for (const selector of [".decode-title", ".decode-text"]) {
+      const color = /(?:^|[\s;])color:\s*var\((--[\w-]+)\)/.exec(ruleBody(selector))?.[1];
+      expect(color, `${selector} color`).toBeDefined();
+      expect(contrast(token(color!), token("--enamel")), `${selector} ${color} on --enamel`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
 });
