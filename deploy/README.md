@@ -137,9 +137,15 @@ the last 24 h, and refusals by code and the most listeners seen per hour from th
 receiver log (#144). It reads that log from the `RECEIVER_LOG` file and its
 rotated copies inside the container, plus any receiver lines in the container's
 own logs (where they go if the file can't be opened), and keeps the last 24 h.
+The per-hour tables' first and last hours are partial, so they are labelled
+"(from HH:MM)" and "(so far, to HH:MM)": the next day's report starts where
+this one stops, so every minute is in exactly one row.
 Session counts come from the container's own logs, which a deploy that recreates
 the container deletes; on such a day the report says "since <time>; earlier
-hours were in the previous container". When Docker's own log cap (10 MB x 5),
+hours were in the previous container". To keep a day of sessions in those logs,
+the service leaves successful `/held`, `/noise` and `/healthz` requests out of
+its access log (each open page polls `/held` every minute, #155); failed ones
+are still logged. When Docker's own log cap (10 MB x 5),
 or the receiver log's (5 MB x 5), has already dropped lines from inside the
 24 h, it says how far back that log reaches. A section it can't read (say the
 container is restarting) says so and the rest of the report still prints.

@@ -453,3 +453,41 @@ def test_counts_refusals_the_throttle_held_back(tmp_path: Path):
     assert "    8  event=refused code=skywave_cap" in section  # 1 + (1 + 4) + 2
     assert "    1  event=listening code=-" in section
     assert "2026-11-26T15  11" in out.stdout
+
+
+# The cut is 2026-11-25T17:07 and the report runs at 2026-11-26T17:07 (FAKE_DATE):
+# the 17:30 lines are in the window's partial first hour, the 2026-11-26 17:01
+# ones in its partial last hour, the 18:05 ones in a whole hour.
+EDGE_LOGS = textwrap.dedent(
+    f"""\
+    2026-11-25T17:30:00.000000000Z INFO:     {BROWSER_IP}:0 - "WebSocket /ws?token={TOKEN}" [accepted]
+    2026-11-25T18:05:00.000000000Z INFO:     {BROWSER_IP}:0 - "WebSocket /ws?token={TOKEN}" [accepted]
+    2026-11-26T17:01:00.000000000Z INFO:     {BROWSER_IP}:0 - "WebSocket /ws?token={TOKEN}" [accepted]
+    """
+)
+EDGE_RECEIVERS = textwrap.dedent(
+    f"""\
+    2026-11-25 17:30:00,000 event=refused host={KIWI_HOST} port=8073 code=full detail=- audio_s=0.0 listeners=14
+    2026-11-25 18:05:00,000 event=listening host={KIWI_HOST} port=8073 code=- detail=- audio_s=0.0 listeners=3
+    2026-11-26 17:01:00,000 event=listening host={KIWI_HOST} port=8073 code=- detail=- audio_s=0.0 listeners=5
+    """
+)
+
+
+# Value: protects=the per-hour tables (sessions opened, most listeners) keep the window's partial first and last hours and label them "(from HH:MM)" and "(so far, to HH:MM)", so with the next day's report every minute is in exactly one row, and an empty table says "(none)"; fails_when=a partial end hour is dropped (the 17:07-17:59 gap both #155 adversarial reviewers found) or loses its label, or an empty table goes blank; why_new=the 2026-11-28 #155 report showed 25 unlabeled rows for "last 24 h"; seam=fake docker and date on PATH; no_claim=docker's own --since 24h cut
+def test_hourly_tables_label_the_partial_end_hours(tmp_path: Path):
+    out = run_stats(tmp_path, EDGE_LOGS, receivers=EDGE_RECEIVERS)
+    assert out.returncode == 0, out.stderr
+    sessions = out.stdout.split("== /ws sessions")[1].split("== receiver log")[0]
+    assert "  2026-11-25T17  1  (from 17:07)\n" in sessions
+    assert "  2026-11-25T18  1\n" in sessions
+    assert "  2026-11-26T17  1  (so far, to 17:07)\n" in sessions
+    listeners = out.stdout.split("most listeners per hour:")[1].split("== host CPU")[0]
+    assert "    2026-11-25T17  14  (from 17:07)\n" in listeners
+    assert "    2026-11-25T18  3\n" in listeners
+    assert "    2026-11-26T17  5  (so far, to 17:07)\n" in listeners
+    # Nothing to list: each table says so rather than going blank.
+    drops_only = "2026-11-26 12:00:00,000 event=dropped lines=3\n"
+    empty = run_stats(tmp_path / "b", "", receivers=drops_only).stdout
+    assert "  (none)" in empty.split("== /ws sessions")[1].split("== receiver log")[0]
+    assert "    (none)" in empty.split("most listeners per hour:")[1].split("== host CPU")[0]

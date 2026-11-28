@@ -27,8 +27,23 @@ main() {
   # (YYYY-MM-DDTHH:MM:SS, UTC) and compared to it as text.
   local cutoff
   cutoff=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%S)
+  local now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-  echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) $(hostname)"
+  # Per-hour rows ("YYYY-MM-DDTHH N" on stdin, sorted), indented by $1. The
+  # window's first and last hours are partial, so they say from or to when:
+  # the next day's report starts where this one stops, so every minute is in
+  # exactly one row of one report (dropping the first hour would lose it).
+  hour_rows() {
+    awk -v ind="$1" -v first="${cutoff:0:13}" -v from="${cutoff:11:5}" \
+        -v last="${now:0:13}" -v to="${now:11:5}" '
+      { note = ""
+        if ($1 == first) note = "  (from " from ")"
+        else if ($1 == last) note = "  (so far, to " to ")"
+        printf "%s%s  %s%s\n", ind, $1, $2, note }'
+  }
+
+  echo "== $now $(hostname)"
   echo "cpus=$(nproc)  load=$(cut -d' ' -f1-3 /proc/loadavg)  up=$(uptime -p | sed 's/^up //')"
   free -m | awk '/^Mem:/ {printf "mem_total=%sMB  mem_used=%sMB  mem_available=%sMB\n", $2, $3, $7}'
   [[ -f /var/run/reboot-required ]] && echo "reboot_required=yes" || echo "reboot_required=no"
@@ -94,8 +109,8 @@ main() {
   if (( ! logs_ok )); then
     echo "  (couldn't read the container's logs)"
   else
-    grep 'WebSocket /ws' <<<"$logs" | cut -c1-13 | sort | uniq -c | awk '{printf "  %s  %s\n", $2, $1}' \
-      || echo "  (none)"
+    grep 'WebSocket /ws' <<<"$logs" | cut -c1-13 | sort | uniq -c | awk '{print $2, $1}' | hour_rows "  " \
+      | grep . || echo "  (none)"
   fi
 
   # Receiver-log lines (#144): refusals by code and the most listeners seen per
@@ -180,7 +195,8 @@ main() {
     echo "  most listeners per hour:"
     awk '{ h = substr($1, 1, 13); for (i = 2; i <= NF; i++) if ($i ~ /^listeners=/) {
              split($i, a, "="); if (a[2] + 0 > m[h]) m[h] = a[2] + 0 } }
-         END { for (h in m) print h, m[h] }' <<<"$events" | sort | awk '{printf "    %s  %s\n", $1, $2}'
+         END { for (h in m) print h, m[h] }' <<<"$events" | sort | hour_rows "    " \
+      | grep . || echo "    (none)"
   fi
 
   # Host CPU by hour, from sysstat's samples (every 10 min once it's enabled:
